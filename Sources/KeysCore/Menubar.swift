@@ -9,11 +9,11 @@ struct MenubarSnapshot: Equatable {
     /// One line per plan window, for the dropdown. Empty when no tool has reported a window.
     var lines: [String] = []
 
-    /// Title: Grok's own dollars for the report range, then each tool's windows as
-    /// `C 12/2%` (5 hour / weekly) or `G 8%` (weekly only). Never a Claude or Codex estimate.
+    /// Title: each tool's weekly window only, `C 2%  X 63%  G 10%`. Dollars and the 5-hour
+    /// windows live in the dropdown. Never a Claude or Codex estimate.
     static func from(_ report: SpendReport, status: LiveStatus? = nil, now: Date = Date()) -> MenubarSnapshot {
         let usd = formatUsd(report.totals.grokUsd)
-        var title = usd
+        var parts: [String] = []
         var tooltip: [String] = ["Grok \(usd) this \(report.range == .week ? "week" : "month")"]
         var lines: [String] = []
         if let status {
@@ -22,18 +22,11 @@ struct MenubarSnapshot: Equatable {
             let grok = status.grok ?? status.plans.first { $0.source == "grok" }
             for (letter, name, tool) in [("C", "Claude", claude), ("X", "Codex", codex), ("G", "Grok", grok)] {
                 guard let tool, tool.fiveHourPct != nil || tool.weeklyPct != nil else { continue }
-                switch (tool.fiveHourPct, tool.weeklyPct) {
-                case let (five?, week?):
-                    title += "  \(letter) \(five)/\(week)%"
-                    tooltip.append("\(name) 5h \(five)% · weekly \(week)%")
-                case let (five?, nil):
-                    title += "  \(letter) \(five)% 5h"
-                    tooltip.append("\(name) 5h \(five)%")
-                case let (nil, week?):
-                    title += "  \(letter) \(week)%"
+                if let week = tool.weeklyPct {
+                    parts.append("\(letter) \(week)%")
                     tooltip.append("\(name) weekly \(week)%")
-                default:
-                    break
+                } else if let five = tool.fiveHourPct {
+                    tooltip.append("\(name) 5h \(five)%")
                 }
                 if let five = tool.fiveHourPct {
                     lines.append("\(name) · 5 hour \(five)%" + resetsSuffix(tool.fiveHourResetsAt, now: now))
@@ -43,7 +36,8 @@ struct MenubarSnapshot: Equatable {
                 }
             }
         }
-        tooltip.append("local tool spend, not a subscription bar")
+        tooltip.append("weekly plan windows · click for 5-hour windows and spend")
+        let title = parts.isEmpty ? usd : parts.joined(separator: "  ")
         return MenubarSnapshot(
             title: title,
             tooltip: tooltip.joined(separator: " · "),
@@ -164,7 +158,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.url = url
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        item.button?.imagePosition = .imageLeading
+        item.button?.imagePosition = .noImage
         item.menu = buildMenu()
         item.menu?.delegate = self
         refresh()
@@ -216,7 +210,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let snap = MenubarSnapshot.from(report, status: status)
         item.button?.title = snap.title
         item.button?.toolTip = snap.tooltip
-        item.button?.image = Sparkline.image(values: snap.sparkline, size: CGSize(width: 22, height: 16))
+        item.button?.image = nil
         lastSnapshot = snap
         updatedAt = Date()
         item.menu = buildMenu()
@@ -232,7 +226,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.addItem(row)
             }
             if !snap.lines.isEmpty { menu.addItem(.separator()) }
-            let spend = NSMenuItem(title: "Grok \(MenubarSnapshot.formatUsd(0)) this week".replacingOccurrences(of: "$0", with: snap.title.split(separator: " ").first.map(String.init) ?? "$0"), action: nil, keyEquivalent: "")
+            let spend = NSMenuItem(title: snap.tooltip.split(separator: "·").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "", action: nil, keyEquivalent: "")
             spend.isEnabled = false
             menu.addItem(spend)
             let f = DateFormatter()

@@ -322,10 +322,8 @@ final class Session3Tests: XCTestCase {
             ToolStatus(source: "openai", title: "OpenAI · Codex", weeklyPct: 32)
         ]
         let snap = MenubarSnapshot.from(report, status: status)
-        XCTAssertTrue(snap.title.hasPrefix("$2.81"))
-        XCTAssertTrue(snap.title.contains("G 3%"))
-        XCTAssertTrue(snap.title.contains("C 22% 5h"))
-        XCTAssertTrue(snap.title.contains("X 32%"))
+        XCTAssertEqual(snap.title, "X 32%  G 3%") // Claude has no weekly window here, so only its 5h is in the tooltip
+        XCTAssertTrue(snap.tooltip.hasPrefix("Grok $2.81"))
         XCTAssertTrue(snap.tooltip.contains("Claude 5h 22%"))
         XCTAssertTrue(snap.tooltip.contains("Codex weekly 32%"))
         XCTAssertTrue(snap.tooltip.contains("Grok weekly 3%"))

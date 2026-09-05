@@ -18,11 +18,11 @@ final class MenubarTests: XCTestCase {
                 daily: []
             )
         )
-        XCTAssertEqual(snap.title, "$2.81")
+        XCTAssertEqual(snap.title, "$2.81") // no windows reported: fall back to Grok dollars
         XCTAssertFalse(snap.title.contains("1.00"))
         XCTAssertFalse(snap.tooltip.contains(fixtureSecret))
         XCTAssertFalse(snap.tooltip.contains("1.00"))
-        XCTAssertTrue(snap.tooltip.lowercased().contains("not a subscription"))
+        XCTAssertTrue(snap.tooltip.lowercased().contains("plan windows"))
     }
 
     func testZeroSpendTitle() {
@@ -121,7 +121,8 @@ final class MenubarWindowsTests: XCTestCase {
         grok.weeklyPct = 8; grok.weeklyResetsAt = "2026-09-11T18:04:00Z"
         let status = LiveStatus(grok: grok, claude: claude, plans: [grok, claude, codex])
         let snap = MenubarSnapshot.from(report, status: status, now: now)
-        XCTAssertEqual(snap.title, "$36.93  C 12/2%  X 22/46%  G 8%")
+        XCTAssertEqual(snap.title, "C 2%  X 46%  G 8%")
+        XCTAssertTrue(snap.tooltip.hasPrefix("Grok $36.93 this week"))
         XCTAssertEqual(snap.lines, [
             "Claude · 5 hour 12% · resets in 55m",
             "Claude · weekly 2% · resets in 32h 0m",
