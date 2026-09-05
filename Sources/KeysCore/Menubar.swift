@@ -6,37 +6,61 @@ struct MenubarSnapshot: Equatable {
     var title: String
     var tooltip: String
     var sparkline: [Double]
+    /// One line per plan window, for the dropdown. Empty when no tool has reported a window.
+    var lines: [String] = []
 
-    static func from(_ report: SpendReport, status: LiveStatus? = nil) -> MenubarSnapshot {
+    /// Title: Grok's own dollars for the report range, then each tool's windows as
+    /// `C 12/2%` (5 hour / weekly) or `G 8%` (weekly only). Never a Claude or Codex estimate.
+    static func from(_ report: SpendReport, status: LiveStatus? = nil, now: Date = Date()) -> MenubarSnapshot {
         let usd = formatUsd(report.totals.grokUsd)
         var title = usd
-        let tooltip: String
+        var tooltip: [String] = ["Grok \(usd) this \(report.range == .week ? "week" : "month")"]
+        var lines: [String] = []
         if let status {
-            var parts = ["Grok \(usd)"]
-            if let pct = status.grok?.weeklyPct {
-                title += "  G\(pct)%"
-                parts.append("Grok \(pct)%")
+            let claude = status.claude ?? status.plans.first { $0.source == "claude" }
+            let codex = status.plans.first { $0.source == "openai" }
+            let grok = status.grok ?? status.plans.first { $0.source == "grok" }
+            for (letter, name, tool) in [("C", "Claude", claude), ("X", "Codex", codex), ("G", "Grok", grok)] {
+                guard let tool, tool.fiveHourPct != nil || tool.weeklyPct != nil else { continue }
+                switch (tool.fiveHourPct, tool.weeklyPct) {
+                case let (five?, week?):
+                    title += "  \(letter) \(five)/\(week)%"
+                    tooltip.append("\(name) 5h \(five)% · weekly \(week)%")
+                case let (five?, nil):
+                    title += "  \(letter) \(five)% 5h"
+                    tooltip.append("\(name) 5h \(five)%")
+                case let (nil, week?):
+                    title += "  \(letter) \(week)%"
+                    tooltip.append("\(name) weekly \(week)%")
+                default:
+                    break
+                }
+                if let five = tool.fiveHourPct {
+                    lines.append("\(name) · 5 hour \(five)%" + resetsSuffix(tool.fiveHourResetsAt, now: now))
+                }
+                if let week = tool.weeklyPct {
+                    lines.append("\(name) · weekly \(week)%" + resetsSuffix(tool.weeklyResetsAt, now: now))
+                }
             }
-            if let pct = status.claude?.fiveHourPct {
-                title += "  C\(pct)%"
-                parts.append("Claude 5h \(pct)%")
-            }
-            let openai = status.plans.first { $0.source == "openai" }
-            if let pct = openai?.weeklyPct {
-                title += "  X\(pct)%"
-                parts.append("Codex \(pct)%")
-            }
-            parts.append("local tool spend, not a subscription bar")
-            tooltip = parts.joined(separator: " · ")
-        } else {
-            let claude = formatTokens(report.totals.claudeTokens)
-            tooltip = "Grok \(usd) · Claude \(claude) tokens · local tool spend, not a subscription bar"
         }
+        tooltip.append("local tool spend, not a subscription bar")
         return MenubarSnapshot(
             title: title,
-            tooltip: tooltip,
-            sparkline: Sparkline.values(from: report.daily)
+            tooltip: tooltip.joined(separator: " · "),
+            sparkline: Sparkline.values(from: report.daily),
+            lines: lines
         )
+    }
+
+    static func resetsSuffix(_ iso: String?, now: Date) -> String {
+        guard let iso, let date = UTC.parse(iso) else { return "" }
+        let s = Int(date.timeIntervalSince(now))
+        if s <= 0 { return " · reset due" }
+        let m = s / 60
+        if m < 60 { return " · resets in \(m)m" }
+        let h = m / 60
+        if h < 48 { return " · resets in \(h)h \(m % 60)m" }
+        return " · resets in \(h / 24)d \(h % 24)h"
     }
 
     static func formatUsd(_ usd: Double) -> String {
@@ -125,12 +149,14 @@ enum LoopbackSite {
 }
 
 @MainActor
-final class MenubarExtra: NSObject, NSApplicationDelegate {
+final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let service: KeysService
     private let server: LoopbackHTTPServer
     private let url: URL
     private let item: NSStatusItem
     private var timer: Timer?
+    private var lastSnapshot: MenubarSnapshot?
+    private var updatedAt: Date?
 
     init(service: KeysService, server: LoopbackHTTPServer, url: URL) {
         self.service = service
@@ -140,6 +166,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate {
         super.init()
         item.button?.imagePosition = .imageLeading
         item.menu = buildMenu()
+        item.menu?.delegate = self
         refresh()
         timer = Timer.scheduledTimer(
             timeInterval: 60,
@@ -170,9 +197,14 @@ final class MenubarExtra: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    /// Refresh right before the menu drops down, so the rows are never a minute stale.
+    func menuWillOpen(_ menu: NSMenu) {
+        refresh()
+    }
+
     @objc func refresh() {
-        let report = (try? service.spend(range: .month, by: .model, source: .all)) ?? SpendReport(
-            range: .month,
+        let report = (try? service.spend(range: .week, by: .model, source: .all)) ?? SpendReport(
+            range: .week,
             by: .model,
             source: .all,
             caption: SpendReport.captionText,
@@ -185,10 +217,32 @@ final class MenubarExtra: NSObject, NSApplicationDelegate {
         item.button?.title = snap.title
         item.button?.toolTip = snap.tooltip
         item.button?.image = Sparkline.image(values: snap.sparkline, size: CGSize(width: 22, height: 16))
+        lastSnapshot = snap
+        updatedAt = Date()
+        item.menu = buildMenu()
+        item.menu?.delegate = self
     }
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+        if let snap = lastSnapshot {
+            for line in snap.lines {
+                let row = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+                row.isEnabled = false
+                menu.addItem(row)
+            }
+            if !snap.lines.isEmpty { menu.addItem(.separator()) }
+            let spend = NSMenuItem(title: "Grok \(MenubarSnapshot.formatUsd(0)) this week".replacingOccurrences(of: "$0", with: snap.title.split(separator: " ").first.map(String.init) ?? "$0"), action: nil, keyEquivalent: "")
+            spend.isEnabled = false
+            menu.addItem(spend)
+            let f = DateFormatter()
+            f.timeStyle = .short
+            f.dateStyle = .none
+            let when = NSMenuItem(title: "Updated \(f.string(from: updatedAt ?? Date())) · refreshes every minute", action: nil, keyEquivalent: "")
+            when.isEnabled = false
+            menu.addItem(when)
+            menu.addItem(.separator())
+        }
         let open = NSMenuItem(title: "Open Keysreallysafe", action: #selector(openDashboard), keyEquivalent: "")
         open.target = self
         menu.addItem(open)

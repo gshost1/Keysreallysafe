@@ -21,7 +21,7 @@ final class MenubarTests: XCTestCase {
         XCTAssertEqual(snap.title, "$2.81")
         XCTAssertFalse(snap.title.contains("1.00"))
         XCTAssertFalse(snap.tooltip.contains(fixtureSecret))
-        XCTAssertTrue(snap.tooltip.contains("Claude"))
+        XCTAssertFalse(snap.tooltip.contains("1.00"))
         XCTAssertTrue(snap.tooltip.lowercased().contains("not a subscription"))
     }
 
@@ -103,5 +103,40 @@ final class MenubarTests: XCTestCase {
             rows: [],
             daily: []
         )
+    }
+}
+
+final class MenubarWindowsTests: XCTestCase {
+    func testTitleShowsFiveHourAndWeeklyForEveryToolAndLinesCarryResets() {
+        var totals = SpendTotals()
+        totals.grokUsd = 36.93
+        let report = SpendReport(range: .week, by: .model, source: .all, caption: SpendReport.captionText, totals: totals, rows: [], daily: [])
+        let now = UTC.parse("2026-09-05T00:00:00Z")!
+        var claude = ToolStatus(source: "claude", title: "Claude")
+        claude.fiveHourPct = 12; claude.fiveHourResetsAt = "2026-09-05T00:55:00Z"
+        claude.weeklyPct = 2; claude.weeklyResetsAt = "2026-09-06T08:00:00Z"
+        var codex = ToolStatus(source: "openai", title: "OpenAI · Codex")
+        codex.fiveHourPct = 22; codex.weeklyPct = 46; codex.weeklyResetsAt = "2026-09-10T23:42:00Z"
+        var grok = ToolStatus(source: "grok", title: "Grok")
+        grok.weeklyPct = 8; grok.weeklyResetsAt = "2026-09-11T18:04:00Z"
+        let status = LiveStatus(grok: grok, claude: claude, plans: [grok, claude, codex])
+        let snap = MenubarSnapshot.from(report, status: status, now: now)
+        XCTAssertEqual(snap.title, "$36.93  C 12/2%  X 22/46%  G 8%")
+        XCTAssertEqual(snap.lines, [
+            "Claude · 5 hour 12% · resets in 55m",
+            "Claude · weekly 2% · resets in 32h 0m",
+            "Codex · 5 hour 22%",
+            "Codex · weekly 46% · resets in 5d 23h",
+            "Grok · weekly 8% · resets in 6d 18h",
+        ])
+        XCTAssertTrue(snap.tooltip.contains("this week"))
+        XCTAssertFalse(snap.tooltip.contains("estimate"))
+    }
+
+    func testToolWithoutWindowsIsOmitted() {
+        let status = LiveStatus(grok: nil, claude: nil, plans: [ToolStatus(source: "cursor", title: "Cursor")])
+        let snap = MenubarSnapshot.from(SpendReport(range: .week, by: .model, source: .all, caption: SpendReport.captionText, totals: SpendTotals(), rows: [], daily: []), status: status)
+        XCTAssertEqual(snap.title, "$0")
+        XCTAssertEqual(snap.lines, [])
     }
 }

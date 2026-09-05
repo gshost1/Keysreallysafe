@@ -323,12 +323,12 @@ final class Session3Tests: XCTestCase {
         ]
         let snap = MenubarSnapshot.from(report, status: status)
         XCTAssertTrue(snap.title.hasPrefix("$2.81"))
-        XCTAssertTrue(snap.title.contains("G3%"))
-        XCTAssertTrue(snap.title.contains("C22%"))
-        XCTAssertTrue(snap.title.contains("X32%"))
+        XCTAssertTrue(snap.title.contains("G 3%"))
+        XCTAssertTrue(snap.title.contains("C 22% 5h"))
+        XCTAssertTrue(snap.title.contains("X 32%"))
         XCTAssertTrue(snap.tooltip.contains("Claude 5h 22%"))
-        XCTAssertTrue(snap.tooltip.contains("Codex 32%"))
-        XCTAssertTrue(snap.tooltip.contains("Grok 3%"))
+        XCTAssertTrue(snap.tooltip.contains("Codex weekly 32%"))
+        XCTAssertTrue(snap.tooltip.contains("Grok weekly 3%"))
     }
 
     func testParseAutostartRemoveAndNewCommands() throws {
