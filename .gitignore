@@ -1,0 +1,26 @@
+.build/
+.swiftpm/
+
+# Local databases and journals may contain vault metadata or usage history.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Never commit environment files, credentials, or signing material.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
+
+.DS_Store
+*.xcuserstate
+xcuserdata/
+*.log
+Web/.cache/
+.github/.DS_Store

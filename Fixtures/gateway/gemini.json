@@ -1,0 +1,8 @@
+{
+  "modelVersion": "gemini-2.0-flash",
+  "usageMetadata": {
+    "promptTokenCount": 14,
+    "candidatesTokenCount": 4,
+    "cachedContentTokenCount": 2
+  }
+}

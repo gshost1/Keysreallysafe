@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Keysreallysafe</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body data-pane="spend">
+  <header class="toolbar">
+    <div class="brand">
+      <p class="brand-name">Keysreallysafe</p>
+      <p class="brand-purpose">local vault + usage</p>
+    </div>
+    <nav class="seg" role="tablist" aria-label="Pane">
+      <button type="button" role="tab" id="nav-usage" aria-selected="true" aria-controls="pane-usage" title="Usage (⌘1)">Usage</button>
+      <button type="button" role="tab" id="nav-chart" aria-selected="false" aria-controls="pane-chart" tabindex="-1" title="Chart (⌘2)">Chart</button>
+      <button type="button" role="tab" id="nav-keys" aria-selected="false" aria-controls="pane-keys" tabindex="-1" title="Keys (⌘3)">Keys</button>
+    </nav>
+    <div class="toolbar-end">
+      <span id="keys-count" class="count"></span>
+      <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
+      <button type="button" id="btn-export" class="btn-quiet" title="Download the current rows as CSV (X)">CSV</button>
+      <button type="button" id="btn-copy-totals" class="btn-quiet" title="Copy the totals line as Markdown (⇧C)">Copy totals</button>
+      <button type="button" id="btn-ingest" class="btn-quiet" title="Ingest Grok, Claude Code and Codex sessions (⌘R)">Ingest</button>
+      <button type="button" id="btn-help" class="btn-quiet" aria-label="Keyboard shortcuts" title="Shortcuts">?</button>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </div>
+  </header>
+
+  <main>
+    <section id="pane-usage" role="tabpanel" aria-labelledby="nav-usage">
+      <div id="live-status" class="live-status" hidden></div>
+      <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac.</p>
+      <div id="usage-totals" class="usage-totals"></div>
+    </section>
+
+    <section id="pane-chart" role="tabpanel" aria-labelledby="nav-chart" hidden>
+      <div class="filters" id="filters">
+        <div class="chips" role="radiogroup" aria-label="Range">
+          <button type="button" role="radio" data-range="today" aria-checked="true">Today</button>
+          <button type="button" role="radio" data-range="week" aria-checked="false" tabindex="-1">This week</button>
+          <button type="button" role="radio" data-range="month" aria-checked="false" tabindex="-1">This month</button>
+        </div>
+        <div class="chips" role="radiogroup" aria-label="Source">
+          <button type="button" role="radio" data-source="all" aria-checked="true">All</button>
+          <button type="button" role="radio" data-source="grok" aria-checked="false" tabindex="-1">Grok</button>
+          <button type="button" role="radio" data-source="claude" aria-checked="false" tabindex="-1">Claude</button>
+          <button type="button" role="radio" data-source="openai" aria-checked="false" tabindex="-1">OpenAI</button>
+        </div>
+        <div class="chips" role="radiogroup" aria-label="Group by" id="group-chips" hidden title="Models or projects (P)">
+          <button type="button" role="radio" data-group="model" aria-checked="true">Models</button>
+          <button type="button" role="radio" data-group="project" aria-checked="false" tabindex="-1">Projects</button>
+        </div>
+        <div class="chips" id="key-chip" hidden></div>
+        <div class="chips" role="radiogroup" aria-label="Unit" title="Tokens or USD (T)">
+          <button type="button" role="radio" data-unit="tokens" aria-checked="true">Tokens</button>
+          <button type="button" role="radio" data-unit="usd" aria-checked="false" tabindex="-1">USD</button>
+        </div>
+      </div>
+      <div class="chart-top">
+        <p id="interval" class="interval"></p>
+        <div id="totals" class="totals"></div>
+      </div>
+      <figure class="chart" id="daily">
+        <figcaption class="chart-head"><span id="daily-title" class="chart-title"></span><span id="daily-unit" class="axis-unit"></span></figcaption>
+        <svg id="daily-svg" role="img" aria-labelledby="daily-title"></svg>
+        <div class="tip" id="daily-tip" hidden></div>
+        <p id="chart-nothing" class="chart-empty" hidden>Nothing yet today.</p>
+      </figure>
+      <ol id="mix" class="mix" role="listbox" aria-label="Model mix" aria-multiselectable="false"></ol>
+      <p class="caption">local tool spend, not a subscription bar · click a model to see it alone</p>
+      <p id="spend-empty" class="empty" hidden></p>
+    </section>
+
+    <section id="pane-keys" role="tabpanel" aria-labelledby="nav-keys" hidden>
+      <table class="keys" id="keys-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Provider</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Created</th>
+            <th scope="col">Last used</th>
+            <th scope="col" class="th-usd">Via gateway</th>
+            <th scope="col"><span class="sr">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody id="keys-body"></tbody>
+      </table>
+      <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button></p>
+    </section>
+  </main>
+
+  <dialog id="dlg-add" class="dlg" aria-labelledby="add-title">
+    <form id="add-form" novalidate>
+      <h2 id="add-title">Add key</h2>
+      <label>Name
+        <input name="name" required pattern="[a-z0-9][a-z0-9._-]*" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="openai-prod">
+      </label>
+      <label>Provider
+        <input name="provider" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="openai" data-picker>
+      </label>
+      <div class="row2">
+        <label>Kind
+          <select name="kind">
+            <option value="runtime">runtime</option>
+            <option value="billing">billing</option>
+          </select>
+        </label>
+        <label>Notes
+          <input name="notes" autocomplete="off">
+        </label>
+      </div>
+      <label>Secret
+        <input name="secret" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">
+      </label>
+      <p class="hint">Stored in the macOS Keychain. It never appears in the list.</p>
+      <p class="err" id="add-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Add key</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-edit" class="dlg" aria-labelledby="edit-title">
+    <form id="edit-form" novalidate>
+      <h2 id="edit-title">Edit <span id="edit-name"></span></h2>
+      <label>Provider
+        <input name="provider" required autocomplete="off" autocapitalize="off" spellcheck="false" data-picker>
+      </label>
+      <div class="row2">
+        <label>Kind
+          <select name="kind">
+            <option value="runtime">runtime</option>
+            <option value="billing">billing</option>
+          </select>
+        </label>
+        <label>Notes
+          <input name="notes" autocomplete="off">
+        </label>
+      </div>
+      <p class="hint">Name and secret can't change. To rotate, delete the key and add it again.</p>
+      <p class="err" id="edit-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-rotate" class="dlg" aria-labelledby="rotate-title">
+    <form id="rotate-form" novalidate>
+      <h2 id="rotate-title">Rotate <span id="rotate-name"></span></h2>
+      <label>New secret
+        <input name="secret" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">
+      </label>
+      <p class="hint">Replaces the Keychain value under the same name. The old value is gone. A gateway that is on switches to the new value at once.</p>
+      <p class="err" id="rotate-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Rotate</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-host" class="dlg" aria-labelledby="host-title">
+    <form id="host-form" novalidate>
+      <h2 id="host-title">Gateway host for <span id="host-name"></span></h2>
+      <label>Host
+        <input name="host" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="my-resource.openai.azure.com">
+      </label>
+      <p class="hint" id="host-hint"></p>
+      <p class="err" id="host-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Turn on</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-reveal" class="dlg" aria-labelledby="reveal-name">
+    <h2 id="reveal-name"></h2>
+    <output id="reveal-secret" class="secret"></output>
+    <p class="hint" id="reveal-timer"></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Hide</button>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-delete" class="dlg" aria-labelledby="delete-title">
+    <form id="delete-form">
+      <h2 id="delete-title">Delete <span id="delete-name"></span>?</h2>
+      <p class="hint">Removes the secret from the Keychain and the name from this list.</p>
+      <p class="err" id="delete-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="delete-confirm">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-help" class="dlg" aria-labelledby="help-title">
+    <h2 id="help-title">Shortcuts</h2>
+    <dl class="shortcuts">
+      <dt><kbd>⌘</kbd><kbd>1</kbd></dt><dd>Usage</dd>
+      <dt><kbd>⌘</kbd><kbd>2</kbd></dt><dd>Chart</dd>
+      <dt><kbd>⌘</kbd><kbd>3</kbd></dt><dd>Keys</dd>
+      <dt><kbd>⌘</kbd><kbd>R</kbd></dt><dd>Ingest sessions</dd>
+      <dt><kbd>T</kbd></dt><dd>Tokens / USD</dd>
+      <dt><kbd>N</kbd></dt><dd>Add key</dd>
+      <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Move in a list</dd>
+      <dt><kbd>C</kbd></dt><dd>Copy the selected key</dd>
+      <dt><kbd>V</kbd></dt><dd>Reveal the selected key</dd>
+      <dt><kbd>E</kbd></dt><dd>Edit the selected key</dd>
+      <dt><kbd>G</kbd></dt><dd>Gateway on / off for the selected key</dd>
+      <dt><kbd>H</kbd></dt><dd>History of the selected key</dd>
+      <dt><kbd>R</kbd></dt><dd>Rotate the selected key</dd>
+      <dt><kbd>P</kbd></dt><dd>Models / projects (Claude)</dd>
+      <dt><kbd>D</kbd> <kbd>W</kbd> <kbd>M</kbd></dt><dd>Today / week / month</dd>
+      <dt><kbd>X</kbd></dt><dd>Download spend rows as CSV</dd>
+      <dt><kbd>⇧</kbd><kbd>C</kbd></dt><dd>Copy the totals line as Markdown</dd>
+      <dt><kbd>⌫</kbd></dt><dd>Delete the selected key</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close</dd>
+      <dt><kbd>?</kbd></dt><dd>This list</dd>
+    </dl>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Close</button>
+    </div>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

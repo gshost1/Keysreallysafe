@@ -1,0 +1,3 @@
+{"ts":"2026-09-04T17:51:00.000Z","msg":"billing: fetched credits config","ctx":{"config":{"creditUsagePercent":62.0,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-08-28T18:04:26.160Z","end":"2026-09-04T18:04:26.160Z"},"onDemandCap":{"val":0},"onDemandUsed":{"val":0}},"subscriptionTier":"SuperGrok Plus"}}
+{"ts":"2026-09-04T18:10:00.000Z","msg":"session started"}
+{"ts":"2026-09-04T18:43:52.216Z","msg":"billing: fetched credits config","ctx":{"config":{"creditUsagePercent":2.0,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-09-04T18:04:26.160272+00:00","end":"2026-09-11T18:04:26.160272+00:00"},"onDemandCap":{"val":0},"onDemandUsed":{"val":0}},"subscriptionTier":"SuperGrok Plus"}}

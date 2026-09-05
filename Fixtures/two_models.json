@@ -1,0 +1,48 @@
+{
+  "timestamp": 1768564800,
+  "method": "session/update",
+  "params": {
+    "sessionId": "sess-2",
+    "update": {
+      "sessionUpdate": "turn_completed",
+      "prompt_id": "prompt-2",
+      "stop_reason": "cancelled",
+      "usage": {
+        "inputTokens": 100,
+        "outputTokens": 50,
+        "totalTokens": 150,
+        "cachedReadTokens": 10,
+        "cacheCreationTokens": 5,
+        "reasoningTokens": 20,
+        "modelCalls": 3,
+        "apiDurationMs": 1200,
+        "costUsdTicks": 81000000000,
+        "numTurns": 1,
+        "modelUsage": {
+          "grok-4.6-build": {
+            "inputTokens": 80,
+            "outputTokens": 40,
+            "totalTokens": 120,
+            "cachedReadTokens": 8,
+            "cacheCreationTokens": 4,
+            "reasoningTokens": 16,
+            "modelCalls": 2,
+            "apiDurationMs": 800,
+            "costUsdTicks": 60000000000
+          },
+          "grok-4-fast": {
+            "inputTokens": 20,
+            "outputTokens": 10,
+            "totalTokens": 30,
+            "cachedReadTokens": 2,
+            "cacheCreationTokens": 1,
+            "reasoningTokens": 4,
+            "modelCalls": 1,
+            "apiDurationMs": 400,
+            "costUsdTicks": 21000000000
+          }
+        }
+      }
+    }
+  }
+}

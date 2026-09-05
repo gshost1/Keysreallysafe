@@ -1,0 +1,6 @@
+{
+  "info": { "id": "sess-1", "cwd": "/tmp/keysreallysafe-fixture" },
+  "generated_title": "Synthetic fixture session",
+  "agent_name": "grok",
+  "current_model_id": "grok-4.6-build"
+}

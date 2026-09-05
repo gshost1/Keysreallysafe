@@ -1,0 +1,906 @@
+{
+  "fetched_at": "2026-09-04T22:12:17Z",
+  "source": "https://openrouter.ai/api/v1/models",
+  "models": [
+    {
+      "id": "openai/gpt-6-astra",
+      "name": "OpenAI: GPT-6 Astra",
+      "provider": "openai",
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_read_per_mtok": 1,
+      "context": 1050000
+    },
+    {
+      "id": "openai/gpt-6-astra-pro",
+      "name": "OpenAI: GPT-6 Astra Pro",
+      "provider": "openai",
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_read_per_mtok": 1,
+      "context": 1050000
+    },
+    {
+      "id": "meta/muse-spark-1.3-contributor",
+      "name": "Meta: Muse Spark 1.3 Contributor",
+      "provider": "meta",
+      "input_per_mtok": 0.09999999999999999,
+      "output_per_mtok": 0.19999999999999998,
+      "cache_read_per_mtok": 0.002,
+      "context": 1048576
+    },
+    {
+      "id": "meta/muse-spark-1.3",
+      "name": "Meta: Muse Spark 1.3",
+      "provider": "meta",
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 4.25,
+      "cache_read_per_mtok": 0.15,
+      "context": 1048576
+    },
+    {
+      "id": "google/gemini-3.8-flash",
+      "name": "Google: Gemini 3.8 Flash",
+      "provider": "google",
+      "input_per_mtok": 0.75,
+      "output_per_mtok": 3.75,
+      "cache_read_per_mtok": 0.075,
+      "context": 1048576
+    },
+    {
+      "id": "anthropic/claude-fable-5.1",
+      "name": "Anthropic: Claude Fable 5.1",
+      "provider": "anthropic",
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_read_per_mtok": 0.25,
+      "context": 1000000
+    },
+    {
+      "id": "inception/mercury-2.5-preview",
+      "name": "Inception: Mercury 2.5 Preview",
+      "provider": "inception",
+      "input_per_mtok": 0.04,
+      "output_per_mtok": 0.15,
+      "cache_read_per_mtok": 0.004,
+      "context": 260000
+    },
+    {
+      "id": "ibm-granite/granite-4.2-8b",
+      "name": "IBM: Granite 4.2 8B",
+      "provider": "ibm-granite",
+      "input_per_mtok": 0.09999999999999999,
+      "output_per_mtok": 0.15,
+      "cache_read_per_mtok": 0.049999999999999996,
+      "context": 131072
+    },
+    {
+      "id": "tencent/hy4-preview",
+      "name": "Tencent: Hy4 preview",
+      "provider": "tencent",
+      "input_per_mtok": 0.834,
+      "output_per_mtok": 2.501,
+      "cache_read_per_mtok": 0.041999999999999996,
+      "context": 1048576
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash-fin",
+      "name": "inclusionAI: Ling 3.0 Flash Fin",
+      "provider": "inclusionai",
+      "input_per_mtok": 0.06,
+      "output_per_mtok": 0.18,
+      "cache_read_per_mtok": 0.012,
+      "context": 262144
+    },
+    {
+      "id": "~z-ai/glm-flash-latest",
+      "name": "Z.ai: GLM Flash Latest",
+      "provider": "~z-ai",
+      "input_per_mtok": 0.075,
+      "output_per_mtok": 0.25,
+      "cache_read_per_mtok": 0.015,
+      "context": 1310720
+    },
+    {
+      "id": "qwen/qwen3.8-flash",
+      "name": "Qwen: Qwen3.8 Flash",
+      "provider": "qwen",
+      "input_per_mtok": 0.15,
+      "output_per_mtok": 0.47,
+      "cache_read_per_mtok": 0.016,
+      "context": 1000000
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "name": "Z.ai: GLM 5.3 Flash",
+      "provider": "z-ai",
+      "input_per_mtok": 0.075,
+      "output_per_mtok": 0.25,
+      "cache_read_per_mtok": 0.015,
+      "context": 1310720
+    },
+    {
+      "id": "meta/muse-spark-1.2-contributor",
+      "name": "Meta: Muse Spark 1.2 Contributor",
+      "provider": "meta",
+      "input_per_mtok": 0.09999999999999999,
+      "output_per_mtok": 0.19999999999999998,
+      "cache_read_per_mtok": 0.002,
+      "context": 1048576
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-vision-exp",
+      "name": "DeepSeek: DeepSeek V4 Flash Vision Exp",
+      "provider": "deepseek",
+      "input_per_mtok": 0.22,
+      "output_per_mtok": 0.66,
+      "cache_read_per_mtok": 0.007,
+      "context": 1048576
+    },
+    {
+      "id": "tencent/hy-mt2-1.8b",
+      "name": "Tencent: Hy-MT2-1.8B",
+      "provider": "tencent",
+      "input_per_mtok": 0.044,
+      "output_per_mtok": 0.17700000000000002,
+      "cache_read_per_mtok": null,
+      "context": 8192
+    },
+    {
+      "id": "tencent/hy-mt2-30b-a3b",
+      "name": "Tencent: Hy-MT2-30B-A3B",
+      "provider": "tencent",
+      "input_per_mtok": 0.074,
+      "output_per_mtok": 0.295,
+      "cache_read_per_mtok": null,
+      "context": 8192
+    },
+    {
+      "id": "~z-ai/glm-latest",
+      "name": "Z.ai: GLM Latest",
+      "provider": "~z-ai",
+      "input_per_mtok": 1.15,
+      "output_per_mtok": 3.5,
+      "cache_read_per_mtok": 0.09999999999999999,
+      "context": 1310720
+    },
+    {
+      "id": "tencent/hy-mt2-7b",
+      "name": "Tencent: Hy-MT2-7B",
+      "provider": "tencent",
+      "input_per_mtok": 0.074,
+      "output_per_mtok": 0.295,
+      "cache_read_per_mtok": null,
+      "context": 8192
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "name": "Z.ai: GLM 5.3",
+      "provider": "z-ai",
+      "input_per_mtok": 1.4,
+      "output_per_mtok": 4.4,
+      "cache_read_per_mtok": 0.14,
+      "context": 1310720
+    },
+    {
+      "id": "qwen/qwen3.8-27b",
+      "name": "Qwen: Qwen3.8 27B",
+      "provider": "qwen",
+      "input_per_mtok": 0.42,
+      "output_per_mtok": 3,
+      "cache_read_per_mtok": 0.08499999999999999,
+      "context": 1000000
+    },
+    {
+      "id": "google/gemini-3.7-flash",
+      "name": "Google: Gemini 3.7 Flash",
+      "provider": "google",
+      "input_per_mtok": 0.75,
+      "output_per_mtok": 3.75,
+      "cache_read_per_mtok": 0.075,
+      "context": 1048576
+    },
+    {
+      "id": "bytedance-seed/seed-2-1-turbo",
+      "name": "ByteDance Seed: Seed 2.1 Turbo",
+      "provider": "bytedance-seed",
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 2.5,
+      "cache_read_per_mtok": null,
+      "context": 262144
+    },
+    {
+      "id": "qwen/qwen3.8-2.4t-a95b",
+      "name": "Qwen: Qwen3.8 2.4T A95B",
+      "provider": "qwen",
+      "input_per_mtok": 2,
+      "output_per_mtok": 6,
+      "cache_read_per_mtok": 0.25,
+      "context": 1048576
+    },
+    {
+      "id": "bytedance-seed/seed-2.0-code",
+      "name": "ByteDance Seed: Seed-2.0-Code",
+      "provider": "bytedance-seed",
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 3,
+      "cache_read_per_mtok": null,
+      "context": 262144
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro-0813",
+      "name": "DeepSeek: DeepSeek V4 Pro 0813",
+      "provider": "deepseek",
+      "input_per_mtok": 0.57948,
+      "output_per_mtok": 1.73844,
+      "cache_read_per_mtok": 0.019316,
+      "context": 1048576
+    },
+    {
+      "id": "x-ai/grok-4.6",
+      "name": "SpaceXAI: Grok 4.6",
+      "provider": "x-ai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 6,
+      "cache_read_per_mtok": 0.5,
+      "context": 500000
+    },
+    {
+      "id": "nvidia/nemotron-3.5-lightning",
+      "name": "NVIDIA: Nemotron 3.5 Lightning",
+      "provider": "nvidia",
+      "input_per_mtok": 0.08,
+      "output_per_mtok": 0.19999999999999998,
+      "cache_read_per_mtok": 0.04,
+      "context": 262144
+    },
+    {
+      "id": "sakana/sakana-namazu",
+      "name": "Sakana: Sakana Namazu",
+      "provider": "sakana",
+      "input_per_mtok": 0.95,
+      "output_per_mtok": 4,
+      "cache_read_per_mtok": 0.15,
+      "context": 262144
+    },
+    {
+      "id": "upstage/solar-pro4",
+      "name": "Upstage: Solar Pro 4",
+      "provider": "upstage",
+      "input_per_mtok": 0.03,
+      "output_per_mtok": 0.12,
+      "cache_read_per_mtok": 0.006,
+      "context": 524288
+    },
+    {
+      "id": "meta/muse-glimmer-30b",
+      "name": "Meta: Muse Glimmer 30B",
+      "provider": "meta",
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 1.1,
+      "cache_read_per_mtok": 0.04,
+      "context": 131072
+    },
+    {
+      "id": "meta/muse-spark-1.2",
+      "name": "Meta: Muse Spark 1.2",
+      "provider": "meta",
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 4.25,
+      "cache_read_per_mtok": 0.15,
+      "context": 1048576
+    },
+    {
+      "id": "qwen/qwen3.8-max",
+      "name": "Qwen: Qwen3.8 Max",
+      "provider": "qwen",
+      "input_per_mtok": 2,
+      "output_per_mtok": 6,
+      "cache_read_per_mtok": 0.25,
+      "context": 1000000
+    },
+    {
+      "id": "~deepseek/deepseek-v4-flash-latest",
+      "name": "DeepSeek V4 Flash Latest",
+      "provider": "~deepseek",
+      "input_per_mtok": 0.049980000000000004,
+      "output_per_mtok": 0.09996000000000001,
+      "cache_read_per_mtok": 0.009996000000000001,
+      "context": 1310720
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash-0731",
+      "name": "DeepSeek: DeepSeek V4 Flash 0731",
+      "provider": "deepseek",
+      "input_per_mtok": 0.065,
+      "output_per_mtok": 0.18,
+      "cache_read_per_mtok": 0.016,
+      "context": 1310720
+    },
+    {
+      "id": "thinkingmachines/inkling-small",
+      "name": "Thinking Machines: Inkling Small",
+      "provider": "thinkingmachines",
+      "input_per_mtok": 0.44999999999999996,
+      "output_per_mtok": 1.2,
+      "cache_read_per_mtok": 0.09999999999999999,
+      "context": 1048576
+    },
+    {
+      "id": "qwen/qwen3.7-flash",
+      "name": "Qwen: Qwen3.7 Flash",
+      "provider": "qwen",
+      "input_per_mtok": 0.03,
+      "output_per_mtok": 0.13,
+      "cache_read_per_mtok": 0.006,
+      "context": 1000000
+    },
+    {
+      "id": "anthropic/claude-opus-5",
+      "name": "Claude Opus 5",
+      "provider": "anthropic",
+      "input_per_mtok": 5,
+      "output_per_mtok": 25,
+      "cache_read_per_mtok": 0.5,
+      "context": 1000000
+    },
+    {
+      "id": "inclusionai/ling-3.0-flash",
+      "name": "inclusionAI: Ling 3.0 Flash",
+      "provider": "inclusionai",
+      "input_per_mtok": 0.020999999999999998,
+      "output_per_mtok": 0.063,
+      "cache_read_per_mtok": 0.004200000000000001,
+      "context": 262144
+    },
+    {
+      "id": "poolside/laguna-s-2.1",
+      "name": "Poolside: Laguna S 2.1",
+      "provider": "poolside",
+      "input_per_mtok": 0.09,
+      "output_per_mtok": 0.18,
+      "cache_read_per_mtok": 0.009,
+      "context": 1048576
+    },
+    {
+      "id": "google/gemini-3.6-flash",
+      "name": "Google: Gemini 3.6 Flash",
+      "provider": "google",
+      "input_per_mtok": 0.75,
+      "output_per_mtok": 3.75,
+      "cache_read_per_mtok": 0.075,
+      "context": 1048576
+    },
+    {
+      "id": "google/gemini-3.5-flash-lite",
+      "name": "Google: Gemini 3.5 Flash Lite",
+      "provider": "google",
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 2.5,
+      "cache_read_per_mtok": 0.03,
+      "context": 1048576
+    },
+    {
+      "id": "meituan/longcat-2.0",
+      "name": "Meituan: LongCat 2.0",
+      "provider": "meituan",
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 1.2,
+      "cache_read_per_mtok": 0.006,
+      "context": 1048756
+    },
+    {
+      "id": "thinkingmachines/inkling",
+      "name": "Thinking Machines: Inkling",
+      "provider": "thinkingmachines",
+      "input_per_mtok": 1,
+      "output_per_mtok": 4.05,
+      "cache_read_per_mtok": 0.16999999999999998,
+      "context": 1048576
+    },
+    {
+      "id": "openrouter/auto-beta",
+      "name": "Auto Router (Beta)",
+      "provider": "openrouter",
+      "input_per_mtok": -1000000,
+      "output_per_mtok": -1000000,
+      "cache_read_per_mtok": null,
+      "context": 2000000
+    },
+    {
+      "id": "moonshotai/kimi-k3",
+      "name": "MoonshotAI: Kimi K3",
+      "provider": "moonshotai",
+      "input_per_mtok": 3,
+      "output_per_mtok": 15,
+      "cache_read_per_mtok": 0.3,
+      "context": 1048576
+    },
+    {
+      "id": "meta/muse-spark-1.1",
+      "name": "Meta: Muse Spark 1.1",
+      "provider": "meta",
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 4.25,
+      "cache_read_per_mtok": 0.15,
+      "context": 1048576
+    },
+    {
+      "id": "kwaipilot/kat-coder-pro-v2.5",
+      "name": "Kwaipilot: KAT-Coder-Pro V2.5",
+      "provider": "kwaipilot",
+      "input_per_mtok": 0.74,
+      "output_per_mtok": 2.96,
+      "cache_read_per_mtok": 0.15,
+      "context": 262144
+    },
+    {
+      "id": "openai/gpt-5.6-luna-pro",
+      "name": "OpenAI: GPT-5.6 Luna Pro",
+      "provider": "openai",
+      "input_per_mtok": 0.19999999999999998,
+      "output_per_mtok": 1.2,
+      "cache_read_per_mtok": 0.02,
+      "context": 1050000
+    },
+    {
+      "id": "openai/gpt-5.6-luna",
+      "name": "OpenAI: GPT-5.6 Luna",
+      "provider": "openai",
+      "input_per_mtok": 0.19999999999999998,
+      "output_per_mtok": 1.2,
+      "cache_read_per_mtok": 0.02,
+      "context": 1050000
+    },
+    {
+      "id": "openai/gpt-5.6-terra-pro",
+      "name": "OpenAI: GPT-5.6 Terra Pro",
+      "provider": "openai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 12,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1050000
+    },
+    {
+      "id": "openai/gpt-5.6-terra",
+      "name": "OpenAI: GPT-5.6 Terra",
+      "provider": "openai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 12,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1050000
+    },
+    {
+      "id": "openai/gpt-5.6-sol-pro",
+      "name": "OpenAI: GPT-5.6 Sol Pro",
+      "provider": "openai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 10,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1050000
+    },
+    {
+      "id": "openai/gpt-5.6-sol",
+      "name": "OpenAI: GPT-5.6 Sol",
+      "provider": "openai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 10,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1050000
+    },
+    {
+      "id": "x-ai/grok-4.5",
+      "name": "SpaceXAI: Grok 4.5",
+      "provider": "x-ai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 6,
+      "cache_read_per_mtok": 0.3,
+      "context": 500000
+    },
+    {
+      "id": "~x-ai/grok-latest",
+      "name": "xAI: Grok Latest",
+      "provider": "~x-ai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 6,
+      "cache_read_per_mtok": 0.5,
+      "context": 500000
+    },
+    {
+      "id": "aion-labs/aion-3.0-mini",
+      "name": "AionLabs: Aion-3.0-Mini",
+      "provider": "aion-labs",
+      "input_per_mtok": 0.7,
+      "output_per_mtok": 1.4,
+      "cache_read_per_mtok": 0.18,
+      "context": 131072
+    },
+    {
+      "id": "aion-labs/aion-3.0",
+      "name": "AionLabs: Aion-3.0",
+      "provider": "aion-labs",
+      "input_per_mtok": 3,
+      "output_per_mtok": 6,
+      "cache_read_per_mtok": 0.75,
+      "context": 131072
+    },
+    {
+      "id": "tencent/hy3",
+      "name": "Tencent: Hy3",
+      "provider": "tencent",
+      "input_per_mtok": 0.0825,
+      "output_per_mtok": 0.33,
+      "cache_read_per_mtok": 0.020625,
+      "context": 262144
+    },
+    {
+      "id": "poolside/laguna-xs-2.1",
+      "name": "Poolside: Laguna XS 2.1",
+      "provider": "poolside",
+      "input_per_mtok": 0.06,
+      "output_per_mtok": 0.12,
+      "cache_read_per_mtok": 0.03,
+      "context": 262144
+    },
+    {
+      "id": "anthropic/claude-sonnet-5",
+      "name": "Anthropic: Claude Sonnet 5",
+      "provider": "anthropic",
+      "input_per_mtok": 2,
+      "output_per_mtok": 10,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1000000
+    },
+    {
+      "id": "google/gemini-3.1-flash-lite-image",
+      "name": "Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)",
+      "provider": "google",
+      "input_per_mtok": 0.25,
+      "output_per_mtok": 1.5,
+      "cache_read_per_mtok": null,
+      "context": 65536
+    },
+    {
+      "id": "nex-agi/nex-n2-mini",
+      "name": "Nex AGI: Nex-N2-Mini",
+      "provider": "nex-agi",
+      "input_per_mtok": 0.024999999999999998,
+      "output_per_mtok": 0.09999999999999999,
+      "cache_read_per_mtok": 0.0025,
+      "context": 262144
+    },
+    {
+      "id": "sakana/fugu-ultra",
+      "name": "Sakana: Fugu Ultra",
+      "provider": "sakana",
+      "input_per_mtok": 5,
+      "output_per_mtok": 30,
+      "cache_read_per_mtok": 0.5,
+      "context": 1000000
+    },
+    {
+      "id": "google/gemini-3.1-flash-image",
+      "name": "Google: Nano Banana 2 (Gemini 3.1 Flash Image)",
+      "provider": "google",
+      "input_per_mtok": 0.5,
+      "output_per_mtok": 3,
+      "cache_read_per_mtok": null,
+      "context": 131072
+    },
+    {
+      "id": "google/gemini-3-pro-image",
+      "name": "Google: Nano Banana Pro (Gemini 3 Pro Image)",
+      "provider": "google",
+      "input_per_mtok": 2,
+      "output_per_mtok": 12,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 131072
+    },
+    {
+      "id": "z-ai/glm-5.2",
+      "name": "Z.ai: GLM 5.2",
+      "provider": "z-ai",
+      "input_per_mtok": 0.966,
+      "output_per_mtok": 3.036,
+      "cache_read_per_mtok": 0.1932,
+      "context": 1048576
+    },
+    {
+      "id": "openrouter/fusion",
+      "name": "OpenRouter: Fusion",
+      "provider": "openrouter",
+      "input_per_mtok": -1000000,
+      "output_per_mtok": -1000000,
+      "cache_read_per_mtok": null,
+      "context": 1000000
+    },
+    {
+      "id": "moonshotai/kimi-k2.7-code",
+      "name": "MoonshotAI: Kimi K2.7 Code",
+      "provider": "moonshotai",
+      "input_per_mtok": 0.66,
+      "output_per_mtok": 3.4,
+      "cache_read_per_mtok": 0.18,
+      "context": 262144
+    },
+    {
+      "id": "~anthropic/claude-fable-latest",
+      "name": "Anthropic: Claude Fable Latest",
+      "provider": "~anthropic",
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_read_per_mtok": 0.25,
+      "context": 1000000
+    },
+    {
+      "id": "anthropic/claude-fable-5",
+      "name": "Anthropic: Claude Fable 5",
+      "provider": "anthropic",
+      "input_per_mtok": 10,
+      "output_per_mtok": 50,
+      "cache_read_per_mtok": 1,
+      "context": 1000000
+    },
+    {
+      "id": "nex-agi/nex-n2-pro",
+      "name": "Nex AGI: Nex-N2-Pro",
+      "provider": "nex-agi",
+      "input_per_mtok": 0.25,
+      "output_per_mtok": 1,
+      "cache_read_per_mtok": 0.024999999999999998,
+      "context": 262144
+    },
+    {
+      "id": "nvidia/nemotron-3.5-content-safety",
+      "name": "NVIDIA: Nemotron 3.5 Content Safety",
+      "provider": "nvidia",
+      "input_per_mtok": 0.19999999999999998,
+      "output_per_mtok": 0.19999999999999998,
+      "cache_read_per_mtok": null,
+      "context": 131072
+    },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "name": "NVIDIA: Nemotron 3 Ultra",
+      "provider": "nvidia",
+      "input_per_mtok": 0.625,
+      "output_per_mtok": 3.125,
+      "cache_read_per_mtok": 0.1875,
+      "context": 262144
+    },
+    {
+      "id": "qwen/qwen3.7-plus",
+      "name": "Qwen: Qwen3.7 Plus",
+      "provider": "qwen",
+      "input_per_mtok": 0.32,
+      "output_per_mtok": 1.28,
+      "cache_read_per_mtok": 0.064,
+      "context": 1000000
+    },
+    {
+      "id": "minimax/minimax-m3",
+      "name": "MiniMax: MiniMax M3",
+      "provider": "minimax",
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 1.2,
+      "cache_read_per_mtok": 0.06,
+      "context": 1048576
+    },
+    {
+      "id": "stepfun/step-3.7-flash",
+      "name": "StepFun: Step 3.7 Flash",
+      "provider": "stepfun",
+      "input_per_mtok": 0.19999999999999998,
+      "output_per_mtok": 1.15,
+      "cache_read_per_mtok": 0.04,
+      "context": 262144
+    },
+    {
+      "id": "anthropic/claude-opus-4.8",
+      "name": "Anthropic: Claude Opus 4.8",
+      "provider": "anthropic",
+      "input_per_mtok": 5,
+      "output_per_mtok": 25,
+      "cache_read_per_mtok": 0.5,
+      "context": 1000000
+    },
+    {
+      "id": "qwen/qwen3.7-max",
+      "name": "Qwen: Qwen3.7 Max",
+      "provider": "qwen",
+      "input_per_mtok": 1.475,
+      "output_per_mtok": 4.425,
+      "cache_read_per_mtok": 0.295,
+      "context": 1000000
+    },
+    {
+      "id": "x-ai/grok-build-0.1",
+      "name": "SpaceXAI: Grok Build 0.1",
+      "provider": "x-ai",
+      "input_per_mtok": 1,
+      "output_per_mtok": 2,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 256000
+    },
+    {
+      "id": "google/gemini-3.5-flash",
+      "name": "Google: Gemini 3.5 Flash",
+      "provider": "google",
+      "input_per_mtok": 1.5,
+      "output_per_mtok": 9,
+      "cache_read_per_mtok": 0.15,
+      "context": 1048576
+    },
+    {
+      "id": "perceptron/perceptron-mk1",
+      "name": "Perceptron: Perceptron Mk1",
+      "provider": "perceptron",
+      "input_per_mtok": 0.15,
+      "output_per_mtok": 1.5,
+      "cache_read_per_mtok": null,
+      "context": 32768
+    },
+    {
+      "id": "google/gemini-3.1-flash-lite",
+      "name": "Google: Gemini 3.1 Flash Lite",
+      "provider": "google",
+      "input_per_mtok": 0.25,
+      "output_per_mtok": 1.5,
+      "cache_read_per_mtok": 0.024999999999999998,
+      "context": 1048576
+    },
+    {
+      "id": "openai/gpt-chat-latest",
+      "name": "OpenAI: GPT Chat Latest",
+      "provider": "openai",
+      "input_per_mtok": 5,
+      "output_per_mtok": 30,
+      "cache_read_per_mtok": 0.5,
+      "context": 400000
+    },
+    {
+      "id": "x-ai/grok-4.3",
+      "name": "SpaceXAI: Grok 4.3",
+      "provider": "x-ai",
+      "input_per_mtok": 1.25,
+      "output_per_mtok": 2.5,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1000000
+    },
+    {
+      "id": "mistralai/mistral-medium-3-5",
+      "name": "Mistral: Mistral Medium 3.5",
+      "provider": "mistralai",
+      "input_per_mtok": 1.5,
+      "output_per_mtok": 7.5,
+      "cache_read_per_mtok": null,
+      "context": 262144
+    },
+    {
+      "id": "~anthropic/claude-haiku-latest",
+      "name": "Anthropic Claude Haiku Latest",
+      "provider": "~anthropic",
+      "input_per_mtok": 1,
+      "output_per_mtok": 5,
+      "cache_read_per_mtok": 0.09999999999999999,
+      "context": 200000
+    },
+    {
+      "id": "~openai/gpt-mini-latest",
+      "name": "OpenAI GPT Mini Latest",
+      "provider": "~openai",
+      "input_per_mtok": 0.75,
+      "output_per_mtok": 4.5,
+      "cache_read_per_mtok": 0.075,
+      "context": 400000
+    },
+    {
+      "id": "~google/gemini-pro-latest",
+      "name": "Google Gemini Pro Latest",
+      "provider": "~google",
+      "input_per_mtok": 2,
+      "output_per_mtok": 12,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1048576
+    },
+    {
+      "id": "~moonshotai/kimi-latest",
+      "name": "MoonshotAI Kimi Latest",
+      "provider": "~moonshotai",
+      "input_per_mtok": 2.5,
+      "output_per_mtok": 14,
+      "cache_read_per_mtok": 0.29,
+      "context": 1048576
+    },
+    {
+      "id": "~google/gemini-flash-latest",
+      "name": "Google Gemini Flash Latest",
+      "provider": "~google",
+      "input_per_mtok": 0.75,
+      "output_per_mtok": 3.75,
+      "cache_read_per_mtok": 0.075,
+      "context": 1048576
+    },
+    {
+      "id": "~anthropic/claude-sonnet-latest",
+      "name": "Anthropic Claude Sonnet Latest",
+      "provider": "~anthropic",
+      "input_per_mtok": 2,
+      "output_per_mtok": 10,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1000000
+    },
+    {
+      "id": "~openai/gpt-latest",
+      "name": "OpenAI GPT Latest",
+      "provider": "~openai",
+      "input_per_mtok": 2,
+      "output_per_mtok": 10,
+      "cache_read_per_mtok": 0.19999999999999998,
+      "context": 1050000
+    },
+    {
+      "id": "qwen/qwen3.5-plus-20260420",
+      "name": "Qwen: Qwen3.5 Plus 2026-04-20",
+      "provider": "qwen",
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 1.7999999999999998,
+      "cache_read_per_mtok": null,
+      "context": 1000000
+    },
+    {
+      "id": "qwen/qwen3.6-flash",
+      "name": "Qwen: Qwen3.6 Flash",
+      "provider": "qwen",
+      "input_per_mtok": 0.1875,
+      "output_per_mtok": 1.125,
+      "cache_read_per_mtok": null,
+      "context": 1000000
+    },
+    {
+      "id": "qwen/qwen3.6-35b-a3b",
+      "name": "Qwen: Qwen3.6 35B A3B",
+      "provider": "qwen",
+      "input_per_mtok": 0.09999999999999999,
+      "output_per_mtok": 0.8999999999999999,
+      "cache_read_per_mtok": 0.049999999999999996,
+      "context": 262144
+    },
+    {
+      "id": "qwen/qwen3.6-max-preview",
+      "name": "Qwen: Qwen3.6 Max Preview",
+      "provider": "qwen",
+      "input_per_mtok": 1.0270000000000001,
+      "output_per_mtok": 6.162,
+      "cache_read_per_mtok": null,
+      "context": 262144
+    },
+    {
+      "id": "qwen/qwen3.6-27b",
+      "name": "Qwen: Qwen3.6 27B",
+      "provider": "qwen",
+      "input_per_mtok": 0.3,
+      "output_per_mtok": 2,
+      "cache_read_per_mtok": 0.03,
+      "context": 262144
+    },
+    {
+      "id": "openai/gpt-5.5-pro",
+      "name": "OpenAI: GPT-5.5 Pro",
+      "provider": "openai",
+      "input_per_mtok": 30,
+      "output_per_mtok": 180,
+      "cache_read_per_mtok": null,
+      "context": 1050000
+    },
+    {
+      "id": "openai/gpt-5.5",
+      "name": "OpenAI: GPT-5.5",
+      "provider": "openai",
+      "input_per_mtok": 5,
+      "output_per_mtok": 30,
+      "cache_read_per_mtok": 0.5,
+      "context": 1050000
+    }
+  ]
+}

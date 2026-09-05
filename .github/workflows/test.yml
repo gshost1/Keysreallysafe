@@ -1,0 +1,19 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    env:
+      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
+      GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test with synthetic fixtures
+        run: swift test

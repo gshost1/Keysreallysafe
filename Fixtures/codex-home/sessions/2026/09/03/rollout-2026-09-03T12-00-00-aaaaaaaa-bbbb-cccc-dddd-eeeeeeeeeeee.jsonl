@@ -1,0 +1,5 @@
+{"timestamp":"2026-09-03T12:00:00.000Z","type":"session_meta","payload":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/keysreallysafe-fixture","source":"cli"}}
+{"timestamp":"2026-09-03T12:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-09-03T12:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":40,"reasoning_output_tokens":10,"total_tokens":150},"total_token_usage":{"input_tokens":9999,"output_tokens":9999}}}}
+{"timestamp":"2026-09-03T12:00:03.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET_SHOULD_NOT_BE_INGESTED"}]}}
+{"timestamp":"2026-09-03T12:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":80,"cached_input_tokens":10,"output_tokens":20,"reasoning_output_tokens":0,"total_tokens":100}}}}
