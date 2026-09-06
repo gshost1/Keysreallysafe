@@ -20,6 +20,9 @@ Agent key access, from `notes/2026-09-06-agent-key-access.md`.
 - Keys list and `keys env` show the provider and the host a key is bound to.
 - README now says what the per-launch token is (browser cross-site defence),
   not local-process authentication.
+- Menubar dropdown: a tab strip (Overview, then one tab per subscription)
+  over bars with "% left" and reset times; the tab is remembered. Rows below:
+  Plan Usage, Status Page submenu, Refresh (was Ingest), About.
 
 
 All notable changes to Keysreallysafe. Each entry is a GitHub release.

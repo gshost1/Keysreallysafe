@@ -141,3 +141,36 @@ final class MenubarWindowsTests: XCTestCase {
         XCTAssertEqual(snap.lines, [])
     }
 }
+
+final class MenubarPanelDataTests: XCTestCase {
+    func testCardsCarryPlanWindowsAndResetLabels() {
+        var claude = ToolStatus(source: "claude", title: "Claude")
+        claude.plan = "Max"
+        claude.fiveHourPct = 53
+        claude.fiveHourResetsAt = "2026-09-06T20:00:00Z"
+        claude.weeklyPct = 1
+        claude.weeklyResetsAt = "2026-09-12T09:00:00Z"
+        var grok = ToolStatus(source: "grok", title: "Grok")
+        grok.weeklyPct = 10
+        grok.weeklyResetsAt = "2026-09-07T05:00:00Z"
+        var status = LiveStatus()
+        status.plans = [claude, grok]
+        let now = UTC.parse("2026-09-06T17:00:00Z")!
+        let report = SpendReport(range: .week, by: .model, source: .all, caption: SpendReport.captionText, totals: SpendTotals(), rows: [], daily: [])
+        let snap = MenubarSnapshot.from(report, status: status, now: now)
+        XCTAssertEqual(snap.cards.map(\.id), ["claude", "grok"])
+        XCTAssertEqual(snap.cards[0].plan, "Max")
+        XCTAssertEqual(snap.cards[0].windows.map(\.label), ["Claude 5-hour", "Claude weekly"])
+        XCTAssertEqual(snap.cards[0].windows.map(\.pctUsed), [53, 1])
+        XCTAssertEqual(snap.cards[1].usdLine, "Grok $0 this week")
+        XCTAssertEqual(snap.spendLine, "Grok $0 this week")
+
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        XCTAssertEqual(MenubarSnapshot.resetsLabel("2026-09-06T20:00:00Z", now: now, calendar: utc), "Resets today, 20:00")
+        XCTAssertEqual(MenubarSnapshot.resetsLabel("2026-09-07T02:01:00Z", now: now, calendar: utc), "Resets tomorrow, 02:01")
+        XCTAssertEqual(MenubarSnapshot.resetsLabel("2026-09-11T09:45:00Z", now: now, calendar: utc), "Resets 11 Sep at 09:45")
+        XCTAssertEqual(MenubarSnapshot.resetsLabel("2026-09-06T16:00:00Z", now: now, calendar: utc), "Reset due")
+        XCTAssertEqual(MenubarSnapshot.resetsLabel(nil, now: now, calendar: utc), "")
+    }
+}

@@ -8,6 +8,24 @@ struct MenubarSnapshot: Equatable {
     var sparkline: [Double]
     /// One line per plan window, for the dropdown. Empty when no tool has reported a window.
     var lines: [String] = []
+    /// One card per subscription with a plan window, in menubar order. Feeds the dropdown panel.
+    var cards: [ToolCard] = []
+    var spendLine: String = ""
+
+    struct Window: Equatable {
+        var label: String
+        var pctUsed: Int
+        var resetsAt: String?
+    }
+
+    struct ToolCard: Equatable {
+        var id: String
+        var name: String
+        var plan: String?
+        var windows: [Window]
+        var note: String?
+        var usdLine: String?
+    }
 
     /// Title: each tool's weekly window only, `C 2%  X 63%  G 10%`. Dollars and the 5-hour
     /// windows live in the dropdown. Never a Claude or Codex estimate.
@@ -16,6 +34,7 @@ struct MenubarSnapshot: Equatable {
         var parts: [String] = []
         var tooltip: [String] = ["Grok \(usd) this \(report.range == .week ? "week" : "month")"]
         var lines: [String] = []
+        var cards: [ToolCard] = []
         if let status {
             let claude = status.claude ?? status.plans.first { $0.source == "claude" }
             let codex = status.plans.first { $0.source == "openai" }
@@ -34,6 +53,21 @@ struct MenubarSnapshot: Equatable {
                 if let week = tool.weeklyPct {
                     lines.append("\(name) · weekly \(week)%" + resetsSuffix(tool.weeklyResetsAt, now: now))
                 }
+                var windows: [Window] = []
+                if let five = tool.fiveHourPct {
+                    windows.append(Window(label: "\(name) 5-hour", pctUsed: five, resetsAt: tool.fiveHourResetsAt))
+                }
+                if let week = tool.weeklyPct {
+                    windows.append(Window(label: "\(name) weekly", pctUsed: week, resetsAt: tool.weeklyResetsAt))
+                }
+                cards.append(ToolCard(
+                    id: tool.source,
+                    name: name,
+                    plan: tool.plan,
+                    windows: windows,
+                    note: tool.usageNote,
+                    usdLine: letter == "G" ? "Grok \(usd) this \(report.range == .week ? "week" : "month")" : nil
+                ))
             }
         }
         tooltip.append("weekly plan windows · click for 5-hour windows and spend")
@@ -42,8 +76,29 @@ struct MenubarSnapshot: Equatable {
             title: title,
             tooltip: tooltip.joined(separator: " · "),
             sparkline: Sparkline.values(from: report.daily),
-            lines: lines
+            lines: lines,
+            cards: cards,
+            spendLine: tooltip.first ?? ""
         )
+    }
+
+    /// `Resets today, 14:05` · `Resets tomorrow, 02:01` · `Resets 11 Sep at 09:45`. Local time.
+    static func resetsLabel(_ iso: String?, now: Date, calendar: Calendar = .current) -> String {
+        guard let iso, let date = UTC.parse(iso) else { return "" }
+        if date <= now { return "Reset due" }
+        let time = DateFormatter()
+        time.calendar = calendar
+        time.timeZone = calendar.timeZone
+        time.dateFormat = "HH:mm"
+        if calendar.isDate(date, inSameDayAs: now) { return "Resets today, \(time.string(from: date))" }
+        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) {
+            return "Resets tomorrow, \(time.string(from: date))"
+        }
+        let day = DateFormatter()
+        day.calendar = calendar
+        day.timeZone = calendar.timeZone
+        day.dateFormat = "d MMM"
+        return "Resets \(day.string(from: date)) at \(time.string(from: date))"
     }
 
     static func resetsSuffix(_ iso: String?, now: Date) -> String {
@@ -153,6 +208,8 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var lastSnapshot: MenubarSnapshot?
     private var updatedAt: Date?
+    private let panel = MenubarPanel()
+    private static let tabKey = "menubar.tab"
 
     init(service: KeysService, server: LoopbackHTTPServer, url: URL) {
         self.service = service
@@ -161,6 +218,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         item.button?.imagePosition = .noImage
+        panel.selectedTab = UserDefaults.standard.string(forKey: Self.tabKey) ?? "overview"
+        panel.onSelect = { [weak self] id in
+            UserDefaults.standard.set(id, forKey: Self.tabKey)
+            self?.renderPanel()
+        }
         item.menu = buildMenu()
         item.menu?.delegate = self
         refresh()
@@ -218,37 +280,76 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.image = nil
         lastSnapshot = snap
         updatedAt = Date()
-        item.menu = buildMenu()
-        item.menu?.delegate = self
+        renderPanel()
+        if item.menu == nil {
+            item.menu = buildMenu()
+            item.menu?.delegate = self
+        }
+    }
+
+    private func renderPanel() {
+        guard let snap = lastSnapshot else { return }
+        panel.render(snapshot: snap, updatedAt: updatedAt ?? Date())
+    }
+
+    /// Status pages for the tracked tools. Public pages, no auth.
+    static let statusPages: [(id: String, name: String, url: String)] = [
+        ("claude", "Claude", "https://status.anthropic.com"),
+        ("openai", "OpenAI / Codex", "https://status.openai.com"),
+        ("grok", "Grok", "https://status.x.ai"),
+    ]
+
+    @objc func openPlanUsage() {
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc func openStatusPage(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let target = URL(string: raw) else { return }
+        NSWorkspace.shared.open(target)
+    }
+
+    @objc func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Keysreallysafe",
+            .applicationVersion: "0.2",
+            .version: "local vault + usage · loopback only",
+            .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. MIT."),
+        ])
     }
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
-        if let snap = lastSnapshot {
-            for line in snap.lines {
-                let row = NSMenuItem(title: line, action: nil, keyEquivalent: "")
-                row.isEnabled = false
-                menu.addItem(row)
-            }
-            if !snap.lines.isEmpty { menu.addItem(.separator()) }
-            let spend = NSMenuItem(title: snap.tooltip.split(separator: "·").first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? "", action: nil, keyEquivalent: "")
-            spend.isEnabled = false
-            menu.addItem(spend)
-            let f = DateFormatter()
-            f.timeStyle = .short
-            f.dateStyle = .none
-            let when = NSMenuItem(title: "Updated \(f.string(from: updatedAt ?? Date())) · refreshes every minute", action: nil, keyEquivalent: "")
-            when.isEnabled = false
-            menu.addItem(when)
-            menu.addItem(.separator())
+        let host = NSMenuItem()
+        host.view = panel
+        menu.addItem(host)
+        menu.addItem(.separator())
+        let plan = NSMenuItem(title: "Plan Usage", action: #selector(openPlanUsage), keyEquivalent: "")
+        plan.target = self
+        plan.toolTip = "Open the Usage pane on the local site"
+        menu.addItem(plan)
+        let status = NSMenuItem(title: "Status Page", action: nil, keyEquivalent: "")
+        let statusMenu = NSMenu()
+        for page in Self.statusPages {
+            let row = NSMenuItem(title: page.name, action: #selector(openStatusPage(_:)), keyEquivalent: "")
+            row.target = self
+            row.representedObject = page.url
+            statusMenu.addItem(row)
         }
+        status.submenu = statusMenu
+        menu.addItem(status)
+        menu.addItem(.separator())
         let open = NSMenuItem(title: "Open Keysreallysafe", action: #selector(openDashboard), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
-        let ingest = NSMenuItem(title: "Ingest", action: #selector(ingestNow), keyEquivalent: "r")
+        let ingest = NSMenuItem(title: "Refresh", action: #selector(ingestNow), keyEquivalent: "r")
         ingest.keyEquivalentModifierMask = [.command]
         ingest.target = self
+        ingest.toolTip = "Ingest the local session logs now"
         menu.addItem(ingest)
+        let about = NSMenuItem(title: "About Keysreallysafe", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
