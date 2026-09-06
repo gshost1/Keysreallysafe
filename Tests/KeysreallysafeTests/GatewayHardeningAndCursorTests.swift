@@ -2,7 +2,8 @@ import Darwin
 import XCTest
 @testable import KeysCore
 
-final class Session4Tests: XCTestCase {
+/// Gateway request hardening, owner pid, framing limits, cursor replay, gateway estimates, dedup migration.
+final class GatewayHardeningAndCursorTests: XCTestCase {
     func testGatewayRejectsBadHostOriginAndCrossSiteBeforeLookup() async throws {
         let hits = HitCounter()
         let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
@@ -110,9 +111,10 @@ final class Session4Tests: XCTestCase {
         )
         XCTAssertEqual(short.status, 400)
 
+        let client = try service.issueGatewayClient(name: "demo", label: "test").token
         let chunked = try sendRaw(
             port: gateway.boundPort,
-            request: "POST /demo/v1/x HTTP/1.1\r\nHost: 127.0.0.1:\(gateway.boundPort)\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+            request: "POST /demo/v1/x HTTP/1.1\r\nHost: 127.0.0.1:\(gateway.boundPort)\r\nAuthorization: Bearer \(client)\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
         )
         XCTAssertEqual(chunked.status, 200)
         XCTAssertEqual(String(data: captured.body, encoding: .utf8), "hello")
@@ -389,7 +391,9 @@ final class Session4Tests: XCTestCase {
             key: "demo"
         )
         XCTAssertEqual(report.totals.gatewayUsdEstimate ?? 0, 2.0, accuracy: 1e-9)
-        XCTAssertEqual(report.totals.usdEstimate ?? 0, 2.0, accuracy: 1e-9)
+        // Gateway dollars are a separate ledger, never folded into the local estimate.
+        XCTAssertEqual(report.totals.usdEstimate ?? 0, 0.0, accuracy: 1e-9)
+        XCTAssertEqual(report.totals.gatewayCalls, 1)
         XCTAssertEqual(report.totals.tokenRule, TokenTotals.rule)
         let json = report.jsonObject()["totals"] as! [String: Any]
         XCTAssertEqual(json["token_rule"] as? String, TokenTotals.rule)

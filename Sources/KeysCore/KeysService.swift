@@ -9,7 +9,10 @@ final class KeysService: @unchecked Sendable {
     var grokHome: URL
     var claudeHome: URL
     var codexHome: URL
+    /// Serialises ingest passes only. A five-minute log scan must never hold up a gateway lookup.
     private let ingestLock = NSLock()
+    /// Guards `gatewayCache` and `gatewayListener`; held for dictionary access only.
+    private let gatewayLock = NSLock()
     private var gatewayCache: [String: GatewayTarget] = [:]
     private var gatewayListener: GatewayListener?
     var openRouter: any OpenRouterFetching
@@ -75,17 +78,18 @@ final class KeysService: @unchecked Sendable {
     }
 
     func listJSONObject() throws -> [[String: Any]] {
-        let usd = try monthUsdByKey()
-        return try list().map { keyJSONObject($0, usdMonth: usd[$0.name]) }
+        let months = try monthGatewayByKey()
+        return try list().map { keyJSONObject($0, month: months[$0.name]) }
     }
 
     func keyJSONObject(_ row: CatalogRow) throws -> [String: Any] {
-        let usd = try monthUsdByKey()[row.name]
-        return keyJSONObject(row, usdMonth: usd)
+        let month = try monthGatewayByKey()[row.name]
+        return keyJSONObject(row, month: month)
     }
 
-    func keyJSONObject(_ row: CatalogRow, usdMonth: Double?) -> [String: Any] {
+    func keyJSONObject(_ row: CatalogRow, month: GatewayMonth?) -> [String: Any] {
         let enabled = isGatewayEnabled(row.name)
+        let month = month ?? GatewayMonth()
         return [
             "name": row.name,
             "provider": row.provider,
@@ -98,20 +102,25 @@ final class KeysService: @unchecked Sendable {
             "gateway_url": enabled
                 ? "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
                 : NSNull(),
-            "usd_month": usdMonth ?? 0,
+            // null means "calls happened but none could be priced", not zero dollars.
+            "usd_month": month.usd as Any? ?? NSNull(),
+            "usd_month_kind": month.kind,
+            "gateway_month_calls": month.calls,
+            "gateway_month_unpriced_calls": month.unpricedCalls,
+            "gateway_month_unpriced_tokens": month.unpricedTokens,
             "version": row.version,
         ]
     }
 
     func isGatewayEnabled(_ name: String) -> Bool {
-        ingestLock.lock()
-        defer { ingestLock.unlock() }
+        gatewayLock.lock()
+        defer { gatewayLock.unlock() }
         return gatewayCache[name] != nil
     }
 
     func isGatewayRunning() -> Bool {
-        ingestLock.lock()
-        defer { ingestLock.unlock() }
+        gatewayLock.lock()
+        defer { gatewayLock.unlock() }
         return gatewayListener != nil
     }
 
@@ -130,9 +139,9 @@ final class KeysService: @unchecked Sendable {
     }
 
     func lookupGateway(name: String) -> GatewayTarget? {
-        ingestLock.lock()
+        gatewayLock.lock()
         let cached = gatewayCache[name]
-        ingestLock.unlock()
+        gatewayLock.unlock()
         guard let cached else { return nil }
         guard let row = try? catalog.catalogRow(name: name) else {
             disableGatewayMemory(name: name, reason: "target_changed")
@@ -170,15 +179,15 @@ final class KeysService: @unchecked Sendable {
             } else {
                 throw AppError.usage("host is required")
             }
-            ingestLock.lock()
+            gatewayLock.lock()
             let previous = gatewayCache[name]
-            ingestLock.unlock()
+            gatewayLock.unlock()
             if let previous, previous.host != resolved || previous.provider.id != provider.id {
                 disableGatewayMemory(name: name, reason: "target_changed")
             }
             let secret = try secrets.get(name: name)
             let version = row.version
-            ingestLock.lock()
+            gatewayLock.lock()
             gatewayCache[name] = GatewayTarget(
                 name: name,
                 secret: secret,
@@ -186,26 +195,26 @@ final class KeysService: @unchecked Sendable {
                 host: resolved,
                 version: version
             )
-            ingestLock.unlock()
+            gatewayLock.unlock()
             let updated = try catalog.updateGateway(name: name, enabled: true, host: resolved)
             try recordKeyEvent(name: name, action: "gateway_enable", caller: caller)
             return updated
         }
-        ingestLock.lock()
+        gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
-        ingestLock.unlock()
+        gatewayLock.unlock()
         let updated = try catalog.updateGatewayEnabled(name: name, enabled: false)
         try recordKeyEvent(name: name, action: "gateway_disable", caller: caller)
         return updated
     }
 
     func startGateway(port: UInt16 = GatewayListener.port) throws -> GatewayListener {
-        ingestLock.lock()
+        gatewayLock.lock()
         if let gatewayListener {
-            ingestLock.unlock()
+            gatewayLock.unlock()
             return gatewayListener
         }
-        ingestLock.unlock()
+        gatewayLock.unlock()
         let listener = try GatewayListener(service: self, port: port)
         do {
             try catalog.setMeta(
@@ -216,23 +225,23 @@ final class KeysService: @unchecked Sendable {
             listener.stop()
             throw error
         }
-        ingestLock.lock()
+        gatewayLock.lock()
         if let existing = gatewayListener {
-            ingestLock.unlock()
+            gatewayLock.unlock()
             listener.stop()
             return existing
         }
         listener.start()
         gatewayListener = listener
-        ingestLock.unlock()
+        gatewayLock.unlock()
         return listener
     }
 
     func stopGateway() {
-        ingestLock.lock()
+        gatewayLock.lock()
         let listener = gatewayListener
         gatewayListener = nil
-        ingestLock.unlock()
+        gatewayLock.unlock()
         listener?.stop()
         let us = ProcessInfo.processInfo.processIdentifier
         if let raw = try? catalog.metaValue("gateway_owner_pid"), pid_t(raw) == us {
@@ -240,13 +249,115 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
+    // MARK: gateway clients
+
+    /// Issuing a capability to spend a key is a key use, so it asks for presence like copy does.
+    /// The token is returned once and only its hash is stored.
+    func issueGatewayClient(
+        name: String,
+        label: String,
+        days: Int? = nil,
+        methods: [String]? = nil,
+        pathPrefix: String? = nil,
+        caller: String = "dashboard",
+        now: Date = Date()
+    ) throws -> (token: String, client: GatewayClient) {
+        try KeyName.validate(name)
+        guard try catalog.catalogExists(name: name) else { throw AppError.notFound(name) }
+        let ttlDays = try GatewayClientToken.validateDays(days)
+        let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
+        let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
+        let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        try secrets.confirmPresence(reason: "Issue gateway client for \(name)")
+        let token = GatewayClientToken.generate()
+        let client = try catalog.insertGatewayClient(
+            keyName: name,
+            label: trimmedLabel,
+            tokenHash: GatewayClientToken.hash(token),
+            hint: GatewayClientToken.hint(token),
+            methods: allowed,
+            pathPrefix: prefix,
+            createdAt: UTC.iso(now),
+            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
+        )
+        try recordKeyEvent(
+            name: name,
+            action: "client_issue",
+            caller: caller,
+            detail: "#\(client.id) \(trimmedLabel) \(ttlDays)d \(allowed.joined(separator: "/"))"
+        )
+        return (token, client)
+    }
+
+    func gatewayClients(name: String) throws -> [GatewayClient] {
+        try KeyName.validate(name)
+        guard try catalog.catalogExists(name: name) else { throw AppError.notFound(name) }
+        return try catalog.gatewayClients(keyName: name)
+    }
+
+    func revokeGatewayClient(name: String, id: Int64, caller: String = "dashboard") throws -> GatewayClient {
+        try KeyName.validate(name)
+        guard try catalog.catalogExists(name: name) else { throw AppError.notFound(name) }
+        guard try catalog.revokeGatewayClient(id: id, keyName: name, at: UTC.iso(Date())) else {
+            throw AppError.notFound("client \(id)")
+        }
+        try recordKeyEvent(name: name, action: "client_revoke", caller: caller, detail: "#\(id)")
+        guard let client = try catalog.gatewayClients(keyName: name).first(where: { $0.id == id }) else {
+            throw AppError.notFound("client \(id)")
+        }
+        return client
+    }
+
+    /// Decides whether one request may use `name` through the gateway. Never consults the
+    /// dashboard token. Denial reasons are for the audit log; the caller sends a uniform 401.
+    func authorizeGatewayClient(
+        name: String,
+        headers: [String: String],
+        method: String,
+        rest: String,
+        now: Date = Date()
+    ) -> GatewayClientDecision {
+        guard let token = GatewayClientToken.extract(headers: headers) else {
+            return .denied("no_client_token")
+        }
+        guard let client = try? catalog.gatewayClient(tokenHash: GatewayClientToken.hash(token)) else {
+            return .denied("unknown_client")
+        }
+        guard client.keyName == name else { return .denied("wrong_key") }
+        guard client.revokedAt == nil else { return .denied("revoked") }
+        guard client.isActive(now: now) else { return .denied("expired") }
+        guard client.allows(method: method, rest: rest) else { return .denied("out_of_scope") }
+        return .allowed(client)
+    }
+
+    /// Called once the key resolved and the call is about to be forwarded, so `last_used_at`
+    /// means an upstream call, not a rejected attempt.
+    func noteGatewayClientUse(_ client: GatewayClient, now: Date = Date()) {
+        try? catalog.touchGatewayClient(id: client.id, at: UTC.iso(now))
+    }
+
+    /// Audit a denial only for a key that exists; a made-up name must not grow the log.
+    func recordGatewayDenial(name: String, reason: String) {
+        guard (try? catalog.catalogExists(name: name)) == true else { return }
+        try? recordKeyEvent(name: name, action: "gateway_denied", caller: "gateway", detail: reason)
+    }
+
     func recordGatewayUsage(_ row: GatewayUsageRow) throws {
         try catalog.withTransaction {
             try catalog.insertGatewayUsage(row)
+            // The upstream request id is the prompt id so a local event with the same id can be
+            // matched. A proxy that repeats ids must not collapse two calls into one row, so a
+            // second sighting of an id gets a suffix (and then no longer correlates).
+            var promptId = row.requestId ?? UUID().uuidString.lowercased()
+            if row.requestId != nil,
+               try catalog.usageExists(source: "gateway", sessionId: "gw:" + row.key, promptId: promptId, model: row.model ?? "")
+            {
+                promptId += "+" + UUID().uuidString.lowercased()
+            }
             let event = UsageEvent(
                 source: "gateway",
                 sessionId: "gw:" + row.key,
-                promptId: UUID().uuidString.lowercased(),
+                promptId: promptId,
                 model: row.model ?? "",
                 occurredAt: row.ts,
                 provider: row.provider,
@@ -277,22 +388,49 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
-    func monthUsdByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: Double] {
+    /// This month's gateway calls for one key. `usd` is nil when no call could be priced,
+    /// so an unknown cost is never shown as $0.
+    struct GatewayMonth: Equatable {
+        var usd: Double? = nil
+        var calls: Int = 0
+        var pricedCalls: Int = 0
+        var unpricedCalls: Int = 0
+        var unpricedTokens: Int = 0
+
+        /// none: no calls. estimate: every call priced. partial: some priced. unknown: none priced.
+        var kind: String {
+            if calls == 0 { return "none" }
+            if unpricedCalls == 0 { return "estimate" }
+            if pricedCalls == 0 { return "unknown" }
+            return "partial"
+        }
+    }
+
+    func monthGatewayByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: GatewayMonth] {
         let (start, end) = SpendRange.month.interval(now: now, timeZone: timeZone)
         let rows = try catalog.gatewayUsage(from: UTC.iso(start), to: UTC.iso(end))
-        var sums: [String: Double] = [:]
+        var out: [String: GatewayMonth] = [:]
         for row in rows {
-            guard let usd = GatewayEstimate.usd(
+            var month = out[row.key] ?? GatewayMonth()
+            month.calls += 1
+            if let usd = GatewayEstimate.usd(
                 model: row.model,
                 input: row.inputTokens ?? 0,
                 output: row.outputTokens ?? 0,
                 cacheRead: row.cacheReadTokens ?? 0,
                 cacheWrite: row.cacheWriteTokens ?? 0,
                 api: Providers.provider(id: row.provider)?.api
-            ) else { continue }
-            sums[row.key, default: 0] += usd
+            ) {
+                month.usd = (month.usd ?? 0) + usd
+                month.pricedCalls += 1
+            } else {
+                month.unpricedCalls += 1
+                month.unpricedTokens += (row.inputTokens ?? 0) + (row.outputTokens ?? 0)
+                    + (row.cacheReadTokens ?? 0) + (row.cacheWriteTokens ?? 0)
+            }
+            out[row.key] = month
         }
-        return sums
+        return out
     }
 
     /// Metadata only. Name and secret are immutable. No Touch ID.
@@ -388,9 +526,9 @@ final class KeysService: @unchecked Sendable {
             throw AppError.notFound(name)
         }
         try secrets.confirmPresence(reason: "Unlock \(name)")
-        ingestLock.lock()
+        gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
-        ingestLock.unlock()
+        gatewayLock.unlock()
         try secrets.delete(name: name)
         try catalog.deleteCatalog(name: name)
         try recordKeyEvent(name: name, action: "rm", caller: caller)
@@ -406,13 +544,13 @@ final class KeysService: @unchecked Sendable {
         try secrets.confirmPresence(reason: "Unlock \(name)")
         try secrets.replace(name: name, secret: secret)
         let version = try catalog.incrementVersion(name: name)
-        ingestLock.lock()
+        gatewayLock.lock()
         if var cached = gatewayCache[name] {
             cached.secret = secret
             cached.version = version
             gatewayCache[name] = cached
         }
-        ingestLock.unlock()
+        gatewayLock.unlock()
         try recordKeyEvent(name: name, action: "rotate", caller: caller)
         guard let row = try catalog.catalogRow(name: name) else {
             throw AppError.notFound(name)
@@ -435,9 +573,9 @@ final class KeysService: @unchecked Sendable {
         guard confirmation == "purge" else {
             throw AppError.usage("type purge to confirm")
         }
-        ingestLock.lock()
+        gatewayLock.lock()
         gatewayCache.removeAll()
-        ingestLock.unlock()
+        gatewayLock.unlock()
         try secrets.deleteAll()
         try catalog.wipeData()
     }
@@ -466,9 +604,9 @@ final class KeysService: @unchecked Sendable {
         let rows = try catalog.listCatalog()
         for row in rows {
             guard row.provider == "openrouter", row.kind == "billing" else { continue }
-            ingestLock.lock()
+            gatewayLock.lock()
             let secret = gatewayCache[row.name]?.secret
-            ingestLock.unlock()
+            gatewayLock.unlock()
             guard let secret else { continue }
             do {
                 var snap = try openRouter.fetch(secret: secret)
@@ -490,7 +628,8 @@ final class KeysService: @unchecked Sendable {
     }
 
     func ingestIfStale(olderThan: TimeInterval = IngestScheduler.staleInterval) throws {
-        ingestLock.lock()
+        // A pass already running will refresh the data; do not queue a request thread behind it.
+        guard ingestLock.try() else { return }
         defer { ingestLock.unlock() }
         if let iso = try catalog.lastIngestAt(), let date = UTC.parse(iso) {
             if Date().timeIntervalSince(date) < olderThan { return }
@@ -536,9 +675,9 @@ final class KeysService: @unchecked Sendable {
     }
 
     private func disableGatewayMemory(name: String, reason: String) {
-        ingestLock.lock()
+        gatewayLock.lock()
         let had = gatewayCache.removeValue(forKey: name) != nil
-        ingestLock.unlock()
+        gatewayLock.unlock()
         guard had else { return }
         _ = try? catalog.updateGatewayEnabled(name: name, enabled: false)
         try? recordKeyEvent(

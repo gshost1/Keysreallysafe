@@ -1,7 +1,8 @@
 import XCTest
 @testable import KeysCore
 
-final class Session3Tests: XCTestCase {
+/// Key audit log, rotate/remove/purge presence, OpenRouter poll, Claude dedup, project spend, menubar text.
+final class KeyLifecycleAndDedupTests: XCTestCase {
     func testKeyEventsNewestFirstAndLastUsedOnlyOnUse() throws {
         let (db, dir) = try makeDB()
         let (service, _, _) = makeService(db: db)

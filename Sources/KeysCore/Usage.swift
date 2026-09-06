@@ -183,10 +183,25 @@ struct SpendTotals: Equatable {
     var openaiUnpricedModels: [String] = []
     var openaiPricedTokens: Int = 0
     var openaiUnpricedTokens: Int = 0
+    /// Dollars for gateway calls that no local log also recorded. Kept out of `usdEstimate`:
+    /// a Claude Code or Codex call routed through the gateway is in both records, and only an
+    /// exact request-id match can tell them apart.
     var gatewayUsdEstimate: Double?
+    var gatewayTokens: Int = 0
+    var gatewayCalls: Int = 0
+    var gatewayPricedTokens: Int = 0
+    var gatewayUnpricedTokens: Int = 0
+    var gatewayUnpricedCalls: Int = 0
+    var gatewayUnpricedModels: [String] = []
+    /// Gateway calls dropped because a local event carried the same upstream request id.
+    var gatewayCorrelatedCalls: Int = 0
+    /// Local sources only (Grok cost log, Claude and OpenAI list-price estimates).
     var usdEstimate: Double?
+    var usdEstimateScope: String = SpendTotals.localScope
     var tokens: Int = 0
     var tokenRule: String = TokenTotals.rule
+
+    static let localScope = "local logs only; gateway dollars are reported separately because a routed call can also appear in a local log"
 }
 
 struct SpendRow: Equatable {
@@ -273,10 +288,23 @@ struct SpendReport: Equatable {
             "openai_priced_tokens": totals.openaiPricedTokens,
             "openai_unpriced_tokens": totals.openaiUnpricedTokens,
             "gateway_usd_estimate": totals.gatewayUsdEstimate as Any? ?? NSNull(),
+            "gateway_tokens": totals.gatewayTokens,
+            "gateway_calls": totals.gatewayCalls,
+            "gateway_priced_tokens": totals.gatewayPricedTokens,
+            "gateway_unpriced_tokens": totals.gatewayUnpricedTokens,
+            "gateway_unpriced_calls": totals.gatewayUnpricedCalls,
+            "gateway_unpriced_models": totals.gatewayUnpricedModels,
+            "gateway_correlated_calls": totals.gatewayCorrelatedCalls,
             "usd_estimate": totals.usdEstimate as Any? ?? NSNull(),
+            "usd_estimate_scope": totals.usdEstimateScope,
             "tokens": totals.tokens,
             "token_rule": totals.tokenRule,
         ]
+        if totals.gatewayCalls > 0 || totals.gatewayCorrelatedCalls > 0 {
+            totalsObj["gateway_usd_estimate_label"] = EstimateLabel.text(
+                unpricedCount: totals.gatewayUnpricedModels.count
+            )
+        }
         if let est = totals.claudeUsdEstimate {
             totalsObj["claude_usd_estimate"] = est
         } else {

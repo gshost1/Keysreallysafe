@@ -31,7 +31,10 @@ final class CatalogDB: @unchecked Sendable {
         try exec("PRAGMA busy_timeout=5000")
         try exec("PRAGMA journal_mode=WAL")
         try exec("PRAGMA foreign_keys=ON")
+        // Overwrite freed pages so a deleted row does not linger in the file or the WAL.
+        try exec("PRAGMA secure_delete=ON")
         try migrate()
+        try purgeLegacyTailSignatures()
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
     }
 
@@ -134,6 +137,9 @@ final class CatalogDB: @unchecked Sendable {
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS gateway_usage_key_ts ON gateway_usage (key, ts);")
+        if !(try hasColumn("gateway_usage", "request_id")) {
+            try exec("ALTER TABLE gateway_usage ADD COLUMN request_id TEXT;")
+        }
         try exec("UPDATE catalog SET gateway_enabled = 0;")
         if !(try hasColumn("catalog", "version")) {
             try exec("ALTER TABLE catalog ADD COLUMN version INTEGER NOT NULL DEFAULT 1;")
@@ -166,12 +172,54 @@ final class CatalogDB: @unchecked Sendable {
         try exec(
             "CREATE INDEX IF NOT EXISTS provider_snapshots_key_ts ON provider_snapshots (provider, key_name, ts DESC);"
         )
+        try exec("""
+            CREATE TABLE IF NOT EXISTS gateway_clients (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              key_name TEXT NOT NULL,
+              label TEXT NOT NULL DEFAULT '',
+              token_hash TEXT NOT NULL UNIQUE,
+              hint TEXT NOT NULL DEFAULT '',
+              methods TEXT NOT NULL,
+              path_prefix TEXT,
+              created_at TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              revoked_at TEXT,
+              last_used_at TEXT
+            );
+            """)
+        try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
         if !(try hasColumn("ingest_files", "tail_sig")) {
             try exec("ALTER TABLE ingest_files ADD COLUMN tail_sig TEXT;")
         }
         if !(try hasColumn("ingest_files", "parser_json")) {
             try exec("ALTER TABLE ingest_files ADD COLUMN parser_json TEXT;")
         }
+    }
+
+    /// Cursor rows written before 0.2 held the last 32 raw bytes of each log as hex, which could
+    /// include a fragment of a user message. Clear them, then checkpoint and vacuum so neither
+    /// the main file nor the WAL keeps the old page images. Scope: this catalog file only.
+    /// Copies made by Time Machine or by hand are outside what the app can reach.
+    private func purgeLegacyTailSignatures() throws {
+        // The marker is written only after the vacuum succeeded, so a busy database on one open
+        // (another process mid-ingest) means the whole step runs again next time rather than the
+        // freed pages being left behind. Nothing here may fail `init`.
+        if try metaValue("tail_sig_format") == "v2" { return }
+        try exec(
+            "UPDATE ingest_files SET tail_sig = NULL WHERE tail_sig IS NOT NULL AND tail_sig != '' AND tail_sig NOT LIKE 'v2:%';"
+        )
+        let cleared = sqlite3_changes(db)
+        if cleared > 0 {
+            let previous = Int(try metaValue("tail_sig_purged_rows") ?? "0") ?? 0
+            try setMeta("tail_sig_purged_rows", String(previous + Int(cleared)))
+        }
+        do {
+            try exec("PRAGMA wal_checkpoint(TRUNCATE)")
+            try exec("VACUUM")
+        } catch {
+            return
+        }
+        try setMeta("tail_sig_format", "v2")
     }
 
     private func rebuildUsagePrimaryKeyIfNeeded() throws {
@@ -432,6 +480,122 @@ final class CatalogDB: @unchecked Sendable {
             if sqlite3_changes(db) == 0 {
                 throw AppError.notFound(name)
             }
+            // A capability for a key that no longer exists must not outlive it.
+            let clients = try prepare("DELETE FROM gateway_clients WHERE key_name = ?;")
+            defer { sqlite3_finalize(clients) }
+            bindText(clients, 1, name)
+            guard sqlite3_step(clients) == SQLITE_DONE else { throw sqliteError() }
+        }
+    }
+
+    // MARK: gateway clients
+
+    func insertGatewayClient(
+        keyName: String,
+        label: String,
+        tokenHash: String,
+        hint: String,
+        methods: [String],
+        pathPrefix: String?,
+        createdAt: String,
+        expiresAt: String
+    ) throws -> GatewayClient {
+        try withLock {
+            let stmt = try prepare("""
+                INSERT INTO gateway_clients
+                  (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """)
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, keyName)
+            bindText(stmt, 2, label)
+            bindText(stmt, 3, tokenHash)
+            bindText(stmt, 4, hint)
+            bindText(stmt, 5, methods.joined(separator: ","))
+            bindText(stmt, 6, pathPrefix)
+            bindText(stmt, 7, createdAt)
+            bindText(stmt, 8, expiresAt)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
+            return GatewayClient(
+                id: sqlite3_last_insert_rowid(db),
+                keyName: keyName,
+                label: label,
+                methods: methods,
+                pathPrefix: pathPrefix,
+                createdAt: createdAt,
+                expiresAt: expiresAt,
+                revokedAt: nil,
+                lastUsedAt: nil,
+                hint: hint
+            )
+        }
+    }
+
+    private static let gatewayClientColumns =
+        "id, key_name, label, hint, methods, path_prefix, created_at, expires_at, revoked_at, last_used_at"
+
+    private func decodeGatewayClient(_ stmt: OpaquePointer) -> GatewayClient {
+        GatewayClient(
+            id: sqlite3_column_int64(stmt, 0),
+            keyName: columnText(stmt, 1) ?? "",
+            label: columnText(stmt, 2) ?? "",
+            methods: (columnText(stmt, 4) ?? "").split(separator: ",").map(String.init),
+            pathPrefix: columnText(stmt, 5),
+            createdAt: columnText(stmt, 6) ?? "",
+            expiresAt: columnText(stmt, 7) ?? "",
+            revokedAt: columnText(stmt, 8),
+            lastUsedAt: columnText(stmt, 9),
+            hint: columnText(stmt, 3) ?? ""
+        )
+    }
+
+    func gatewayClients(keyName: String) throws -> [GatewayClient] {
+        try withLock {
+            let stmt = try prepare(
+                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE key_name = ? ORDER BY id;"
+            )
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, keyName)
+            var out: [GatewayClient] = []
+            while sqlite3_step(stmt) == SQLITE_ROW { out.append(decodeGatewayClient(stmt)) }
+            return out
+        }
+    }
+
+    func gatewayClient(tokenHash: String) throws -> GatewayClient? {
+        try withLock {
+            let stmt = try prepare(
+                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE token_hash = ? LIMIT 1;"
+            )
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, tokenHash)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return decodeGatewayClient(stmt)
+        }
+    }
+
+    /// Returns false when no such client belongs to the key or it was already revoked.
+    func revokeGatewayClient(id: Int64, keyName: String, at iso: String) throws -> Bool {
+        try withLock {
+            let stmt = try prepare(
+                "UPDATE gateway_clients SET revoked_at = ? WHERE id = ? AND key_name = ? AND revoked_at IS NULL;"
+            )
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, iso)
+            sqlite3_bind_int64(stmt, 2, id)
+            bindText(stmt, 3, keyName)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
+            return sqlite3_changes(db) > 0
+        }
+    }
+
+    func touchGatewayClient(id: Int64, at iso: String) throws {
+        try withLock {
+            let stmt = try prepare("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, iso)
+            sqlite3_bind_int64(stmt, 2, id)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
         }
     }
 
@@ -636,6 +800,20 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     @discardableResult
+    func usageExists(source: String, sessionId: String, promptId: String, model: String) throws -> Bool {
+        try withLock {
+            let stmt = try prepare(
+                "SELECT 1 FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ? LIMIT 1;"
+            )
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, source)
+            bindText(stmt, 2, sessionId)
+            bindText(stmt, 3, promptId)
+            bindText(stmt, 4, model)
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
     func insertUsage(_ event: UsageEvent) throws -> InsertResult {
         try withLock {
             let existedStmt = try prepare(
@@ -799,8 +977,8 @@ final class CatalogDB: @unchecked Sendable {
             let sql = """
                 INSERT INTO gateway_usage (
                   ts, key, provider, model, input_tokens, output_tokens,
-                  cache_read_tokens, cache_write_tokens, status, duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                  cache_read_tokens, cache_write_tokens, status, duration_ms, request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """
             let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
@@ -814,6 +992,7 @@ final class CatalogDB: @unchecked Sendable {
             bindInt(stmt, 8, row.cacheWriteTokens)
             sqlite3_bind_int(stmt, 9, Int32(row.status))
             sqlite3_bind_int(stmt, 10, Int32(row.durationMs))
+            bindText(stmt, 11, row.requestId)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
         }
     }
@@ -822,7 +1001,7 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             var sql = """
                 SELECT id, ts, key, provider, model, input_tokens, output_tokens,
-                       cache_read_tokens, cache_write_tokens, status, duration_ms
+                       cache_read_tokens, cache_write_tokens, status, duration_ms, request_id
                 FROM gateway_usage
                 WHERE ts >= ? AND ts < ?
                 """
@@ -847,7 +1026,8 @@ final class CatalogDB: @unchecked Sendable {
                         cacheReadTokens: columnOptionalInt(stmt, 7),
                         cacheWriteTokens: columnOptionalInt(stmt, 8),
                         status: Int(sqlite3_column_int(stmt, 9)),
-                        durationMs: Int(sqlite3_column_int(stmt, 10))
+                        durationMs: Int(sqlite3_column_int(stmt, 10)),
+                        requestId: columnText(stmt, 11)
                     )
                 )
             }
@@ -1021,6 +1201,7 @@ final class CatalogDB: @unchecked Sendable {
             try exec("DELETE FROM usage_events;")
             try exec("DELETE FROM ingest_files;")
             try exec("DELETE FROM gateway_usage;")
+            try exec("DELETE FROM gateway_clients;")
             try exec("DELETE FROM key_events;")
             try exec("DELETE FROM provider_snapshots;")
             try exec("DELETE FROM model_colors;")

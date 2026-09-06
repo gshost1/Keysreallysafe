@@ -103,6 +103,9 @@ final class GatewayListener: @unchecked Sendable {
         switch HTTPFrame.read(fd: client, bodyCap: Self.bodyCap) {
         case .tooLarge:
             _ = Self.writeJSON(fd: client, status: 413, object: ["error": "payload too large"])
+            // Closing with unread bytes in the receive buffer makes the kernel send RST, and the
+            // client then sees a dropped connection instead of the 413. Drain briefly first.
+            Self.drain(fd: client)
             return
         case .bad:
             _ = Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
@@ -142,10 +145,27 @@ final class GatewayListener: @unchecked Sendable {
             _ = Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
             return
         }
+        // Loopback headers say where a browser request came from; they say nothing about a native
+        // local process. Every caller must hold a client capability issued for this key.
+        let gatewayClient: GatewayClient
+        switch service.authorizeGatewayClient(
+            name: keyName, headers: request.headers, method: request.method, rest: request.rest
+        ) {
+        case .allowed(let c):
+            gatewayClient = c
+        case .denied(let reason):
+            service.recordGatewayDenial(name: keyName, reason: reason)
+            _ = Self.writeJSON(fd: client, status: 401, object: [
+                "error": "client_required",
+                "hint": "issue one with: keys client issue \(keyName)",
+            ])
+            return
+        }
         guard let target = service.lookupGateway(name: keyName) else {
             _ = Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
             return
         }
+        service.noteGatewayClientUse(gatewayClient)
         let host = target.host
         let hostname = host.split(separator: ":").first.map(String.init) ?? host
         let scheme = BindPolicy.isLoopbackHostname(hostname) ? "http" : "https"
@@ -218,7 +238,8 @@ final class GatewayListener: @unchecked Sendable {
                     cacheReadTokens: parsed.cacheReadTokens,
                     cacheWriteTokens: parsed.cacheWriteTokens,
                     status: status,
-                    durationMs: durationMs
+                    durationMs: durationMs,
+                    requestId: proxy.requestId
                 )
             )
         } catch {
@@ -240,7 +261,7 @@ final class GatewayListener: @unchecked Sendable {
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailers", "transfer-encoding", "upgrade", "proxy-connection",
         "host", "content-length", "authorization", "x-api-key", "x-goog-api-key",
-        "api-key", "accept-encoding", "x-ksf-token",
+        "api-key", "accept-encoding", "x-ksf-token", "x-ksf-client",
     ]
 
     /// Split on the first `?` in the raw target. Path/query bytes are not decoded.
@@ -267,11 +288,26 @@ final class GatewayListener: @unchecked Sendable {
         return (name, "")
     }
 
+    /// Reads and discards what the client is still sending, bounded in bytes and time.
+    static func drain(fd: Int32, maxBytes: Int = 4 * bodyCap, seconds: Int = 2) {
+        var tv = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        Darwin.shutdown(fd, SHUT_WR)
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        var total = 0
+        while total < maxBytes {
+            let n = Darwin.read(fd, &buf, buf.count)
+            if n <= 0 { break }
+            total += n
+        }
+    }
+
     static func writeJSON(fd: Int32, status: Int, object: [String: Any]) -> Bool {
         let body = (try? JSONValue.data(object)) ?? Data("{}".utf8)
         let reason: String
         switch status {
         case 400: reason = "Bad Request"
+        case 401: reason = "Unauthorized"
         case 403: reason = "Forbidden"
         case 404: reason = "Not Found"
         case 409: reason = "Conflict"
@@ -283,6 +319,7 @@ final class GatewayListener: @unchecked Sendable {
         default: reason = "Error"
         }
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
+        if status == 401 { head += "WWW-Authenticate: Bearer realm=\"keysreallysafe-gateway\"\r\n" }
         head += "Content-Type: application/json; charset=utf-8\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Connection: close\r\n"
@@ -377,6 +414,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     private(set) var hasResponse = false
     private(set) var statusCode: Int?
     private(set) var contentType: String?
+    private(set) var requestId: String?
 
     init(clientFD: Int32, tee: GatewayTee) {
         self.clientFD = clientFD
@@ -408,6 +446,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
         let http = response as? HTTPURLResponse
         statusCode = http?.statusCode
         contentType = http?.value(forHTTPHeaderField: "Content-Type")
+        requestId = Self.requestId(from: http)
         if let contentType { tee.setContentType(contentType) }
         if !wroteHead {
             wroteHead = writeHead(http)
@@ -434,6 +473,18 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         finish()
+    }
+
+    static func requestId(from http: HTTPURLResponse?) -> String? {
+        guard let http else { return nil }
+        for name in ["request-id", "x-request-id"] {
+            if let value = http.value(forHTTPHeaderField: name)?.trimmingCharacters(in: .whitespaces),
+               !value.isEmpty, value.count <= 128
+            {
+                return value
+            }
+        }
+        return nil
     }
 
     private func writeHead(_ http: HTTPURLResponse?) -> Bool {

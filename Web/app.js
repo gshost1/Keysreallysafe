@@ -511,6 +511,23 @@
     }
   }
 
+  // Zero, unknown and partial are different things. usd_month is null when calls happened but
+  // none could be priced; usd_month_kind says which case this is.
+  function gatewayMonthCell(k, on) {
+    const kind = k.usd_month_kind || (Number(k.usd_month) > 0 ? "estimate" : "none");
+    const unpricedCalls = Number(k.gateway_month_unpriced_calls) || 0;
+    const calls = Number(k.gateway_month_calls) || 0;
+    const open = () => { setKey(k.name); showPane("chart"); };
+    if (kind === "none") {
+      return el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Dollars appear once the gateway routes this key." });
+    }
+    if (kind === "unknown") {
+      return el("td", { class: "td-usd none", "data-label": "Via gateway", text: `${plural(calls, "call", "calls")}, unpriced`, title: "This month's gateway calls with this key carried no model or no list price, so the cost is unknown, not zero. Click to chart.", onclick: open });
+    }
+    const partial = kind === "partial" ? ` ${plural(unpricedCalls, "call", "calls")} unpriced and left out.` : "";
+    return el("td", { class: "td-usd", "data-label": "Via gateway", text: (kind === "partial" ? "≥ " : "") + fmtUsd(k.usd_month), title: "This month, calls through the local gateway with this key." + partial + " Click to chart.", onclick: open });
+  }
+
   // One line: the dollar figure first, then the parts that make it up.
   function renderTotals(data) {
     const t = data.totals || {};
@@ -530,6 +547,19 @@
     if (showOpenAI && src === "all") parts.push(el("span", { class: "totals-part" }, el("b", { text: "≈ " + fmtUsd(openai) }), " OpenAI"));
     const tokens = state.series.reduce((a, s) => a + s.tokens, 0);
     parts.push(el("span", { class: "totals-part" }, el("b", { text: fmtTokens(tokens) }), " tokens"));
+    // Gateway dollars are a separate ledger: a routed Claude Code or Codex call is also in a local
+    // log, so the engine never adds them into the headline figure.
+    const gwCalls = Number(t.gateway_calls) || 0;
+    const gwUnpriced = Number(t.gateway_unpriced_calls) || 0;
+    if (src === "all" && (gwCalls > 0 || t.gateway_usd_estimate != null)) {
+      const gw = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
+      const label = gw == null ? "unpriced" : "≈ " + fmtUsd(gw);
+      const why = gwUnpriced > 0
+        ? `${plural(gwUnpriced, "gateway call", "gateway calls")} could not be priced (${(t.gateway_unpriced_models || []).join(", ") || "no model"}).`
+        : "";
+      parts.push(el("span", { class: "totals-part", title: ("Calls routed through the local gateway that no local log also recorded. Not added to the total above. " + why).trim() },
+        el("b", { text: label }), " via gateway"));
+    }
     parts.forEach((p, i) => { if (i) nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
     const unpriced = unpricedModels(data, src);
     if (unpriced.length) {
@@ -894,9 +924,7 @@
         el("td", { class: "td-kind", "data-label": "Kind", text: k.kind || "—" }),
         el("td", { class: "td-created", "data-label": "Created", text: fmtDate(k.created_at), title: k.created_at || null }),
         el("td", { class: "td-used", "data-label": "Last used", text: relTime(k.last_used_at), title: k.last_used_at || "Never copied or revealed" }),
-        Number(k.usd_month) > 0
-          ? el("td", { class: "td-usd", "data-label": "Via gateway", text: fmtUsd(k.usd_month), title: "This month, calls through the local gateway with this key. Click to chart.", onclick: () => { setKey(k.name); showPane("chart"); } })
-          : el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Dollars appear once the gateway routes this key." }),
+        gatewayMonthCell(k, on),
         el("td", { class: "td-actions", "data-label": "Actions" },
           el("div", { class: "row-actions" },
             el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "copy", "aria-label": "Copy " + k.name, text: "Copy" }),
@@ -1428,7 +1456,7 @@
       const body = { enabled: !on };
       if (!on && (host || k.gateway_host)) body.host = host || k.gateway_host;
       const r = await api("/api/keys/" + encodeURIComponent(name) + "/gateway", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      say(on ? `Gateway off for ${name}.` : `Gateway on. Base URL ${(r && r.gateway_url) || "http://127.0.0.1:12767/" + name}`);
+      say(on ? `Gateway off for ${name}.` : `Gateway on. Base URL ${(r && r.gateway_url) || "http://127.0.0.1:12767/" + name}. Callers need a client: keys client issue ${name}`);
       await loadKeys();
       selectRow(name, false);
       restoreKeysFocus(name, "gateway");

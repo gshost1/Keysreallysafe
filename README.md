@@ -5,7 +5,8 @@ A local spend meter and API-key vault for the AI command-line tools on your Mac.
 It reads the usage numbers that Claude Code, Grok and Codex already write to
 your home folder, prices them from a checked-in list-price table, and shows the
 result on a loopback web page and in the menu bar. Secrets live in the macOS
-Keychain and come out only after Touch ID. Nothing leaves the machine.
+Keychain, and the app asks for Touch ID before it reads one out. Nothing
+leaves the machine.
 
 ## What it never does
 
@@ -69,8 +70,12 @@ picker is grouped into Labs, Routers, Hosts, Clouds and Non-chat, and a pasted
 secret with a recognisable prefix pre-fills it. `?` lists every shortcut.
 
 Every request the page makes is same-origin. Mutating calls carry a token the
-server generates per launch, so a stray `curl` from another local process
-cannot copy or reveal a key.
+server generates per launch. That token is a browser CSRF defense: it stops a
+web page you have open from driving the dashboard. It is not authentication
+of local processes. Any program running as you can fetch `index.html`, read
+the token and edit key metadata (provider, kind, notes). What stands between
+such a program and a secret is the presence prompt on copy, reveal, env,
+rotate and delete, not the token.
 
 ## The vault
 
@@ -79,8 +84,12 @@ cannot copy or reveal a key.
 provider, kind, notes and timestamps; the value never enters SQLite, a log,
 the page, or the API response for the key list.
 
-Getting a value back always asks for user presence, Touch ID or your login
-password:
+Getting a value back asks for user presence, Touch ID or your login password.
+The prompt is the app's own (LocalAuthentication before an ordinary Keychain
+read); the Keychain item itself carries no access-control attribute, because
+an ad-hoc signed command-line tool cannot use one. A properly signed and
+entitled helper is the way to make the OS enforce presence per item, and that
+is not yet done. Treat this as app-level prompting:
 
 - `keys copy` puts it on the clipboard and wipes the clipboard 20 seconds
   later. Reveal on the site hides it again after 15 seconds.
@@ -90,27 +99,47 @@ password:
 - Delete and purge also require presence, so a script on the machine cannot
   quietly empty the vault.
 
-Every read, copy, env use, rotate, gateway call and delete is written to a
-per-key audit log you can open from the Keys pane. The site's mutating
-requests carry a token generated per launch, so a browser page or a local
-`curl` without it gets a 403. The gateway, when you turn it on for a key, keeps
-the value in process memory only and forgets it on restart.
+Every read, copy, env use, rotate, gateway call, gateway denial, client issue
+and delete is written to a per-key audit log you can open from the Keys pane.
+The gateway, when you turn it on for a key, keeps the value in process memory
+only and forgets it on restart.
 
 ## The gateway
 
-Turn the gateway on for a key (one Touch ID) and point an SDK at
+Turn the gateway on for a key (one Touch ID), issue a client capability for
+the program that will call it (one more Touch ID), and point the SDK at the
+gateway with that capability where the SDK expects the API key:
 
-```
-http://127.0.0.1:12767/<key name>
+```sh
+keys client issue <key name> --label "my script" --days 30 --method POST --path-prefix v1/messages
+# prints ksfc_… once; the catalog keeps only its hash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:12767/<key name>
+export ANTHROPIC_API_KEY=ksfc_…
 ```
 
-The gateway forwards to the provider host from `Web/providers.json`, injects
-the secret in the right header, streams the response back, and records the
-`usage` object from OpenAI chat-completions and responses, Anthropic messages
-and Gemini bodies. Those calls show up as a "Via gateway" column in Keys and can be charted per key.
-The secret is held in process memory only while the gateway is on and is
-forgotten on restart. Providers that need request signing or OAuth (Bedrock,
-Vertex, watsonx) cannot be proxied and say so.
+A request without a valid client gets 401 before the gateway even looks the
+key up, so being on loopback proves nothing by itself. A client is bound to
+one key, expires (default 30 days, at most 365), can be revoked with
+`keys client revoke`, and can be limited to HTTP methods and an upstream path
+prefix. The dashboard's per-launch token is never accepted as a client. This
+narrows accidental or unauthorized local use; it is not a boundary against a
+process that can already read your files or memory.
+
+The gateway forwards to the provider host from `Web/providers.json`, replaces
+the client capability with the secret in the right header, streams the
+response back, and records the `usage` object from OpenAI chat-completions
+and responses, Anthropic messages and Gemini bodies, plus the upstream
+`request-id`. Those calls show up as a "Via gateway" column in Keys and can
+be charted per key. A call that no model or price could be attached to is
+shown as unpriced, never as $0. The secret is held in process memory only
+while the gateway is on and is forgotten on restart. Providers that need
+request signing or OAuth (Bedrock, Vertex, watsonx) cannot be proxied and say so.
+
+Gateway dollars are a separate ledger from the local-log estimate. A Claude
+Code or Codex call routed through the gateway appears in both places; when
+the gateway's `request-id` matches a local event the local one wins and the
+gateway copy is dropped, and otherwise the two totals are shown side by side
+rather than added.
 
 For an OpenRouter key of kind `billing` with the gateway on, the engine polls
 OpenRouter's key endpoint every 15 minutes and shows the remaining credit.
@@ -133,6 +162,9 @@ keys doctor
 keys dashboard [--month|--week]
 keys menubar
 keys autostart [--remove]
+keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path-prefix <prefix>]
+keys client list <name>
+keys client revoke <name> <id>
 keys purge
 ```
 
@@ -152,15 +184,18 @@ row is empty. Start there when a number is missing.
 | Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate, 5-hour and weekly % |
 | Gateway | in-process | dollars per key |
 
-Ingest is incremental and runs on start, every five minutes, and on demand
-(`⌘R`). Claude turns are counted once per message id even though Claude Code
+Ingest is incremental, reads logs in bounded chunks, commits in batches, and
+runs on a background queue on start, every five minutes, and on demand
+(`⌘R`). The cursor it keeps per file is a SHA-256 of the last 32 bytes, never
+the bytes themselves. Claude turns are counted once per message id even though Claude Code
 writes one log line per content block. Prices come from `Fixtures/models.json`
 (OpenRouter's list, refreshed by hand with `scripts/refresh-models.sh`) with a
 few hand-maintained rows that win on exact match.
 
 Everything lives under `~/Library/Application Support/Keysreallysafe/`
 (SQLite catalog, snapshot of the site) and in the Keychain service
-`keysreallysafe`.
+`keysreallysafe`. `keys autostart` stages a new version beside the old one
+and puts the old one back if signing or launch fails.
 
 ## Development
 
