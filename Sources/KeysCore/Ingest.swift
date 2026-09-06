@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -132,16 +133,33 @@ enum IngestFiles {
         return prev.first == 0x0A
     }
 
-    private static func readTailSig(handle: FileHandle, offset: Int64) throws -> String? {
+    /// Versioned one-way digest of the 32 bytes before `offset`. The bytes themselves never
+    /// reach the catalog: a cursor row must not let anyone reconstruct message text.
+    static let tailDigestPrefix = "v2:"
+    static let tailDigestWindow: Int64 = 32
+
+    static func readTailSig(handle: FileHandle, offset: Int64) throws -> String? {
         if offset <= 0 { return "" }
-        let n = Int(min(offset, 32))
+        let n = Int(min(offset, tailDigestWindow))
         try handle.seek(toOffset: UInt64(offset) - UInt64(n))
         let data = try handle.read(upToCount: n) ?? Data()
-        return data.map { String(format: "%02x", $0) }.joined()
+        return tailDigest(data)
+    }
+
+    static func tailDigest(_ data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        return tailDigestPrefix + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func isCurrentTailSig(_ sig: String?) -> Bool {
+        guard let sig else { return false }
+        return sig.isEmpty || sig.hasPrefix(tailDigestPrefix)
     }
 
     private static func tailMatches(handle: FileHandle, offset: Int64, sig: String?) throws -> Bool {
         guard let sig, !sig.isEmpty else { return offset == 0 }
+        // A legacy reversible signature is never trusted; the file replays from zero.
+        guard isCurrentTailSig(sig) else { return false }
         let expected = try readTailSig(handle: handle, offset: offset)
         return expected == sig
     }

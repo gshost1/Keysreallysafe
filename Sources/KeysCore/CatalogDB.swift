@@ -31,7 +31,10 @@ final class CatalogDB: @unchecked Sendable {
         try exec("PRAGMA busy_timeout=5000")
         try exec("PRAGMA journal_mode=WAL")
         try exec("PRAGMA foreign_keys=ON")
+        // Overwrite freed pages so a deleted row does not linger in the file or the WAL.
+        try exec("PRAGMA secure_delete=ON")
         try migrate()
+        try purgeLegacyTailSignatures()
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
     }
 
@@ -171,6 +174,25 @@ final class CatalogDB: @unchecked Sendable {
         }
         if !(try hasColumn("ingest_files", "parser_json")) {
             try exec("ALTER TABLE ingest_files ADD COLUMN parser_json TEXT;")
+        }
+    }
+
+    /// Cursor rows written before 0.2 held the last 32 raw bytes of each log as hex, which could
+    /// include a fragment of a user message. Clear them, then checkpoint and vacuum so neither
+    /// the main file nor the WAL keeps the old page images. Scope: this catalog file only.
+    /// Copies made by Time Machine or by hand are outside what the app can reach.
+    private func purgeLegacyTailSignatures() throws {
+        try exec(
+            "UPDATE ingest_files SET tail_sig = NULL WHERE tail_sig IS NOT NULL AND tail_sig != '' AND tail_sig NOT LIKE 'v2:%';"
+        )
+        let cleared = sqlite3_changes(db)
+        if cleared > 0 {
+            try exec("PRAGMA wal_checkpoint(TRUNCATE)")
+            try exec("VACUUM")
+            try setMeta("tail_sig_purged_rows", String(cleared))
+        }
+        if try metaValue("tail_sig_format") != "v2" {
+            try setMeta("tail_sig_format", "v2")
         }
     }
 
