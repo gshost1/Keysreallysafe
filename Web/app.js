@@ -1456,7 +1456,7 @@
       const body = { enabled: !on };
       if (!on && (host || k.gateway_host)) body.host = host || k.gateway_host;
       const r = await api("/api/keys/" + encodeURIComponent(name) + "/gateway", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      say(on ? `Gateway off for ${name}.` : `Gateway on. Base URL ${(r && r.gateway_url) || "http://127.0.0.1:12767/" + name}`);
+      say(on ? `Gateway off for ${name}.` : `Gateway on. Base URL ${(r && r.gateway_url) || "http://127.0.0.1:12767/" + name}. Callers need a client: keys client issue ${name}`);
       await loadKeys();
       selectRow(name, false);
       restoreKeysFocus(name, "gateway");

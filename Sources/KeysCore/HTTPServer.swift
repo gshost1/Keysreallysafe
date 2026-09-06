@@ -739,6 +739,9 @@ final class APIHandler: @unchecked Sendable {
     }
 
     /// Injects the per-launch origin token. Does not write `Web/index.html`.
+    /// The token is a browser CSRF defense: any local process can GET this page and read it,
+    /// so it must never be treated as authentication of the caller. Secret reads stay behind
+    /// the presence gate regardless.
     private func injectOriginToken(_ data: Data) -> Data {
         guard var html = String(data: data, encoding: .utf8) else { return data }
         let meta = "<meta name=\"ksf-token\" content=\"\(originToken)\">"
