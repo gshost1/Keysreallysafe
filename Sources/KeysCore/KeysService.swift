@@ -246,6 +246,88 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
+    // MARK: gateway clients
+
+    /// Issuing a capability to spend a key is a key use, so it asks for presence like copy does.
+    /// The token is returned once and only its hash is stored.
+    func issueGatewayClient(
+        name: String,
+        label: String,
+        days: Int? = nil,
+        methods: [String]? = nil,
+        pathPrefix: String? = nil,
+        caller: String = "dashboard",
+        now: Date = Date()
+    ) throws -> (token: String, client: GatewayClient) {
+        try KeyName.validate(name)
+        guard try catalog.catalogExists(name: name) else { throw AppError.notFound(name) }
+        let ttlDays = try GatewayClientToken.validateDays(days)
+        let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
+        let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
+        let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        try secrets.confirmPresence(reason: "Issue gateway client for \(name)")
+        let token = GatewayClientToken.generate()
+        let client = try catalog.insertGatewayClient(
+            keyName: name,
+            label: trimmedLabel,
+            tokenHash: GatewayClientToken.hash(token),
+            hint: GatewayClientToken.hint(token),
+            methods: allowed,
+            pathPrefix: prefix,
+            createdAt: UTC.iso(now),
+            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
+        )
+        try recordKeyEvent(
+            name: name,
+            action: "client_issue",
+            caller: caller,
+            detail: "#\(client.id) \(trimmedLabel) \(ttlDays)d \(allowed.joined(separator: "/"))"
+        )
+        return (token, client)
+    }
+
+    func gatewayClients(name: String) throws -> [GatewayClient] {
+        try KeyName.validate(name)
+        guard try catalog.catalogExists(name: name) else { throw AppError.notFound(name) }
+        return try catalog.gatewayClients(keyName: name)
+    }
+
+    func revokeGatewayClient(name: String, id: Int64, caller: String = "dashboard") throws -> GatewayClient {
+        try KeyName.validate(name)
+        guard try catalog.catalogExists(name: name) else { throw AppError.notFound(name) }
+        guard try catalog.revokeGatewayClient(id: id, keyName: name, at: UTC.iso(Date())) else {
+            throw AppError.notFound("client \(id)")
+        }
+        try recordKeyEvent(name: name, action: "client_revoke", caller: caller, detail: "#\(id)")
+        guard let client = try catalog.gatewayClients(keyName: name).first(where: { $0.id == id }) else {
+            throw AppError.notFound("client \(id)")
+        }
+        return client
+    }
+
+    /// Decides whether one request may use `name` through the gateway. Never consults the
+    /// dashboard token. Denial reasons are for the audit log; the caller sends a uniform 401.
+    func authorizeGatewayClient(
+        name: String,
+        headers: [String: String],
+        method: String,
+        rest: String,
+        now: Date = Date()
+    ) -> GatewayClientDecision {
+        guard let token = GatewayClientToken.extract(headers: headers) else {
+            return .denied("no_client_token")
+        }
+        guard let client = try? catalog.gatewayClient(tokenHash: GatewayClientToken.hash(token)) else {
+            return .denied("unknown_client")
+        }
+        guard client.keyName == name else { return .denied("wrong_key") }
+        guard client.revokedAt == nil else { return .denied("revoked") }
+        guard client.isActive(now: now) else { return .denied("expired") }
+        guard client.allows(method: method, rest: rest) else { return .denied("out_of_scope") }
+        try? catalog.touchGatewayClient(id: client.id, at: UTC.iso(now))
+        return .allowed(client)
+    }
+
     func recordGatewayUsage(_ row: GatewayUsageRow) throws {
         try catalog.withTransaction {
             try catalog.insertGatewayUsage(row)

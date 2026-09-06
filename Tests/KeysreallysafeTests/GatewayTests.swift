@@ -162,7 +162,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(row.gatewayHost, "127.0.0.1:9")
     }
 
-    func testUnknownKeyIs404AndDoesNotCallUpstream() async throws {
+    func testUnknownKeyIs401WithoutClientAndDoesNotCallUpstream() async throws {
         let hits = HitCounter()
         let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
             hits.bump()
@@ -177,11 +177,27 @@ final class GatewayTests: XCTestCase {
         gateway.start()
         defer { gateway.stop() }
 
+        // Authentication comes before key lookup, so an unauthenticated caller cannot learn
+        // which names have the gateway on.
         let url = URL(string: "http://127.0.0.1:\(gateway.boundPort)/nosuch/v1/models")!
         let (data, response) = try await URLSession.shared.data(from: url)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
-        XCTAssertEqual(http.statusCode, 404)
-        XCTAssertTrue(String(data: data, encoding: .utf8)!.contains("not_found"))
+        XCTAssertEqual(http.statusCode, 401)
+        XCTAssertTrue(String(data: data, encoding: .utf8)!.contains("client_required"))
+        XCTAssertEqual(hits.count, 0)
+        // A client bound to another key does not turn a missing key into a 404 either.
+        try service.add(name: "real", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        let token = try service.issueGatewayClient(name: "real", label: "t", methods: ["GET"]).token
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, second) = try await URLSession.shared.data(for: req)
+        XCTAssertEqual((second as? HTTPURLResponse)?.statusCode, 401)
+        // The right client, but the key has the gateway off: now 404.
+        var own = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/real/v1/models")!)
+        own.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (body, third) = try await URLSession.shared.data(for: own)
+        XCTAssertEqual((third as? HTTPURLResponse)?.statusCode, 404)
+        XCTAssertTrue(String(data: body, encoding: .utf8)!.contains("not_found"))
         XCTAssertEqual(hits.count, 0)
         _ = dir
     }
@@ -212,6 +228,8 @@ final class GatewayTests: XCTestCase {
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-test-secret")
         _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
         XCTAssertEqual(gate.reasons, ["Unlock demo"])
+        let client = try service.issueGatewayClient(name: "demo", label: "sdk").token
+        XCTAssertEqual(gate.reasons, ["Unlock demo", "Issue gateway client for demo"])
 
         let gateway = try GatewayListener(service: service, port: 0)
         gateway.start()
@@ -219,7 +237,7 @@ final class GatewayTests: XCTestCase {
 
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/chat/completions")!)
         req.httpMethod = "POST"
-        req.setValue("Bearer leaked", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(client)", forHTTPHeaderField: "Authorization")
         req.setValue("leaked-api-key", forHTTPHeaderField: "x-api-key")
         req.setValue("leaked-google", forHTTPHeaderField: "x-goog-api-key")
         req.setValue("leaked-azure", forHTTPHeaderField: "api-key")
@@ -230,6 +248,8 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(http.statusCode, 200)
         XCTAssertEqual(data, stubBody)
         XCTAssertEqual(captured.headers["authorization"], "Bearer sk-test-secret")
+        XCTAssertNil(captured.headers["x-ksf-client"])
+        XCTAssertFalse(captured.headers.values.contains { $0.contains(client) }, "the client token never reaches upstream")
         XCTAssertNotEqual(captured.headers["x-api-key"], "leaked-api-key")
         XCTAssertNil(captured.headers["x-api-key"])
         XCTAssertNil(captured.headers["x-goog-api-key"])
@@ -313,8 +333,10 @@ final class GatewayTests: XCTestCase {
         gateway.start()
         defer { gateway.stop() }
 
-        let url = URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/models")!
-        let (data, response) = try await noRedirectSession.data(from: url)
+        let token = try service.issueGatewayClient(name: "demo", label: "t", methods: ["GET"]).token
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/models")!)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await noRedirectSession.data(for: req)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 302)
         XCTAssertEqual(String(data: data, encoding: .utf8), "moved")

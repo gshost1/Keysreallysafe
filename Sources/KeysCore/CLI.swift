@@ -24,6 +24,7 @@ public struct KeysCLI: ParsableCommand {
             DashboardCommand.self,
             MenubarCommand.self,
             AutostartCommand.self,
+            ClientCommand.self,
             PurgeCommand.self,
         ]
     )
@@ -429,6 +430,73 @@ struct AutostartCommand: ParsableCommand {
         try LoginItem.install(fromBinary: binary, webRoot: web)
         print("starts at login  \(LoginItem.bookmarkURL.absoluteString)")
         print("menu bar Open Keysreallysafe  (loopback only, not Vercel)")
+    }
+}
+
+struct ClientCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "client",
+        abstract: "Issue, list or revoke gateway client capabilities for a key.",
+        subcommands: [ClientIssueCommand.self, ClientListCommand.self, ClientRevokeCommand.self],
+        defaultSubcommand: ClientListCommand.self
+    )
+}
+
+struct ClientIssueCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "issue",
+        abstract: "Mint a revocable, expiring token an SDK presents to the gateway (user presence). Shown once."
+    )
+
+    @Argument(help: "Key name.") var name: String
+    @Option(help: "What this client is, e.g. the app or script name.") var label: String = ""
+    @Option(help: "Days until the token expires (1 to \(GatewayClientToken.maxDays)).") var days: Int = GatewayClientToken.defaultDays
+    @Option(name: .customLong("method"), help: "Allowed HTTP method; repeat for more. Default POST.") var methods: [String] = []
+    @Option(name: .customLong("path-prefix"), help: "Only this upstream path prefix, e.g. v1/messages.") var pathPrefix: String?
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let issued = try service.issueGatewayClient(
+            name: name,
+            label: label,
+            days: days,
+            methods: methods.isEmpty ? nil : methods,
+            pathPrefix: pathPrefix,
+            caller: "cli"
+        )
+        print(issued.token)
+        let scope = issued.client.methods.joined(separator: ",") + " " + (issued.client.pathPrefix ?? "*")
+        FileHandle.standardError.write(Data(
+            "client #\(issued.client.id) for \(name), \(scope), expires \(issued.client.expiresAt). Put it where the SDK expects the API key; base URL http://127.0.0.1:\(GatewayListener.port)/\(name)\n".utf8
+        ))
+    }
+}
+
+struct ClientListCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "list", abstract: "List a key's gateway clients.")
+
+    @Argument(help: "Key name.") var name: String
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let now = Date()
+        for c in try service.gatewayClients(name: name) {
+            let state = c.revokedAt != nil ? "revoked" : (c.isActive(now: now) ? "active" : "expired")
+            print("#\(c.id)\t…\(c.hint)\t\(state)\t\(c.methods.joined(separator: ","))\t\(c.pathPrefix ?? "*")\texpires \(c.expiresAt)\tlast \(c.lastUsedAt ?? "-")\t\(c.label)")
+        }
+    }
+}
+
+struct ClientRevokeCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "revoke", abstract: "Revoke one gateway client.")
+
+    @Argument(help: "Key name.") var name: String
+    @Argument(help: "Client id from `keys client list`.") var id: Int64
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let c = try service.revokeGatewayClient(name: name, id: id, caller: "cli")
+        print("revoked client #\(c.id) for \(name)")
     }
 }
 

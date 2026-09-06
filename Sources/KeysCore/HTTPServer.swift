@@ -332,6 +332,12 @@ final class APIHandler: @unchecked Sendable {
                 return providers()
             case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/gateway"):
                 return try keysGateway(request, nameFrom: p)
+            case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/clients"):
+                return try clientsList(nameFrom: p)
+            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/clients"):
+                return try clientsIssue(request, nameFrom: p)
+            case ("DELETE", let p) where p.hasPrefix("/api/keys/") && p.contains("/clients/"):
+                return try clientsRevoke(pathWith: p)
             case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/rotate"):
                 return try keysRotate(request, nameFrom: p)
             case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/events"):
@@ -454,6 +460,52 @@ final class APIHandler: @unchecked Sendable {
         }
         let row = try service.setGateway(name: name, enabled: enabled, host: host, caller: "dashboard")
         return HTTPResponse.json(200, try service.keyJSONObject(row))
+    }
+
+    private func clientsList(nameFrom path: String) throws -> HTTPResponse {
+        let name = try extractName(path, suffix: "/clients")
+        let now = Date()
+        return HTTPResponse.json(200, [
+            "clients": try service.gatewayClients(name: name).map { $0.jsonObject(now: now) }
+        ])
+    }
+
+    /// The token appears in this one response and nowhere else.
+    private func clientsIssue(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
+        let name = try extractName(path, suffix: "/clients")
+        let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) ?? [:]
+        let label = JSONValue.string(obj["label"]) ?? ""
+        var days: Int?
+        if obj.keys.contains("days") {
+            guard let d = obj["days"] as? Int else { return HTTPResponse.json(400, ["error": "invalid days"]) }
+            days = d
+        }
+        var methods: [String]?
+        if obj.keys.contains("methods") {
+            guard let m = obj["methods"] as? [String] else { return HTTPResponse.json(400, ["error": "invalid methods"]) }
+            methods = m
+        }
+        var prefix: String?
+        if obj.keys.contains("path_prefix"), !(obj["path_prefix"] is NSNull) {
+            guard let p = obj["path_prefix"] as? String else { return HTTPResponse.json(400, ["error": "invalid path_prefix"]) }
+            prefix = p
+        }
+        let issued = try service.issueGatewayClient(
+            name: name, label: label, days: days, methods: methods, pathPrefix: prefix, caller: "dashboard"
+        )
+        return HTTPResponse.json(201, ["token": issued.token, "client": issued.client.jsonObject()])
+    }
+
+    private func clientsRevoke(pathWith path: String) throws -> HTTPResponse {
+        let rest = String(path.dropFirst("/api/keys/".count))
+        guard let marker = rest.range(of: "/clients/") else { throw AppError.usage("bad path") }
+        let name = String(rest[..<marker.lowerBound])
+        try KeyName.validate(name)
+        guard let id = Int64(rest[marker.upperBound...]) else {
+            return HTTPResponse.json(404, ["error": "not_found"])
+        }
+        let client = try service.revokeGatewayClient(name: name, id: id, caller: "dashboard")
+        return HTTPResponse.json(200, ["client": client.jsonObject()])
     }
 
     private func keysRotate(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {

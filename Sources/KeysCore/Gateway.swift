@@ -142,6 +142,21 @@ final class GatewayListener: @unchecked Sendable {
             _ = Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
             return
         }
+        // Loopback headers say where a browser request came from; they say nothing about a native
+        // local process. Every caller must hold a client capability issued for this key.
+        switch service.authorizeGatewayClient(
+            name: keyName, headers: request.headers, method: request.method, rest: request.rest
+        ) {
+        case .allowed:
+            break
+        case .denied(let reason):
+            try? service.recordKeyEvent(name: keyName, action: "gateway_denied", caller: "gateway", detail: reason)
+            _ = Self.writeJSON(fd: client, status: 401, object: [
+                "error": "client_required",
+                "hint": "issue one with: keys client issue \(keyName)",
+            ])
+            return
+        }
         guard let target = service.lookupGateway(name: keyName) else {
             _ = Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
             return
@@ -241,7 +256,7 @@ final class GatewayListener: @unchecked Sendable {
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailers", "transfer-encoding", "upgrade", "proxy-connection",
         "host", "content-length", "authorization", "x-api-key", "x-goog-api-key",
-        "api-key", "accept-encoding", "x-ksf-token",
+        "api-key", "accept-encoding", "x-ksf-token", "x-ksf-client",
     ]
 
     /// Split on the first `?` in the raw target. Path/query bytes are not decoded.
@@ -273,6 +288,7 @@ final class GatewayListener: @unchecked Sendable {
         let reason: String
         switch status {
         case 400: reason = "Bad Request"
+        case 401: reason = "Unauthorized"
         case 403: reason = "Forbidden"
         case 404: reason = "Not Found"
         case 409: reason = "Conflict"
@@ -284,6 +300,7 @@ final class GatewayListener: @unchecked Sendable {
         default: reason = "Error"
         }
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
+        if status == 401 { head += "WWW-Authenticate: Bearer realm=\"keysreallysafe-gateway\"\r\n" }
         head += "Content-Type: application/json; charset=utf-8\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Connection: close\r\n"
