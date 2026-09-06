@@ -16,6 +16,9 @@ final class KeysService: @unchecked Sendable {
     private var gatewayCache: [String: GatewayTarget] = [:]
     private var gatewayListener: GatewayListener?
     var openRouter: any OpenRouterFetching
+    let grants = GrantStore()
+    var checker: any ProviderCheckFetching = ProviderCheckHTTP()
+    private var screenLockObserver: NSObjectProtocol?
 
     init(
         catalog: CatalogDB,
@@ -90,9 +93,29 @@ final class KeysService: @unchecked Sendable {
     func keyJSONObject(_ row: CatalogRow, month: GatewayMonth?) -> [String: Any] {
         let enabled = isGatewayEnabled(row.name)
         let month = month ?? GatewayMonth()
+        let provider = Providers.provider(id: row.provider)
+        let host = row.gatewayHost ?? provider?.host
+        let check = try? catalog.providerCheck(keyName: row.name)
+        let active = grants.list().filter { $0.key == row.name }
         return [
             "name": row.name,
             "provider": row.provider,
+            "provider_name": provider?.name ?? row.provider,
+            "host": host as Any? ?? NSNull(),
+            "checkable": provider.map { ProviderCheck.endpoint(for: $0) != nil } ?? false,
+            "last_check": check.map { c -> [String: Any] in
+                [
+                    "checked_at": c.checkedAt,
+                    "outcome": c.outcome.rawValue,
+                    "ok": c.ok,
+                    "model_count": c.models.count,
+                    "summary": c.summary,
+                ]
+            } as Any? ?? NSNull(),
+            "active_grants": active.count,
+            "gateway_base_url": enabled
+                ? "http://127.0.0.1:\(GatewayListener.port)/\(row.name)" + (provider?.pathPrefix ?? "")
+                : NSNull(),
             "kind": row.kind,
             "notes": row.notes,
             "created_at": row.createdAt,
@@ -159,7 +182,13 @@ final class KeysService: @unchecked Sendable {
     }
 
     /// Enable requires one Touch ID (same `secrets.get` path as copy). Secret is held in memory only.
-    func setGateway(name: String, enabled: Bool, host: String?, caller: String = "dashboard") throws -> CatalogRow {
+    func setGateway(
+        name: String,
+        enabled: Bool,
+        host: String?,
+        caller: String = "dashboard",
+        reason: String? = nil
+    ) throws -> CatalogRow {
         try requireGatewayOwner()
         try KeyName.validate(name)
         guard let row = try catalog.catalogRow(name: name) else {
@@ -185,7 +214,13 @@ final class KeysService: @unchecked Sendable {
             if let previous, previous.host != resolved || previous.provider.id != provider.id {
                 disableGatewayMemory(name: name, reason: "target_changed")
             }
-            let secret = try secrets.get(name: name)
+            let secret: String
+            if let reason {
+                try secrets.confirmPresence(reason: reason)
+                secret = try secrets.getAfterPresence(name: name)
+            } else {
+                secret = try secrets.get(name: name)
+            }
             let version = row.version
             gatewayLock.lock()
             gatewayCache[name] = GatewayTarget(
@@ -203,9 +238,169 @@ final class KeysService: @unchecked Sendable {
         gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
         gatewayLock.unlock()
+        revokeGrants(key: name, reason: "gateway_off", caller: caller)
         let updated = try catalog.updateGatewayEnabled(name: name, enabled: false)
         try recordKeyEvent(name: name, action: "gateway_disable", caller: caller)
         return updated
+    }
+
+    // MARK: - Grants (temporary, narrowly scoped access)
+
+    /// One presence prompt per grant. Names the task, provider, host and expiry in the prompt.
+    /// If the gateway is off for the key, this turns it on with the same single prompt.
+    func issueGrant(
+        name: String,
+        request raw: GrantRequest,
+        caller: String = "dashboard"
+    ) throws -> (grant: Grant, token: String) {
+        try requireGatewayOwner()
+        try KeyName.validate(name)
+        let request = try raw.validated()
+        guard let row = try catalog.catalogRow(name: name) else { throw AppError.notFound(name) }
+        guard let provider = Providers.provider(id: row.provider), provider.gateway else {
+            throw AppError.usage("gateway is not available for provider \(row.provider); a grant cannot be issued")
+        }
+        let host: String
+        if let existing = row.gatewayHost, !existing.isEmpty {
+            host = existing
+        } else if let fallback = provider.host, !fallback.isEmpty {
+            host = fallback
+        } else {
+            throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
+        }
+        let reason = Self.grantReason(
+            task: request.task, key: name, provider: provider, host: host, minutes: request.minutes
+        )
+        if let cached = lookupGateway(name: name), cached.host == host {
+            try secrets.confirmPresence(reason: reason)
+        } else {
+            _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
+        }
+        grants.prune()
+        let issued = grants.issue(key: name, provider: provider.id, host: host, request: request)
+        try recordKeyEvent(
+            name: name,
+            action: "grant",
+            caller: caller,
+            detail: Self.grantDetail(issued.grant)
+        )
+        return issued
+    }
+
+    static func grantReason(task: String, key: String, provider: Providers.Record, host: String, minutes: Int) -> String {
+        let span = minutes % 60 == 0 && minutes >= 60 ? "\(minutes / 60) h" : "\(minutes) min"
+        return "Grant \"\(task)\" the key \(key) for \(provider.name) at \(host), \(span)"
+    }
+
+    static func grantDetail(_ g: Grant) -> String {
+        var parts = ["\(g.id)", g.task, "until \(UTC.iso(g.expiresAt))", "\(g.host)"]
+        if g.methods != Grant.allMethods { parts.append(g.methods.sorted().joined(separator: ",")) }
+        if !g.paths.isEmpty { parts.append(g.paths.joined(separator: ",")) }
+        if let n = g.maxRequests { parts.append("max \(n) req") }
+        if let u = g.maxUsd { parts.append(String(format: "max $%.2f", u)) }
+        return parts.joined(separator: " · ")
+    }
+
+    func listGrants(includeInactive: Bool = false) -> [Grant] {
+        grants.list(includeInactive: includeInactive)
+    }
+
+    @discardableResult
+    func revokeGrant(id: String, caller: String = "dashboard") throws -> Grant {
+        guard let g = grants.revoke(id: id, reason: "revoked") else { throw AppError.notFound(id) }
+        try? recordKeyEvent(name: g.key, action: "grant_revoke", caller: caller, detail: "\(g.id) · \(g.task)")
+        return g
+    }
+
+    @discardableResult
+    func revokeGrants(key: String? = nil, reason: String, caller: String = "dashboard") -> [Grant] {
+        let touched = grants.revokeAll(key: key, reason: reason)
+        for g in touched {
+            try? recordKeyEvent(name: g.key, action: "grant_revoke", caller: caller, detail: "\(g.id) · \(reason)")
+        }
+        return touched
+    }
+
+    /// Screen lock, logout and process exit all fail closed.
+    func handleScreenLock() {
+        revokeGrants(reason: "screen_lock", caller: "system")
+    }
+
+    private func observeScreenLock() {
+        if screenLockObserver != nil { return }
+        screenLockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.handleScreenLock()
+        }
+    }
+
+    func authorizeGateway(
+        token: String?,
+        target: GatewayTarget,
+        method: String,
+        rest: String
+    ) -> Result<Grant, GrantDenial> {
+        grants.authorize(
+            token: token,
+            key: target.name,
+            host: target.host,
+            method: method,
+            rest: rest,
+            providerPrefix: target.provider.pathPrefix
+        )
+    }
+
+    // MARK: - Provider checks (read-only)
+
+    /// Authentication status and model list from the provider's read-only endpoint.
+    /// Uses the in-memory gateway secret when present, else one presence prompt.
+    func checkProvider(name: String, caller: String = "dashboard") throws -> ProviderCheck.Result {
+        try KeyName.validate(name)
+        guard let row = try catalog.catalogRow(name: name) else { throw AppError.notFound(name) }
+        guard let provider = Providers.provider(id: row.provider) else {
+            throw AppError.usage("unknown provider \(row.provider); edit the key and pick one from the list")
+        }
+        let host = row.gatewayHost ?? provider.host
+        guard ProviderCheck.endpoint(for: provider) != nil else {
+            let result = ProviderCheck.Result(
+                key: name, provider: provider.id, host: host ?? "", checkedAt: UTC.iso(Date()),
+                outcome: .noCheckEndpoint, httpStatus: nil, models: [], requestId: nil,
+                message: "no read-only endpoint for \(provider.name); nothing was sent", endpoint: nil
+            )
+            try catalog.upsertProviderCheck(result)
+            return result
+        }
+        guard let host, !host.isEmpty else {
+            throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
+        }
+        gatewayLock.lock()
+        let cached = gatewayCache[name]?.secret
+        gatewayLock.unlock()
+        let secret: String
+        if let cached {
+            secret = cached
+        } else {
+            try secrets.confirmPresence(reason: "Check \(name) against \(provider.name) at \(host) (read-only)")
+            secret = try secrets.getAfterPresence(name: name)
+        }
+        let result = ProviderCheck.run(key: name, provider: provider, host: host, secret: secret, fetcher: checker)
+        try catalog.upsertProviderCheck(result)
+        try recordKeyEvent(
+            name: name,
+            action: "check",
+            caller: caller,
+            detail: result.summary,
+            touchLastUsed: true
+        )
+        return result
+    }
+
+    func lastCheck(name: String) throws -> ProviderCheck.Result? {
+        try KeyName.validate(name)
+        return try catalog.providerCheck(keyName: name)
     }
 
     func startGateway(port: UInt16 = GatewayListener.port) throws -> GatewayListener {
@@ -234,11 +429,13 @@ final class KeysService: @unchecked Sendable {
         listener.start()
         gatewayListener = listener
         gatewayLock.unlock()
+        observeScreenLock()
         return listener
     }
 
     func stopGateway() {
         gatewayLock.lock()
+        revokeGrants(reason: "gateway_stopped", caller: "system")
         let listener = gatewayListener
         gatewayListener = nil
         gatewayLock.unlock()
@@ -342,7 +539,20 @@ final class KeysService: @unchecked Sendable {
         try? recordKeyEvent(name: name, action: "gateway_denied", caller: "gateway", detail: reason)
     }
 
-    func recordGatewayUsage(_ row: GatewayUsageRow) throws {
+    func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil) throws {
+        if let grantId {
+            grants.charge(
+                id: grantId,
+                usd: GatewayEstimate.usd(
+                    model: row.model,
+                    input: row.inputTokens ?? 0,
+                    output: row.outputTokens ?? 0,
+                    cacheRead: row.cacheReadTokens ?? 0,
+                    cacheWrite: row.cacheWriteTokens ?? 0,
+                    api: Providers.provider(id: row.provider)?.api
+                )
+            )
+        }
         try catalog.withTransaction {
             try catalog.insertGatewayUsage(row)
             // The upstream request id is the prompt id so a local event with the same id can be
@@ -525,12 +735,15 @@ final class KeysService: @unchecked Sendable {
         guard try catalog.catalogExists(name: name) else {
             throw AppError.notFound(name)
         }
-        try secrets.confirmPresence(reason: "Unlock \(name)")
+        try secrets.confirmPresence(reason: "Delete \(name)")
         gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
         gatewayLock.unlock()
+        gatewayCache.removeValue(forKey: name)
+        revokeGrants(key: name, reason: "key_deleted", caller: caller)
         try secrets.delete(name: name)
         try catalog.deleteCatalog(name: name)
+        try? catalog.deleteProviderCheck(keyName: name)
         try recordKeyEvent(name: name, action: "rm", caller: caller)
     }
 
@@ -576,6 +789,7 @@ final class KeysService: @unchecked Sendable {
         gatewayLock.lock()
         gatewayCache.removeAll()
         gatewayLock.unlock()
+        revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
         try catalog.wipeData()
     }
@@ -679,6 +893,7 @@ final class KeysService: @unchecked Sendable {
         let had = gatewayCache.removeValue(forKey: name) != nil
         gatewayLock.unlock()
         guard had else { return }
+        revokeGrants(key: name, reason: reason)
         _ = try? catalog.updateGatewayEnabled(name: name, enabled: false)
         try? recordKeyEvent(
             name: name,
@@ -704,6 +919,11 @@ final class KeysService: @unchecked Sendable {
         let variable = EnvVar.canonicalize(variable)
         try EnvVar.validate(variable)
         guard !command.isEmpty else { throw AppError.usage("missing command after --") }
+        guard let row = try catalog.catalogRow(name: name) else { throw AppError.notFound(name) }
+        let provider = Providers.provider(id: row.provider)
+        let where_ = row.gatewayHost ?? provider?.host ?? "no fixed host"
+        let line = "keys env: \(name) is a \(provider?.name ?? row.provider) key (\(where_)); the raw value goes to \(command[0]) as \(variable)\n"
+        FileHandle.standardError.write(Data(line.utf8))
         let secret = try get(name: name)
         try recordKeyEvent(name: name, action: "env", caller: caller, touchLastUsed: true)
         return try runner.run(argv: command, extraEnv: [variable: secret])

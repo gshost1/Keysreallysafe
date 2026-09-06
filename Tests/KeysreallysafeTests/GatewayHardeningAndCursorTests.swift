@@ -111,10 +111,10 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         )
         XCTAssertEqual(short.status, 400)
 
-        let client = try service.issueGatewayClient(name: "demo", label: "test").token
+        let token = try grantFor(service, "demo")
         let chunked = try sendRaw(
             port: gateway.boundPort,
-            request: "POST /demo/v1/x HTTP/1.1\r\nHost: 127.0.0.1:\(gateway.boundPort)\r\nAuthorization: Bearer \(client)\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+            request: "POST /demo/v1/x HTTP/1.1\r\nHost: 127.0.0.1:\(gateway.boundPort)\r\nAuthorization: Bearer \(token)\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
         )
         XCTAssertEqual(chunked.status, 200)
         XCTAssertEqual(String(data: captured.body, encoding: .utf8), "hello")

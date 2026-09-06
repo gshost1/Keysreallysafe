@@ -112,3 +112,9 @@ let sentinelMessage = "DO-NOT-INGEST-MESSAGE-TEXT"
 let sentinelRaw = "DO-NOT-INGEST-RAW-INPUT"
 let sentinelClaude = "DO-NOT-INGEST-CLAUDE-CONTENT"
 let fixtureSecret = "unit-test-secret-value-xyz"
+
+/// One grant for `key` on a service whose secret store has no presence gate (or a recording one).
+@discardableResult
+func grantFor(_ service: KeysService, _ key: String, task: String = "test", minutes: Int = 30) throws -> String {
+    try service.issueGrant(name: key, request: GrantRequest(task: task, minutes: minutes), caller: "test").token
+}

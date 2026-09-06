@@ -134,6 +134,8 @@ enum LoopbackSite {
         server.start()
         do {
             _ = try service.startGateway()
+            try ControlFile.write(port: server.boundPort, token: handler.originToken)
+            atexit { ControlFile.remove() }
         } catch {
             let line = "gateway not started: \(error)\n"
             FileHandle.standardError.write(Data(line.utf8))

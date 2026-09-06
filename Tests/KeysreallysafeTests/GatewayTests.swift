@@ -228,8 +228,12 @@ final class GatewayTests: XCTestCase {
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-test-secret")
         _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
         XCTAssertEqual(gate.reasons, ["Unlock demo"])
-        let client = try service.issueGatewayClient(name: "demo", label: "sdk").token
-        XCTAssertEqual(gate.reasons, ["Unlock demo", "Issue gateway client for demo"])
+        // Gateway already on: the grant costs one more prompt, naming task, provider and host.
+        let token = try grantFor(service, "demo", task: "unit round trip")
+        XCTAssertEqual(gate.reasons.count, 2)
+        XCTAssertTrue(gate.reasons[1].contains("unit round trip"), gate.reasons[1])
+        XCTAssertTrue(gate.reasons[1].contains("OpenAI"), gate.reasons[1])
+        XCTAssertTrue(gate.reasons[1].contains("127.0.0.1:\(stub.boundPort)"), gate.reasons[1])
 
         let gateway = try GatewayListener(service: service, port: 0)
         gateway.start()
@@ -237,7 +241,7 @@ final class GatewayTests: XCTestCase {
 
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/chat/completions")!)
         req.httpMethod = "POST"
-        req.setValue("Bearer \(client)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("leaked-api-key", forHTTPHeaderField: "x-api-key")
         req.setValue("leaked-google", forHTTPHeaderField: "x-goog-api-key")
         req.setValue("leaked-azure", forHTTPHeaderField: "api-key")
@@ -249,7 +253,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(data, stubBody)
         XCTAssertEqual(captured.headers["authorization"], "Bearer sk-test-secret")
         XCTAssertNil(captured.headers["x-ksf-client"])
-        XCTAssertFalse(captured.headers.values.contains { $0.contains(client) }, "the client token never reaches upstream")
+        XCTAssertFalse(captured.headers.values.contains { $0.contains(token) }, "the grant token never reaches upstream")
         XCTAssertNotEqual(captured.headers["x-api-key"], "leaked-api-key")
         XCTAssertNil(captured.headers["x-api-key"])
         XCTAssertNil(captured.headers["x-goog-api-key"])
@@ -329,14 +333,14 @@ final class GatewayTests: XCTestCase {
         let (service, _, _) = makeService(db: db)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+        let token = try grantFor(service, "demo")
         let gateway = try GatewayListener(service: service, port: 0)
         gateway.start()
         defer { gateway.stop() }
 
-        let token = try service.issueGatewayClient(name: "demo", label: "t", methods: ["GET"]).token
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/models")!)
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await noRedirectSession.data(for: req)
+        var redirected = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/models")!)
+        redirected.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await noRedirectSession.data(for: redirected)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 302)
         XCTAssertEqual(String(data: data, encoding: .utf8), "moved")

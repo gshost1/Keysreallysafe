@@ -9,9 +9,15 @@ protocol SecretStore: Sendable {
     func replace(name: String, secret: String) throws
     func deleteAll() throws
     func confirmPresence(reason: String) throws
+    /// Read after the caller already confirmed presence with a task-specific reason.
+    func getAfterPresence(name: String) throws -> String
 }
 
 extension SecretStore {
+    func getAfterPresence(name: String) throws -> String {
+        try get(name: name)
+    }
+
     func replace(name: String, secret: String) throws {
         try delete(name: name)
         try add(name: name, secret: secret)
@@ -85,12 +91,14 @@ protocol PresenceGate: Sendable {
 }
 
 /// Touch ID or Mac password on every get/copy. New context each call; no reuse duration.
+/// Failures are distinguished: unavailable (no GUI session, sandbox, nothing enrolled),
+/// cancelled (user, app or system), and failed (wrong password / biometry mismatch).
 struct LocalPresenceGate: PresenceGate {
     func require(reason: String) throws {
         let context = LAContext()
         var evalError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &evalError) else {
-            throw AppError.keychain("this Mac has no Touch ID or password to unlock keys")
+            throw AppError.authUnavailable(Self.unavailableReason(evalError))
         }
         let box = WaitBox()
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
@@ -98,14 +106,37 @@ struct LocalPresenceGate: PresenceGate {
         }
         box.wait()
         if let error = box.error as? LAError {
-            switch error.code {
-            case .userCancel, .appCancel, .systemCancel, .userFallback:
-                throw AppError.authFailed
-            default:
-                throw AppError.authFailed
-            }
+            throw Self.map(error)
+        }
+        if let error = box.error {
+            throw AppError.authUnavailable(error.localizedDescription)
         }
         guard box.success else { throw AppError.authFailed }
+    }
+
+    static func map(_ error: LAError) -> AppError {
+        switch error.code {
+        case .userCancel, .appCancel, .systemCancel:
+            return .authCancelled
+        case .authenticationFailed, .userFallback:
+            return .authFailed
+        case .passcodeNotSet:
+            return .authUnavailable("no login password is set on this Mac")
+        case .biometryNotAvailable, .biometryNotEnrolled, .biometryLockout:
+            return .authUnavailable("Touch ID is not available; the login password prompt could not be shown")
+        case .notInteractive:
+            return .authUnavailable(
+                "no interactive session (sandbox or headless); run keys from a Terminal outside the sandbox")
+        default:
+            return .authUnavailable("LocalAuthentication error \(error.code.rawValue)")
+        }
+    }
+
+    private static func unavailableReason(_ error: NSError?) -> String {
+        if let error, let la = LAError(_nsError: error) as LAError? {
+            if case .authUnavailable(let m) = map(la) { return m }
+        }
+        return "this Mac has no Touch ID or password to unlock keys"
     }
 }
 
@@ -137,6 +168,10 @@ struct GatedSecretStore: SecretStore {
 
     func confirmPresence(reason: String) throws {
         try presence.require(reason: reason)
+    }
+
+    func getAfterPresence(name: String) throws -> String {
+        try inner.get(name: name)
     }
 }
 

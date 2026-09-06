@@ -17,6 +17,8 @@
     spend: null,
     series: [],
     keys: [],
+    grants: [],
+    checkModels: [],
     selected: null,
     mixFilter: null,
     busy: false,
@@ -173,7 +175,10 @@
   }
   function friendly(code, status) {
     switch (code) {
-      case "auth_failed": return "Touch ID cancelled or failed.";
+      case "auth_failed": return "Mac authentication failed (Touch ID or password not accepted).";
+      case "auth_cancelled": return "Mac authentication cancelled.";
+      case "auth_unavailable": return "Mac authentication is not available here (no GUI session, or nothing enrolled).";
+      case "not_checked": return "No check recorded yet.";
       case "not_found": return "That key no longer exists.";
       case "already_exists": return "A key with that name already exists.";
       case "forbidden": return "Blocked: request was not same-origin.";
@@ -890,6 +895,7 @@
       const data = await api("/api/keys");
       state.keys = data.keys || [];
       renderKeys(opts);
+      loadGrants();
     } catch (e) {
       if (!opts.quiet) say(e.message, true);
     }
@@ -920,7 +926,10 @@
       const noGateway = prov && prov.gateway === false;
       tr.append(
         nameCell,
-        el("td", { class: "td-provider", "data-label": "Provider", text: providerName(k.provider) }),
+        el("td", { class: "td-provider", "data-label": "Provider", title: k.host ? "Requests bound to " + k.host : "No fixed host" },
+          providerName(k.provider),
+          k.host ? el("span", { class: "key-host", text: k.host }) : null,
+          k.last_check ? el("span", { class: "key-host", text: (k.last_check.ok ? "✓ " : "✗ ") + k.last_check.summary + " · " + relTime(k.last_check.checked_at), title: "Last read-only check " + k.last_check.checked_at }) : null),
         el("td", { class: "td-kind", "data-label": "Kind", text: k.kind || "—" }),
         el("td", { class: "td-created", "data-label": "Created", text: fmtDate(k.created_at), title: k.created_at || null }),
         el("td", { class: "td-used", "data-label": "Last used", text: relTime(k.last_used_at), title: k.last_used_at || "Never copied or revealed" }),
@@ -938,6 +947,20 @@
               text: on ? "Gateway on" : "Gateway",
               disabled: noGateway ? "" : null,
               title: noGateway ? (prov.name + " needs request signing; it cannot be proxied") : on ? "Stop proxying with this key" : "One Touch ID, then http://127.0.0.1:12767/" + k.name + " forwards to the provider with this key",
+            }),
+            el("button", {
+              type: "button", class: "btn btn-row", tabindex: tab, "data-act": "grant",
+              "aria-label": "Grant temporary access to " + k.name,
+              text: k.active_grants ? `Grant (${k.active_grants})` : "Grant",
+              disabled: noGateway ? "" : null,
+              title: noGateway ? (prov.name + " cannot be proxied, so no grant") : "One Touch ID for a temporary, scoped token an agent uses instead of the real key",
+            }),
+            el("button", {
+              type: "button", class: "btn btn-row", tabindex: tab, "data-act": "check",
+              "aria-label": "Check " + k.name + " against its provider",
+              text: "Check",
+              disabled: k.checkable ? null : "",
+              title: k.checkable ? "Read-only: authentication status and model list from " + (k.host || "the provider") : "No read-only check endpoint for this provider; nothing is sent",
             }),
             el("span", { class: "act-div", "aria-hidden": "true" }),
             el("button", { type: "button", class: "btn btn-row btn-danger", tabindex: tab, "data-act": "delete", "aria-label": "Delete " + k.name, text: "Delete" }),
@@ -990,6 +1013,8 @@
     else if (btn.dataset.act === "reveal") revealKey(name);
     else if (btn.dataset.act === "edit") openEdit(name);
     else if (btn.dataset.act === "gateway") toggleGateway(name);
+    else if (btn.dataset.act === "grant") openGrant(name);
+    else if (btn.dataset.act === "check") runCheck(name);
     else if (btn.dataset.act === "history") toggleEvents(name);
     else if (btn.dataset.act === "rotate") openRotate(name);
     else if (btn.dataset.act === "delete") askDelete(name);
@@ -1016,6 +1041,8 @@
       case "v": e.preventDefault(); revealKey(tr.dataset.name); break;
       case "e": e.preventDefault(); openEdit(tr.dataset.name); break;
       case "g": e.preventDefault(); toggleGateway(tr.dataset.name); break;
+      case "a": e.preventDefault(); openGrant(tr.dataset.name); break;
+      case "t": e.preventDefault(); runCheck(tr.dataset.name); break;
       case "h": e.preventDefault(); toggleEvents(tr.dataset.name); break;
       case "r": e.preventDefault(); openRotate(tr.dataset.name); break;
       case "Backspace": case "Delete":
@@ -1353,7 +1380,7 @@
 
   // ---------- key history (audit log the engine keeps; never the secret) ----------
 
-  const ACTION_LABEL = { add: "added", copy: "copied", reveal: "revealed", env: "used in env", gateway_enable: "gateway on", gateway_disable: "gateway off", gateway_call: "gateway call", rotate: "rotated", rm: "deleted", patch: "edited" };
+  const ACTION_LABEL = { add: "added", copy: "copied", reveal: "revealed", env: "used in env", gateway_enable: "gateway on", gateway_disable: "gateway off", gateway_call: "gateway call", grant: "grant issued", grant_revoke: "grant revoked", check: "checked", rotate: "rotated", rm: "deleted", patch: "edited" };
   const fmtWhen = (iso) => {
     const t = Date.parse(iso || "");
     if (Number.isNaN(t)) return iso || "";
@@ -1486,6 +1513,169 @@
     $("dlg-host").close();
     toggleGateway(name, host);
   });
+
+  // ---------- grants (temporary, scoped access; one Touch ID per task) ----------
+
+  const fmtWhenShort = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" }); };
+  const minutesLeft = (iso) => Math.max(0, Math.round((new Date(iso) - Date.now()) / 60000));
+
+  async function loadGrants() {
+    try {
+      const r = await api("/api/grants");
+      state.grants = (r && r.grants) || [];
+    } catch { state.grants = []; }
+    renderGrants();
+  }
+  function renderGrants() {
+    const box = $("grants");
+    const list = state.grants || [];
+    box.hidden = list.length === 0;
+    $("grants-count").textContent = plural(list.length, "active grant", "active grants") + ".";
+    $("grants-list").replaceChildren(...list.map((g) => el("li", {},
+      el("span", { class: "g-id", text: g.id }),
+      el("span", { class: "g-key", text: g.key + " → " + g.host }),
+      el("span", { class: "g-task", text: g.task, title: g.task }),
+      el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${fmtUsd(g.usd)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${minutesLeft(g.expires_at)} min left` }),
+      el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke grant " + g.id, onclick: () => revokeGrant(g.id) }),
+    )));
+  }
+  async function revokeGrant(id) {
+    try {
+      await api("/api/grants/" + encodeURIComponent(id), { method: "DELETE" });
+      say(`Grant ${id} revoked.`);
+      await loadKeys();
+    } catch (e) { say(e.message); }
+  }
+
+  function openGrant(name) {
+    const k = state.keys.find((x) => x.name === name);
+    if (!k) return;
+    const prov = providerById(k.provider);
+    if (prov && prov.gateway === false) { say(prov.name + " cannot be proxied, so no grant."); return; }
+    if (!k.host) { say("Set a gateway host for " + name + " first (Edit)."); return; }
+    const dlg = $("dlg-grant");
+    dlg.dataset.name = name;
+    $("grant-form").reset();
+    $("grant-form").hidden = false;
+    $("grant-result").hidden = true;
+    $("grant-err").textContent = "";
+    $("grant-name").textContent = name;
+    $("grant-target").textContent = `${providerName(k.provider)} at ${k.host}. Requests to any other host are refused and redirects are never followed.`;
+    dlg.showModal();
+    $("grant-form").elements.task.focus();
+  }
+  $("grant-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (state.busy) return;
+    const f = e.target.elements;
+    const name = $("dlg-grant").dataset.name;
+    const body = { task: f.task.value.trim(), minutes: Number(f.minutes.value) };
+    if (f.methods.value) body.methods = f.methods.value.split(",");
+    const paths = f.paths.value.split(",").map((p) => p.trim()).filter(Boolean);
+    if (paths.length) body.paths = paths;
+    if (f.max_requests.value) body.max_requests = Number(f.max_requests.value);
+    if (f.max_usd.value) body.max_usd = Number(f.max_usd.value);
+    state.busy = true;
+    $("grant-err").textContent = "";
+    $("grant-submit").textContent = "Touch ID…";
+    $("grant-submit").disabled = true;
+    try {
+      const g = await api("/api/keys/" + encodeURIComponent(name) + "/grants", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      $("gr-id").textContent = g.id;
+      $("gr-target").textContent = `${g.key} → ${providerName(g.provider)} at ${g.host}`;
+      $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + " estimated" : ""}`;
+      $("gr-expires").textContent = `${fmtWhenShort(g.expires_at)} (${body.minutes} min), or earlier on screen lock, revoke or site restart`;
+      $("gr-base").textContent = g.base_url;
+      $("gr-token").textContent = g.token;
+      $("gr-hint").textContent = `Use the token as the API key (${g.auth_header} header) and the base URL as the SDK endpoint. Shown once; it is not stored anywhere. Select to copy.`;
+      $("dlg-grant").dataset.grantId = g.id;
+      $("grant-form").hidden = true;
+      $("grant-result").hidden = false;
+      say(`Grant ${g.id} issued for ${name}.`);
+      await loadKeys();
+    } catch (err) {
+      $("grant-err").textContent = err.message;
+    } finally {
+      $("grant-submit").textContent = "Grant";
+      $("grant-submit").disabled = false;
+      state.busy = false;
+    }
+  });
+  $("gr-revoke").addEventListener("click", async () => {
+    const id = $("dlg-grant").dataset.grantId;
+    if (id) await revokeGrant(id);
+    $("dlg-grant").close();
+  });
+  $("dlg-grant").addEventListener("close", () => {
+    $("gr-token").textContent = "";
+    $("gr-base").textContent = "";
+    restoreKeysFocus($("dlg-grant").dataset.name, "grant");
+  });
+
+  // ---------- provider check (read-only: auth status + model list) ----------
+
+  function renderCheck(r, name) {
+    $("check-name").textContent = name;
+    $("check-target").textContent = `${providerName(r.provider)} at ${r.host}${r.endpoint ? " · GET " + r.endpoint : ""}`;
+    const st = $("check-status");
+    st.textContent = r.ok ? `OK · ${r.model_count} models` : r.summary;
+    st.className = "check-status " + (r.ok ? "ok" : "bad");
+    $("check-meta").textContent = `Checked ${fmtWhenShort(r.checked_at)}${r.request_id ? " · request id " + r.request_id : ""}${r.ok ? "" : " · " + hintFor(r.outcome)}`;
+    state.checkModels = r.models || [];
+    $("check-filter-label").hidden = !r.ok;
+    $("check-filter").value = "";
+    filterCheck();
+  }
+  function hintFor(outcome) {
+    switch (outcome) {
+      case "provider_auth_failed": return "The provider rejected this key. Rotate it, or check it belongs to this provider.";
+      case "provider_refused": return "The key is recognised but this request was refused: wrong host, plan, region or headers. Not necessarily a bad key.";
+      case "network": return "No answer from the host. Check the network and the host in Edit.";
+      case "no_check_endpoint": return "This provider has no read-only list endpoint; no paid request was made instead.";
+      case "malformed": return "The host answered but not with a model list. Is the host right?";
+      default: return "The provider returned an error.";
+    }
+  }
+  function filterCheck() {
+    const q = $("check-filter").value.trim().toLowerCase();
+    const ids = (state.checkModels || []).filter((m) => !q || m.toLowerCase().includes(q));
+    $("check-models").replaceChildren(...ids.map((m) => el("li", { text: m })));
+    $("check-filter").setAttribute("aria-label", `Filter models, ${ids.length} shown`);
+  }
+  $("check-filter").addEventListener("input", filterCheck);
+  async function runCheck(name, force) {
+    if (state.busy) return;
+    const k = state.keys.find((x) => x.name === name);
+    if (!k) return;
+    if (!k.checkable) { say("No read-only check endpoint for " + providerName(k.provider) + "; nothing is sent."); return; }
+    const dlg = $("dlg-check");
+    dlg.dataset.name = name;
+    $("check-err").textContent = "";
+    if (!force && k.last_check) {
+      try {
+        const cached = await api("/api/keys/" + encodeURIComponent(name) + "/check");
+        renderCheck(cached, name);
+        if (!dlg.open) dlg.showModal();
+        return;
+      } catch {}
+    }
+    state.busy = true;
+    const btn = btnFor(name, "check");
+    setBtn(btn, k.gateway_enabled ? "Checking…" : "Touch ID…", true);
+    try {
+      const r = await api("/api/keys/" + encodeURIComponent(name) + "/check", { method: "POST" });
+      renderCheck(r, name);
+      if (!dlg.open) dlg.showModal();
+      loadKeys({ quiet: true });
+    } catch (e) {
+      if (dlg.open) $("check-err").textContent = e.message; else say(e.message);
+    } finally {
+      setBtn(btn, "Check");
+      state.busy = false;
+    }
+  }
+  $("check-again").addEventListener("click", () => runCheck($("dlg-check").dataset.name, true));
+  $("dlg-check").addEventListener("close", () => restoreKeysFocus($("dlg-check").dataset.name, "check"));
 
   // ---------- export ----------
 
@@ -1627,6 +1817,8 @@
       if (e.key === "n") { e.preventDefault(); openAdd(); return; }
       if (e.key === "e" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); openEdit(state.selected); return; }
       if (e.key === "g" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); toggleGateway(state.selected); return; }
+      if (e.key === "a" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); openGrant(state.selected); return; }
+      if (e.key === "t" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); runCheck(state.selected); return; }
       if (e.key === "h" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); toggleEvents(state.selected); return; }
       if (e.key === "r" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); openRotate(state.selected); return; }
       const inList = e.target.closest && e.target.closest("#keys-body");

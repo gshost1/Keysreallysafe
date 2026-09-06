@@ -21,6 +21,9 @@ leaves the machine.
   listed as "not tracked" with a link to its own dashboard.
 - No secret on screen by default. The key list shows names, never values.
   Copy, reveal, env and rotate ask for user presence every time.
+- No open gateway. A request through the gateway needs a grant token: one
+  Touch ID per task, bound to one key, one host, a method and path scope and
+  an expiry. Screen lock, revoke, gateway off or a restart kills it.
 
 ## Install
 
@@ -60,12 +63,16 @@ cost log. With the Claude chip selected, `P` switches the breakdown to
 projects. `X` downloads the rows as CSV, `⇧C` copies the totals line as
 Markdown.
 
-**Keys** is a dense table: name, provider, kind, created, last used, dollars
-routed through the gateway this month. Actions
+**Keys** is a dense table: name, provider and the host requests are bound to,
+kind, created, last used, dollars routed through the gateway this month, and
+the last read-only check. Actions
 per row: Copy (`C`, clipboard wipes itself after 20 s), Reveal (`V`, hides
 after 15 s), Edit (`E`, provider, kind and notes; name and secret are
 immutable), History (`H`, the audit log), Rotate (`R`, new secret under the
-same name), Gateway (`G`) and Delete (`⌫`). `N` adds a key; the provider
+same name), Gateway (`G`), Grant (`A`, a temporary scoped token, see below),
+Check (`T`, authentication status and model list from the provider's
+read-only endpoint, with a filter box) and Delete (`⌫`). Active grants sit
+above the table with a Revoke button each. `N` adds a key; the provider
 picker is grouped into Labs, Routers, Hosts, Clouds and Non-chat, and a pasted
 secret with a recognisable prefix pre-fills it. `?` lists every shortcut.
 
@@ -99,41 +106,91 @@ is not yet done. Treat this as app-level prompting:
 - Delete and purge also require presence, so a script on the machine cannot
   quietly empty the vault.
 
-Every read, copy, env use, rotate, gateway call, gateway denial, client issue
-and delete is written to a per-key audit log you can open from the Keys pane.
-The gateway, when you turn it on for a key, keeps the value in process memory
-only and forgets it on restart.
+Every read, copy, env use, rotate, gateway call, gateway denial, client issue,
+grant, check and delete is written to a per-key audit log you can open from
+the Keys pane. The gateway, when you turn it on for a key, keeps the value in
+process memory only and forgets it on restart.
+
+Presence failures are told apart: `Mac authentication cancelled`, `failed`
+(wrong password), or `unavailable` with the reason (no GUI session, a sandbox,
+nothing enrolled). The exit code is 3 for all three.
+
+Presence failures are told apart: `Mac authentication cancelled`, `failed`
+(wrong password), or `unavailable` with the reason (no GUI session, a sandbox,
+nothing enrolled). The exit code is 3 for all three.
 
 ## The gateway
 
-Turn the gateway on for a key (one Touch ID), issue a client capability for
-the program that will call it (one more Touch ID), and point the SDK at the
-gateway with that capability where the SDK expects the API key:
+Two kinds of credential open the gateway, and a request without one of them
+gets 401 before the key is even looked up, so being on loopback proves
+nothing by itself.
+
+**A grant** is for one task: short-lived, in memory only, one Touch ID whose
+prompt names the task, provider, host and lifetime.
+
+```sh
+keys grant router --task "list models" --minutes 30 --methods GET --paths /models
+# prints ksf_… once, plus the base URL http://127.0.0.1:12767/router/v1
+```
+
+One Touch ID, whose prompt names the task, the provider, the host and the
+lifetime. Back comes a token that the client uses *as its API key*, plus the
+base URL:
+
+```
+base url http://127.0.0.1:12767/router/v1
+token    ksf_1f2e3d4c_…
+```
+
+Point the SDK at the base URL, give it the token as the key, and every call
+inside the scope goes through with no further prompt. Anything else fails
+closed with a named reason: `grant_required`, `grant_expired`,
+`grant_revoked`, `grant_method_not_allowed`, `grant_path_not_allowed`,
+`grant_request_limit`, `grant_usd_limit`, `grant_target_changed`. A grant is
+bound to one key and the host recorded when it was issued; editing the
+provider or host revokes it. Screen lock, `keys revoke`, gateway off and a
+site restart all revoke. Grants live only in the site's memory; the audit log
+keeps the id, task and scope, never the token. `--max-requests` is a hard cap.
+`--max-usd` is an estimate from list prices checked after each call, so one
+call can overshoot it.
+
+If the gateway is off for the key, `keys grant` turns it on with the same
+single prompt. `keys grants` lists what is active, `keys revoke <id>` or
+`keys revoke --all [--key name]` ends it. The dashboard has the same three
+under Grant (`A`).
+
+`keys grant` talks to the running site (menubar or dashboard) through a
+0600 file under Application Support; without one it says so and stops. The
+token in that file only lets a local process *ask*; the grant itself still
+needs Touch ID in the site.
+
+**A client** is for a program you keep: a capability that lives in the
+catalog as a hash, expires in days (default 30, at most 365), and is scoped
+to HTTP methods and an upstream path prefix.
 
 ```sh
 keys client issue <key name> --label "my script" --days 30 --method POST --path-prefix v1/messages
-# prints ksfc_… once; the catalog keeps only its hash
+# prints ksfc_… once
 export ANTHROPIC_BASE_URL=http://127.0.0.1:12767/<key name>
 export ANTHROPIC_API_KEY=ksfc_…
 ```
 
-A request without a valid client gets 401 before the gateway even looks the
-key up, so being on loopback proves nothing by itself. A client is bound to
-one key, expires (default 30 days, at most 365), can be revoked with
-`keys client revoke`, and can be limited to HTTP methods and an upstream path
-prefix. The dashboard's per-launch token is never accepted as a client. This
-narrows accidental or unauthorized local use; it is not a boundary against a
-process that can already read your files or memory.
+Either token goes where the SDK expects the API key. A client is bound to one
+key and revoked with `keys client revoke`. The dashboard's per-launch token
+is never accepted as either. Both narrow accidental or unauthorized local
+use; neither is a boundary against a process that can already read your
+files or memory.
 
-The gateway forwards to the provider host from `Web/providers.json`, replaces
-the client capability with the secret in the right header, streams the
-response back, and records the `usage` object from OpenAI chat-completions
-and responses, Anthropic messages and Gemini bodies, plus the upstream
-`request-id`. Those calls show up as a "Via gateway" column in Keys and can
-be charted per key. A call that no model or price could be attached to is
-shown as unpriced, never as $0. The secret is held in process memory only
-while the gateway is on and is forgotten on restart. Providers that need
-request signing or OAuth (Bedrock, Vertex, watsonx) cannot be proxied and say so.
+The gateway forwards to the provider host from `Web/providers.json` or the
+host you set, replaces the token with the secret in the right header, never
+follows a redirect, streams the response back, and records the `usage`
+object from OpenAI chat-completions and responses, Anthropic messages and
+Gemini bodies, plus the upstream `request-id`. Those calls show up as a "Via
+gateway" column in Keys and can be charted per key. A call that no model or
+price could be attached to is shown as unpriced, never as $0. The secret is
+held in process memory only while the gateway is on and is forgotten on
+restart. Providers that need request signing or OAuth (Bedrock, Vertex,
+watsonx) cannot be proxied and say so.
 
 Gateway dollars are a separate ledger from the local-log estimate. A Claude
 Code or Codex call routed through the gateway appears in both places; when
@@ -143,7 +200,20 @@ rather than added.
 
 For an OpenRouter key of kind `billing` with the gateway on, the engine polls
 OpenRouter's key endpoint every 15 minutes and shows the remaining credit.
-That is the only outbound host besides the gateway targets.
+
+## Checks
+
+`keys test <name>` hits the provider's read-only model list (`/v1/models` for
+OpenAI-shaped APIs, Anthropic's `/v1/models`, Gemini's `/v1beta/models`)
+with a plain `Accept` and `User-Agent`, and reports one of: ok with the model
+count, provider rejected the key (401), provider refused the request (403,
+which is *not* the same as a bad key), provider error, network failure, or
+no check endpoint for this provider. It never falls back to a paid
+generation call. The provider's own error text and request id are kept,
+with the key scrubbed. The result (status, model ids, time) is stored so
+`keys models <name> --cached` and the dashboard's Check can reuse it without
+another unlock; `keys models <name> --grep sonnet` narrows the list. With the
+gateway on the check uses the in-memory secret and prompts for nothing.
 
 ## Commands
 
@@ -155,6 +225,11 @@ keys copy <name>
 keys rm <name> [--yes]
 keys rotate <name>
 keys env <name> <VAR> -- <command> [args...]
+keys grant <name> [--task <text>] [--minutes N] [--methods GET,POST] [--paths /a,/b] [--max-requests N] [--max-usd X] [--json]
+keys grants [--all] [--json]
+keys revoke <id> | --all [--key <name>]
+keys test <name> [--json]
+keys models <name> [--grep <text>] [--cached] [--json]
 keys ingest [all|grok|claude|openai]
 keys spend [--month|--week] [--json] [--by model|session|project]
 keys status
@@ -169,7 +244,9 @@ keys purge
 ```
 
 `keys env` puts the secret in the child's environment only; nothing touches
-the clipboard. `keys doctor` prints every local source it looked for, whether
+the clipboard. It prints the provider and host the key belongs to before the
+prompt, so a similarly named key for a different provider is caught early.
+Prefer `keys grant` when the child only needs to call that provider. `keys doctor` prints every local source it looked for, whether
 it was found, when it last changed, which row on the site it feeds, and why a
 row is empty. Start there when a number is missing.
 

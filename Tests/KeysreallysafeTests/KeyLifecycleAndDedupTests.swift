@@ -68,7 +68,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let beforeRemove = gate.reasons.count
         try service.remove(name: "demo", caller: "rm")
         XCTAssertEqual(gate.reasons.count, beforeRemove + 1)
-        XCTAssertEqual(gate.reasons.last, "Unlock demo")
+        XCTAssertEqual(gate.reasons.last, "Delete demo")
         XCTAssertTrue(try service.list().isEmpty)
         XCTAssertThrowsError(try inner.get(name: "demo"))
     }

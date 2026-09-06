@@ -146,33 +146,57 @@ final class GatewayListener: @unchecked Sendable {
             return
         }
         // Loopback headers say where a browser request came from; they say nothing about a native
-        // local process. Every caller must hold a client capability issued for this key.
-        let gatewayClient: GatewayClient
-        switch service.authorizeGatewayClient(
-            name: keyName, headers: request.headers, method: request.method, rest: request.rest
-        ) {
-        case .allowed(let c):
-            gatewayClient = c
-        case .denied(let reason):
-            service.recordGatewayDenial(name: keyName, reason: reason)
-            _ = Self.writeJSON(fd: client, status: 401, object: [
-                "error": "client_required",
-                "hint": "issue one with: keys client issue \(keyName)",
+        // local process. Every caller must hold either a long-lived client capability (ksfc_)
+        // or a task grant (ksf_), presented where the SDK would put the provider key.
+        let (grantToken, rawQuery) = Self.extractGrantToken(headers: request.headers, rawQuery: request.rawQuery)
+        var gatewayClient: GatewayClient?
+        if grantToken == nil {
+            switch service.authorizeGatewayClient(
+                name: keyName, headers: request.headers, method: request.method, rest: request.rest
+            ) {
+            case .allowed(let c):
+                gatewayClient = c
+            case .denied(let reason):
+                service.recordGatewayDenial(name: keyName, reason: reason)
+                _ = Self.writeJSON(fd: client, status: 401, object: [
+                    "error": "client_required",
+                    "hint": "issue one with: keys grant \(keyName) --task \"...\" (temporary) or keys client issue \(keyName) (long-lived)",
+                ])
+                return
+            }
+        }
+        guard let target = service.lookupGateway(name: keyName) else {
+            _ = Self.writeJSON(fd: client, status: 404, object: [
+                "error": "not_found",
+                "message": "no key \(keyName) with the gateway on; run: keys grant \(keyName) --task \"...\"",
             ])
             return
         }
-        guard let target = service.lookupGateway(name: keyName) else {
-            _ = Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
-            return
+        var grant: Grant?
+        if grantToken != nil {
+            switch service.authorizeGateway(token: grantToken, target: target, method: request.method, rest: request.rest) {
+            case .success(let g):
+                grant = g
+            case .failure(let denial):
+                service.recordGatewayDenial(name: keyName, reason: denial.code)
+                _ = Self.writeJSON(fd: client, status: denial.status, object: [
+                    "error": denial.code,
+                    "message": denial.message,
+                    "key": keyName,
+                    "provider": target.provider.id,
+                    "host": target.host,
+                ])
+                return
+            }
         }
-        service.noteGatewayClientUse(gatewayClient)
+        if let gatewayClient { service.noteGatewayClientUse(gatewayClient) }
         let host = target.host
         let hostname = host.split(separator: ":").first.map(String.init) ?? host
         let scheme = BindPolicy.isLoopbackHostname(hostname) ? "http" : "https"
         let path = GatewayPath.join(prefix: target.provider.pathPrefix, rest: request.rest)
         var urlString = "\(scheme)://\(host)\(path)"
-        if !request.rawQuery.isEmpty {
-            urlString += "?" + request.rawQuery
+        if !rawQuery.isEmpty {
+            urlString += "?" + rawQuery
         }
         guard let url = URL(string: urlString) else {
             _ = Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
@@ -240,7 +264,8 @@ final class GatewayListener: @unchecked Sendable {
                     status: status,
                     durationMs: durationMs,
                     requestId: proxy.requestId
-                )
+                ),
+                grantId: grant?.id
             )
         } catch {
             let line = "gateway usage persist failed for \(target.name): \(error)\n"
@@ -255,6 +280,34 @@ final class GatewayListener: @unchecked Sendable {
         var rawQuery: String
         var headers: [String: String]
         var body: Data
+    }
+
+    /// Grant token from any auth-style header, or Gemini's `?key=`. The query is returned
+    /// with a token-bearing `key` removed so it never reaches the provider.
+    static func extractGrantToken(headers: [String: String], rawQuery: String) -> (String?, String) {
+        for name in ["authorization", "x-api-key", "x-goog-api-key", "api-key", "x-ksf-grant"] {
+            guard var value = headers[name]?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { continue }
+            if name == "authorization" {
+                let parts = value.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                if parts.count == 2 { value = String(parts[1]).trimmingCharacters(in: .whitespaces) }
+            }
+            if GrantToken.looksLikeToken(value) { return (value, rawQuery) }
+        }
+        guard !rawQuery.isEmpty else { return (nil, rawQuery) }
+        var kept: [String] = []
+        var found: String?
+        for pair in rawQuery.split(separator: "&", omittingEmptySubsequences: true) {
+            let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            if kv.count == 2, kv[0] == "key" {
+                let v = String(kv[1]).removingPercentEncoding ?? String(kv[1])
+                if GrantToken.looksLikeToken(v) {
+                    found = v
+                    continue
+                }
+            }
+            kept.append(String(pair))
+        }
+        return (found, found == nil ? rawQuery : kept.joined(separator: "&"))
     }
 
     private static let dropIncoming: Set<String> = [
@@ -313,6 +366,7 @@ final class GatewayListener: @unchecked Sendable {
         case 409: reason = "Conflict"
         case 411: reason = "Length Required"
         case 413: reason = "Payload Too Large"
+        case 429: reason = "Too Many Requests"
         case 501: reason = "Not Implemented"
         case 502: reason = "Bad Gateway"
         case 503: reason = "Service Unavailable"
@@ -321,6 +375,7 @@ final class GatewayListener: @unchecked Sendable {
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         if status == 401 { head += "WWW-Authenticate: Bearer realm=\"keysreallysafe-gateway\"\r\n" }
         head += "Content-Type: application/json; charset=utf-8\r\n"
+        if status == 401 { head += "WWW-Authenticate: Bearer realm=\"keysreallysafe grant\"\r\n" }
         head += "Content-Length: \(body.count)\r\n"
         head += "Connection: close\r\n"
         head += "Cache-Control: no-store\r\n"

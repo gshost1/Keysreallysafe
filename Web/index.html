@@ -75,6 +75,10 @@
     </section>
 
     <section id="pane-keys" role="tabpanel" aria-labelledby="nav-keys" hidden>
+      <div id="grants" class="grants" hidden>
+        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart</span></div>
+        <ul id="grants-list" class="grants-list"></ul>
+      </div>
       <table class="keys" id="keys-table">
         <thead>
           <tr>
@@ -181,6 +185,82 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-grant" class="dlg dlg-wide" aria-labelledby="grant-title">
+    <form id="grant-form" novalidate>
+      <h2 id="grant-title">Grant access to <span id="grant-name"></span></h2>
+      <p class="hint" id="grant-target"></p>
+      <label>Task (shown in the Touch ID prompt and the audit log)
+        <input name="task" autocomplete="off" spellcheck="false" placeholder="list models for the router" maxlength="120">
+      </label>
+      <div class="two-col">
+        <label>Expires in
+          <select name="minutes">
+            <option value="15">15 minutes</option>
+            <option value="30" selected>30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="240">4 hours</option>
+            <option value="1440">24 hours</option>
+          </select>
+        </label>
+        <label>Methods
+          <select name="methods">
+            <option value="GET">GET only (read)</option>
+            <option value="GET,POST" selected>GET and POST</option>
+            <option value="">Any</option>
+          </select>
+        </label>
+      </div>
+      <label>Paths (comma-separated prefixes under the provider prefix; empty = any)
+        <input name="paths" autocomplete="off" spellcheck="false" placeholder="/models, /chat/completions">
+      </label>
+      <div class="two-col">
+        <label>Max requests (optional)
+          <input name="max_requests" type="number" min="1" step="1" inputmode="numeric" placeholder="unlimited">
+        </label>
+        <label>Max USD, estimated (optional)
+          <input name="max_usd" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="unlimited">
+        </label>
+      </div>
+      <p class="hint">One Touch ID. Further calls inside this scope need no prompt. The spend cap is checked after each call, so one call can overshoot it.</p>
+      <p class="err" id="grant-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="grant-submit">Grant</button>
+      </div>
+    </form>
+    <div id="grant-result" hidden>
+      <dl class="grant-facts">
+        <dt>Grant</dt><dd id="gr-id"></dd>
+        <dt>Key</dt><dd id="gr-target"></dd>
+        <dt>Scope</dt><dd id="gr-scope"></dd>
+        <dt>Expires</dt><dd id="gr-expires"></dd>
+        <dt>Base URL</dt><dd><output id="gr-base" class="secret small"></output></dd>
+        <dt>Token</dt><dd><output id="gr-token" class="secret"></output></dd>
+      </dl>
+      <p class="hint" id="gr-hint"></p>
+      <div class="actions">
+        <button type="button" class="btn btn-danger" id="gr-revoke">Revoke now</button>
+        <button type="button" class="btn" data-close>Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-check" class="dlg dlg-wide" aria-labelledby="check-title">
+    <h2 id="check-title">Check <span id="check-name"></span></h2>
+    <p class="hint" id="check-target"></p>
+    <p id="check-status" class="check-status"></p>
+    <p class="hint" id="check-meta"></p>
+    <label id="check-filter-label">Filter models
+      <input id="check-filter" autocomplete="off" spellcheck="false" placeholder="type to narrow">
+    </label>
+    <ul id="check-models" class="check-models"></ul>
+    <p class="err" id="check-err" role="alert"></p>
+    <div class="actions">
+      <button type="button" class="btn" id="check-again">Check again</button>
+      <button type="button" class="btn" data-close>Close</button>
+    </div>
+  </dialog>
+
   <dialog id="dlg-reveal" class="dlg" aria-labelledby="reveal-name">
     <h2 id="reveal-name"></h2>
     <output id="reveal-secret" class="secret"></output>
@@ -216,6 +296,8 @@
       <dt><kbd>V</kbd></dt><dd>Reveal the selected key</dd>
       <dt><kbd>E</kbd></dt><dd>Edit the selected key</dd>
       <dt><kbd>G</kbd></dt><dd>Gateway on / off for the selected key</dd>
+      <dt><kbd>A</kbd></dt><dd>Grant temporary, scoped access to the selected key</dd>
+      <dt><kbd>T</kbd></dt><dd>Check the selected key against its provider (read-only)</dd>
       <dt><kbd>H</kbd></dt><dd>History of the selected key</dd>
       <dt><kbd>R</kbd></dt><dd>Rotate the selected key</dd>
       <dt><kbd>P</kbd></dt><dd>Models / projects (Claude)</dd>

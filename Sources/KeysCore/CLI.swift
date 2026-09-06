@@ -21,6 +21,11 @@ public struct KeysCLI: ParsableCommand {
             StatusCommand.self,
             DoctorCommand.self,
             EnvCommand.self,
+            GrantCommand.self,
+            GrantsCommand.self,
+            RevokeCommand.self,
+            TestCommand.self,
+            ModelsCommand.self,
             DashboardCommand.self,
             MenubarCommand.self,
             AutostartCommand.self,
@@ -348,6 +353,224 @@ struct EnvCommand: ParsableCommand {
             }
             throw error
         }
+    }
+}
+
+struct GrantCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "grant",
+        abstract: "Temporary, scoped gateway access for one task (one Touch ID, no raw secret).",
+        discussion: """
+            Asks the running site to mint a grant token for <name>. Use the token as the API key \
+            and point the SDK at the printed base URL; the gateway swaps in the real secret. \
+            The grant expires, can be revoked, and dies with screen lock or a site restart. \
+            Within its scope no further prompts are needed.
+            """
+    )
+
+    @Argument(help: "Vault key name.")
+    var name: String
+
+    @Option(help: "What the access is for; shown in the Touch ID prompt and the audit log.")
+    var task: String = ""
+
+    @Option(help: "Lifetime in minutes (1-1440).")
+    var minutes: Int = Grant.defaultMinutes
+
+    @Option(help: "Comma-separated HTTP methods, e.g. GET or GET,POST. Default: all.")
+    var methods: String = ""
+
+    @Option(help: "Comma-separated path prefixes under the provider prefix, e.g. /models. Default: any.")
+    var paths: String = ""
+
+    @Option(name: .customLong("max-requests"), help: "Refuse further calls after this many.")
+    var maxRequests: Int?
+
+    @Option(name: .customLong("max-usd"), help: "Refuse further calls once the estimated spend passes this (checked after each call).")
+    var maxUsd: Double?
+
+    @Flag(help: "Print the grant as JSON (token included) for a script to read once.")
+    var json = false
+
+    func run() throws {
+        try KeyName.validate(name)
+        let client = try ControlClient.connect()
+        var body: [String: Any] = ["task": task, "minutes": minutes, "caller": "cli"]
+        let methodList = methods.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !methodList.isEmpty { body["methods"] = methodList }
+        let pathList = paths.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if !pathList.isEmpty { body["paths"] = pathList }
+        if let maxRequests { body["max_requests"] = maxRequests }
+        if let maxUsd { body["max_usd"] = maxUsd }
+        fputs("Touch ID in the Keysreallysafe site…\n", stderr)
+        let (status, obj) = try client.call(method: "POST", path: "/api/keys/\(name)/grants", body: body)
+        guard status == 201 else { throw ControlClient.raise(status: status, body: obj) }
+        if json {
+            let data = try JSONValue.data(obj)
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
+        let token = JSONValue.string(obj["token"]) ?? ""
+        let id = JSONValue.string(obj["id"]) ?? ""
+        let providerName = Providers.provider(id: JSONValue.string(obj["provider"]) ?? "")?.name
+            ?? (JSONValue.string(obj["provider"]) ?? "")
+        let host = JSONValue.string(obj["host"]) ?? ""
+        let expires = JSONValue.string(obj["expires_at"]) ?? ""
+        let methodsOut = (obj["methods"] as? [Any])?.compactMap { $0 as? String }.joined(separator: ",") ?? "all"
+        let pathsOut = (obj["paths"] as? [Any])?.compactMap { $0 as? String } ?? []
+        let base = JSONValue.string(obj["base_url"]) ?? ""
+        let header = JSONValue.string(obj["auth_header"]) ?? "Authorization"
+        print("grant \(id)  \(name) -> \(providerName) (\(host))")
+        print("  task     \(JSONValue.string(obj["task"]) ?? "")")
+        print("  expires  \(expires)  (\(minutes) min)")
+        print("  scope    methods \(methodsOut.isEmpty ? "all" : methodsOut)  paths \(pathsOut.isEmpty ? "any" : pathsOut.joined(separator: ","))")
+        if let n = JSONValue.int(obj["max_requests"]) { print("  limit    \(n) requests") }
+        if let u = JSONValue.double(obj["max_usd"]) { print("  limit    $\(String(format: "%.2f", u)) estimated, enforced after each call") }
+        print("  base url \(base)")
+        print("  token    \(token)")
+        print("  use the token as the API key (\(header)); the gateway swaps in the real secret")
+        print("  revoke   keys revoke \(id)")
+    }
+}
+
+struct GrantsCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "grants", abstract: "List active grants on the running site.")
+
+    @Flag(help: "Include expired and revoked grants.")
+    var all = false
+
+    @Flag var json = false
+
+    func run() throws {
+        let client = try ControlClient.connect()
+        let (status, obj) = try client.call(method: "GET", path: "/api/grants" + (all ? "?all=1" : ""))
+        guard status == 200 else { throw ControlClient.raise(status: status, body: obj) }
+        let grants = (obj["grants"] as? [Any])?.compactMap(JSONValue.object) ?? []
+        if json {
+            FileHandle.standardOutput.write(try JSONValue.data(grants))
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
+        if grants.isEmpty {
+            print(all ? "no grants" : "no active grants")
+            return
+        }
+        print("ID\tKEY\tHOST\tTASK\tSTATUS\tEXPIRES\tREQUESTS\tUSD")
+        for g in grants {
+            let usd = JSONValue.double(g["usd"]) ?? 0
+            print([
+                JSONValue.string(g["id"]) ?? "", JSONValue.string(g["key"]) ?? "", JSONValue.string(g["host"]) ?? "",
+                JSONValue.string(g["task"]) ?? "", JSONValue.string(g["status"]) ?? "",
+                JSONValue.string(g["expires_at"]) ?? "", String(JSONValue.int(g["requests"]) ?? 0),
+                String(format: "%.4f", usd),
+            ].joined(separator: "\t"))
+        }
+    }
+}
+
+struct RevokeCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "revoke", abstract: "Revoke a grant now (no Touch ID needed).")
+
+    @Argument(help: "Grant id from keys grant, or omit with --all.")
+    var id: String?
+
+    @Flag(help: "Revoke every active grant.")
+    var all = false
+
+    @Option(help: "With --all, only grants for this key.")
+    var key: String?
+
+    func run() throws {
+        let client = try ControlClient.connect()
+        if all {
+            var path = "/api/grants"
+            if let key {
+                try KeyName.validate(key)
+                path += "?key=\(key)"
+            }
+            let (status, obj) = try client.call(method: "DELETE", path: path)
+            guard status == 200 else { throw ControlClient.raise(status: status, body: obj) }
+            let n = (obj["revoked"] as? [Any])?.count ?? 0
+            print("revoked \(n) grant\(n == 1 ? "" : "s")")
+            return
+        }
+        guard let id, !id.isEmpty else { throw AppError.usage("give a grant id, or --all") }
+        let (status, obj) = try client.call(method: "DELETE", path: "/api/grants/\(id)")
+        guard status == 200 else { throw ControlClient.raise(status: status, body: obj) }
+        print("revoked \(id)")
+    }
+}
+
+struct TestCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "test",
+        abstract: "Read-only connection check against the key's provider (user presence, no generation)."
+    )
+
+    @Argument var name: String
+    @Flag var json = false
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let result = try service.checkProvider(name: name, caller: "test")
+        if json {
+            FileHandle.standardOutput.write(try JSONValue.data(result.jsonObject()))
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        } else {
+            let providerName = Providers.provider(id: result.provider)?.name ?? result.provider
+            print("\(result.ok ? "ok" : "FAIL")  \(name) -> \(providerName) (\(result.host))  \(result.summary)")
+            print("checked \(result.checkedAt)" + (result.endpoint.map { "  GET \($0)" } ?? ""))
+            if result.ok { print("models: keys models \(name) --cached") }
+        }
+        if !result.ok { Darwin.exit(result.outcome == .noCheckEndpoint ? 2 : 5) }
+    }
+}
+
+struct ModelsCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "models",
+        abstract: "List the provider's model IDs for a key; --cached reuses the last check with no prompt."
+    )
+
+    @Argument var name: String
+    @Option(help: "Only IDs containing this text (case-insensitive).")
+    var grep: String?
+    @Flag(help: "Reuse the last check instead of asking the provider again.")
+    var cached = false
+    @Flag var json = false
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let result: ProviderCheck.Result
+        if cached {
+            guard let last = try service.lastCheck(name: name) else {
+                throw AppError.usage("no check recorded for \(name); run keys test \(name) or keys models \(name)")
+            }
+            result = last
+        } else {
+            result = try service.checkProvider(name: name, caller: "models")
+        }
+        var ids = result.models
+        if let grep, !grep.isEmpty {
+            ids = ids.filter { $0.localizedCaseInsensitiveContains(grep) }
+        }
+        if json {
+            var obj = result.jsonObject()
+            obj["models"] = ids
+            obj["model_count"] = ids.count
+            FileHandle.standardOutput.write(try JSONValue.data(obj))
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            if !result.ok { Darwin.exit(5) }
+            return
+        }
+        guard result.ok else {
+            let providerName = Providers.provider(id: result.provider)?.name ?? result.provider
+            print("FAIL  \(name) -> \(providerName) (\(result.host))  \(result.summary)")
+            Darwin.exit(result.outcome == .noCheckEndpoint ? 2 : 5)
+        }
+        for id in ids { print(id) }
+        fputs("\(ids.count) of \(result.models.count) models  checked \(result.checkedAt)\(cached ? " (cached)" : "")\n", stderr)
     }
 }
 

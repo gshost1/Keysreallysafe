@@ -157,6 +157,20 @@ final class CatalogDB: @unchecked Sendable {
             """)
         try exec("CREATE INDEX IF NOT EXISTS key_events_name_ts ON key_events (name, ts DESC, id DESC);")
         try exec("""
+            CREATE TABLE IF NOT EXISTS provider_checks (
+              key_name TEXT PRIMARY KEY,
+              provider TEXT NOT NULL,
+              host TEXT NOT NULL,
+              ts TEXT NOT NULL,
+              outcome TEXT NOT NULL,
+              http_status INTEGER,
+              models_json TEXT NOT NULL DEFAULT '[]',
+              request_id TEXT,
+              message TEXT,
+              endpoint TEXT
+            );
+            """)
+        try exec("""
             CREATE TABLE IF NOT EXISTS provider_snapshots (
               provider TEXT NOT NULL,
               key_name TEXT NOT NULL,
@@ -1032,6 +1046,79 @@ final class CatalogDB: @unchecked Sendable {
                 )
             }
             return rows
+        }
+    }
+
+    /// Latest read-only provider check per key. Model IDs and status only; never a secret.
+    func upsertProviderCheck(_ r: ProviderCheck.Result) throws {
+        try withLock {
+            let sql = """
+                INSERT INTO provider_checks
+                  (key_name, provider, host, ts, outcome, http_status, models_json, request_id, message, endpoint)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key_name) DO UPDATE SET
+                  provider = excluded.provider, host = excluded.host, ts = excluded.ts,
+                  outcome = excluded.outcome, http_status = excluded.http_status,
+                  models_json = excluded.models_json, request_id = excluded.request_id,
+                  message = excluded.message, endpoint = excluded.endpoint;
+                """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, r.key)
+            bindText(stmt, 2, r.provider)
+            bindText(stmt, 3, r.host)
+            bindText(stmt, 4, r.checkedAt)
+            bindText(stmt, 5, r.outcome.rawValue)
+            if let status = r.httpStatus {
+                sqlite3_bind_int(stmt, 6, Int32(status))
+            } else {
+                sqlite3_bind_null(stmt, 6)
+            }
+            let models = (try? JSONValue.data(r.models)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+            bindText(stmt, 7, models)
+            bindText(stmt, 8, r.requestId)
+            bindText(stmt, 9, r.message)
+            bindText(stmt, 10, r.endpoint)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
+        }
+    }
+
+    func providerCheck(keyName: String) throws -> ProviderCheck.Result? {
+        try withLock {
+            let sql = """
+                SELECT key_name, provider, host, ts, outcome, http_status, models_json, request_id, message, endpoint
+                FROM provider_checks WHERE key_name = ?;
+                """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, keyName)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            let outcome = ProviderCheck.Outcome(rawValue: columnText(stmt, 4) ?? "") ?? .malformed
+            let status: Int? = sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 5))
+            let modelsData = Data((columnText(stmt, 6) ?? "[]").utf8)
+            let models = ((try? JSONSerialization.jsonObject(with: modelsData)) as? [Any])?
+                .compactMap { $0 as? String } ?? []
+            return ProviderCheck.Result(
+                key: columnText(stmt, 0) ?? keyName,
+                provider: columnText(stmt, 1) ?? "",
+                host: columnText(stmt, 2) ?? "",
+                checkedAt: columnText(stmt, 3) ?? "",
+                outcome: outcome,
+                httpStatus: status,
+                models: models,
+                requestId: columnText(stmt, 7),
+                message: columnText(stmt, 8),
+                endpoint: columnText(stmt, 9)
+            )
+        }
+    }
+
+    func deleteProviderCheck(keyName: String) throws {
+        try withLock {
+            let stmt = try prepare("DELETE FROM provider_checks WHERE key_name = ?;")
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, keyName)
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
         }
     }
 

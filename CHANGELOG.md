@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+Agent key access, from `notes/2026-09-06-agent-key-access.md`.
+
+- Grants: `keys grant`, `keys grants`, `keys revoke` and a Grant action in the
+  dashboard. One Touch ID per task; the token is used as the API key; bound to
+  key, host, methods, path prefixes, expiry, optional request and USD caps.
+  Revoked on screen lock, gateway off, key edit or delete, and site restart.
+- The gateway now requires a grant token. A request without one gets
+  `401 grant_required`; out-of-scope requests get a named 403 or 429. The
+  old open-once-enabled behaviour is gone.
+- Checks: `keys test`, `keys models [--cached] [--grep]` and a Check action
+  with a filter box. Read-only, provider-specific, never a generation call;
+  result stored per key and reused without a second unlock.
+- Errors: presence failures split into cancelled, failed and unavailable
+  (with the reason); provider 401 and 403 reported differently; provider
+  message and request id kept, key scrubbed from every message.
+- Keys list and `keys env` show the provider and the host a key is bound to.
+- README now says what the per-launch token is (browser cross-site defence),
+  not local-process authentication.
+
+
 All notable changes to Keysreallysafe. Each entry is a GitHub release.
 
 ## 0.2.0 — 2026-09-05

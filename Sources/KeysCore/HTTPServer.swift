@@ -338,6 +338,18 @@ final class APIHandler: @unchecked Sendable {
                 return try clientsIssue(request, nameFrom: p)
             case ("DELETE", let p) where p.hasPrefix("/api/keys/") && p.contains("/clients/"):
                 return try clientsRevoke(pathWith: p)
+            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/grants"):
+                return try keysGrant(request, nameFrom: p)
+            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/check"):
+                return try keysCheck(nameFrom: p)
+            case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/check"):
+                return try keysLastCheck(nameFrom: p)
+            case ("GET", "/api/grants"):
+                return grantsList(request)
+            case ("DELETE", "/api/grants"):
+                return grantsRevokeAll(request)
+            case ("DELETE", let p) where p.hasPrefix("/api/grants/"):
+                return try grantRevoke(p)
             case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/rotate"):
                 return try keysRotate(request, nameFrom: p)
             case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/events"):
@@ -506,6 +518,83 @@ final class APIHandler: @unchecked Sendable {
         }
         let client = try service.revokeGatewayClient(name: name, id: id, caller: "dashboard")
         return HTTPResponse.json(200, ["client": client.jsonObject()])
+    }
+
+    private func keysGrant(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
+        let name = try extractName(path, suffix: "/grants")
+        guard let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) else {
+            return HTTPResponse.json(400, ["error": "invalid json"])
+        }
+        var req = GrantRequest(task: JSONValue.string(obj["task"]) ?? "")
+        if let m = JSONValue.int(obj["minutes"]) { req.minutes = m }
+        if let methods = obj["methods"] as? [Any] {
+            req.methods = Set(methods.compactMap { $0 as? String })
+        }
+        if let paths = obj["paths"] as? [Any] {
+            req.paths = paths.compactMap { $0 as? String }
+        }
+        if obj.keys.contains("max_requests"), !(obj["max_requests"] is NSNull) {
+            guard let n = JSONValue.int(obj["max_requests"]) else {
+                return HTTPResponse.json(400, ["error": "max_requests must be an integer"])
+            }
+            req.maxRequests = n
+        }
+        if obj.keys.contains("max_usd"), !(obj["max_usd"] is NSNull) {
+            guard let d = JSONValue.double(obj["max_usd"]) else {
+                return HTTPResponse.json(400, ["error": "max_usd must be a number"])
+            }
+            req.maxUsd = d
+        }
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "dashboard"
+        let issued = try service.issueGrant(name: name, request: req, caller: caller)
+        var body = issued.grant.jsonObject()
+        body["token"] = issued.token
+        body["gateway_url"] = "http://127.0.0.1:\(GatewayListener.port)/\(name)"
+        let prefix = Providers.provider(id: issued.grant.provider)?.pathPrefix ?? ""
+        body["base_url"] = "http://127.0.0.1:\(GatewayListener.port)/\(name)" + prefix
+        body["auth_header"] = Providers.provider(id: issued.grant.provider)?.authHeader ?? "Authorization"
+        return HTTPResponse.json(201, body)
+    }
+
+    private func grantsList(_ request: HTTPRequest) -> HTTPResponse {
+        let all = request.query["all"] == "1" || request.query["all"] == "true"
+        var grants = service.listGrants(includeInactive: all)
+        if let key = request.query["key"], !key.isEmpty {
+            grants = grants.filter { $0.key == key }
+        }
+        return HTTPResponse.json(200, [
+            "grants": grants.map { $0.jsonObject() },
+            "gateway_owned": service.thisProcessOwnsGateway(),
+        ])
+    }
+
+    private func grantRevoke(_ path: String) throws -> HTTPResponse {
+        let id = String(path.dropFirst("/api/grants/".count))
+        guard id.count == 8, id.allSatisfy({ $0.isHexDigit }) else {
+            return HTTPResponse.json(404, ["error": "not_found"])
+        }
+        let g = try service.revokeGrant(id: id, caller: "dashboard")
+        return HTTPResponse.json(200, g.jsonObject())
+    }
+
+    private func grantsRevokeAll(_ request: HTTPRequest) -> HTTPResponse {
+        let key = request.query["key"].flatMap { $0.isEmpty ? nil : $0 }
+        let touched = service.revokeGrants(key: key, reason: "revoked", caller: "dashboard")
+        return HTTPResponse.json(200, ["revoked": touched.map { $0.jsonObject() }])
+    }
+
+    private func keysCheck(nameFrom path: String) throws -> HTTPResponse {
+        let name = try extractName(path, suffix: "/check")
+        let result = try service.checkProvider(name: name, caller: "dashboard")
+        return HTTPResponse.json(200, result.jsonObject())
+    }
+
+    private func keysLastCheck(nameFrom path: String) throws -> HTTPResponse {
+        let name = try extractName(path, suffix: "/check")
+        guard let result = try service.lastCheck(name: name) else {
+            return HTTPResponse.json(404, ["error": "not_checked", "message": "no check recorded for \(name)"])
+        }
+        return HTTPResponse.json(200, result.jsonObject())
     }
 
     private func keysRotate(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
@@ -688,9 +777,13 @@ final class APIHandler: @unchecked Sendable {
                 "gateway_owner_pid": Int(pid),
             ])
         case .authFailed:
-            return HTTPResponse.json(403, ["error": "auth_failed"])
+            return HTTPResponse.json(403, ["error": "auth_failed", "message": error.description])
+        case .authCancelled:
+            return HTTPResponse.json(403, ["error": "auth_cancelled", "message": error.description])
+        case .authUnavailable:
+            return HTTPResponse.json(503, ["error": "auth_unavailable", "message": error.description])
         case .keychain(let m):
-            return HTTPResponse.json(500, ["error": m])
+            return HTTPResponse.json(500, ["error": "keychain", "message": m])
         default:
             return HTTPResponse.json(400, ["error": error.description])
         }

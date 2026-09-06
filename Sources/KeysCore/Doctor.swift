@@ -20,6 +20,8 @@ struct DoctorReport: Equatable {
     var binaryNote: String
     var gatewayOwnerPid: pid_t? = nil
     var gatewayOwned: Bool = false
+    var activeGrants: Int = 0
+    var controlFile: String? = nil
 
     func jsonObject() -> [String: Any] {
         [
@@ -39,6 +41,8 @@ struct DoctorReport: Equatable {
             "binary": binaryNote,
             "gateway_owner_pid": gatewayOwnerPid.map { Int($0) } as Any? ?? NSNull(),
             "gateway_owned": gatewayOwned,
+            "active_grants": activeGrants,
+            "control_file": controlFile as Any? ?? NSNull(),
         ]
     }
 
@@ -60,6 +64,9 @@ struct DoctorReport: Equatable {
         )
         lines.append(
             "gateway  127.0.0.1:\(gatewayPort)  \(gatewayListening ? "listening" : "not listening")"
+        )
+        lines.append(
+            "grants  \(activeGrants) active in this process  control=\(controlFile ?? "none (no running site)")"
         )
         lines.append(
             "autostart  \(autostartPlistPath)  \(autostartPlist ? "present" : "missing")"
@@ -193,7 +200,9 @@ enum Doctor {
             debugBinarySHA256: debugSHA,
             binaryNote: binaryNote,
             gatewayOwnerPid: service.gatewayOwnerPid(),
-            gatewayOwned: service.thisProcessOwnsGateway()
+            gatewayOwned: service.thisProcessOwnsGateway(),
+            activeGrants: service.listGrants().count,
+            controlFile: ControlFile.live().map { "127.0.0.1:\($0.port) pid \($0.pid)" }
         )
     }
 

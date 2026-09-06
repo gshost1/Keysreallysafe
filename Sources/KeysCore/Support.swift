@@ -6,6 +6,8 @@ enum AppError: Error, CustomStringConvertible {
     case usage(String)
     case notFound(String)
     case authFailed
+    case authCancelled
+    case authUnavailable(String)
     case ingestIO(String)
     case alreadyExists(String)
     case gatewayOwned(pid_t)
@@ -20,7 +22,7 @@ enum AppError: Error, CustomStringConvertible {
             return 1
         case .notFound:
             return 2
-        case .authFailed, .keychain:
+        case .authFailed, .authCancelled, .authUnavailable, .keychain:
             return 3
         case .ingestIO, .sqlite:
             return 4
@@ -34,7 +36,11 @@ enum AppError: Error, CustomStringConvertible {
         case .notFound(let name):
             return "not found: \(name)"
         case .authFailed:
-            return "keychain authorization failed or cancelled"
+            return "Mac authentication failed (Touch ID or password not accepted)"
+        case .authCancelled:
+            return "Mac authentication cancelled"
+        case .authUnavailable(let m):
+            return "Mac authentication unavailable: \(m)"
         case .alreadyExists(let name):
             return "already exists: \(name)"
         case .gatewayOwned(let pid):
@@ -42,6 +48,30 @@ enum AppError: Error, CustomStringConvertible {
         case .refusedBind(let host):
             return "refusing to bind \(host) (loopback 127.0.0.1 only)"
         }
+    }
+}
+
+/// Strips credential values from text that may be printed or stored.
+enum Redact {
+    static let mask = "[redacted]"
+
+    static func scrub(_ text: String, secrets: [String]) -> String {
+        var out = text
+        for secret in secrets where secret.count >= 4 {
+            out = out.replacingOccurrences(of: secret, with: mask)
+        }
+        // Authorization-style values and grant tokens, wherever they appear.
+        out = out.replacingOccurrences(
+            of: #"(?i)(bearer\s+)[A-Za-z0-9._\-~+/=]{8,}"#, with: "$1" + mask, options: .regularExpression
+        )
+        out = out.replacingOccurrences(
+            of: #"ksf_[A-Za-z0-9]+_[A-Za-z0-9_\-]+"#, with: mask, options: .regularExpression
+        )
+        out = out.replacingOccurrences(
+            of: #"(?i)(x-api-key|x-goog-api-key|api-key|authorization)(\s*[:=]\s*)\S+"#,
+            with: "$1$2" + mask, options: .regularExpression
+        )
+        return out
     }
 }
 
