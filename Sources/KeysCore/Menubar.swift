@@ -181,8 +181,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func ingestNow() {
-        _ = try? service.ingest(.all)
-        refresh()
+        // Never on the main thread: a pass over a large log tree would freeze the menu bar.
+        let queued = IngestScheduler.enqueue(service: service) { [weak self] in
+            DispatchQueue.main.async { self?.refresh() }
+        }
+        if !queued { refresh() }   // a pass is already running and will refresh when it lands
     }
 
     @objc func quit() {

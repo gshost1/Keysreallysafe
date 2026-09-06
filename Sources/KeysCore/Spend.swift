@@ -281,7 +281,8 @@ struct SpendQueries {
             start: start,
             end: end,
             now: now,
-            timeZone: timeZone
+            timeZone: timeZone,
+            keyed: key != nil
         )
         assembled.lastIngestAt = try db.lastIngestAt()
         assembled.catalogVersion = try db.catalogVersion()
@@ -296,7 +297,8 @@ struct SpendQueries {
         start: Date,
         end: Date,
         now: Date,
-        timeZone: TimeZone
+        timeZone: TimeZone,
+        keyed: Bool = false
     ) -> SpendReport {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = timeZone
@@ -304,6 +306,10 @@ struct SpendQueries {
         var totals = SpendTotals()
         let (events, correlated) = dropCorrelatedGatewayEvents(allEvents)
         totals.gatewayCorrelatedCalls = correlated
+        // Rows, daily buckets and hourly points follow the headline: without a key filter they
+        // are the local ledger, and gateway calls appear only in the gateway totals. A keyed
+        // report is the gateway's own ledger (local events carry no key), so everything shows.
+        let charted = keyed ? events : events.filter { $0.source != "gateway" }
         var grokTicks: Int64 = 0
         var claudeEstimate: Double = 0
         var hasClaudeEstimate = false
@@ -395,18 +401,18 @@ struct SpendQueries {
         let rows: [SpendRow]
         switch by {
         case .model, .hour:
-            rows = groupByModel(events)
+            rows = groupByModel(charted)
         case .session:
-            rows = groupBySession(events)
+            rows = groupBySession(charted)
         case .project:
-            rows = groupByProject(events)
+            rows = groupByProject(charted)
         }
 
         let daily = by == .project
-            ? dailyPointsByProject(events, calendar: cal)
-            : dailyPoints(events, calendar: cal)
+            ? dailyPointsByProject(charted, calendar: cal)
+            : dailyPoints(charted, calendar: cal)
         let points = by == .hour
-            ? hourlyPoints(events, now: now, timeZone: timeZone)
+            ? hourlyPoints(charted, now: now, timeZone: timeZone)
             : []
         return SpendReport(
             range: range,

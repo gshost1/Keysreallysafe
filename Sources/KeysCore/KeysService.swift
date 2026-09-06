@@ -327,17 +327,37 @@ final class KeysService: @unchecked Sendable {
         guard client.revokedAt == nil else { return .denied("revoked") }
         guard client.isActive(now: now) else { return .denied("expired") }
         guard client.allows(method: method, rest: rest) else { return .denied("out_of_scope") }
-        try? catalog.touchGatewayClient(id: client.id, at: UTC.iso(now))
         return .allowed(client)
+    }
+
+    /// Called once the key resolved and the call is about to be forwarded, so `last_used_at`
+    /// means an upstream call, not a rejected attempt.
+    func noteGatewayClientUse(_ client: GatewayClient, now: Date = Date()) {
+        try? catalog.touchGatewayClient(id: client.id, at: UTC.iso(now))
+    }
+
+    /// Audit a denial only for a key that exists; a made-up name must not grow the log.
+    func recordGatewayDenial(name: String, reason: String) {
+        guard (try? catalog.catalogExists(name: name)) == true else { return }
+        try? recordKeyEvent(name: name, action: "gateway_denied", caller: "gateway", detail: reason)
     }
 
     func recordGatewayUsage(_ row: GatewayUsageRow) throws {
         try catalog.withTransaction {
             try catalog.insertGatewayUsage(row)
+            // The upstream request id is the prompt id so a local event with the same id can be
+            // matched. A proxy that repeats ids must not collapse two calls into one row, so a
+            // second sighting of an id gets a suffix (and then no longer correlates).
+            var promptId = row.requestId ?? UUID().uuidString.lowercased()
+            if row.requestId != nil,
+               try catalog.usageExists(source: "gateway", sessionId: "gw:" + row.key, promptId: promptId, model: row.model ?? "")
+            {
+                promptId += "+" + UUID().uuidString.lowercased()
+            }
             let event = UsageEvent(
                 source: "gateway",
                 sessionId: "gw:" + row.key,
-                promptId: row.requestId ?? UUID().uuidString.lowercased(),
+                promptId: promptId,
                 model: row.model ?? "",
                 occurredAt: row.ts,
                 provider: row.provider,
@@ -411,10 +431,6 @@ final class KeysService: @unchecked Sendable {
             out[row.key] = month
         }
         return out
-    }
-
-    func monthUsdByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: Double] {
-        try monthGatewayByKey(now: now, timeZone: timeZone).compactMapValues(\.usd)
     }
 
     /// Metadata only. Name and secret are immutable. No Touch ID.
@@ -612,7 +628,8 @@ final class KeysService: @unchecked Sendable {
     }
 
     func ingestIfStale(olderThan: TimeInterval = IngestScheduler.staleInterval) throws {
-        ingestLock.lock()
+        // A pass already running will refresh the data; do not queue a request thread behind it.
+        guard ingestLock.try() else { return }
         defer { ingestLock.unlock() }
         if let iso = try catalog.lastIngestAt(), let date = UTC.parse(iso) {
             if Date().timeIntervalSince(date) < olderThan { return }

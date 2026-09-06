@@ -122,6 +122,8 @@ final class GatewayClientTests: XCTestCase {
         let auth = ["Authorization": "Bearer " + scoped.token]
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: auth), 200)
         await AsyncAssert.equal(try await send(rig.url("v1/chatter"), headers: auth), 401, "prefix is segment-aware")
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/../models"), headers: auth), 401, "dot segments never pass a scope")
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/%2e%2e/models"), headers: auth), 401)
         await AsyncAssert.equal(try await send(rig.url("v1/models"), headers: auth), 401)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), method: "GET", headers: auth), 401)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions", key: "other"), headers: auth), 401, "a client is bound to one key")
@@ -143,6 +145,35 @@ final class GatewayClientTests: XCTestCase {
         XCTAssertTrue(reasons.contains("out_of_scope"))
         XCTAssertTrue(reasons.contains("expired"))
         XCTAssertTrue(reasons.contains("revoked"))
+    }
+
+    func testTrailingSlashPrefixMatchesTheEndpointItNames() throws {
+        XCTAssertEqual(try GatewayClientToken.validatePathPrefix("/v1/messages/"), "v1/messages")
+        XCTAssertNil(try GatewayClientToken.validatePathPrefix("///"))
+        XCTAssertThrowsError(try GatewayClientToken.validatePathPrefix("v1/%2e%2e/x"))
+        let c = GatewayClient(id: 1, keyName: "k", label: "", methods: ["POST"], pathPrefix: "v1/messages",
+                              createdAt: "", expiresAt: "2999-01-01T00:00:00Z", revokedAt: nil, lastUsedAt: nil, hint: "")
+        XCTAssertTrue(c.allows(method: "POST", rest: "v1/messages"))
+        XCTAssertTrue(c.allows(method: "post", rest: "v1/messages/count_tokens"))
+        XCTAssertFalse(c.allows(method: "POST", rest: "v1/messages2"))
+        XCTAssertFalse(c.allows(method: "POST", rest: "v1/messages/../models"))
+        XCTAssertFalse(c.allows(method: "POST", rest: "./v1/messages"))
+    }
+
+    func testUnknownKeyNamesDoNotGrowTheAuditLogAndUseIsStampedOnlyOnForward() async throws {
+        let rig = try makeRig()
+        defer { rig.gateway.stop(); rig.stub.stop() }
+        for i in 0..<5 {
+            await AsyncAssert.equal(try await send(rig.url("v1/x", key: "junk\(i)")), 401)
+        }
+        let allEvents = try rig.db.keyEvents(name: "junk0", limit: 50)
+        XCTAssertTrue(allEvents.isEmpty, "no audit row for a name that is not a key")
+        // A valid client on a key whose gateway is off gets 404 and no last_used_at.
+        try rig.service.add(name: "off", provider: "openai", kind: "runtime", notes: "", secret: "s")
+        let issued = try rig.service.issueGatewayClient(name: "off", label: "t")
+        await AsyncAssert.equal(try await send(rig.url("v1/x", key: "off"), headers: ["Authorization": "Bearer " + issued.token]), 404)
+        XCTAssertNil(try rig.service.gatewayClients(name: "off").first?.lastUsedAt)
+        XCTAssertEqual(rig.hits.count, 0)
     }
 
     func testDeletingTheKeyDeletesItsClients() throws {

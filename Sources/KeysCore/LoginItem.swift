@@ -175,8 +175,10 @@ struct Installer {
         var moved = false
         do {
             try bootout()
-            try moveLive(to: backup)
+            // From the first move on, rollback must run even if moveLive itself fails halfway;
+            // rollback checks each part for existence, so a partial move is safe to undo.
             moved = true
+            try moveLive(to: backup)
             for part in Self.parts {
                 let from = staging.appendingPathComponent(part)
                 if fm.fileExists(atPath: from.path) {

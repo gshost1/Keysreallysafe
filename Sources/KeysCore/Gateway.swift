@@ -147,13 +147,14 @@ final class GatewayListener: @unchecked Sendable {
         }
         // Loopback headers say where a browser request came from; they say nothing about a native
         // local process. Every caller must hold a client capability issued for this key.
+        let gatewayClient: GatewayClient
         switch service.authorizeGatewayClient(
             name: keyName, headers: request.headers, method: request.method, rest: request.rest
         ) {
-        case .allowed:
-            break
+        case .allowed(let c):
+            gatewayClient = c
         case .denied(let reason):
-            try? service.recordKeyEvent(name: keyName, action: "gateway_denied", caller: "gateway", detail: reason)
+            service.recordGatewayDenial(name: keyName, reason: reason)
             _ = Self.writeJSON(fd: client, status: 401, object: [
                 "error": "client_required",
                 "hint": "issue one with: keys client issue \(keyName)",
@@ -164,6 +165,7 @@ final class GatewayListener: @unchecked Sendable {
             _ = Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
             return
         }
+        service.noteGatewayClientUse(gatewayClient)
         let host = target.host
         let hostname = host.split(separator: ":").first.map(String.init) ?? host
         let scheme = BindPolicy.isLoopbackHostname(hostname) ? "http" : "https"

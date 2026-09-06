@@ -133,6 +133,28 @@ final class InstallerRollbackTests: XCTestCase {
         XCTAssertTrue(leftovers.isEmpty)
     }
 
+    func testFailureWhileMovingLivePartsStillRollsBack() throws {
+        let w = try makeWorld()
+        try w.installer.install(fromBinary: w.source, webRoot: w.webRoot)
+        // Make the Web directory immovable: a file at the backup destination path cannot exist
+        // yet, so instead deny the move by making the live Web dir a mount-like obstacle: rename
+        // protection via an unremovable child is not portable, so simulate with a read-only root.
+        let plistBefore = try Data(contentsOf: w.plist)
+        try Data("v2".utf8).write(to: w.source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: w.root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: w.root.path) }
+        XCTAssertThrowsError(try w.installer.install(fromBinary: w.source, webRoot: w.webRoot)) { error in
+            let f = error as? Installer.Failure
+            XCTAssertNotNil(f)
+            if f?.stage == "activation" {
+                XCTAssertEqual(f?.rolledBack, true)
+            }
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: w.root.path)
+        XCTAssertEqual(liveBinary(w), "v1")
+        XCTAssertEqual(try Data(contentsOf: w.plist), plistBefore)
+    }
+
     func testBootstrapFailureOnFreshInstallLeavesNoHalfInstall() throws {
         let w = try makeWorld()
         w.launch.failVerb = "bootstrap"

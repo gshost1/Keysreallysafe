@@ -201,18 +201,25 @@ final class CatalogDB: @unchecked Sendable {
     /// the main file nor the WAL keeps the old page images. Scope: this catalog file only.
     /// Copies made by Time Machine or by hand are outside what the app can reach.
     private func purgeLegacyTailSignatures() throws {
+        // The marker is written only after the vacuum succeeded, so a busy database on one open
+        // (another process mid-ingest) means the whole step runs again next time rather than the
+        // freed pages being left behind. Nothing here may fail `init`.
+        if try metaValue("tail_sig_format") == "v2" { return }
         try exec(
             "UPDATE ingest_files SET tail_sig = NULL WHERE tail_sig IS NOT NULL AND tail_sig != '' AND tail_sig NOT LIKE 'v2:%';"
         )
         let cleared = sqlite3_changes(db)
         if cleared > 0 {
+            let previous = Int(try metaValue("tail_sig_purged_rows") ?? "0") ?? 0
+            try setMeta("tail_sig_purged_rows", String(previous + Int(cleared)))
+        }
+        do {
             try exec("PRAGMA wal_checkpoint(TRUNCATE)")
             try exec("VACUUM")
-            try setMeta("tail_sig_purged_rows", String(cleared))
+        } catch {
+            return
         }
-        if try metaValue("tail_sig_format") != "v2" {
-            try setMeta("tail_sig_format", "v2")
-        }
+        try setMeta("tail_sig_format", "v2")
     }
 
     private func rebuildUsagePrimaryKeyIfNeeded() throws {
@@ -793,6 +800,20 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     @discardableResult
+    func usageExists(source: String, sessionId: String, promptId: String, model: String) throws -> Bool {
+        try withLock {
+            let stmt = try prepare(
+                "SELECT 1 FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ? LIMIT 1;"
+            )
+            defer { sqlite3_finalize(stmt) }
+            bindText(stmt, 1, source)
+            bindText(stmt, 2, sessionId)
+            bindText(stmt, 3, promptId)
+            bindText(stmt, 4, model)
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
     func insertUsage(_ event: UsageEvent) throws -> InsertResult {
         try withLock {
             let existedStmt = try prepare(

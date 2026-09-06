@@ -65,11 +65,16 @@ final class TailDigestPrivacyTests: XCTestCase {
             let mtime = Int64(((attrs[.modificationDate] as? Date) ?? Date()).timeIntervalSince1970 * 1000)
             try db.upsertIngestFile(path: file.path, size: size, mtimeMs: mtime, byteOffset: size, tailSig: legacyHex)
             XCTAssertEqual(try db.ingestFile(path: file.path)?.tailSig, legacyHex)
+            // A catalog written by 0.1.0 has no format marker; a marked catalog is never rescanned.
+            try db.clearMeta("tail_sig_format")
         }
         let reopened = try CatalogDB(path: path)
         XCTAssertNil(try reopened.ingestFile(path: file.path)?.tailSig)
         XCTAssertEqual(try reopened.metaValue("tail_sig_format"), "v2")
         XCTAssertEqual(try reopened.metaValue("tail_sig_purged_rows"), "1")
+        // A fresh catalog carries the marker too, so the purge runs at most once per file.
+        let (fresh, _) = try makeDB()
+        XCTAssertEqual(try fresh.metaValue("tail_sig_format"), "v2")
         for name in ["catalog.db", "catalog.db-wal"] {
             guard let bytes = try? Data(contentsOf: dir.appendingPathComponent(name)) else { continue }
             XCTAssertNil(bytes.range(of: Data(legacyHex.utf8)), "\(name) still holds the legacy signature")

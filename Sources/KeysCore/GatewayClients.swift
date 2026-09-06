@@ -27,8 +27,11 @@ struct GatewayClient: Equatable {
 
     func allows(method: String, rest: String) -> Bool {
         guard methods.contains(method.uppercased()) else { return false }
+        // A `..` segment would pass a prefix check here and be collapsed upstream into a
+        // different path, so no request path with dot segments is in scope for any client.
+        guard !GatewayClientToken.hasDotSegment(rest) else { return false }
         guard let pathPrefix, !pathPrefix.isEmpty else { return true }
-        return rest == pathPrefix || rest.hasPrefix(pathPrefix.hasSuffix("/") ? pathPrefix : pathPrefix + "/")
+        return rest == pathPrefix || rest.hasPrefix(pathPrefix + "/")
     }
 
     func jsonObject(now: Date = Date()) -> [String: Any] {
@@ -103,13 +106,27 @@ enum GatewayClientToken {
         return Array(Set(upper)).sorted()
     }
 
+    /// Mirrors `GatewayListener.splitKey`, which strips a trailing slash from the request path.
     static func validatePathPrefix(_ prefix: String?) throws -> String? {
         guard var p = prefix?.trimmingCharacters(in: .whitespaces), !p.isEmpty else { return nil }
         while p.hasPrefix("/") { p.removeFirst() }
-        if p.contains("..") || p.contains("?") || p.contains("#") || p.contains("\0") || p.count > 200 {
+        while p.hasSuffix("/") { p.removeLast() }
+        if p.isEmpty { return nil }
+        if hasDotSegment(p) || p.contains("?") || p.contains("#") || p.contains("\0") || p.count > 200 {
             throw AppError.usage("invalid path prefix")
         }
         return p
+    }
+
+    /// True when any `/`-separated segment is `.` or `..`, before or after percent-decoding.
+    static func hasDotSegment(_ path: String) -> Bool {
+        for candidate in [path, path.removingPercentEncoding ?? path] {
+            for segment in candidate.split(separator: "/", omittingEmptySubsequences: false)
+            where segment == "." || segment == ".." {
+                return true
+            }
+        }
+        return false
     }
 
     static func validateDays(_ days: Int?) throws -> Int {

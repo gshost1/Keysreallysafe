@@ -52,14 +52,19 @@ final class GatewayAccountingTests: XCTestCase {
         let all = try report(db)
         XCTAssertEqual(all.totals.gatewayCorrelatedCalls, 1)
         XCTAssertEqual(all.totals.gatewayCalls, 1)
-        XCTAssertEqual(all.rows.filter { $0.key == "probe" }.count, 1, "only the uncorrelated gateway call remains as a keyed row")
+        XCTAssertTrue(all.rows.allSatisfy { $0.key == nil }, "an unkeyed report charts the local ledger only")
+        XCTAssertEqual(all.rows.reduce(0) { $0 + $1.inputTokens + $1.outputTokens }, all.totals.tokens, "rows agree with the headline")
+        XCTAssertEqual(all.daily.reduce(0) { $0 + $1.tokens }, all.totals.tokens)
         // Per-key view is the gateway's own ledger; nothing local carries a key, so nothing is dropped.
         let keyed = try report(db, key: "probe")
         XCTAssertEqual(keyed.totals.gatewayCalls, 2)
         XCTAssertEqual(keyed.totals.gatewayCorrelatedCalls, 0)
-        // A retry with the same upstream id is one usage row, not two.
+        // A proxy that repeats request ids must not collapse two calls into one row.
         try service.recordGatewayUsage(gatewayRow(requestId: "req_other"))
-        XCTAssertEqual(try report(db, key: "probe").totals.gatewayCalls, 2)
+        let keyedAgain = try report(db, key: "probe")
+        XCTAssertEqual(keyedAgain.totals.gatewayCalls, 3)
+        XCTAssertEqual(keyedAgain.totals.gatewayTokens, 450)
+        XCTAssertEqual(keyedAgain.rows.first?.key, "probe", "a keyed report is the gateway ledger and still charts")
     }
 
     func testUnknownGatewayCostIsNullNotZero() throws {
