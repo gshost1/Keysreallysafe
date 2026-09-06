@@ -263,7 +263,7 @@
       "id": "ramp-router",
       "name": "Ramp Router",
       "group": "routers",
-      "host": "app.router.com",
+      "host": "api.router.com",
       "api": "openai",
       "auth_header": "Authorization",
       "auth_prefix": "Bearer ",

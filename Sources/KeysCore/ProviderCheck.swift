@@ -145,10 +145,14 @@ enum ProviderCheck {
         case 200..<300:
             let models = parseModels(api: provider.api, data: data)
             if models.isEmpty, !looksLikeList(api: provider.api, data: data) {
+                let ctype = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+                let why = ctype.contains("text/html") || data.prefix(64).contains(where: { $0 == UInt8(ascii: "<") })
+                    ? "answered a web page, not JSON; \(host) is probably the app host, not the API host"
+                    : message
                 return Result(
                     key: key, provider: provider.id, host: host, checkedAt: ts,
                     outcome: .malformed, httpStatus: http.statusCode, models: [], requestId: requestId,
-                    message: message, endpoint: endpoint.path
+                    message: why, endpoint: endpoint.path
                 )
             }
             return Result(
