@@ -103,6 +103,9 @@ final class GatewayListener: @unchecked Sendable {
         switch HTTPFrame.read(fd: client, bodyCap: Self.bodyCap) {
         case .tooLarge:
             _ = Self.writeJSON(fd: client, status: 413, object: ["error": "payload too large"])
+            // Closing with unread bytes in the receive buffer makes the kernel send RST, and the
+            // client then sees a dropped connection instead of the 413. Drain briefly first.
+            Self.drain(fd: client)
             return
         case .bad:
             _ = Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
@@ -281,6 +284,20 @@ final class GatewayListener: @unchecked Sendable {
         }
         let name = p.removingPercentEncoding ?? p
         return (name, "")
+    }
+
+    /// Reads and discards what the client is still sending, bounded in bytes and time.
+    static func drain(fd: Int32, maxBytes: Int = 4 * bodyCap, seconds: Int = 2) {
+        var tv = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        Darwin.shutdown(fd, SHUT_WR)
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        var total = 0
+        while total < maxBytes {
+            let n = Darwin.read(fd, &buf, buf.count)
+            if n <= 0 { break }
+            total += n
+        }
     }
 
     static func writeJSON(fd: Int32, status: Int, object: [String: Any]) -> Bool {
