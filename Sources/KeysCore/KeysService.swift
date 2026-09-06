@@ -75,17 +75,18 @@ final class KeysService: @unchecked Sendable {
     }
 
     func listJSONObject() throws -> [[String: Any]] {
-        let usd = try monthUsdByKey()
-        return try list().map { keyJSONObject($0, usdMonth: usd[$0.name]) }
+        let months = try monthGatewayByKey()
+        return try list().map { keyJSONObject($0, month: months[$0.name]) }
     }
 
     func keyJSONObject(_ row: CatalogRow) throws -> [String: Any] {
-        let usd = try monthUsdByKey()[row.name]
-        return keyJSONObject(row, usdMonth: usd)
+        let month = try monthGatewayByKey()[row.name]
+        return keyJSONObject(row, month: month)
     }
 
-    func keyJSONObject(_ row: CatalogRow, usdMonth: Double?) -> [String: Any] {
+    func keyJSONObject(_ row: CatalogRow, month: GatewayMonth?) -> [String: Any] {
         let enabled = isGatewayEnabled(row.name)
+        let month = month ?? GatewayMonth()
         return [
             "name": row.name,
             "provider": row.provider,
@@ -98,7 +99,12 @@ final class KeysService: @unchecked Sendable {
             "gateway_url": enabled
                 ? "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
                 : NSNull(),
-            "usd_month": usdMonth ?? 0,
+            // null means "calls happened but none could be priced", not zero dollars.
+            "usd_month": month.usd as Any? ?? NSNull(),
+            "usd_month_kind": month.kind,
+            "gateway_month_calls": month.calls,
+            "gateway_month_unpriced_calls": month.unpricedCalls,
+            "gateway_month_unpriced_tokens": month.unpricedTokens,
             "version": row.version,
         ]
     }
@@ -246,7 +252,7 @@ final class KeysService: @unchecked Sendable {
             let event = UsageEvent(
                 source: "gateway",
                 sessionId: "gw:" + row.key,
-                promptId: UUID().uuidString.lowercased(),
+                promptId: row.requestId ?? UUID().uuidString.lowercased(),
                 model: row.model ?? "",
                 occurredAt: row.ts,
                 provider: row.provider,
@@ -277,22 +283,53 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
-    func monthUsdByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: Double] {
+    /// This month's gateway calls for one key. `usd` is nil when no call could be priced,
+    /// so an unknown cost is never shown as $0.
+    struct GatewayMonth: Equatable {
+        var usd: Double? = nil
+        var calls: Int = 0
+        var pricedCalls: Int = 0
+        var unpricedCalls: Int = 0
+        var unpricedTokens: Int = 0
+
+        /// none: no calls. estimate: every call priced. partial: some priced. unknown: none priced.
+        var kind: String {
+            if calls == 0 { return "none" }
+            if unpricedCalls == 0 { return "estimate" }
+            if pricedCalls == 0 { return "unknown" }
+            return "partial"
+        }
+    }
+
+    func monthGatewayByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: GatewayMonth] {
         let (start, end) = SpendRange.month.interval(now: now, timeZone: timeZone)
         let rows = try catalog.gatewayUsage(from: UTC.iso(start), to: UTC.iso(end))
-        var sums: [String: Double] = [:]
+        var out: [String: GatewayMonth] = [:]
         for row in rows {
-            guard let usd = GatewayEstimate.usd(
+            var month = out[row.key] ?? GatewayMonth()
+            month.calls += 1
+            if let usd = GatewayEstimate.usd(
                 model: row.model,
                 input: row.inputTokens ?? 0,
                 output: row.outputTokens ?? 0,
                 cacheRead: row.cacheReadTokens ?? 0,
                 cacheWrite: row.cacheWriteTokens ?? 0,
                 api: Providers.provider(id: row.provider)?.api
-            ) else { continue }
-            sums[row.key, default: 0] += usd
+            ) {
+                month.usd = (month.usd ?? 0) + usd
+                month.pricedCalls += 1
+            } else {
+                month.unpricedCalls += 1
+                month.unpricedTokens += (row.inputTokens ?? 0) + (row.outputTokens ?? 0)
+                    + (row.cacheReadTokens ?? 0) + (row.cacheWriteTokens ?? 0)
+            }
+            out[row.key] = month
         }
-        return sums
+        return out
+    }
+
+    func monthUsdByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: Double] {
+        try monthGatewayByKey(now: now, timeZone: timeZone).compactMapValues(\.usd)
     }
 
     /// Metadata only. Name and secret are immutable. No Touch ID.

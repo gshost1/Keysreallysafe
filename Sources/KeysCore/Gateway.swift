@@ -218,7 +218,8 @@ final class GatewayListener: @unchecked Sendable {
                     cacheReadTokens: parsed.cacheReadTokens,
                     cacheWriteTokens: parsed.cacheWriteTokens,
                     status: status,
-                    durationMs: durationMs
+                    durationMs: durationMs,
+                    requestId: proxy.requestId
                 )
             )
         } catch {
@@ -377,6 +378,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     private(set) var hasResponse = false
     private(set) var statusCode: Int?
     private(set) var contentType: String?
+    private(set) var requestId: String?
 
     init(clientFD: Int32, tee: GatewayTee) {
         self.clientFD = clientFD
@@ -408,6 +410,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
         let http = response as? HTTPURLResponse
         statusCode = http?.statusCode
         contentType = http?.value(forHTTPHeaderField: "Content-Type")
+        requestId = Self.requestId(from: http)
         if let contentType { tee.setContentType(contentType) }
         if !wroteHead {
             wroteHead = writeHead(http)
@@ -434,6 +437,18 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         finish()
+    }
+
+    static func requestId(from http: HTTPURLResponse?) -> String? {
+        guard let http else { return nil }
+        for name in ["request-id", "x-request-id"] {
+            if let value = http.value(forHTTPHeaderField: name)?.trimmingCharacters(in: .whitespaces),
+               !value.isEmpty, value.count <= 128
+            {
+                return value
+            }
+        }
+        return nil
     }
 
     private func writeHead(_ http: HTTPURLResponse?) -> Bool {

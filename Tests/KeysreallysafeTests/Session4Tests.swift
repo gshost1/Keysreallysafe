@@ -389,7 +389,9 @@ final class Session4Tests: XCTestCase {
             key: "demo"
         )
         XCTAssertEqual(report.totals.gatewayUsdEstimate ?? 0, 2.0, accuracy: 1e-9)
-        XCTAssertEqual(report.totals.usdEstimate ?? 0, 2.0, accuracy: 1e-9)
+        // Gateway dollars are a separate ledger, never folded into the local estimate.
+        XCTAssertEqual(report.totals.usdEstimate ?? 0, 0.0, accuracy: 1e-9)
+        XCTAssertEqual(report.totals.gatewayCalls, 1)
         XCTAssertEqual(report.totals.tokenRule, TokenTotals.rule)
         let json = report.jsonObject()["totals"] as! [String: Any]
         XCTAssertEqual(json["token_rule"] as? String, TokenTotals.rule)

@@ -12,6 +12,9 @@ struct GatewayUsageRow: Equatable {
     var cacheWriteTokens: Int?
     var status: Int
     var durationMs: Int
+    /// Upstream `request-id` / `x-request-id` response header. Claude Code stores the same value
+    /// as `requestId`, so a call seen both locally and through the gateway can be matched exactly.
+    var requestId: String? = nil
 }
 
 struct GatewayParsedUsage: Equatable {

@@ -137,6 +137,9 @@ final class CatalogDB: @unchecked Sendable {
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS gateway_usage_key_ts ON gateway_usage (key, ts);")
+        if !(try hasColumn("gateway_usage", "request_id")) {
+            try exec("ALTER TABLE gateway_usage ADD COLUMN request_id TEXT;")
+        }
         try exec("UPDATE catalog SET gateway_enabled = 0;")
         if !(try hasColumn("catalog", "version")) {
             try exec("ALTER TABLE catalog ADD COLUMN version INTEGER NOT NULL DEFAULT 1;")
@@ -821,8 +824,8 @@ final class CatalogDB: @unchecked Sendable {
             let sql = """
                 INSERT INTO gateway_usage (
                   ts, key, provider, model, input_tokens, output_tokens,
-                  cache_read_tokens, cache_write_tokens, status, duration_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                  cache_read_tokens, cache_write_tokens, status, duration_ms, request_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """
             let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
@@ -836,6 +839,7 @@ final class CatalogDB: @unchecked Sendable {
             bindInt(stmt, 8, row.cacheWriteTokens)
             sqlite3_bind_int(stmt, 9, Int32(row.status))
             sqlite3_bind_int(stmt, 10, Int32(row.durationMs))
+            bindText(stmt, 11, row.requestId)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
         }
     }
@@ -844,7 +848,7 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             var sql = """
                 SELECT id, ts, key, provider, model, input_tokens, output_tokens,
-                       cache_read_tokens, cache_write_tokens, status, duration_ms
+                       cache_read_tokens, cache_write_tokens, status, duration_ms, request_id
                 FROM gateway_usage
                 WHERE ts >= ? AND ts < ?
                 """
@@ -869,7 +873,8 @@ final class CatalogDB: @unchecked Sendable {
                         cacheReadTokens: columnOptionalInt(stmt, 7),
                         cacheWriteTokens: columnOptionalInt(stmt, 8),
                         status: Int(sqlite3_column_int(stmt, 9)),
-                        durationMs: Int(sqlite3_column_int(stmt, 10))
+                        durationMs: Int(sqlite3_column_int(stmt, 10)),
+                        requestId: columnText(stmt, 11)
                     )
                 )
             }

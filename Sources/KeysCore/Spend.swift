@@ -289,7 +289,7 @@ struct SpendQueries {
     }
 
     static func assemble(
-        events: [UsageEvent],
+        events allEvents: [UsageEvent],
         range: SpendRange,
         by: SpendGroup,
         source: SourceFilter,
@@ -302,6 +302,8 @@ struct SpendQueries {
         cal.timeZone = timeZone
 
         var totals = SpendTotals()
+        let (events, correlated) = dropCorrelatedGatewayEvents(allEvents)
+        totals.gatewayCorrelatedCalls = correlated
         var grokTicks: Int64 = 0
         var claudeEstimate: Double = 0
         var hasClaudeEstimate = false
@@ -312,7 +314,24 @@ struct SpendQueries {
         var gatewayEstimate: Double = 0
         var hasGatewayEstimate = false
 
+        var gatewayUnpriced = Set<String>()
         for event in events {
+            if event.source == "gateway" {
+                // Separate ledger. See SpendTotals.localScope.
+                let tok = TokenTotals.normalized(event)
+                totals.gatewayTokens += tok
+                totals.gatewayCalls += 1
+                if let est = gatewayUsd(event) {
+                    gatewayEstimate += est
+                    hasGatewayEstimate = true
+                    totals.gatewayPricedTokens += tok
+                } else {
+                    gatewayUnpriced.insert(event.model.isEmpty ? "unknown" : event.model)
+                    totals.gatewayUnpricedTokens += tok
+                    totals.gatewayUnpricedCalls += 1
+                }
+                continue
+            }
             totals.inputTokens += event.inputTokens
             totals.outputTokens += event.outputTokens
             totals.cachedReadTokens += event.cachedReadTokens
@@ -357,10 +376,6 @@ struct SpendQueries {
                     totals.openaiUnpricedTokens += tok
                 }
             }
-            if let est = gatewayUsd(event) {
-                gatewayEstimate += est
-                hasGatewayEstimate = true
-            }
         }
         totals.grokUsd = Ticks.usd(grokTicks)
         totals.claudeUsdEstimate = hasClaudeEstimate ? claudeEstimate : nil
@@ -368,10 +383,12 @@ struct SpendQueries {
         totals.gatewayUsdEstimate = hasGatewayEstimate ? gatewayEstimate : nil
         totals.claudeUnpricedModels = claudeUnpriced.sorted()
         totals.openaiUnpricedModels = openaiUnpriced.sorted()
+        totals.gatewayUnpricedModels = gatewayUnpriced.sorted()
         var grand = totals.grokUsd
         if let est = totals.claudeUsdEstimate { grand += est }
         if let est = totals.openaiUsdEstimate { grand += est }
-        if let est = totals.gatewayUsdEstimate { grand += est }
+        // Gateway dollars stay in gatewayUsdEstimate. Adding them here double-counted every
+        // Claude Code or Codex call that went through the gateway.
         totals.usdEstimate = grand
         totals.tokenRule = TokenTotals.rule
 
@@ -405,6 +422,27 @@ struct SpendQueries {
             startDay: SpendRange.localDay(start, timeZone: timeZone),
             endDay: SpendRange.inclusiveEndDay(end: end, timeZone: timeZone)
         )
+    }
+
+    /// A gateway event whose prompt id equals a local event's prompt id is the same upstream
+    /// call (the gateway stores the provider's request id; Claude Code stores it as
+    /// `requestId`). The local event is authoritative, so the gateway copy is dropped.
+    /// Only exact ids match; nothing is merged by time or model.
+    static func dropCorrelatedGatewayEvents(_ events: [UsageEvent]) -> ([UsageEvent], Int) {
+        var localIds = Set<String>()
+        for event in events where event.source != "gateway" && !event.promptId.isEmpty {
+            localIds.insert(event.promptId)
+        }
+        if localIds.isEmpty { return (events, 0) }
+        var dropped = 0
+        let kept = events.filter { event in
+            if event.source == "gateway", localIds.contains(event.promptId) {
+                dropped += 1
+                return false
+            }
+            return true
+        }
+        return (kept, dropped)
     }
 
     private static func gatewayUsd(_ event: UsageEvent) -> Double? {
