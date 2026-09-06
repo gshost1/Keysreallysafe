@@ -14,7 +14,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(Providers.provider(id: "bedrock")?.gateway, false)
         let root = try JSONSerialization.jsonObject(with: Providers.rawJSON()) as! [String: Any]
         let list = root["providers"] as! [Any]
-        XCTAssertEqual(list.count, 53)
+        XCTAssertEqual(list.count, 54)
     }
 
     func testPathJoinDoesNotDoublePrefix() {
@@ -383,7 +383,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(response.body, Providers.rawJSON())
         let root = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
-        XCTAssertEqual((root["providers"] as? [Any])?.count, 53)
+        XCTAssertEqual((root["providers"] as? [Any])?.count, 54)
     }
 
     func testGatewayEnableRouteNeedsTokenAndTouchID() throws {

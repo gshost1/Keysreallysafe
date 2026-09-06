@@ -828,6 +828,21 @@
       "docs": "https://platform.stability.ai/docs",
       "gateway": true,
       "note": null
+    },
+    {
+      "id": "experiential-labs",
+      "name": "Experiential Labs",
+      "group": "routers",
+      "host": "api.experientiallabs.ai",
+      "api": "openai",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer ",
+      "path_prefix": "/v1",
+      "key_prefix": null,
+      "usage_endpoint": null,
+      "docs": "https://platform.experientiallabs.ai",
+      "gateway": true,
+      "note": "Gateway with virtual keys; OpenAI-shaped, /v1/models answers (checked 2026-09-06)."
     }
   ]
 }
