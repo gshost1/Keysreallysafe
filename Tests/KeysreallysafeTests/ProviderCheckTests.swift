@@ -117,6 +117,15 @@ final class ProviderCheckTests: XCTestCase {
         XCTAssertEqual(refused.message, "access denied for this key")
         XCTAssertTrue(refused.summary.contains("recognised but not allowed"), refused.summary)
 
+        fetcher.status = 308
+        fetcher.headers = ["Location": "https://app.router.com/v1/models"]
+        fetcher.body = Data()
+        let moved = try service.checkProvider(name: "demo", caller: "test")
+        XCTAssertEqual(moved.outcome, .redirect)
+        XCTAssertEqual(moved.message, "api.openai.com redirects to app.router.com; the key was not sent there")
+        XCTAssertTrue(moved.summary.contains("host moved"), moved.summary)
+        fetcher.headers = [:]
+
         fetcher.status = 500
         fetcher.body = Data("<html>boom</html>".utf8)
         let err = try service.checkProvider(name: "demo", caller: "test")

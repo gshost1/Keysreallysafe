@@ -12,6 +12,7 @@ enum ProviderCheck {
         case providerAuthFailed = "provider_auth_failed"
         case providerRefused = "provider_refused"
         case providerError = "provider_error"
+        case redirect
         case network
         case malformed
         case noCheckEndpoint = "no_check_endpoint"
@@ -22,6 +23,7 @@ enum ProviderCheck {
             case .providerAuthFailed: return "provider rejected the key (401)"
             case .providerRefused: return "provider refused the request (403): key is recognised but not allowed here"
             case .providerError: return "provider error"
+            case .redirect: return "host moved (redirect not followed; fix the host in Edit)"
             case .network: return "network failure (no response from the provider host)"
             case .malformed: return "provider answered but the body was not the expected model list"
             case .noCheckEndpoint: return "no read-only check endpoint for this provider; nothing was sent"
@@ -171,6 +173,15 @@ enum ProviderCheck {
                 key: key, provider: provider.id, host: host, checkedAt: ts,
                 outcome: .providerRefused, httpStatus: 403, models: [], requestId: requestId,
                 message: message, endpoint: endpoint.path
+            )
+        case 301, 302, 307, 308:
+            let location = http.value(forHTTPHeaderField: "Location") ?? "unknown"
+            let target = URL(string: location)?.host ?? location
+            return Result(
+                key: key, provider: provider.id, host: host, checkedAt: ts,
+                outcome: .redirect, httpStatus: http.statusCode, models: [], requestId: requestId,
+                message: "\(host) redirects to \(Redact.scrub(target, secrets: [secret])); the key was not sent there",
+                endpoint: endpoint.path
             )
         default:
             return Result(

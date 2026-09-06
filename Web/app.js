@@ -1709,6 +1709,7 @@
       case "provider_auth_failed": return "The provider rejected this key. Rotate it, or check it belongs to this provider.";
       case "provider_refused": return "The key is recognised but this request was refused: wrong host, plan, region or headers. Not necessarily a bad key.";
       case "network": return "No answer from the host. Check the network and the host in Edit.";
+      case "redirect": return "The host moved. Put the new host in Edit; the key was not sent to the redirect target.";
       case "no_check_endpoint": return "This provider has no read-only list endpoint; no paid request was made instead.";
       case "malformed": return "The host answered but not with a model list. Is the host right?";
       default: return "The provider returned an error.";

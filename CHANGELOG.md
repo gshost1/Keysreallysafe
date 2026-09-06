@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-09-06
 
 - Dashboard: the Grant dialog has a kind switch, task grant (minutes, in
   memory) or long-lived client (days, hash in the catalog), so `keys client`
   has a UI. Active clients are listed with the grants, each with Revoke.
 - Keys table: action buttons wrap into rows on narrower windows instead of
   stacking one per line.
+- Check: a redirect is its own outcome, naming the host it points to; the key
+  is never sent there. Ramp Router's API host is `api.router.com`;
+  Experiential Labs added to the catalog.
 
 ## 0.3.0 — 2026-09-06
 
