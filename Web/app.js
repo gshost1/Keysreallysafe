@@ -18,6 +18,7 @@
     series: [],
     keys: [],
     grants: [],
+    clients: [],
     checkModels: [],
     selected: null,
     mixFilter: null,
@@ -950,7 +951,7 @@
             }),
             el("button", {
               type: "button", class: "btn btn-row", tabindex: tab, "data-act": "grant",
-              "aria-label": "Grant temporary access to " + k.name,
+              "aria-label": "Grant temporary access to " + k.name + " or issue a long-lived client",
               text: k.active_grants ? `Grant (${k.active_grants})` : "Grant",
               disabled: noGateway ? "" : null,
               title: noGateway ? (prov.name + " cannot be proxied, so no grant") : "One Touch ID for a temporary, scoped token an agent uses instead of the real key",
@@ -1524,13 +1525,25 @@
       const r = await api("/api/grants");
       state.grants = (r && r.grants) || [];
     } catch { state.grants = []; }
+    try {
+      const lists = await Promise.all(state.keys.map((k) => api("/api/keys/" + encodeURIComponent(k.name) + "/clients").then((r) => (r && r.clients) || []).catch(() => [])));
+      state.clients = lists.flat().filter((c) => c.active);
+    } catch { state.clients = []; }
     renderGrants();
   }
   function renderGrants() {
     const box = $("grants");
     const list = state.grants || [];
-    box.hidden = list.length === 0;
-    $("grants-count").textContent = plural(list.length, "active grant", "active grants") + ".";
+    const clients = state.clients || [];
+    box.hidden = list.length === 0 && clients.length === 0;
+    $("grants-count").textContent = plural(list.length, "active grant", "active grants") + ", " + plural(clients.length, "client", "clients") + ".";
+    $("clients-list").replaceChildren(...clients.map((c) => el("li", {},
+      el("span", { class: "g-id", text: "#" + c.id + " " + (c.hint || "") }),
+      el("span", { class: "g-key", text: c.key }),
+      el("span", { class: "g-task", text: c.label || "client", title: c.label }),
+      el("span", { class: "g-meta", text: `client · ${c.methods.join("/")} · ${c.path_prefix ? c.path_prefix : "any path"} · expires ${fmtWhenShort(c.expires_at)}${c.last_used_at ? " · used " + relTime(c.last_used_at) : ""}` }),
+      el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke client " + c.id, onclick: () => revokeClient(c.key, c.id) }),
+    )));
     $("grants-list").replaceChildren(...list.map((g) => el("li", {},
       el("span", { class: "g-id", text: g.id }),
       el("span", { class: "g-key", text: g.key + " → " + g.host }),
@@ -1538,6 +1551,13 @@
       el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${fmtUsd(g.usd)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${minutesLeft(g.expires_at)} min left` }),
       el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke grant " + g.id, onclick: () => revokeGrant(g.id) }),
     )));
+  }
+  async function revokeClient(key, id) {
+    try {
+      await api("/api/keys/" + encodeURIComponent(key) + "/clients/" + encodeURIComponent(id), { method: "DELETE" });
+      say(`Client #${id} revoked.`);
+      await loadKeys();
+    } catch (e) { say(e.message); }
   }
   async function revokeGrant(id) {
     try {
@@ -1556,6 +1576,7 @@
     const dlg = $("dlg-grant");
     dlg.dataset.name = name;
     $("grant-form").reset();
+    setGrantKind("grant");
     $("grant-form").hidden = false;
     $("grant-result").hidden = true;
     $("grant-err").textContent = "";
@@ -1564,11 +1585,64 @@
     dlg.showModal();
     $("grant-form").elements.task.focus();
   }
+  function grantKind() { return $("dlg-grant").dataset.kind || "grant"; }
+  function setGrantKind(kind) {
+    $("dlg-grant").dataset.kind = kind;
+    document.querySelectorAll(".kind-switch [data-kind]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.kind === kind)));
+    $("grant-fields").hidden = kind !== "grant";
+    $("client-fields").hidden = kind !== "client";
+    $("grant-submit").textContent = kind === "client" ? "Issue client" : "Grant";
+    const f = $("grant-form").elements;
+    (kind === "client" ? f.label : f.task).focus();
+  }
+  document.querySelectorAll(".kind-switch [data-kind]").forEach((b) => b.addEventListener("click", () => setGrantKind(b.dataset.kind)));
+
+  async function issueClient(name, f) {
+    const methods = [...f.cm].filter((c) => c.checked).map((c) => c.value);
+    if (!methods.length) throw new Error("Pick at least one method.");
+    const body = { label: f.label.value.trim(), days: Number(f.days.value), methods };
+    if (f.path_prefix.value.trim()) body.path_prefix = f.path_prefix.value.trim();
+    const r = await api("/api/keys/" + encodeURIComponent(name) + "/clients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const c = r.client;
+    const k = state.keys.find((x) => x.name === name) || {};
+    const prov = providerById(k.provider) || {};
+    $("gr-kind").textContent = "Client";
+    $("gr-id").textContent = "#" + c.id + " " + (c.hint || "");
+    $("gr-target").textContent = `${name} → ${providerName(k.provider)} at ${k.host || "?"}`;
+    $("gr-scope").textContent = `${c.methods.join(", ")} · ${c.path_prefix ? c.path_prefix : "any path"}`;
+    $("gr-expires").textContent = `${fmtWhenShort(c.expires_at)} (${body.days} days). Survives restarts and screen lock.`;
+    $("gr-base").textContent = "http://127.0.0.1:12767/" + name + (prov.path_prefix || "");
+    $("gr-token").textContent = r.token;
+    $("gr-hint").textContent = `Use the token as the API key (${prov.auth_header || "Authorization"} header) and the base URL as the SDK endpoint. Shown once; only its hash is stored. Select to copy.`;
+    $("dlg-grant").dataset.grantId = "";
+    $("dlg-grant").dataset.clientId = String(c.id);
+    say(`Client #${c.id} issued for ${name}.`);
+  }
+
   $("grant-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     if (state.busy) return;
     const f = e.target.elements;
     const name = $("dlg-grant").dataset.name;
+    if (grantKind() === "client") {
+      state.busy = true;
+      $("grant-err").textContent = "";
+      $("grant-submit").textContent = "Touch ID…";
+      $("grant-submit").disabled = true;
+      try {
+        await issueClient(name, f);
+        $("grant-form").hidden = true;
+        $("grant-result").hidden = false;
+        await loadKeys();
+      } catch (err) {
+        $("grant-err").textContent = err.message;
+      } finally {
+        $("grant-submit").textContent = "Issue client";
+        $("grant-submit").disabled = false;
+        state.busy = false;
+      }
+      return;
+    }
     const body = { task: f.task.value.trim(), minutes: Number(f.minutes.value) };
     if (f.methods.value) body.methods = f.methods.value.split(",");
     const paths = f.paths.value.split(",").map((p) => p.trim()).filter(Boolean);
@@ -1581,6 +1655,7 @@
     $("grant-submit").disabled = true;
     try {
       const g = await api("/api/keys/" + encodeURIComponent(name) + "/grants", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      $("gr-kind").textContent = "Grant";
       $("gr-id").textContent = g.id;
       $("gr-target").textContent = `${g.key} → ${providerName(g.provider)} at ${g.host}`;
       $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + " estimated" : ""}`;
@@ -1589,6 +1664,7 @@
       $("gr-token").textContent = g.token;
       $("gr-hint").textContent = `Use the token as the API key (${g.auth_header} header) and the base URL as the SDK endpoint. Shown once; it is not stored anywhere. Select to copy.`;
       $("dlg-grant").dataset.grantId = g.id;
+      $("dlg-grant").dataset.clientId = "";
       $("grant-form").hidden = true;
       $("grant-result").hidden = false;
       say(`Grant ${g.id} issued for ${name}.`);
@@ -1603,7 +1679,9 @@
   });
   $("gr-revoke").addEventListener("click", async () => {
     const id = $("dlg-grant").dataset.grantId;
+    const cid = $("dlg-grant").dataset.clientId;
     if (id) await revokeGrant(id);
+    else if (cid) await revokeClient($("dlg-grant").dataset.name, cid);
     $("dlg-grant").close();
   });
   $("dlg-grant").addEventListener("close", () => {

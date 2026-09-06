@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Dashboard: the Grant dialog has a kind switch, task grant (minutes, in
+  memory) or long-lived client (days, hash in the catalog), so `keys client`
+  has a UI. Active clients are listed with the grants, each with Revoke.
+- Keys table: action buttons wrap into rows on narrower windows instead of
+  stacking one per line.
+
 ## 0.3.0 — 2026-09-06
 
 Agent key access, from `notes/2026-09-06-agent-key-access.md`. Verified live

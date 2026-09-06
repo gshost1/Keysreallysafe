@@ -685,8 +685,8 @@ main { flex: 1; min-height: 0; overflow: auto; }
 
 @media (max-width: 1100px) {
   .keys .td-created, .keys th:nth-child(4) { display: none; }
-  .row-actions { flex-wrap: wrap; row-gap: 2px; }
-  .keys .td-actions { white-space: normal; max-width: 300px; }
+  .row-actions { display: flex; flex-wrap: wrap; row-gap: 2px; justify-content: flex-end; }
+  .keys .td-actions { white-space: normal; width: auto; min-width: 340px; max-width: 460px; }
 }
 
 @media (max-width: 720px) {
@@ -780,3 +780,10 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .check-models li { padding: 2px 8px; user-select: all; -webkit-user-select: all; }
 .check-models li:nth-child(even) { background: var(--bg-sel); }
 .key-host { display: block; font-size: 11px; color: var(--fg-3); }
+.kind-switch { margin-bottom: 12px; }
+.kind-btn small { display: block; font-size: 10px; color: var(--fg-3); font-weight: 400; }
+.kind-btn[aria-checked="true"] small { color: var(--fg-2); }
+.methods { border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; margin: 0 0 10px; font-size: 12px; color: var(--fg-2); }
+.methods legend { padding: 0 4px; color: var(--fg-3); }
+.methods .inline { display: inline-flex; align-items: center; gap: 4px; margin: 0 12px 0 0; }
+.methods input { width: auto; margin: 0; }
