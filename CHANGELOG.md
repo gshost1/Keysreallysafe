@@ -2,9 +2,9 @@
 
 All notable changes to Keysreallysafe. Each entry is a GitHub release.
 
-## Unreleased
+## 0.2.0 — 2026-09-05
 
-Source review of 2026-09-05, all seven findings addressed.
+Source review of 2026-09-05, all seven findings addressed, plus an eight-item review pass on the fixes. Upgrade note: the first open after this release clears the old ingest cursors and replays every log once in the background; on a large `~/.claude/projects` that is a few minutes of catch-up, not a hang. Verified on a real install: `keys autostart` upgraded in place and kept the previous version, `keys client issue` prompted once and the gateway returned 401 without the token.
 
 ### Security
 - Ingest cursors no longer hold raw log bytes. `ingest_files.tail_sig` stored the last 32 bytes of each log as hex, which could carry a fragment of a user message; it is now a versioned SHA-256 digest. On first open the catalog clears legacy signatures, checkpoints the WAL and vacuums, and `secure_delete` is on. Scope: the catalog file only; copies made outside the app are out of reach.
