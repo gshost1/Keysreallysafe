@@ -2,7 +2,8 @@ import Darwin
 import XCTest
 @testable import KeysCore
 
-final class Session4Tests: XCTestCase {
+/// Gateway request hardening, owner pid, framing limits, cursor replay, gateway estimates, dedup migration.
+final class GatewayHardeningAndCursorTests: XCTestCase {
     func testGatewayRejectsBadHostOriginAndCrossSiteBeforeLookup() async throws {
         let hits = HitCounter()
         let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
