@@ -33,10 +33,24 @@ enum ClaudeIngest {
                 report.filesScanned += 1
                 do {
                     var pending: [UsageEvent] = []
+                    func flush(_ cursor: JsonlCursor) throws {
+                        try db.withTransaction {
+                            for event in pending {
+                                switch try db.insertUsage(event) {
+                                case .inserted: report.rowsInserted += 1
+                                case .updated: report.rowsUpdated += 1
+                                case .duplicate: report.skippedDupes += 1
+                                }
+                            }
+                            try IngestFiles.commit(cursor, url: file, db: db)
+                        }
+                        pending.removeAll(keepingCapacity: true)
+                    }
                     guard let cursor = try IngestFiles.processNewBytes(
                         url: file,
                         db: db,
                         keepLine: { $0.firstRange(of: assistantType) != nil },
+                        flush: flush,
                         each: { line in
                             do {
                                 if let event = try parseLine(line) { pending.append(event) }
@@ -45,16 +59,7 @@ enum ClaudeIngest {
                             }
                         }
                     ) else { continue }
-                    try db.withTransaction {
-                        for event in pending {
-                            switch try db.insertUsage(event) {
-                            case .inserted: report.rowsInserted += 1
-                            case .updated: report.rowsUpdated += 1
-                            case .duplicate: report.skippedDupes += 1
-                            }
-                        }
-                        try IngestFiles.commit(cursor, url: file, db: db)
-                    }
+                    try flush(cursor)
                 } catch {
                     report.parseErrors += 1
                 }

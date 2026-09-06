@@ -32,11 +32,38 @@ enum IngestScheduler {
     static let repeatingInterval: TimeInterval = 5 * 60
     static let staleInterval: TimeInterval = 60
 
+    /// Ingest work never runs on the run loop that owns the menu bar. The timer only enqueues;
+    /// a serial utility queue does the reading, and a tick that finds the previous pass still
+    /// running is skipped rather than queued behind it.
+    static let queue = DispatchQueue(label: "keysreallysafe.ingest", qos: .utility)
+    private static let inFlight = NSLock()
+    nonisolated(unsafe) private static var running = false
+
     static func scheduleRepeating(service: KeysService, interval: TimeInterval = repeatingInterval) {
         let timer = Timer(timeInterval: interval, repeats: true) { _ in
-            _ = try? service.ingest(.all)
+            enqueue(service: service)
         }
         RunLoop.current.add(timer, forMode: .common)
+    }
+
+    /// Returns false when a pass is already running.
+    @discardableResult
+    static func enqueue(service: KeysService, completion: (() -> Void)? = nil) -> Bool {
+        inFlight.lock()
+        if running {
+            inFlight.unlock()
+            return false
+        }
+        running = true
+        inFlight.unlock()
+        queue.async {
+            _ = try? service.ingest(.all)
+            inFlight.lock()
+            running = false
+            inFlight.unlock()
+            completion?()
+        }
+        return true
     }
 }
 
@@ -50,14 +77,25 @@ struct JsonlCursor {
 }
 
 enum IngestFiles {
+    /// Bytes read per syscall. A multi-gigabyte rollout is never held in memory at once.
+    static let defaultChunkBytes = 1 << 20
+    /// Kept lines delivered between `flush` calls. Each flush is one transaction with its cursor.
+    static let defaultBatchLines = 2_000
+
     /// Streams complete new jsonl lines. `nil` means size and mtime are unchanged.
-    /// Does not write `ingest_files`; commit the cursor after the rows are inserted.
+    /// Does not write `ingest_files`; commit the returned cursor after the rows are inserted.
+    /// When `flush` is given it is called every `batchLines` kept lines with a cursor that is
+    /// valid at that byte offset, so the caller can insert what it has and commit the cursor in
+    /// one transaction. A crash between batches costs at most one batch of re-reading.
     /// Cursor metadata is the fstat of the snapshot actually read, not a later path stat.
     static func processNewBytes(
         url: URL,
         db: CatalogDB,
         keepLine: ((UnsafeBufferPointer<UInt8>) -> Bool)? = nil,
         prepare: ((Bool) -> Void)? = nil,
+        chunkBytes: Int = defaultChunkBytes,
+        batchLines: Int = defaultBatchLines,
+        flush: ((JsonlCursor) throws -> Void)? = nil,
         each: (String) throws -> Void
     ) throws -> JsonlCursor? {
         let path = url.standardizedFileURL.path
@@ -87,21 +125,30 @@ enum IngestFiles {
         }
         prepare?(replayed)
         let snapshotBytes = max(0, attrs.size - from)
+        // A batch cursor records only the bytes consumed as its size. Recording the snapshot's
+        // full size mid-file would make the next pass call the file unchanged and skip the rest.
+        func cursor(at offset: Int64, final: Bool) throws -> JsonlCursor {
+            JsonlCursor(
+                size: final ? attrs.size : offset,
+                mtimeMs: attrs.mtimeMs,
+                byteOffset: offset,
+                tailSig: try readTailSig(handle: handle, offset: offset),
+                replayed: replayed
+            )
+        }
         let newOffset = try forEachCompleteLine(
             handle: handle,
             from: from,
             limit: snapshotBytes,
+            chunkBytes: chunkBytes,
             keepLine: keepLine,
+            batchLines: flush == nil ? Int.max : max(1, batchLines),
+            onBatch: { offset in
+                if let flush { try flush(try cursor(at: offset, final: false)) }
+            },
             each: each
         )
-        let tailSig = try readTailSig(handle: handle, offset: newOffset)
-        return JsonlCursor(
-            size: attrs.size,
-            mtimeMs: attrs.mtimeMs,
-            byteOffset: newOffset,
-            tailSig: tailSig,
-            replayed: replayed
-        )
+        return try cursor(at: newOffset, final: true)
     }
 
     static func commit(_ cursor: JsonlCursor, url: URL, db: CatalogDB) throws {
@@ -164,43 +211,66 @@ enum IngestFiles {
         return expected == sig
     }
 
+    /// Reads `limit` bytes from `offset` in `chunkBytes` pieces and delivers each complete line.
+    /// Only the unfinished tail of the current line is carried between chunks. Returns the offset
+    /// just after the last complete line. `onBatch` fires after every `batchLines` kept lines with
+    /// that same kind of offset; the handle position is restored afterwards, so callers may seek.
     private static func forEachCompleteLine(
         handle: FileHandle,
         from offset: Int64,
         limit: Int64,
+        chunkBytes: Int,
         keepLine: ((UnsafeBufferPointer<UInt8>) -> Bool)?,
+        batchLines: Int,
+        onBatch: (Int64) throws -> Void,
         each: (String) throws -> Void
     ) throws -> Int64 {
-        try handle.seek(toOffset: UInt64(max(0, offset)))
-        let data = try handle.read(upToCount: Int(max(0, limit))) ?? Data()
-        if data.isEmpty { return offset }
-        var newOffset = offset
-        var error: Error?
-        data.withUnsafeBytes { raw in
-            let bytes = raw.bindMemory(to: UInt8.self)
-            var start = 0
-            for i in 0..<bytes.count {
-                if bytes[i] != 0x0A { continue }
-                var count = i - start
-                if count > 0, bytes[start + count - 1] == 0x0D { count -= 1 }
-                if count > 0, let base = bytes.baseAddress {
-                    let buf = UnsafeBufferPointer(start: base + start, count: count)
-                    if keepLine == nil || keepLine!(buf) {
-                        if let s = String(bytes: buf, encoding: .utf8), !s.isEmpty {
-                            do {
-                                try each(s)
-                            } catch let e {
-                                error = e
-                                return
-                            }
-                        }
-                    }
-                }
-                start = i + 1
+        let chunk = max(1, chunkBytes)
+        var remaining = max(0, limit)
+        var readPos = max(0, offset)
+        var carry = Data()               // bytes of that unfinished line seen so far
+        var sinceBatch = 0
+        var lastComplete = readPos
+
+        func deliver(_ line: Data) throws {
+            var bytes = line
+            if bytes.last == 0x0D { bytes.removeLast() }
+            guard !bytes.isEmpty else { return }
+            let keep = try bytes.withUnsafeBytes { raw -> Bool in
+                let buf = raw.bindMemory(to: UInt8.self)
+                return keepLine == nil || keepLine!(buf)
             }
-            newOffset = offset + Int64(start)
+            guard keep else { return }
+            if let s = String(data: bytes, encoding: .utf8), !s.isEmpty {
+                try each(s)
+                sinceBatch += 1
+            }
         }
-        if let error { throw error }
-        return newOffset
+
+        while remaining > 0 {
+            try handle.seek(toOffset: UInt64(readPos))
+            let want = Int(min(Int64(chunk), remaining))
+            let data = try handle.read(upToCount: want) ?? Data()
+            if data.isEmpty { break }
+            remaining -= Int64(data.count)
+            var scanFrom = data.startIndex
+            while let nl = data[scanFrom...].firstIndex(of: 0x0A) {
+                var line = carry
+                line.append(data[scanFrom..<nl])
+                carry.removeAll(keepingCapacity: true)
+                try deliver(line)
+                lastComplete = readPos + Int64(nl - data.startIndex) + 1
+                scanFrom = data.index(after: nl)
+                if sinceBatch >= batchLines {
+                    try onBatch(lastComplete)
+                    sinceBatch = 0
+                }
+            }
+            if scanFrom < data.endIndex {
+                carry.append(data[scanFrom...])
+            }
+            readPos += Int64(data.count)
+        }
+        return lastComplete
     }
 }

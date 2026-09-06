@@ -9,7 +9,10 @@ final class KeysService: @unchecked Sendable {
     var grokHome: URL
     var claudeHome: URL
     var codexHome: URL
+    /// Serialises ingest passes only. A five-minute log scan must never hold up a gateway lookup.
     private let ingestLock = NSLock()
+    /// Guards `gatewayCache` and `gatewayListener`; held for dictionary access only.
+    private let gatewayLock = NSLock()
     private var gatewayCache: [String: GatewayTarget] = [:]
     private var gatewayListener: GatewayListener?
     var openRouter: any OpenRouterFetching
@@ -110,14 +113,14 @@ final class KeysService: @unchecked Sendable {
     }
 
     func isGatewayEnabled(_ name: String) -> Bool {
-        ingestLock.lock()
-        defer { ingestLock.unlock() }
+        gatewayLock.lock()
+        defer { gatewayLock.unlock() }
         return gatewayCache[name] != nil
     }
 
     func isGatewayRunning() -> Bool {
-        ingestLock.lock()
-        defer { ingestLock.unlock() }
+        gatewayLock.lock()
+        defer { gatewayLock.unlock() }
         return gatewayListener != nil
     }
 
@@ -136,9 +139,9 @@ final class KeysService: @unchecked Sendable {
     }
 
     func lookupGateway(name: String) -> GatewayTarget? {
-        ingestLock.lock()
+        gatewayLock.lock()
         let cached = gatewayCache[name]
-        ingestLock.unlock()
+        gatewayLock.unlock()
         guard let cached else { return nil }
         guard let row = try? catalog.catalogRow(name: name) else {
             disableGatewayMemory(name: name, reason: "target_changed")
@@ -176,15 +179,15 @@ final class KeysService: @unchecked Sendable {
             } else {
                 throw AppError.usage("host is required")
             }
-            ingestLock.lock()
+            gatewayLock.lock()
             let previous = gatewayCache[name]
-            ingestLock.unlock()
+            gatewayLock.unlock()
             if let previous, previous.host != resolved || previous.provider.id != provider.id {
                 disableGatewayMemory(name: name, reason: "target_changed")
             }
             let secret = try secrets.get(name: name)
             let version = row.version
-            ingestLock.lock()
+            gatewayLock.lock()
             gatewayCache[name] = GatewayTarget(
                 name: name,
                 secret: secret,
@@ -192,26 +195,26 @@ final class KeysService: @unchecked Sendable {
                 host: resolved,
                 version: version
             )
-            ingestLock.unlock()
+            gatewayLock.unlock()
             let updated = try catalog.updateGateway(name: name, enabled: true, host: resolved)
             try recordKeyEvent(name: name, action: "gateway_enable", caller: caller)
             return updated
         }
-        ingestLock.lock()
+        gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
-        ingestLock.unlock()
+        gatewayLock.unlock()
         let updated = try catalog.updateGatewayEnabled(name: name, enabled: false)
         try recordKeyEvent(name: name, action: "gateway_disable", caller: caller)
         return updated
     }
 
     func startGateway(port: UInt16 = GatewayListener.port) throws -> GatewayListener {
-        ingestLock.lock()
+        gatewayLock.lock()
         if let gatewayListener {
-            ingestLock.unlock()
+            gatewayLock.unlock()
             return gatewayListener
         }
-        ingestLock.unlock()
+        gatewayLock.unlock()
         let listener = try GatewayListener(service: self, port: port)
         do {
             try catalog.setMeta(
@@ -222,23 +225,23 @@ final class KeysService: @unchecked Sendable {
             listener.stop()
             throw error
         }
-        ingestLock.lock()
+        gatewayLock.lock()
         if let existing = gatewayListener {
-            ingestLock.unlock()
+            gatewayLock.unlock()
             listener.stop()
             return existing
         }
         listener.start()
         gatewayListener = listener
-        ingestLock.unlock()
+        gatewayLock.unlock()
         return listener
     }
 
     func stopGateway() {
-        ingestLock.lock()
+        gatewayLock.lock()
         let listener = gatewayListener
         gatewayListener = nil
-        ingestLock.unlock()
+        gatewayLock.unlock()
         listener?.stop()
         let us = ProcessInfo.processInfo.processIdentifier
         if let raw = try? catalog.metaValue("gateway_owner_pid"), pid_t(raw) == us {
@@ -507,9 +510,9 @@ final class KeysService: @unchecked Sendable {
             throw AppError.notFound(name)
         }
         try secrets.confirmPresence(reason: "Unlock \(name)")
-        ingestLock.lock()
+        gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
-        ingestLock.unlock()
+        gatewayLock.unlock()
         try secrets.delete(name: name)
         try catalog.deleteCatalog(name: name)
         try recordKeyEvent(name: name, action: "rm", caller: caller)
@@ -525,13 +528,13 @@ final class KeysService: @unchecked Sendable {
         try secrets.confirmPresence(reason: "Unlock \(name)")
         try secrets.replace(name: name, secret: secret)
         let version = try catalog.incrementVersion(name: name)
-        ingestLock.lock()
+        gatewayLock.lock()
         if var cached = gatewayCache[name] {
             cached.secret = secret
             cached.version = version
             gatewayCache[name] = cached
         }
-        ingestLock.unlock()
+        gatewayLock.unlock()
         try recordKeyEvent(name: name, action: "rotate", caller: caller)
         guard let row = try catalog.catalogRow(name: name) else {
             throw AppError.notFound(name)
@@ -554,9 +557,9 @@ final class KeysService: @unchecked Sendable {
         guard confirmation == "purge" else {
             throw AppError.usage("type purge to confirm")
         }
-        ingestLock.lock()
+        gatewayLock.lock()
         gatewayCache.removeAll()
-        ingestLock.unlock()
+        gatewayLock.unlock()
         try secrets.deleteAll()
         try catalog.wipeData()
     }
@@ -585,9 +588,9 @@ final class KeysService: @unchecked Sendable {
         let rows = try catalog.listCatalog()
         for row in rows {
             guard row.provider == "openrouter", row.kind == "billing" else { continue }
-            ingestLock.lock()
+            gatewayLock.lock()
             let secret = gatewayCache[row.name]?.secret
-            ingestLock.unlock()
+            gatewayLock.unlock()
             guard let secret else { continue }
             do {
                 var snap = try openRouter.fetch(secret: secret)
@@ -655,9 +658,9 @@ final class KeysService: @unchecked Sendable {
     }
 
     private func disableGatewayMemory(name: String, reason: String) {
-        ingestLock.lock()
+        gatewayLock.lock()
         let had = gatewayCache.removeValue(forKey: name) != nil
-        ingestLock.unlock()
+        gatewayLock.unlock()
         guard had else { return }
         _ = try? catalog.updateGatewayEnabled(name: name, enabled: false)
         try? recordKeyEvent(

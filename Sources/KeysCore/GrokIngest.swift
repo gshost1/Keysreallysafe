@@ -33,10 +33,24 @@ enum GrokIngest {
             let sessionFallback = url.deletingLastPathComponent().lastPathComponent
             do {
                 var pending: [UsageEvent] = []
+                func flush(_ cursor: JsonlCursor) throws {
+                    try db.withTransaction {
+                        for event in pending {
+                            switch try db.insertUsage(event) {
+                            case .inserted: report.rowsInserted += 1
+                            case .updated: report.rowsUpdated += 1
+                            case .duplicate: report.skippedDupes += 1
+                            }
+                        }
+                        try IngestFiles.commit(cursor, url: url, db: db)
+                    }
+                    pending.removeAll(keepingCapacity: true)
+                }
                 guard let cursor = try IngestFiles.processNewBytes(
                     url: url,
                     db: db,
                     keepLine: { $0.firstRange(of: turnCompleted) != nil },
+                    flush: flush,
                     each: { line in
                         do {
                             pending.append(contentsOf: try parseLine(line, sessionDirName: sessionFallback, summary: summary))
@@ -45,16 +59,7 @@ enum GrokIngest {
                         }
                     }
                 ) else { continue }
-                try db.withTransaction {
-                    for event in pending {
-                        switch try db.insertUsage(event) {
-                        case .inserted: report.rowsInserted += 1
-                        case .updated: report.rowsUpdated += 1
-                        case .duplicate: report.skippedDupes += 1
-                        }
-                    }
-                    try IngestFiles.commit(cursor, url: url, db: db)
-                }
+                try flush(cursor)
             } catch {
                 report.parseErrors += 1
             }

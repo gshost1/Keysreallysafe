@@ -23,7 +23,24 @@ enum CodexIngest {
             do {
                 var pending: [UsageEvent] = []
                 let prev = try db.ingestFile(path: item.standardizedFileURL.path)
-                guard var cursor = try IngestFiles.processNewBytes(
+                // The parser state is committed with every batch cursor, so a resume mid-file
+                // restores exactly the state that produced that offset.
+                func flush(_ partial: JsonlCursor) throws {
+                    var cursor = partial
+                    cursor.parserJSON = parser.serialize()
+                    try db.withTransaction {
+                        for event in pending {
+                            switch try db.insertUsage(event) {
+                            case .inserted: report.rowsInserted += 1
+                            case .updated: report.rowsUpdated += 1
+                            case .duplicate: report.skippedDupes += 1
+                            }
+                        }
+                        try IngestFiles.commit(cursor, url: item, db: db)
+                    }
+                    pending.removeAll(keepingCapacity: true)
+                }
+                guard let cursor = try IngestFiles.processNewBytes(
                     url: item,
                     db: db,
                     prepare: { replayed in
@@ -33,21 +50,12 @@ enum CodexIngest {
                             parser.restore(json)
                         }
                     },
+                    flush: flush,
                     each: { line in
                         if let event = parser.consume(line) { pending.append(event) }
                     }
                 ) else { continue }
-                cursor.parserJSON = parser.serialize()
-                try db.withTransaction {
-                    for event in pending {
-                        switch try db.insertUsage(event) {
-                        case .inserted: report.rowsInserted += 1
-                        case .updated: report.rowsUpdated += 1
-                        case .duplicate: report.skippedDupes += 1
-                        }
-                    }
-                    try IngestFiles.commit(cursor, url: item, db: db)
-                }
+                try flush(cursor)
             } catch {
                 report.parseErrors += 1
             }
