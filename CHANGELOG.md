@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-06
 
-Agent key access, from `notes/2026-09-06-agent-key-access.md`.
+Agent key access, from `notes/2026-09-06-agent-key-access.md`. Verified live
+on 2026-09-06: grant from a Terminal and from a Codex sandbox (the prompt
+comes from the menubar site), cancel gives exit 3, screen lock revokes, and
+`keys test` lists 68 Ramp Router models.
 
 - Grants: `keys grant`, `keys grants`, `keys revoke` and a Grant action in the
   dashboard. One Touch ID per task; the token is used as the API key; bound to
@@ -23,6 +26,8 @@ Agent key access, from `notes/2026-09-06-agent-key-access.md`.
 - Menubar dropdown: a tab strip (Overview, then one tab per subscription)
   over bars with "% left" and reset times; the tab is remembered. Rows below:
   Plan Usage, Status Page submenu, Refresh (was Ingest), About.
+- providers.json: Ramp Router API host is `api.router.com`; a check that
+  gets a web page back says so.
 
 
 All notable changes to Keysreallysafe. Each entry is a GitHub release.
