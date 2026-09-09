@@ -27,8 +27,8 @@ struct MenubarSnapshot: Equatable {
         var usdLine: String?
     }
 
-    /// Title: each tool's weekly window only, `C 2%  X 63%  G 10%`. Dollars and the 5-hour
-    /// windows live in the dropdown. Never a Claude or Codex estimate.
+    /// Title: Claude's Fable percentage, other tools' weekly percentages.
+    /// Percentages are used quota, directly from local snapshots.
     static func from(_ report: SpendReport, status: LiveStatus? = nil, now: Date = Date()) -> MenubarSnapshot {
         let usd = formatUsd(report.totals.grokUsd)
         var parts: [String] = []
@@ -40,18 +40,24 @@ struct MenubarSnapshot: Equatable {
             let codex = status.plans.first { $0.source == "openai" }
             let grok = status.grok ?? status.plans.first { $0.source == "grok" }
             for (letter, name, tool) in [("C", "Claude", claude), ("X", "Codex", codex), ("G", "Grok", grok)] {
-                guard let tool, tool.fiveHourPct != nil || tool.weeklyPct != nil else { continue }
-                if let week = tool.weeklyPct {
+                guard let tool else { continue }
+                if tool.source == "claude" {
+                    parts.append(tool.fablePct.map { "\(letter) \($0)%" } ?? "\(letter) —")
+                } else if let week = tool.weeklyPct {
                     parts.append("\(letter) \(week)%")
-                    tooltip.append("\(name) weekly \(week)%")
-                } else if let five = tool.fiveHourPct {
-                    tooltip.append("\(name) 5h \(five)%")
                 }
                 if let five = tool.fiveHourPct {
-                    lines.append("\(name) · 5 hour \(five)%" + resetsSuffix(tool.fiveHourResetsAt, now: now))
+                    tooltip.append("\(name) 5h \(five)% used")
+                    lines.append("\(name) · 5 hour \(five)% used" + resetsSuffix(tool.fiveHourResetsAt, now: now))
                 }
                 if let week = tool.weeklyPct {
-                    lines.append("\(name) · weekly \(week)%" + resetsSuffix(tool.weeklyResetsAt, now: now))
+                    tooltip.append("\(name) weekly \(week)% used")
+                    lines.append("\(name) · weekly \(week)% used" + resetsSuffix(tool.weeklyResetsAt, now: now))
+                }
+                if tool.source == "claude" {
+                    let fable = tool.fablePct.map { "\($0)% used" } ?? "unavailable"
+                    tooltip.append("Claude Fable \(fable)")
+                    lines.append("Claude · Fable \(fable)" + resetsSuffix(tool.fableResetsAt, now: now))
                 }
                 var windows: [Window] = []
                 if let five = tool.fiveHourPct {
@@ -70,7 +76,7 @@ struct MenubarSnapshot: Equatable {
                 ))
             }
         }
-        tooltip.append("weekly plan windows · click for 5-hour windows and spend")
+        tooltip.append("plan windows · usage used · click for resets and spend")
         let title = parts.isEmpty ? usd : parts.joined(separator: "  ")
         return MenubarSnapshot(
             title: title,
@@ -264,6 +270,9 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func refresh() {
+        ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
+            DispatchQueue.main.async { self?.refresh() }
+        }
         let report = (try? service.spend(range: .week, by: .model, source: .all)) ?? SpendReport(
             range: .week,
             by: .model,

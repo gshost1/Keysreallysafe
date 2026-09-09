@@ -24,6 +24,8 @@ struct ToolStatus: Equatable {
     var limit: Double? = nil
     var limitRemaining: Double? = nil
     var usageWeekly: Double? = nil
+    var fablePct: Int? = nil
+    var fableResetsAt: String? = nil
 
     func jsonObject() -> [String: Any] {
         var obj: [String: Any] = [
@@ -34,6 +36,8 @@ struct ToolStatus: Equatable {
             "five_hour_resets_at": fiveHourResetsAt as Any? ?? NSNull(),
             "weekly_pct": weeklyPct as Any? ?? NSNull(),
             "weekly_resets_at": weeklyResetsAt as Any? ?? NSNull(),
+            "fable_pct": fablePct as Any? ?? NSNull(),
+            "fable_resets_at": fableResetsAt as Any? ?? NSNull(),
             "weekly_usd": weeklyUsd as Any? ?? NSNull(),
             "weekly_tokens": weeklyTokens as Any? ?? NSNull(),
             "usage_note": usageNote as Any? ?? NSNull(),
@@ -205,7 +209,10 @@ struct LiveStatus: Equatable {
         now: Date = Date()
     ) throws -> LiveStatus {
         let grok = grokRow(weekUsd: grokWeekUsd, period: weekPeriod, home: grokHome, now: now)
-        let claude = readClaudePlan(home: claudeHome, extra: claudePlan)
+        let claude = ClaudeUsageCache.merge(
+            ClaudeUsageCache.read(home: claudeHome, now: now),
+            into: readClaudePlan(home: claudeHome, extra: claudePlan)
+        )
         let openaiLimits = readCodexLimits(home: codexHome, now: now)
         return LiveStatus(
             grok: grok,

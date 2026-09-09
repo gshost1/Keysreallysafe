@@ -1956,6 +1956,7 @@
 
   // right side of a plan meter: "22% used · resets in 2h 1m"
   function usedRight(pct, resetIso) {
+    if (pct == null) return el("span", { class: "live-note", text: "Unavailable" });
     const reset = resetsIn(resetIso);
     return el("span", {},
       el("span", { class: "live-used", text: Math.round(pct) + "% used" }),
@@ -1966,7 +1967,7 @@
   function hasLocalMeasure(row) {
     if (!row) return false;
     if (row.limit_remaining != null || row.usage_weekly != null) return true;
-    if (row.five_hour_pct != null || row.weekly_pct != null) return true;
+    if (row.source === "claude" || row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null) return true;
     if (row.source === "grok" && row.weekly_usd != null) return true;
     if (typeof row.weekly_tokens === "number" && row.weekly_tokens > 0) return true;
     if (typeof row.weekly_usd === "number" && row.weekly_usd > 0) return true;
@@ -2001,14 +2002,17 @@
     if (!row) return null;
     const meters = [];
     const weekly = "Weekly · " + weekSpan(row);
-    if (row.five_hour_pct != null) {
+    if (row.five_hour_pct != null || row.source === "claude") {
       meters.push(meter("5 hour", row.five_hour_pct, usedRight(row.five_hour_pct, row.five_hour_resets_at)));
     }
-    if (row.weekly_pct != null) {
+    if (row.source === "claude") {
+      meters.push(meter("Fable", row.fable_pct, usedRight(row.fable_pct, row.fable_resets_at)));
+    }
+    if (row.weekly_pct != null || row.source === "claude") {
       meters.push(meter("Weekly", row.weekly_pct, usedRight(row.weekly_pct, row.weekly_resets_at)));
     }
     // No provider percentage at all: one plain line with what the local logs say for the week.
-    if (row.five_hour_pct == null && row.weekly_pct == null) {
+    if (row.source !== "claude" && row.five_hour_pct == null && row.fable_pct == null && row.weekly_pct == null) {
       if (row.weekly_usd != null) meters.push(meter(weekly, null, fmtUsd(row.weekly_usd) + (row.weekly_tokens != null ? " · " + fmtTokens(row.weekly_tokens) + " tokens" : "") + " · local logs"));
       else if (row.weekly_tokens != null) meters.push(meter(weekly, null, fmtTokens(row.weekly_tokens) + " tokens · local logs"));
     }
@@ -2023,7 +2027,7 @@
       if (row.usage_weekly != null) meters.push(meter("Weekly", null, fmtUsd(row.usage_weekly) + " billed by OpenRouter"));
     }
     const note = row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null;
-    const stale = (row.five_hour_pct != null || row.weekly_pct != null || row.limit_remaining != null) ? asOf(row.snapshot_at) : "";
+    const stale = (row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null || row.limit_remaining != null) ? asOf(row.snapshot_at) : "";
     const planText = row.plan || (row.kind === "api" ? "API" : row.kind === "local" ? "" : "");
     return el("div", { class: "live-row", "data-source": row.source },
       el("div", { class: "live-head" },

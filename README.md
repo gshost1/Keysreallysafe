@@ -5,8 +5,9 @@ A local spend meter and API-key vault for the AI command-line tools on your Mac.
 It reads the usage numbers that Claude Code, Grok and Codex already write to
 your home folder, prices them from a checked-in list-price table, and shows the
 result on a loopback web page and in the menu bar. Secrets live in the macOS
-Keychain, and the app asks for Touch ID before it reads one out. Nothing
-leaves the machine.
+Keychain, and the app asks for Touch ID before it reads one out. The dashboard
+stays local; Claude's built-in `/usage` command refreshes subscription limits
+through its existing login.
 
 ## What it never does
 
@@ -37,9 +38,16 @@ swift build
 ```
 
 `keys autostart` installs a per-user login item that serves the site at
-`http://127.0.0.1:12766/` and puts a spend sparkline in the menu bar. Re-run it
+`http://127.0.0.1:12766/` and puts Claude's Fable percentage and the other tools'
+weekly percentages in the menu bar (`C 39%  X 46%  G 8%`). Missing Fable usage
+shows `C —`. All plan windows are in the dropdown. Re-run it
 after every build; the login item serves a snapshot. Put `.build/debug/keys`
 on your `PATH` as `keys` for the commands below.
+
+Claude's Fable quota comes from Claude Code's account-matched `/usage` cache in
+`~/.claude.json`. While the menu-bar app runs, it refreshes that cache every five
+minutes through Claude's built-in `/usage` command (no model request), using the
+existing Claude login. Readings older than one hour or past their reset are ignored.
 
 Remove everything with `keys autostart --remove` (login item and snapshot) and
 `keys purge` (catalog and every Keychain item, after Touch ID).
@@ -49,8 +57,8 @@ Remove everything with `keys autostart --remove` (login item and snapshot) and
 Three panes, switched with the segmented control or `⌘1` / `⌘2` / `⌘3`.
 
 **Usage** is the first thing you see: the plan windows each tool reports
-locally, as `plan · % used · resets in`. Claude and Codex have a 5-hour and a
-weekly window, Grok a weekly one. Tools whose quota is not in any local file
+locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
+windows; Codex has five-hour and weekly windows; Grok has a weekly one. Tools whose quota is not in any local file
 sit in a collapsed "not tracked" group with a link to their own dashboard. One
 quiet line underneath gives this month's local dollars.
 
@@ -256,6 +264,7 @@ row is empty. Start there when a number is missing.
 |---|---|---|
 | Claude Code sessions | `~/.claude/projects/**/*.jsonl` | Claude tokens, estimate, per-project view |
 | claude-hud snapshot | `~/Library/Application Support/Keysreallysafe/claude-plan.json` | Claude 5-hour and weekly % |
+| Claude Code usage cache | `~/.claude.json` → `cachedUsageUtilization` | Claude Fable, five-hour, and weekly %; refreshed every five minutes while the menu-bar app runs |
 | Grok sessions | `~/.grok/sessions` | Grok dollars |
 | Grok billing log | `~/.grok/logs/unified.jsonl` | Grok weekly % |
 | Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate, 5-hour and weekly % |

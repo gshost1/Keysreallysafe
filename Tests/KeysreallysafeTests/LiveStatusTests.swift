@@ -23,6 +23,7 @@ final class LiveStatusTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let snap: [String: Any] = [
             "updated_at": "2026-09-03T18:00:00Z",
+            "model_scoped": [["display_name": "Fable", "utilization": 38, "resets_at": "2026-09-08T01:00:00Z"]],
             "five_hour": [
                 "used_percentage": 22,
                 "resets_at": "2026-09-03T18:42:00Z",
@@ -42,6 +43,8 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(claude.fiveHourPct, 22)
         XCTAssertEqual(claude.fiveHourResetsAt, "2026-09-03T18:42:00Z")
         XCTAssertEqual(claude.weeklyPct, 91)
+        XCTAssertNil(claude.fablePct) // Fable comes only from the account-checked Claude usage cache.
+        XCTAssertNil(claude.fableResetsAt)
         XCTAssertEqual(claude.weeklyResetsAt, "2026-09-08T00:00:00Z")
         XCTAssertEqual(claude.snapshotAt, "2026-09-03T18:00:00Z")
         XCTAssertNil(claude.contextPct)

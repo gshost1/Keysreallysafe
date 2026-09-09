@@ -295,6 +295,9 @@ struct StatusCommand: ParsableCommand {
         if row.weeklyPct != nil || row.source == "openai" {
             print("  weekly  \(pctLine(row.weeklyPct, reset: row.weeklyResetsAt))")
         }
+        if row.source == "claude" {
+            print("  Fable   \(pctLine(row.fablePct, reset: row.fableResetsAt))")
+        }
         if let note = row.usageNote {
             print("  \(note)")
         }
