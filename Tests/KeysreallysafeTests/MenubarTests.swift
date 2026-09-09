@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import KeysCore
 
 final class MenubarTests: XCTestCase {
@@ -145,6 +146,25 @@ final class MenubarWindowsTests: XCTestCase {
 }
 
 final class MenubarPanelDataTests: XCTestCase {
+    @MainActor func testClaudePanelKeepsMissingFableVisibleAndShowsUsedQuota() {
+        let panel = MenubarPanel()
+        panel.selectedTab = "claude"
+        let card = MenubarSnapshot.ToolCard(id: "claude", name: "Claude", windows: [
+            .init(label: "Claude 5-hour", pctUsed: 4),
+            .init(label: "Claude weekly", pctUsed: 40),
+        ])
+        panel.render(snapshot: MenubarSnapshot(title: "C —", tooltip: "", sparkline: [], cards: [card]), updatedAt: Date())
+        func texts(_ view: NSView) -> [String] {
+            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(texts)
+        }
+        let labels = texts(panel)
+        XCTAssertTrue(labels.contains("Claude Fable"))
+        XCTAssertTrue(labels.contains("Unavailable"))
+        XCTAssertTrue(labels.contains("4% used"))
+        XCTAssertTrue(labels.contains("40% used"))
+        XCTAssertFalse(labels.contains { $0.contains("% left") })
+    }
+
     func testCardsCarryPlanWindowsAndResetLabels() {
         var claude = ToolStatus(source: "claude", title: "Claude")
         claude.plan = "Max"

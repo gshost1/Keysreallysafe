@@ -98,8 +98,15 @@ final class MenubarPanel: NSView {
         views.append(twoSided(card.name, right: card.plan ?? "", bold: true))
         views.append(twoSided(updatedLine(), right: "", size: 11, color: .secondaryLabelColor))
         views.append(spacer(4))
-        for w in card.windows {
-            views.append(label(w.label, size: 13))
+        let windowLabels = card.id == "claude"
+            ? ["Claude 5-hour", "Claude Fable", "Claude weekly"]
+            : card.windows.map(\.label)
+        for windowLabel in windowLabels {
+            views.append(label(windowLabel, size: 13))
+            guard let w = card.windows.first(where: { $0.label == windowLabel }) else {
+                views.append(label("Unavailable", size: 11, color: .secondaryLabelColor))
+                continue
+            }
             views.append(bar(w.pctUsed))
             views.append(twoSided("\(w.pctUsed)% used", right: MenubarSnapshot.resetsLabel(w.resetsAt, now: now), size: 11, color: .secondaryLabelColor))
         }
