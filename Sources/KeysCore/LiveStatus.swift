@@ -274,7 +274,7 @@ struct LiveStatus: Equatable {
         return row
     }
 
-    private static func readClaudePlan(home: URL, extra: URL) -> ToolStatus {
+    static func readClaudePlan(home: URL, extra: URL) -> ToolStatus {
         let empty = ToolStatus(
             source: "claude",
             title: "Claude",

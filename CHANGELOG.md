@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 — 2026-09-09
+
+- Claude's menu-bar percentage now shows Fable quota used as `C 72%`, with no five-hour value or extra label in the title. If Fable data is unavailable, it shows `C —` rather than substituting weekly usage.
+- The website and Claude dropdown tab show five-hour, Fable, and weekly usage. Dropdown bars now fill with usage consumed instead of usage remaining.
+- Fable reads Claude Code's account-matched `/usage` cache. While the menu-bar app runs, it refreshes through Claude's built-in `/usage` command every five minutes using the existing login, without a model request. Cached readings older than one hour, from another account, or past their reset are ignored.
+- `keys status` includes Fable; `keys doctor` reports the Claude usage cache separately from the HUD export.
+
+Upgrade: build with `swift build`, then run `.build/debug/keys autostart` to update the installed app. Automatic quota refresh requires a signed-in Claude Code version supporting non-interactive `/usage` (verified with 2.1.266).
+
 ## 0.3.1 — 2026-09-06
 
 - Dashboard: the Grant dialog has a kind switch, task grant (minutes, in

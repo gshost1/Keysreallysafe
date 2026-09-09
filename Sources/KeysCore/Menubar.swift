@@ -25,6 +25,11 @@ struct MenubarSnapshot: Equatable {
         var windows: [Window]
         var note: String?
         var usdLine: String?
+
+        var overviewWindow: Window? {
+            if id == "claude" { return windows.first { $0.label == "Claude Fable" } }
+            return windows.last { $0.label.hasSuffix("weekly") } ?? windows.first
+        }
     }
 
     /// Title: Claude's Fable percentage, other tools' weekly percentages.
@@ -62,6 +67,9 @@ struct MenubarSnapshot: Equatable {
                 var windows: [Window] = []
                 if let five = tool.fiveHourPct {
                     windows.append(Window(label: "\(name) 5-hour", pctUsed: five, resetsAt: tool.fiveHourResetsAt))
+                }
+                if let fable = tool.fablePct, tool.source == "claude" {
+                    windows.append(Window(label: "Claude Fable", pctUsed: fable, resetsAt: tool.fableResetsAt))
                 }
                 if let week = tool.weeklyPct {
                     windows.append(Window(label: "\(name) weekly", pctUsed: week, resetsAt: tool.weeklyResetsAt))
@@ -321,7 +329,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Keysreallysafe",
-            .applicationVersion: "0.2",
+            .applicationVersion: "0.4.0",
             .version: "local vault + usage · loopback only",
             .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. MIT."),
         ])

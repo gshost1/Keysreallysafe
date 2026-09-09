@@ -151,6 +151,7 @@ final class MenubarPanelDataTests: XCTestCase {
         claude.fiveHourPct = 53
         claude.fiveHourResetsAt = "2026-09-06T20:00:00Z"
         claude.weeklyPct = 1
+        claude.fablePct = 72
         claude.weeklyResetsAt = "2026-09-12T09:00:00Z"
         var grok = ToolStatus(source: "grok", title: "Grok")
         grok.weeklyPct = 10
@@ -162,8 +163,12 @@ final class MenubarPanelDataTests: XCTestCase {
         let snap = MenubarSnapshot.from(report, status: status, now: now)
         XCTAssertEqual(snap.cards.map(\.id), ["claude", "grok"])
         XCTAssertEqual(snap.cards[0].plan, "Max")
-        XCTAssertEqual(snap.cards[0].windows.map(\.label), ["Claude 5-hour", "Claude weekly"])
-        XCTAssertEqual(snap.cards[0].windows.map(\.pctUsed), [53, 1])
+        XCTAssertEqual(snap.cards[0].windows.map(\.label), ["Claude 5-hour", "Claude Fable", "Claude weekly"])
+        XCTAssertEqual(snap.cards[0].windows.map(\.pctUsed), [53, 72, 1])
+        XCTAssertEqual(snap.cards[0].overviewWindow?.pctUsed, 72)
+        var noFable = snap.cards[0]
+        noFable.windows.removeAll { $0.label == "Claude Fable" }
+        XCTAssertNil(noFable.overviewWindow)
         XCTAssertEqual(snap.cards[1].usdLine, "Grok $0 this week")
         XCTAssertEqual(snap.spendLine, "Grok $0 this week")
 

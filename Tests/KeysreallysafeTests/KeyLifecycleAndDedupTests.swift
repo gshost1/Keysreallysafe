@@ -149,7 +149,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let (service, _, _) = makeService(db: db)
         let report = try Doctor.report(service: service, probeListener: false)
         XCTAssertEqual(report.sources.map(\.id), [
-            "grok-sessions", "grok-quota", "claude-projects", "claude-hud", "codex-sessions",
+            "grok-sessions", "grok-quota", "claude-projects", "claude-hud", "claude-usage-cache", "codex-sessions",
         ])
         XCTAssertTrue(report.printed.contains("strip=Grok weekly $"))
         XCTAssertTrue(report.printed.contains("catalog"))

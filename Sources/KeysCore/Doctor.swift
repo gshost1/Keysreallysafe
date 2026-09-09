@@ -146,16 +146,28 @@ enum Doctor {
         let hudExists = FileManager.default.isReadableFile(atPath: claudeHud.path)
             || FileManager.default.isReadableFile(atPath: claudePlan.path)
         let hudPath = FileManager.default.isReadableFile(atPath: claudeHud.path) ? claudeHud : claudePlan
+        let hudStatus = LiveStatus.readClaudePlan(home: service.claudeHome, extra: claudePlan)
         sources.append(
             source(
                 id: "claude-hud",
                 path: hudPath,
                 directory: false,
-                newestEvent: status.claude?.snapshotAt,
+                newestEvent: hudStatus.snapshotAt,
                 strip: "Claude 5h / weekly %",
-                emptyReason: emptyClaudeHud(status, exists: hudExists)
+                emptyReason: emptyClaudeHud(LiveStatus(claude: hudStatus), exists: hudExists)
             )
         )
+        let claudeCache = ClaudeUsageCache.read(home: service.claudeHome, now: Date())
+        sources.append(source(
+            id: "claude-usage-cache",
+            path: ClaudeUsageCache.configURL(home: service.claudeHome),
+            directory: false,
+            newestEvent: claudeCache?.snapshotAt,
+            strip: "Claude Fable / 5h / weekly %",
+            emptyReason: claudeCache?.fablePct == nil
+                ? "No current Fable reading for this account; run Claude /usage (the menu-bar app refreshes every 5 minutes)."
+                : nil
+        ))
         sources.append(
             source(
                 id: "codex-sessions",

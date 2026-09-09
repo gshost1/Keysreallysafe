@@ -1,8 +1,8 @@
 import AppKit
 
 /// The top of the dropdown: a tab strip (Overview, then one tab per subscription) over a
-/// card. Overview keeps the three weekly rows; a subscription tab shows its plan, every
-/// window as a bar with "% left" and the reset time, and any note.
+/// card. Overview shows Claude Fable and other tools' weekly rows; a subscription tab
+/// shows every window as a bar with percentage used and the reset time.
 @MainActor
 final class MenubarPanel: NSView {
     static let width: CGFloat = 320
@@ -81,10 +81,13 @@ final class MenubarPanel: NSView {
                 views.append(label("No plan window in any local file yet.", size: 12, color: .secondaryLabelColor))
             }
             for card in snap.cards {
-                guard let week = card.windows.last(where: { $0.label.hasSuffix("weekly") }) ?? card.windows.first else { continue }
                 views.append(twoSided(card.name, right: card.plan ?? "", bold: true))
+                guard let week = card.overviewWindow else {
+                    views.append(label("Unavailable", size: 11, color: .secondaryLabelColor))
+                    continue
+                }
                 views.append(bar(week.pctUsed))
-                views.append(twoSided("\(max(0, 100 - week.pctUsed))% left", right: MenubarSnapshot.resetsLabel(week.resetsAt, now: now), size: 11, color: .secondaryLabelColor))
+                views.append(twoSided("\(week.pctUsed)% used", right: MenubarSnapshot.resetsLabel(week.resetsAt, now: now), size: 11, color: .secondaryLabelColor))
             }
             views.append(spacer(4))
             views.append(twoSided(snap.spendLine, right: updatedLine(), size: 11, color: .secondaryLabelColor))
@@ -98,7 +101,7 @@ final class MenubarPanel: NSView {
         for w in card.windows {
             views.append(label(w.label, size: 13))
             views.append(bar(w.pctUsed))
-            views.append(twoSided("\(max(0, 100 - w.pctUsed))% left", right: MenubarSnapshot.resetsLabel(w.resetsAt, now: now), size: 11, color: .secondaryLabelColor))
+            views.append(twoSided("\(w.pctUsed)% used", right: MenubarSnapshot.resetsLabel(w.resetsAt, now: now), size: 11, color: .secondaryLabelColor))
         }
         if let usd = card.usdLine {
             views.append(spacer(2))
@@ -142,7 +145,7 @@ final class MenubarPanel: NSView {
     }
 
     private func bar(_ pctUsed: Int) -> NSView {
-        let v = BarView(fraction: Double(max(0, 100 - pctUsed)) / 100)
+        let v = BarView(fraction: Double(pctUsed) / 100)
         v.heightAnchor.constraint(equalToConstant: 6).isActive = true
         return v
     }
@@ -154,7 +157,7 @@ final class MenubarPanel: NSView {
     }
 }
 
-/// Rounded track with a fill for the part of the window still left.
+/// Rounded track with a fill for the part of the window used.
 @MainActor
 final class BarView: NSView {
     let fraction: Double
@@ -170,9 +173,10 @@ final class BarView: NSView {
         let r = bounds.height / 2
         NSColor.quaternaryLabelColor.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: r, yRadius: r).fill()
-        let color: NSColor = fraction > 0.5 ? .systemGreen : fraction > 0.2 ? .systemOrange : .systemRed
+        let color: NSColor = fraction < 0.5 ? .systemGreen : fraction < 0.8 ? .systemOrange : .systemRed
         color.setFill()
-        let w = max(bounds.height, bounds.width * fraction)
+        guard fraction > 0 else { return }
+        let w = bounds.width * fraction
         NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: w, height: bounds.height), xRadius: r, yRadius: r).fill()
     }
 }
