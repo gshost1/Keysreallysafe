@@ -30,6 +30,15 @@ through its existing login.
 
 Requires macOS and Swift.
 
+Local builds need an Apple Development or Developer ID Application signing
+certificate in the login Keychain. Create one in Xcode Settings → Apple Accounts
+→ your team → Manage Certificates. Use the same team for every build.
+`security find-identity -v -p codesigning` lists the certificate fingerprints.
+Set `KEYS_SIGNING_IDENTITY` to the chosen 40-character SHA-1 fingerprint, or save
+that fingerprint alone in `~/.config/keysreallysafe/signing-identity`.
+The build never falls back to ad-hoc signing. Installation preserves the signed
+binary and rejects a changed identity before stopping the running app.
+
 ```sh
 git clone <this repo> && cd Keysreallysafe
 swift build
@@ -43,6 +52,20 @@ weekly percentages in the menu bar (`C 39%  X 46%  G 8%`). Missing Fable usage
 shows `C —`. All plan windows are in the dropdown. Re-run it
 after every build; the login item serves a snapshot. Put `.build/debug/keys`
 on your `PATH` as `keys` for the commands below.
+
+When migrating from an older ad-hoc build, each existing key may need one native
+Keychain password approval using **Always Allow** for the newly signed app.
+Touch ID remains required by the app when reading secrets. Subsequent builds
+use the same designated requirement and Apple team Keychain partition, so
+ordinary updates do not repeat this migration. A local self-signed certificate
+does not fix this: macOS still assigns it a build-specific partition.
+
+Before installing a new signing configuration, run
+`python3 scripts/test-signing-upgrade.py` outside a sandbox. It creates one
+disposable item, reads it from two different signed builds at the same path with
+interaction disabled, rejects an unrelated ad-hoc signer, and deletes the item.
+It never accesses vault items. Do not claim upgrade continuity until this test
+passes on the target Mac.
 
 Claude's Fable quota comes from Claude Code's account-matched `/usage` cache in
 `~/.claude.json`. While the menu-bar app runs, it refreshes that cache every five
@@ -101,10 +124,10 @@ the page, or the API response for the key list.
 
 Getting a value back asks for user presence, Touch ID or your login password.
 The prompt is the app's own (LocalAuthentication before an ordinary Keychain
-read); the Keychain item itself carries no access-control attribute, because
-an ad-hoc signed command-line tool cannot use one. A properly signed and
-entitled helper is the way to make the OS enforce presence per item, and that
-is not yet done. Treat this as app-level prompting:
+read). Items use the login Keychain's application ACLs. Apple signing preserves
+the app identity across builds; biometric presence is still enforced by the
+app, not by a per-item biometric access-control attribute. Treat this as
+app-level presence prompting:
 
 - `keys copy` puts it on the clipboard and wipes the clipboard 20 seconds
   later. Reveal on the site hides it again after 15 seconds.

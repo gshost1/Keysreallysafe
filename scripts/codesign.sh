@@ -12,5 +12,4 @@ if [ -z "$BIN" ]; then
     exit 1
   fi
 fi
-codesign -s - --force --identifier keysreallysafe --entitlements "$ROOT/Packaging/keys.entitlements" "$BIN"
-echo "ad-hoc signed $BIN (identifier keysreallysafe)"
+exec python3 "$ROOT/scripts/sign-local.py" "$BIN"

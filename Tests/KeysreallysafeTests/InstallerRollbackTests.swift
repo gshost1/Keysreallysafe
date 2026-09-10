@@ -34,7 +34,11 @@ final class InstallerRollbackTests: XCTestCase {
         let webRoot: URL
         let launch: FakeLaunch
         var installer: Installer {
-            Installer(root: root, agentPlist: plist, label: "com.keysreallysafe.test", run: launch.run)
+            Installer(root: root, agentPlist: plist, label: "com.keysreallysafe.test", run: launch.run,
+                      validateSigning: { candidate, _ in
+                          let result = try launch.run("validate-signing", ["validate", candidate.path])
+                          if result.status != 0 { throw AppError.http(result.stderr) }
+                      })
         }
     }
 
@@ -71,7 +75,7 @@ final class InstallerRollbackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.installer.sourceHash.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.plist.path))
         let verbs = w.launch.calls.map { $0.contains("--verify") ? "verify" : ($0[0].hasSuffix("codesign") ? "codesign" : $0[1]) }
-        XCTAssertEqual(verbs, ["codesign", "verify", "bootout", "bootstrap"], "sign and verify happen before the agent is stopped")
+        XCTAssertEqual(verbs, ["validate", "bootout", "bootstrap"], "signature validation happens before the agent is stopped; installation never re-signs")
         XCTAssertFalse(FileManager.default.fileExists(atPath: w.installer.previous.path), "nothing to keep on a first install")
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: w.root.path).filter { $0.hasPrefix(".staging") || $0.hasPrefix(".previous-") }
         XCTAssertTrue(leftovers.isEmpty)
@@ -96,7 +100,7 @@ final class InstallerRollbackTests: XCTestCase {
         try w.installer.install(fromBinary: w.source, webRoot: w.webRoot)
         let plistBefore = try Data(contentsOf: w.plist)
         w.launch.calls.removeAll()
-        w.launch.failVerb = "codesign"
+        w.launch.failVerb = "validate"
         try Data("v2".utf8).write(to: w.source)
         XCTAssertThrowsError(try w.installer.install(fromBinary: w.source, webRoot: w.webRoot)) { error in
             let f = error as? Installer.Failure

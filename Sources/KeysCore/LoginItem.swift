@@ -15,8 +15,7 @@ enum LoginItem {
         Paths.appSupport.appendingPathComponent("bin/keys")
     }
 
-    /// SHA-256 of the binary as it was *before* the install re-signed it. `keys doctor` compares
-    /// this to the checkout's debug binary; the installed file itself never matches after codesign.
+    /// SHA-256 of the signed source binary. Installation preserves its signature and bytes.
     static var installedSourceHash: URL {
         Paths.appSupport.appendingPathComponent("bin/keys.sha256")
     }
@@ -129,6 +128,7 @@ struct Installer {
     var agentPlist: URL
     var label: String
     var run: Runner
+    var validateSigning: (URL, URL?) throws -> Void = StableSigning.validate
 
     static var live: Installer {
         Installer(root: Paths.appSupport, agentPlist: LoginItem.agentPlist, label: LoginItem.label, run: LoginItem.run)
@@ -236,8 +236,7 @@ struct Installer {
         if let hash = Doctor.fileSHA256(source) {
             try Data((hash + "\n").utf8).write(to: bin.appendingPathComponent("keys.sha256"), options: .atomic)
         }
-        try codesign(stagedBinary)
-        try verifySignature(stagedBinary)
+        try validateSigning(stagedBinary, fm.fileExists(atPath: binary.path) ? binary : nil)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stagedBinary.path)
         guard fm.isExecutableFile(atPath: stagedBinary.path) else {
             throw AppError.http("staged binary is not executable")
@@ -303,20 +302,6 @@ struct Installer {
     }
 
     // MARK: processes
-
-    private func codesign(_ binary: URL) throws {
-        let result = try run("/usr/bin/codesign", ["-s", "-", "--force", "--identifier", "keysreallysafe", binary.path])
-        if result.status != 0 {
-            throw AppError.http("codesign failed: \(result.stderr)")
-        }
-    }
-
-    private func verifySignature(_ binary: URL) throws {
-        let result = try run("/usr/bin/codesign", ["--verify", "--strict", binary.path])
-        if result.status != 0 {
-            throw AppError.http("codesign verify failed: \(result.stderr)")
-        }
-    }
 
     private func bootout() throws {
         _ = try run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
