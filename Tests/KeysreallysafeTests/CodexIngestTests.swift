@@ -2,6 +2,37 @@ import XCTest
 @testable import KeysCore
 
 final class CodexIngestTests: XCTestCase {
+    func testParentAndSubagentRolloutsBothCountAndResumeIndependently() throws {
+        let home = try TempDir.make()
+        let sessions = home.appendingPathComponent("sessions/2026/09/03")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        let usage = #"{"timestamp":"2026-09-03T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"turn_id":"turn-1","last_token_usage":{"input_tokens":10,"output_tokens":4}}}}"#
+        let parent = #"{"type":"session_meta","payload":{"id":"parent","config":{"model":"gpt-5.4"},"source":"cli"}}"#
+        let child = #"{"type":"session_meta","payload":{"id":"child","config":{"model":"gpt-5.4"},"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent","depth":1}}}}}"#
+        try (parent + "\n" + usage + "\n").write(
+            to: sessions.appendingPathComponent("rollout-parent.jsonl"), atomically: true, encoding: .utf8
+        )
+        let childFile = sessions.appendingPathComponent("rollout-child.jsonl")
+        try (child + "\n" + usage + "\n").write(to: childFile, atomically: true, encoding: .utf8)
+        let (db, _) = try makeDB()
+        XCTAssertEqual(try CodexIngest.run(home: home, db: db).rowsInserted, 2)
+        XCTAssertEqual(try CodexIngest.run(home: home, db: db).rowsInserted, 0)
+        XCTAssertEqual(Set(try db.allUsageEvents().map(\.sessionId)), ["parent", "child"])
+
+        let handle = try FileHandle(forWritingTo: childFile)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((usage.replacingOccurrences(of: "turn-1", with: "turn-2") + "\n").utf8))
+        try handle.close()
+        XCTAssertEqual(try CodexIngest.run(home: home, db: db).rowsInserted, 1)
+        XCTAssertEqual(try CodexIngest.run(home: home, db: db).rowsInserted, 0)
+        let report = try SpendQueries(db: db).report(
+            range: .month, by: .model, source: .openai,
+            now: UTC.parse("2026-09-03T18:00:00Z")!, timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        XCTAssertEqual(report.totals.openaiTokens, 42)
+        XCTAssertNotNil(report.totals.openaiUsdEstimate)
+    }
+
     func testTokenCountLastUsageTwoRowsSkipsContentAndCumulative() throws {
         let files = try FileManager.default.contentsOfDirectory(
             at: Fixtures.codexHome.appendingPathComponent("sessions/2026/09/03"),

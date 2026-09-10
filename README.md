@@ -272,7 +272,12 @@ row is empty. Start there when a number is missing.
 
 Ingest is incremental, reads logs in bounded chunks, commits in batches, and
 runs on a background queue on start, every five minutes, and on demand
-(`⌘R`). The cursor it keeps per file is a SHA-256 of the last 32 bytes, never
+(`⌘R`). Claude subagent transcripts and Codex subagent rollouts are included
+in local token totals and estimated spend when their logs are present. Existing
+Claude subagent logs are picked up on the next scan. Subagent usage appears in
+the existing model/session/project breakdowns, without a separate subagent view.
+Provider-reported plan percentages remain separate from these local estimates.
+The cursor it keeps per file is a SHA-256 of the last 32 bytes, never
 the bytes themselves. Claude turns are counted once per message id even though Claude Code
 writes one log line per content block. Prices come from `Fixtures/models.json`
 (OpenRouter's list, refreshed by hand with `scripts/refresh-models.sh`) with a

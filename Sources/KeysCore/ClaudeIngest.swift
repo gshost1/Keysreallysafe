@@ -19,17 +19,26 @@ enum ClaudeIngest {
         for dir in projectDirs {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { continue }
-            if dir.lastPathComponent == "subagents" { continue }
-            let files: [URL]
-            do {
-                files = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isRegularFileKey])
-            } catch {
+            // Subagent transcripts live under <session>/subagents/agent-*.jsonl.
+            // Keep the same request identity as top-level logs so copied context
+            // and repeated scans update existing rows rather than add usage twice.
+            guard let files = fm.enumerator(
+                at: dir,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles],
+                errorHandler: { _, _ in
+                    report.parseErrors += 1
+                    return true
+                }
+            ) else {
                 report.parseErrors += 1
                 continue
             }
-            for file in files {
+            while let file = files.nextObject() as? URL {
                 guard file.pathExtension == "jsonl" else { continue }
-                if file.path.contains("/subagents/") { continue }
+                guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                    continue
+                }
                 report.filesScanned += 1
                 do {
                     var pending: [UsageEvent] = []
