@@ -138,8 +138,25 @@ enum GatewayPath {
         if !prefixPath.isEmpty, restPath == prefixPath || restPath.hasPrefix(prefixPath + "/") {
             return restPath.isEmpty ? "/" : restPath
         }
+        // A client that names its own API version is authoritative when the
+        // fixture prefix is itself only a version: Vercel AI Gateway serves the
+        // OpenAI-compatible API under /v1 and the AI SDK's native one under
+        // /v4/ai, and Gemini serves /v1 beside /v1beta. Prefixes with a real
+        // path (/api/gateway) still apply to everything.
+        if isVersionSegment(trimmedPrefix.split(separator: "/").first),
+           isVersionSegment(trimmedRest.split(separator: "/").first) {
+            return restPath
+        }
         let combined = prefixPath + restPath
         return combined.isEmpty ? "/" : combined
+    }
+
+    /// `v1`, `v4`, `v1beta`: a leading `v`, digits, then letters only.
+    static func isVersionSegment(_ segment: Substring?) -> Bool {
+        guard let segment, segment.count >= 2, segment.first == "v" else { return false }
+        let body = segment.dropFirst()
+        guard let firstNonDigit = body.firstIndex(where: { !$0.isNumber }) else { return true }
+        return firstNonDigit > body.startIndex && body[firstNonDigit...].allSatisfy { $0.isLetter }
     }
 }
 

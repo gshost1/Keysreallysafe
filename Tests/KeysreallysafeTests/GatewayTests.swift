@@ -23,6 +23,14 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(GatewayPath.join(prefix: "/v1beta", rest: "models/x"), "/v1beta/models/x")
         XCTAssertEqual(GatewayPath.join(prefix: "", rest: "v1/models"), "/v1/models")
         XCTAssertEqual(GatewayPath.join(prefix: "/v1", rest: ""), "/v1")
+        // A client-named API version wins over a version-only fixture prefix.
+        XCTAssertEqual(GatewayPath.join(prefix: "/v1", rest: "v4/ai/evaluation-model"), "/v4/ai/evaluation-model")
+        XCTAssertEqual(GatewayPath.join(prefix: "/v1beta", rest: "v1/models"), "/v1/models")
+        XCTAssertEqual(GatewayPath.join(prefix: "/v1", rest: "v1beta/models"), "/v1beta/models")
+        // A real path prefix still applies, and a non-version first segment is not a version.
+        XCTAssertEqual(GatewayPath.join(prefix: "/api/gateway", rest: "v1/chat/completions"), "/api/gateway/v1/chat/completions")
+        XCTAssertEqual(GatewayPath.join(prefix: "/v1", rest: "vendor/x"), "/v1/vendor/x")
+        XCTAssertEqual(GatewayPath.join(prefix: "/v1", rest: "v/x"), "/v1/v/x")
     }
 
     func testUsageParserOpenAIChatAndResponses() throws {

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Gateway: a request that names its own API version is forwarded verbatim when the provider's `path_prefix` is only a version. Vercel AI Gateway serves the OpenAI-compatible API under `/v1` and the AI SDK's native endpoints (`evaluation-model`) under `/v4/ai`; before this, `<gateway_url>/v4/ai/...` reached upstream as `/v1/v4/ai/...`. Gemini's `/v1` beside `/v1beta` follows the same rule. Prefixes with a real path (`/api/gateway`) still apply to everything.
+
 ## 0.4.0 — 2026-09-09
 
 - Claude's menu-bar percentage now shows Fable quota used as `C 72%`, with no five-hour value or extra label in the title. If Fable data is unavailable, it shows `C —` rather than substituting weekly usage.
