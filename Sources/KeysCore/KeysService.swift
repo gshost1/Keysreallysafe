@@ -18,6 +18,8 @@ final class KeysService: @unchecked Sendable {
     var openRouter: any OpenRouterFetching
     let grants = GrantStore()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
+    var optimizer: OptimizerController?
+    var analytics: ProductAnalytics?
     private var screenLockObserver: NSObjectProtocol?
 
     init(
@@ -187,7 +189,8 @@ final class KeysService: @unchecked Sendable {
         enabled: Bool,
         host: String?,
         caller: String = "dashboard",
-        reason: String? = nil
+        reason: String? = nil,
+        afterPresence: (() throws -> Void)? = nil
     ) throws -> CatalogRow {
         try requireGatewayOwner()
         try KeyName.validate(name)
@@ -217,6 +220,7 @@ final class KeysService: @unchecked Sendable {
             let secret: String
             if let reason {
                 try secrets.confirmPresence(reason: reason)
+                try afterPresence?()
                 secret = try secrets.getAfterPresence(name: name)
             } else {
                 secret = try secrets.get(name: name)
@@ -260,6 +264,14 @@ final class KeysService: @unchecked Sendable {
         guard let provider = Providers.provider(id: row.provider), provider.gateway else {
             throw AppError.usage("gateway is not available for provider \(row.provider); a grant cannot be issued")
         }
+        let jevAdapter: OptimizerProvider?
+        if let requestedProvider = request.jevProvider {
+            guard requestedProvider == row.provider,
+                  let adapter = OptimizerProvider.compatible(provider: row.provider, host: row.gatewayHost) else {
+                throw AppError.usage("key is not compatible with the requested Jev provider")
+            }
+            jevAdapter = adapter
+        } else { jevAdapter = nil }
         let host: String
         if let existing = row.gatewayHost, !existing.isEmpty {
             host = existing
@@ -274,7 +286,22 @@ final class KeysService: @unchecked Sendable {
         if let cached = lookupGateway(name: name), cached.host == host {
             try secrets.confirmPresence(reason: reason)
         } else {
-            _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
+            _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason, afterPresence: {
+                if let adapter = jevAdapter {
+                    guard let current = try self.catalog.catalogRow(name: name), current.version == row.version,
+                          OptimizerProvider.compatible(provider: current.provider, host: current.gatewayHost) == adapter else {
+                        throw AppError.usage("Jev provider configuration changed during approval")
+                    }
+                }
+            })
+        }
+        if let adapter = jevAdapter {
+            guard let current = try catalog.catalogRow(name: name),
+                  OptimizerProvider.compatible(provider: current.provider, host: current.gatewayHost) == adapter,
+                  let target = lookupGateway(name: name), target.host == adapter.host, adapter.accepts(target.provider) else {
+                disableGatewayMemory(name: name, reason: "target_changed")
+                throw AppError.usage("Jev provider configuration changed during approval")
+            }
         }
         grants.prune()
         let issued = grants.issue(key: name, provider: provider.id, host: host, request: request)
@@ -324,6 +351,12 @@ final class KeysService: @unchecked Sendable {
     /// Screen lock, logout and process exit all fail closed.
     func handleScreenLock() {
         revokeGrants(reason: "screen_lock", caller: "system")
+        optimizer?.lock()
+    }
+
+    func configureOptimizer(_ controller: OptimizerController) {
+        optimizer = controller
+        observeScreenLock()
     }
 
     private func observeScreenLock() {
@@ -343,7 +376,12 @@ final class KeysService: @unchecked Sendable {
         method: String,
         rest: String
     ) -> Result<Grant, GrantDenial> {
-        grants.authorize(
+        if let token, let id = GrantToken.idOf(token), let grant = grants.grant(id: id),
+           let providerID = grant.jevProvider {
+            guard let adapter = OptimizerProvider.compatible(provider: providerID, host: target.host),
+                  adapter.accepts(target.provider) else { return .failure(.targetChanged) }
+        }
+        return grants.authorize(
             token: token,
             key: target.name,
             host: target.host,
@@ -540,18 +578,9 @@ final class KeysService: @unchecked Sendable {
     }
 
     func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil) throws {
+        analytics?.record((200..<400).contains(row.status) ? .gatewaySuccess : .gatewayFailure, durationMS: row.durationMs)
         if let grantId {
-            grants.charge(
-                id: grantId,
-                usd: GatewayEstimate.usd(
-                    model: row.model,
-                    input: row.inputTokens ?? 0,
-                    output: row.outputTokens ?? 0,
-                    cacheRead: row.cacheReadTokens ?? 0,
-                    cacheWrite: row.cacheWriteTokens ?? 0,
-                    api: Providers.provider(id: row.provider)?.api
-                )
-            )
+            grants.charge(id: grantId, usd: row.usd)
         }
         try catalog.withTransaction {
             try catalog.insertGatewayUsage(row)
@@ -582,7 +611,7 @@ final class KeysService: @unchecked Sendable {
                 cachedReadTokens: row.cacheReadTokens ?? 0,
                 cacheCreationTokens: row.cacheWriteTokens ?? 0,
                 reasoningTokens: 0,
-                costUsdTicks: nil,
+                costUsdTicks: row.reportedCostUsdTicks,
                 keyName: row.key
             )
             _ = try catalog.insertUsage(event)
@@ -623,14 +652,7 @@ final class KeysService: @unchecked Sendable {
         for row in rows {
             var month = out[row.key] ?? GatewayMonth()
             month.calls += 1
-            if let usd = GatewayEstimate.usd(
-                model: row.model,
-                input: row.inputTokens ?? 0,
-                output: row.outputTokens ?? 0,
-                cacheRead: row.cacheReadTokens ?? 0,
-                cacheWrite: row.cacheWriteTokens ?? 0,
-                api: Providers.provider(id: row.provider)?.api
-            ) {
+            if let usd = row.usd {
                 month.usd = (month.usd ?? 0) + usd
                 month.pricedCalls += 1
             } else {
@@ -786,11 +808,13 @@ final class KeysService: @unchecked Sendable {
         guard confirmation == "purge" else {
             throw AppError.usage("type purge to confirm")
         }
+        try optimizer?.destroy(service: self)
         gatewayLock.lock()
         gatewayCache.removeAll()
         gatewayLock.unlock()
         revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
+        try analytics?.setEnabled(false, consentVersion: ProductAnalytics.consentVersion)
         try catalog.wipeData()
     }
 
@@ -812,6 +836,17 @@ final class KeysService: @unchecked Sendable {
         if touchLastUsed {
             try catalog.touchLastUsed(name: name, at: ts)
         }
+        // Only the action's fixed enum crosses into product analytics.
+        // The name, caller and audit detail stay in the local audit table.
+        let event: ProductAnalyticsEvent? = switch action {
+        case "add": .keyAdd
+        case "copy": .keyCopy
+        case "rm": .keyDelete
+        case "grant": .grantCreate
+        case "client_issue": .clientCreate
+        default: nil
+        }
+        if let event { analytics?.record(event) }
     }
 
     func pollOpenRouter() throws {
@@ -852,6 +887,8 @@ final class KeysService: @unchecked Sendable {
     }
 
     private func ingestLocked(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
+        var succeeded = false
+        defer { analytics?.record(succeeded ? .ingestSuccess : .ingestFailure) }
         try ensureClaudeDedupLocked()
         let reports = try Ingest.run(
             source: source,
@@ -866,6 +903,7 @@ final class KeysService: @unchecked Sendable {
         }
         try catalog.ensureModelColors()
         try catalog.setLastIngestAt(UTC.iso(Date()))
+        succeeded = true
         return reports
     }
 
@@ -987,10 +1025,13 @@ final class KeysService: @unchecked Sendable {
 enum AppFactory {
     static func makeService() throws -> KeysService {
         let db = try CatalogDB(path: Paths.catalogDB)
-        return KeysService(
+        let service = KeysService(
             catalog: db,
             secrets: GatedSecretStore(inner: KeychainStore(), presence: LocalPresenceGate()),
             clipboard: AppKitClipboard()
         )
+        service.configureOptimizer(try OptimizerController(directory: db.path.deletingLastPathComponent().appendingPathComponent("optimizer")))
+        service.analytics = ProductAnalytics(catalog: db)
+        return service
     }
 }

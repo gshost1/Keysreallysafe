@@ -218,7 +218,13 @@ final class GatewayListener: @unchecked Sendable {
         let auth = target.provider.authPrefix + target.secret
         urlRequest.setValue(auth, forHTTPHeaderField: target.provider.authHeader)
 
-        let tee = GatewayTee(api: target.provider.api)
+        // Vercel's native evaluation protocol differs from its OpenAI-compatible
+        // /v1 endpoints. Keep the extra parser scoped to this provider and path.
+        let evaluation = target.provider.id == "vercel-ai-gateway" && path == "/v4/ai/evaluation-model"
+        let directEvaluation = target.provider.id == "typesafe" && path == "/v1/systemone"
+        let usageAPI = evaluation ? "vercel-evaluation" : directEvaluation ? "typesafe-systemone" :
+            target.provider.api == "typesafe-systemone" ? "other" : target.provider.api
+        let tee = GatewayTee(api: usageAPI)
         let started = Date()
         let proxy = GatewayProxyTask(clientFD: client, tee: tee)
         let config = URLSessionConfiguration.ephemeral
@@ -249,7 +255,11 @@ final class GatewayListener: @unchecked Sendable {
         if !proxy.wroteHead {
             _ = Self.writeJSON(fd: client, status: 502, object: ["error": "upstream_error"])
         }
-        let parsed = tee.result(requestBody: request.body, contentType: proxy.contentType)
+        let parsed = tee.result(
+            requestBody: request.body,
+            contentType: proxy.contentType,
+            requestModel: evaluation ? request.headers["ai-model-id"] : nil
+        )
         do {
             try service.recordGatewayUsage(
                 GatewayUsageRow(
@@ -263,7 +273,8 @@ final class GatewayListener: @unchecked Sendable {
                     cacheWriteTokens: parsed.cacheWriteTokens,
                     status: status,
                     durationMs: durationMs,
-                    requestId: proxy.requestId
+                    requestId: proxy.requestId,
+                    reportedCostUsdTicks: (200..<300).contains(status) ? parsed.reportedCostUsdTicks : nil
                 ),
                 grantId: grant?.id
             )

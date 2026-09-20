@@ -27,6 +27,8 @@ struct Grant: Equatable, Sendable {
     var lastUsedAt: Date?
     var revokedAt: Date?
     var revokeReason: String?
+    /// Present only for reviewed Jev grants. Ordinary grants keep prefix semantics.
+    var jevProvider: String? = nil
 
     var isRevoked: Bool { revokedAt != nil }
     func isExpired(at now: Date) -> Bool { now >= expiresAt }
@@ -47,6 +49,8 @@ struct Grant: Equatable, Sendable {
             "task": task,
             "methods": methods.sorted(),
             "paths": paths,
+            "jev_provider": jevProvider as Any? ?? NSNull(),
+            "exact_paths": jevProvider != nil,
             "created_at": UTC.iso(createdAt),
             "expires_at": UTC.iso(expiresAt),
             "max_requests": maxRequests as Any? ?? NSNull(),
@@ -69,6 +73,7 @@ struct GrantRequest {
     var paths: [String] = []
     var maxRequests: Int?
     var maxUsd: Double?
+    var jevProvider: String? = nil
 
     func validated() throws -> GrantRequest {
         var r = self
@@ -84,6 +89,12 @@ struct GrantRequest {
             throw AppError.usage("unknown method \(bad)")
         }
         r.paths = try paths.map { try GrantPath.normalize($0) }.filter { !$0.isEmpty }
+        if let jevProvider {
+            guard let adapter = OptimizerProvider.supported.first(where: { $0.id == jevProvider }),
+                  r.methods == ["POST"], r.paths == [adapter.path] else {
+                throw AppError.usage("Jev grants require a reviewed provider and its exact POST evaluation path")
+            }
+        }
         if let maxRequests, maxRequests < 1 { throw AppError.usage("max requests must be at least 1") }
         if let maxUsd, !(maxUsd > 0) { throw AppError.usage("max usd must be positive") }
         return r
@@ -243,7 +254,8 @@ final class GrantStore: @unchecked Sendable {
             createdAt: now,
             expiresAt: now.addingTimeInterval(TimeInterval(request.minutes * 60)),
             maxRequests: request.maxRequests,
-            maxUsd: request.maxUsd
+            maxUsd: request.maxUsd,
+            jevProvider: request.jevProvider
         )
         grants[id] = grant
         hashes[id] = GrantToken.hash(token)
@@ -320,7 +332,17 @@ final class GrantStore: @unchecked Sendable {
         if g.host != host { return .failure(.targetChanged) }
         let m = method.uppercased()
         if !g.methods.contains(m) { return .failure(.method(m)) }
-        if !GrantPath.matches(rest: rest, prefix: providerPrefix, allowed: g.paths) {
+        let pathAllowed: Bool
+        if let jevProvider = g.jevProvider {
+            // Use the literal client route, not prefix-relative matching. In
+            // particular, /v1/systemone must not lose its /v1 before comparison.
+            pathAllowed = OptimizerProvider.supported.contains {
+                $0.id == jevProvider && g.provider == $0.id && g.paths == [$0.path] && "/" + rest == $0.path
+            }
+        } else {
+            pathAllowed = GrantPath.matches(rest: rest, prefix: providerPrefix, allowed: g.paths)
+        }
+        if !pathAllowed {
             return .failure(.path("/" + rest))
         }
         if let cap = g.maxRequests, g.requests >= cap { return .failure(.requestLimit) }

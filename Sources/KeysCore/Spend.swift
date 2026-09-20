@@ -453,6 +453,7 @@ struct SpendQueries {
 
     private static func gatewayUsd(_ event: UsageEvent) -> Double? {
         guard event.source == "gateway" else { return nil }
+        if let ticks = event.costUsdTicks { return Ticks.usd(ticks) }
         let model = event.model.isEmpty ? nil : event.model
         return GatewayEstimate.usd(
             model: model,
@@ -714,7 +715,7 @@ struct SpendQueries {
             cur.output += event.outputTokens
             cur.cachedRead += event.cachedReadTokens
             cur.cacheCreate += event.cacheCreationTokens
-            if let ticks = event.costUsdTicks {
+            if event.source == "grok-local", let ticks = event.costUsdTicks {
                 cur.usd = (cur.usd ?? 0) + Ticks.usd(ticks)
             }
             if event.source == "claude-local",
@@ -797,7 +798,7 @@ struct SpendQueries {
             cur.output += event.outputTokens
             cur.cachedRead += event.cachedReadTokens
             cur.cacheCreate += event.cacheCreationTokens
-            if let ticks = event.costUsdTicks {
+            if event.source == "grok-local", let ticks = event.costUsdTicks {
                 cur.usd = (cur.usd ?? 0) + Ticks.usd(ticks)
             }
             if event.source == "claude-local",

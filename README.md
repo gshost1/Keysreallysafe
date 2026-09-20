@@ -9,13 +9,20 @@ Keychain, and the app asks for Touch ID before it reads one out. The dashboard
 stays local; Claude's built-in `/usage` command refreshes subscription limits
 through its existing login.
 
-## What it never does
+## Privacy boundaries
 
-- No cloud. The site and the API bind to `127.0.0.1` only.
+- The dashboard and its API bind to `127.0.0.1` only. Optional product analytics
+  sends only aggregate counters after explicit opt-in to a configured collector;
+  the current build has no collector URL and cannot enable uploads.
+- Product analytics excludes prompt content, credentials, key/project names,
+  paths, and persistent device/user identifiers. The Privacy dialog shows the
+  destination and unsent reports and can stop collection and discard them.
+  See [product analytics](docs/product-analytics.md) and the
+  [self-hosted collector](Analytics/README.md).
 - No scraping. It does not open provider websites, cookies or browser sessions.
-- No message text. Only token counts, model names, timestamps and the working
-  directory are stored. A test proves that request bodies routed through the
-  gateway never reach disk.
+- The usage catalog stores only counters and metadata. Gateway request bodies
+  never reach that catalog. The optional Optimizer library stores explicitly
+  saved project memories and plans in a separate encrypted local archive.
 - No credentials from other tools. `~/.codex/auth.json` and
   `~/.grok/auth.json` are never read.
 - No fake numbers. A provider whose remaining quota is not in a local file is
@@ -53,6 +60,15 @@ shows `C —`. All plan windows are in the dropdown. Re-run it
 after every build; the login item serves a snapshot. Put `.build/debug/keys`
 on your `PATH` as `keys` for the commands below.
 
+The repository also includes an optional [Jev context optimizer](docs/jev-optimizer.md)
+for Claude Code. It prunes eligible old tool content, reuses identical decisions,
+and bounds the work spent deciding what to remove. Keys supplies a scoped grant
+and records Jev usage and available provider-reported cost. The optimizer is
+enabled explicitly per launch; unlike the local usage meter, it sends selected
+conversation state to the selected provider for evaluation. It supports Vercel
+AI Gateway and direct TypeSafe Jev through stored Keys credentials; see
+[provider support](docs/optimizer-providers.md).
+
 When migrating from an older ad-hoc build, each existing key may need one native
 Keychain password approval using **Always Allow** for the newly signed app.
 Touch ID remains required by the app when reading secrets. Subsequent builds
@@ -77,7 +93,7 @@ Remove everything with `keys autostart --remove` (login item and snapshot) and
 
 ## The site
 
-Three panes, switched with the segmented control or `⌘1` / `⌘2` / `⌘3`.
+Four panes, switched with the segmented control or `⌘1` through `⌘4`.
 
 **Usage** is the first thing you see: the plan windows each tool reports
 locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
@@ -106,6 +122,27 @@ read-only endpoint, with a filter box) and Delete (`⌫`). Active grants sit
 above the table with a Revoke button each. `N` adds a key; the provider
 picker is grouped into Labs, Routers, Hosts, Clouds and Non-chat, and a pasted
 secret with a recognisable prefix pre-fills it. `?` lists every shortcut.
+
+**Optimizer** is an optional encrypted project library and task ledger. Unlocking
+it requires user presence and creates an expiring capability kept in memory.
+Projects start off; local storage and external Jev evaluation are separate
+settings. Save and inspect memories and verified plans, archive obsolete entries,
+set request/input budgets, and inspect known versus unknown usage. Jev plan,
+tool, and model decisions are suggestions pending workload evaluation. See the
+[optimizer guide](docs/optimizer-library.md) for MCP/CLI access and exact limits.
+
+Compatible stored keys have an **Optimizer** action that preselects the key
+without unlocking it. The Optimizer selector also offers local-only memory.
+Optional [candidate capture](docs/optimizer-candidates.md) stages curated
+successful-task outcomes for review; pending candidates cannot enter retrieval.
+[Task preparation](docs/optimizer-task-workflow.md) combines local context and
+optional Jev suggestions in one MCP call. A [supported-host TypeScript adapter](docs/optimizer-client-adapter.md)
+provides selective tool loading and permission-aware read-result reuse where a
+client explicitly integrates it. These are not global interception hooks.
+
+Run `python3 scripts/optimizer-preflight.py --strict` for local prerequisites
+without live authorization. [Analytics deployment assets](docs/optimizer-deployment.md)
+are prepared separately; this build still has no configured analytics destination.
 
 Every request the page makes is same-origin. Mutating calls carry a token the
 server generates per launch. That token is a browser CSRF defense: it stops a
@@ -216,7 +253,10 @@ The gateway forwards to the provider host from `Web/providers.json` or the
 host you set, replaces the token with the secret in the right header, never
 follows a redirect, streams the response back, and records the `usage`
 object from OpenAI chat-completions and responses, Anthropic messages and
-Gemini bodies, plus the upstream `request-id`. Those calls show up as a "Via
+Gemini bodies, plus Vercel evaluation-model responses and the upstream `request-id`.
+For evaluation requests the model comes from the `ai-model-id` header. Valid
+provider-reported Vercel evaluation cost is preferred over a list-price estimate;
+missing cost with no price remains unpriced. Those calls show up as a "Via
 gateway" column in Keys and can be charted per key. A call that no model or
 price could be attached to is shown as unpriced, never as $0. The secret is
 held in process memory only while the gateway is on and is forgotten on
@@ -315,12 +355,16 @@ and puts the old one back if signing or launch fails.
 
 ```sh
 swift test                      # synthetic fixtures only, no network
+python3 -m unittest discover -s scripts/tests -p 'test_jev_launcher.py'
 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```
 
 `Web/` is plain HTML, CSS and JavaScript with no build step and no external
 resources. `Fixtures/` holds synthetic session logs for the tests, the price
 table, and the provider catalog. CI runs `swift test` on macOS.
+The bundled optimizer has its own `npm ci`, `npm test`, `npm run typecheck` and
+`npm run build` checks in `Plugins/jev-optimizer`; CI runs those with mocked
+provider responses. See the [research and source notes](docs/jev-research.md).
 
 ## License
 

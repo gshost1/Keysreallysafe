@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 
 struct GatewayUsageRow: Equatable {
@@ -15,6 +16,21 @@ struct GatewayUsageRow: Equatable {
     /// Upstream `request-id` / `x-request-id` response header. Claude Code stores the same value
     /// as `requestId`, so a call seen both locally and through the gateway can be matched exactly.
     var requestId: String? = nil
+    /// Provider-reported total USD, at the same precision as local usage costs.
+    /// nil means absent/invalid, while zero is an explicit reported zero.
+    var reportedCostUsdTicks: Int64? = nil
+
+    var usd: Double? {
+        if let reportedCostUsdTicks { return Ticks.usd(reportedCostUsdTicks) }
+        // TypeSafe's published System One protocol has no cost receipt. A model
+        // name from that response must not acquire an unrelated catalog price.
+        if provider == "typesafe" { return nil }
+        return GatewayEstimate.usd(
+            model: model, input: inputTokens ?? 0, output: outputTokens ?? 0,
+            cacheRead: cacheReadTokens ?? 0, cacheWrite: cacheWriteTokens ?? 0,
+            api: Providers.provider(id: provider)?.api
+        )
+    }
 }
 
 struct GatewayParsedUsage: Equatable {
@@ -23,6 +39,7 @@ struct GatewayParsedUsage: Equatable {
     var outputTokens: Int?
     var cacheReadTokens: Int?
     var cacheWriteTokens: Int?
+    var reportedCostUsdTicks: Int64?
 }
 
 enum GatewayUsageParser {
@@ -30,7 +47,8 @@ enum GatewayUsageParser {
         api: String,
         requestBody: Data,
         responseBody: Data,
-        contentType: String?
+        contentType: String?,
+        requestModel: String? = nil
     ) -> GatewayParsedUsage {
         var parsed: GatewayParsedUsage
         switch api {
@@ -40,11 +58,22 @@ enum GatewayUsageParser {
             parsed = parseAnthropic(responseBody: responseBody, contentType: contentType)
         case "gemini":
             parsed = parseGemini(responseBody: responseBody, contentType: contentType)
+        case "vercel-evaluation":
+            parsed = parseVercelEvaluation(responseBody: responseBody)
+        case "typesafe-systemone":
+            parsed = parseTypeSafe(responseBody: responseBody)
         default:
             parsed = GatewayParsedUsage()
         }
         if parsed.model == nil {
-            parsed.model = modelFromRequest(requestBody)
+            // The evaluation protocol sends the model in `ai-model-id`, not in
+            // its state/questions body. Other APIs must not trust that header.
+            if api == "vercel-evaluation" {
+                let model = requestModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+                parsed.model = model?.isEmpty == false ? model : nil
+            } else {
+                parsed.model = modelFromRequest(requestBody)
+            }
         }
         return parsed
     }
@@ -64,6 +93,48 @@ enum GatewayUsageParser {
             return nil
         }
         return JSONValue.string(obj["model"])
+    }
+
+    private static func parseVercelEvaluation(responseBody: Data) -> GatewayParsedUsage {
+        guard let obj = lastJSONObject(in: responseBody) else { return GatewayParsedUsage() }
+        let usage = JSONValue.object(obj["usage"])
+        let metadata = JSONValue.object(obj["providerMetadata"])
+        let gateway = metadata.flatMap { JSONValue.object($0["gateway"]) }
+        return GatewayParsedUsage(
+            inputTokens: evaluationTokenCount(usage?["inputTokens"]),
+            outputTokens: evaluationTokenCount(usage?["outputTokens"]),
+            reportedCostUsdTicks: evaluationCostTicks(gateway?["cost"])
+        )
+    }
+
+    private static func parseTypeSafe(responseBody: Data) -> GatewayParsedUsage {
+        guard let obj = lastJSONObject(in: responseBody) else { return GatewayParsedUsage() }
+        let usage = JSONValue.object(obj["usage"])
+        return GatewayParsedUsage(model: JSONValue.string(obj["model"]),
+            inputTokens: evaluationTokenCount(usage?["input_tokens"]),
+            outputTokens: evaluationTokenCount(usage?["output_tokens"]))
+    }
+
+    /// Invalid or absent counts stay unknown; `0` is a valid reported count.
+    private static func evaluationTokenCount(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let count = Int(exactly: number.doubleValue), count >= 0
+        else { return nil }
+        return count
+    }
+
+    private static func evaluationCostTicks(_ value: Any?) -> Int64? {
+        let usd: Double?
+        if let text = value as? String {
+            usd = Double(text)
+        } else if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            usd = number.doubleValue
+        } else {
+            usd = nil
+        }
+        guard let usd, usd.isFinite, usd >= 0 else { return nil }
+        return Int64(exactly: (usd * Ticks.perUSD).rounded())
     }
 
     private static func parseOpenAI(responseBody: Data, contentType: String?) -> GatewayParsedUsage {
@@ -317,7 +388,7 @@ final class GatewayTee: @unchecked Sendable {
         }
     }
 
-    func result(requestBody: Data, contentType: String?) -> GatewayParsedUsage {
+    func result(requestBody: Data, contentType: String?, requestModel: String? = nil) -> GatewayParsedUsage {
         lock.lock()
         if sse, !eventBuf.isEmpty {
             parseSSEEvent(eventBuf)
@@ -332,14 +403,16 @@ final class GatewayTee: @unchecked Sendable {
                 api: api,
                 requestBody: requestBody,
                 responseBody: json,
-                contentType: contentType ?? self.contentType
+                contentType: contentType ?? self.contentType,
+                requestModel: requestModel
             )
         } else if parsed.model == nil {
             let fromRequest = GatewayUsageParser.parse(
                 api: api,
                 requestBody: requestBody,
                 responseBody: Data(),
-                contentType: contentType ?? self.contentType
+                contentType: contentType ?? self.contentType,
+                requestModel: requestModel
             )
             parsed.model = fromRequest.model
         }
@@ -399,6 +472,7 @@ final class GatewayTee: @unchecked Sendable {
         if piece.outputTokens != nil { out.outputTokens = piece.outputTokens }
         if piece.cacheReadTokens != nil { out.cacheReadTokens = piece.cacheReadTokens }
         if piece.cacheWriteTokens != nil { out.cacheWriteTokens = piece.cacheWriteTokens }
+        if piece.reportedCostUsdTicks != nil { out.reportedCostUsdTicks = piece.reportedCostUsdTicks }
         return out
     }
 }

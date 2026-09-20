@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>Keysreallysafe</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/optimizer.css">
 </head>
 <body data-pane="spend">
   <header class="toolbar">
@@ -17,6 +18,7 @@
       <button type="button" role="tab" id="nav-usage" aria-selected="true" aria-controls="pane-usage" title="Usage (⌘1)">Usage</button>
       <button type="button" role="tab" id="nav-chart" aria-selected="false" aria-controls="pane-chart" tabindex="-1" title="Chart (⌘2)">Chart</button>
       <button type="button" role="tab" id="nav-keys" aria-selected="false" aria-controls="pane-keys" tabindex="-1" title="Keys (⌘3)">Keys</button>
+      <button type="button" role="tab" id="nav-optimizer" aria-selected="false" aria-controls="pane-optimizer" tabindex="-1" title="Optimizer (⌘4)">Optimizer</button>
     </nav>
     <div class="toolbar-end">
       <span id="keys-count" class="count"></span>
@@ -24,6 +26,7 @@
       <button type="button" id="btn-export" class="btn-quiet" title="Download the current rows as CSV (X)">CSV</button>
       <button type="button" id="btn-copy-totals" class="btn-quiet" title="Copy the totals line as Markdown (⇧C)">Copy totals</button>
       <button type="button" id="btn-ingest" class="btn-quiet" title="Ingest Grok, Claude Code and Codex sessions (⌘R)">Ingest</button>
+      <button type="button" id="btn-privacy" class="btn-quiet" aria-haspopup="dialog" title="Product analytics privacy settings">Privacy</button>
       <button type="button" id="btn-help" class="btn-quiet" aria-label="Keyboard shortcuts" title="Shortcuts">?</button>
       <p id="status" class="status" role="status" aria-live="polite"></p>
     </div>
@@ -95,6 +98,96 @@
         <tbody id="keys-body"></tbody>
       </table>
       <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button></p>
+    </section>
+
+    <section id="pane-optimizer" role="tabpanel" aria-labelledby="nav-optimizer" hidden>
+      <div class="optimizer-shell">
+        <div class="optimizer-head">
+          <div>
+            <p class="optimizer-kicker">local task memory</p>
+            <h1>Optimizer</h1>
+            <p class="optimizer-subtitle">Reuse checked plans and project knowledge when they still fit the current task.</p>
+          </div>
+          <div class="optimizer-head-actions">
+            <span id="optimizer-live-badge" class="optimizer-badge" hidden>Pending live data</span>
+            <button type="button" class="btn" id="optimizer-lock" hidden>Lock</button>
+          </div>
+        </div>
+
+        <div id="optimizer-alert" class="optimizer-alert" role="status" aria-live="polite" hidden></div>
+
+        <div id="optimizer-locked" class="optimizer-locked">
+          <div class="optimizer-lock-icon" aria-hidden="true">⌁</div>
+          <h2>Optimizer is locked</h2>
+          <p>Unlock with Touch ID to inspect project settings, task summaries, and stored memories. Content stays hidden until this page has an active session.</p>
+          <label class="optimizer-unlock-key">Evaluation key<select id="optimizer-jev-key"><option value="">Local only · no provider evaluation</option></select></label>
+          <p id="optimizer-key-state" class="hint" role="status" aria-live="polite">Loading compatible stored keys…</p>
+          <button type="button" class="btn btn-primary" id="optimizer-unlock">Unlock with Touch ID</button>
+          <p class="hint">The session token lives in memory and expires automatically.</p>
+        </div>
+
+        <div id="optimizer-content" hidden>
+          <div class="optimizer-toolbar">
+            <div class="optimizer-tabs" role="tablist" aria-label="Optimizer views">
+              <button type="button" role="tab" aria-selected="true" aria-controls="optimizer-view-overview" data-optimizer-view="overview">Overview</button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="optimizer-view-projects" tabindex="-1" data-optimizer-view="projects">Projects</button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="optimizer-view-library" tabindex="-1" data-optimizer-view="library">Memory &amp; plans</button>
+              <button type="button" role="tab" aria-selected="false" aria-controls="optimizer-view-capabilities" tabindex="-1" data-optimizer-view="capabilities">Capabilities</button>
+            </div>
+            <span id="optimizer-session" class="optimizer-session">Session active</span>
+          </div>
+
+          <section id="optimizer-view-overview" class="optimizer-view" role="tabpanel" aria-label="Optimizer overview">
+            <div class="optimizer-grid optimizer-grid-summary" id="optimizer-summary-cards"></div>
+            <div class="optimizer-panel optimizer-panel-wide">
+              <div class="optimizer-panel-head"><div><h2>What is counted</h2><p>Numbers come from recorded events and remain unknown when the source did not report them.</p></div><span class="optimizer-badge badge-muted">No fake savings</span></div>
+              <div id="optimizer-accounting" class="optimizer-accounting"></div>
+            </div>
+            <div class="optimizer-panel">
+              <div class="optimizer-panel-head"><div><h2>Projects</h2><p>Choose a project to control storage and optimization mode.</p></div><button type="button" class="btn" data-action="new-project">New project</button></div>
+              <div id="optimizer-project-preview" class="optimizer-list"></div>
+            </div>
+            <div class="optimizer-panel">
+              <div class="optimizer-panel-head"><div><h2>Recent activity</h2><p>Task and optimizer events from the current local store.</p></div></div>
+              <div id="optimizer-activity" class="optimizer-list"></div>
+            </div>
+          </section>
+
+          <section id="optimizer-view-projects" class="optimizer-view" role="tabpanel" aria-label="Optimizer projects" hidden>
+            <div class="optimizer-panel optimizer-panel-wide">
+              <div class="optimizer-panel-head"><div><h2>Project settings</h2><p>Optimization is opt-in per project. Off disables optimizer work for that root.</p><p class="optimizer-cli-note">CLI/MCP read-only: <code>keys optimizer mcp --project UUID</code>. Add <code>--writable</code> only when needed; this does not auto-configure a client.</p></div><button type="button" class="btn btn-primary" data-action="new-project">New project</button></div>
+              <div id="optimizer-projects" class="optimizer-list"></div>
+            </div>
+          </section>
+
+          <section id="optimizer-view-library" class="optimizer-view" role="tabpanel" aria-label="Memory and plan library" hidden>
+            <div class="optimizer-library-layout">
+              <div class="optimizer-panel optimizer-library-list-panel">
+                <div class="optimizer-panel-head"><div><h2>Candidate review</h2><p>Captured candidates stay unavailable for reuse until explicitly approved.</p></div></div>
+                <div class="optimizer-candidate-controls">
+                  <label>Review state<select id="optimizer-candidate-state"><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></label>
+                  <button type="button" class="btn btn-row" id="optimizer-candidate-refresh">Refresh</button>
+                </div>
+                <div id="optimizer-candidates" class="optimizer-list"></div>
+                <div class="optimizer-panel-head optimizer-library-heading"><div><h2>Library</h2><p>Curated entries are scoped to one project.</p></div><button type="button" class="btn btn-primary" data-action="new-entry">New entry</button></div>
+                <div class="optimizer-library-controls">
+                  <label class="optimizer-search">Search entries<input id="optimizer-entry-query" type="search" autocomplete="off" placeholder="Search title, tags, content"></label>
+                  <label class="optimizer-select-label">Project<select id="optimizer-entry-project"></select></label>
+                  <label class="optimizer-check"><input id="optimizer-include-archived" type="checkbox"> Include archived</label>
+                </div>
+                <div id="optimizer-entries" class="optimizer-list"></div>
+              </div>
+              <div id="optimizer-entry-detail" class="optimizer-panel optimizer-entry-detail" aria-live="polite">
+                <div class="optimizer-detail-empty"><h2>Select an entry</h2><p>Choose a memory or plan to inspect provenance, constraints, dependencies, and verification evidence.</p></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="optimizer-view-capabilities" class="optimizer-view" role="tabpanel" aria-label="Optimizer capabilities" hidden>
+            <div class="optimizer-panel optimizer-panel-wide"><div class="optimizer-panel-head"><div><h2>Capability matrix</h2><p>Availability comes from the local adapter. Unsupported features stay visibly unavailable.</p></div></div><div id="optimizer-capabilities" class="optimizer-capability-grid"></div></div>
+          </section>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -322,6 +415,7 @@
       <dt><kbd>⌘</kbd><kbd>1</kbd></dt><dd>Usage</dd>
       <dt><kbd>⌘</kbd><kbd>2</kbd></dt><dd>Chart</dd>
       <dt><kbd>⌘</kbd><kbd>3</kbd></dt><dd>Keys</dd>
+      <dt><kbd>⌘</kbd><kbd>4</kbd></dt><dd>Optimizer</dd>
       <dt><kbd>⌘</kbd><kbd>R</kbd></dt><dd>Ingest sessions</dd>
       <dt><kbd>T</kbd></dt><dd>Tokens / USD</dd>
       <dt><kbd>N</kbd></dt><dd>Add key</dd>
@@ -347,6 +441,34 @@
     </div>
   </dialog>
 
+  <dialog id="dlg-privacy" class="dlg dlg-wide" aria-labelledby="privacy-title" aria-describedby="privacy-description">
+    <section class="privacy-dialog">
+      <h2 id="privacy-title">Product analytics</h2>
+      <p id="privacy-description" class="privacy-copy">Help improve Keys by sharing aggregated feature use, outcomes, and timing. A report also includes the app version, macOS major version and architecture, plus a daily date and random report ID. It excludes content, credentials, project names, key names, and account IDs.</p>
+      <p class="privacy-copy">Reports send only after you enable this setting and a destination is configured. Daily summaries are sent after their UTC day ends while the app is running. Failed uploads retry, with up to seven unsent days retained. The collector retains received reports for 30 days. Keys has no persistent device or user ID. Previously sent reports cannot be recalled; turning off discards unsent reports, though a report already in flight may already be received.</p>
+      <p id="analytics-destination" class="privacy-destination" aria-live="polite">Checking analytics configuration…</p>
+
+      <label class="privacy-choice"><input id="analytics-enabled" type="checkbox"> Enable product analytics</label>
+      <p id="analytics-state" class="hint" role="status" aria-live="polite"></p>
+
+      <div class="privacy-facts" aria-label="Pending analytics reports">
+        <span>Pending events</span><strong id="analytics-pending">—</strong>
+        <span>Last result</span><strong id="analytics-last-result">—</strong>
+      </div>
+      <div class="privacy-preview-head"><h3>Unsent report preview</h3><button type="button" id="analytics-download" class="btn-row" disabled>Download unsent reports</button></div>
+      <pre id="analytics-preview" class="privacy-preview">No unsent reports available.</pre>
+
+      <p id="analytics-error" class="err" role="alert"></p>
+      <div class="actions">
+        <button type="button" id="analytics-disable-discard" class="btn btn-danger" hidden>Turn off and discard unsent reports</button>
+        <button type="button" class="btn" data-close>Close</button>
+        <button type="button" id="analytics-save" class="btn btn-primary">Save preference</button>
+      </div>
+    </section>
+  </dialog>
+
   <script src="/app.js"></script>
+  <script src="/optimizer.js"></script>
+  <script src="/analytics.js"></script>
 </body>
 </html>

@@ -26,6 +26,7 @@
     colors: new Map(),
     slots: new Map(),
     providers: null,
+    optimizerCompatibleKeys: new Set(),
     catalogVersion: null,
     status: null,
     engineDown: false,
@@ -197,9 +198,9 @@
 
   // ---------- panes ----------
 
-  const panes = { usage: $("pane-usage"), chart: $("pane-chart"), keys: $("pane-keys") };
-  const tabs = { usage: $("nav-usage"), chart: $("nav-chart"), keys: $("nav-keys") };
-  const PANE_ORDER = ["usage", "chart", "keys"];
+  const panes = { usage: $("pane-usage"), chart: $("pane-chart"), keys: $("pane-keys"), optimizer: $("pane-optimizer") };
+  const tabs = { usage: $("nav-usage"), chart: $("nav-chart"), keys: $("nav-keys"), optimizer: $("nav-optimizer") };
+  const PANE_ORDER = ["usage", "chart", "keys", "optimizer"];
 
   function leaveHiddenPaneFocus(next) {
     const active = document.activeElement;
@@ -216,6 +217,7 @@
   function showPane(name, opts = {}) {
     const changed = state.pane !== name;
     state.pane = name;
+    if (changed) window.KeysAnalytics?.event(`view_${name}`);
     document.body.dataset.pane = name;
     for (const key of Object.keys(panes)) {
       const on = key === name;
@@ -232,7 +234,8 @@
     else if (changed) leaveHiddenPaneFocus(name);
     if (name === "usage") loadStatus();
     else if (name === "chart") loadSpend();
-    else loadKeys({ focus: !!opts.keyboard && !opts.focusTab });
+    else if (name === "keys") loadKeys({ focus: !!opts.keyboard && !opts.focusTab });
+    else if (name === "optimizer" && typeof window.optimizerLoad === "function") window.optimizerLoad();
   }
 
   for (const [name, tab] of Object.entries(tabs)) {
@@ -528,10 +531,10 @@
       return el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Dollars appear once the gateway routes this key." });
     }
     if (kind === "unknown") {
-      return el("td", { class: "td-usd none", "data-label": "Via gateway", text: `${plural(calls, "call", "calls")}, unpriced`, title: "This month's gateway calls with this key carried no model or no list price, so the cost is unknown, not zero. Click to chart.", onclick: open });
+      return el("td", { class: "td-usd none", "data-label": "Via gateway", text: `${plural(calls, "call", "calls")}, unpriced`, title: "This month's gateway calls with this key had no usable cost receipt or list-price estimate, so the cost is unknown, not zero. Click to chart.", onclick: open });
     }
     const partial = kind === "partial" ? ` ${plural(unpricedCalls, "call", "calls")} unpriced and left out.` : "";
-    return el("td", { class: "td-usd", "data-label": "Via gateway", text: (kind === "partial" ? "≥ " : "") + fmtUsd(k.usd_month), title: "This month, calls through the local gateway with this key." + partial + " Click to chart.", onclick: open });
+    return el("td", { class: "td-usd", "data-label": "Via gateway", text: (kind === "partial" ? "≥ " : "") + fmtUsd(k.usd_month), title: "This month, calls through the local gateway with this key. Uses provider-reported cost where available, otherwise a list-price estimate." + partial + " Click to chart.", onclick: open });
   }
 
   // One line: the dollar figure first, then the parts that make it up.
@@ -563,7 +566,7 @@
       const why = gwUnpriced > 0
         ? `${plural(gwUnpriced, "gateway call", "gateway calls")} could not be priced (${(t.gateway_unpriced_models || []).join(", ") || "no model"}).`
         : "";
-      parts.push(el("span", { class: "totals-part", title: ("Calls routed through the local gateway that no local log also recorded. Not added to the total above. " + why).trim() },
+      parts.push(el("span", { class: "totals-part", title: ("Calls routed through the local gateway that no local log also recorded. Uses provider-reported cost where available, otherwise a list-price estimate. Not added to the total above. " + why).trim() },
         el("b", { text: label }), " via gateway"));
     }
     parts.forEach((p, i) => { if (i) nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
@@ -896,10 +899,28 @@
       const data = await api("/api/keys");
       state.keys = data.keys || [];
       renderKeys(opts);
+      loadOptimizerKeyMetadata();
       loadGrants();
     } catch (e) {
       if (!opts.quiet) say(e.message, true);
     }
+  }
+
+  async function loadOptimizerKeyMetadata() {
+    try {
+      const data = await api("/api/optimizer/keys");
+      const keys = Array.isArray(data.keys) ? data.keys : [];
+      const unavailable = new Set((Array.isArray(data.providers) ? data.providers : []).filter((provider) => provider && typeof provider === "object" && (provider.available === false || provider.enabled === false)).map((provider) => provider.id));
+      state.optimizerCompatibleKeys = new Set(keys.filter((key) => {
+        if (!key || typeof key !== "object" || typeof key.name !== "string" || !/^[a-z0-9][a-z0-9._-]*$/.test(key.name)) return false;
+        const features = Array.isArray(key.features) ? key.features.map((value) => String(value).toLowerCase()) : [];
+        return features.some((value) => ["optimizer", "jev", "evaluation", "model_evaluation"].includes(value))
+          || ["typesafe", "vercel-ai-gateway"].includes(String(key.provider || "").toLowerCase());
+      }).filter((key) => !unavailable.has(key.provider)).map((key) => key.name).filter(Boolean));
+    } catch {
+      state.optimizerCompatibleKeys = new Set();
+    }
+    renderKeys();
   }
 
   const gatewayOn = (k) => !!(k.gateway_enabled || k.gateway_on);
@@ -963,6 +984,11 @@
               disabled: k.checkable ? null : "",
               title: k.checkable ? "Read-only: authentication status and model list from " + (k.host || "the provider") : "No read-only check endpoint for this provider; nothing is sent",
             }),
+            state.optimizerCompatibleKeys.has(k.name) ? el("button", {
+              type: "button", class: "btn btn-row", tabindex: tab, "data-act": "optimizer",
+              "aria-label": "Use " + k.name + " with Optimizer", text: "Optimizer",
+              title: "Preselect this stored key in Optimizer. Authorization still requires an explicit unlock.",
+            }) : null,
             el("span", { class: "act-div", "aria-hidden": "true" }),
             el("button", { type: "button", class: "btn btn-row btn-danger", tabindex: tab, "data-act": "delete", "aria-label": "Delete " + k.name, text: "Delete" }),
           ),
@@ -1018,6 +1044,10 @@
     else if (btn.dataset.act === "check") runCheck(name);
     else if (btn.dataset.act === "history") toggleEvents(name);
     else if (btn.dataset.act === "rotate") openRotate(name);
+    else if (btn.dataset.act === "optimizer") {
+      showPane("optimizer");
+      if (typeof window.optimizerPreselectKey === "function") window.optimizerPreselectKey(name);
+    }
     else if (btn.dataset.act === "delete") askDelete(name);
   });
 
@@ -1872,6 +1902,7 @@
       if (e.key === "1") { e.preventDefault(); showPane("usage", { keyboard: true }); }
       else if (e.key === "2") { e.preventDefault(); showPane("chart", { keyboard: true }); }
       else if (e.key === "3") { e.preventDefault(); showPane("keys", { keyboard: true }); }
+      else if (e.key === "4") { e.preventDefault(); showPane("optimizer", { keyboard: true }); }
       else if (e.key === "r" || e.key === "R") { e.preventDefault(); ingest(); }
       return;
     }
@@ -2129,6 +2160,7 @@
   syncGroupChips();
   loadModels();
   showPane("usage", { keyboard: true });
+  document.addEventListener("DOMContentLoaded", () => window.KeysAnalytics?.event("view_usage"), { once: true });
   loadUsageTotals();
   loadKeys({ quiet: true });
   setInterval(loadStatus, 15000);

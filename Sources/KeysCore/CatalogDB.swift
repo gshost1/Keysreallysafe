@@ -140,6 +140,9 @@ final class CatalogDB: @unchecked Sendable {
         if !(try hasColumn("gateway_usage", "request_id")) {
             try exec("ALTER TABLE gateway_usage ADD COLUMN request_id TEXT;")
         }
+        if !(try hasColumn("gateway_usage", "reported_cost_usd_ticks")) {
+            try exec("ALTER TABLE gateway_usage ADD COLUMN reported_cost_usd_ticks INTEGER;")
+        }
         try exec("UPDATE catalog SET gateway_enabled = 0;")
         if !(try hasColumn("catalog", "version")) {
             try exec("ALTER TABLE catalog ADD COLUMN version INTEGER NOT NULL DEFAULT 1;")
@@ -384,18 +387,19 @@ final class CatalogDB: @unchecked Sendable {
 
     private var inTransaction = false
 
-    func withTransaction(_ body: () throws -> Void) throws {
+    @discardableResult
+    func withTransaction<T>(_ body: () throws -> T) throws -> T {
         try withLock {
             if inTransaction {
-                try body()
-                return
+                return try body()
             }
             try exec("BEGIN IMMEDIATE")
             inTransaction = true
             do {
-                try body()
+                let result = try body()
                 try exec("COMMIT")
                 inTransaction = false
+                return result
             } catch {
                 inTransaction = false
                 try? exec("ROLLBACK")
@@ -991,8 +995,8 @@ final class CatalogDB: @unchecked Sendable {
             let sql = """
                 INSERT INTO gateway_usage (
                   ts, key, provider, model, input_tokens, output_tokens,
-                  cache_read_tokens, cache_write_tokens, status, duration_ms, request_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                  cache_read_tokens, cache_write_tokens, status, duration_ms, request_id, reported_cost_usd_ticks
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """
             let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
@@ -1007,6 +1011,8 @@ final class CatalogDB: @unchecked Sendable {
             sqlite3_bind_int(stmt, 9, Int32(row.status))
             sqlite3_bind_int(stmt, 10, Int32(row.durationMs))
             bindText(stmt, 11, row.requestId)
+            if let ticks = row.reportedCostUsdTicks { sqlite3_bind_int64(stmt, 12, ticks) }
+            else { sqlite3_bind_null(stmt, 12) }
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
         }
     }
@@ -1015,7 +1021,7 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             var sql = """
                 SELECT id, ts, key, provider, model, input_tokens, output_tokens,
-                       cache_read_tokens, cache_write_tokens, status, duration_ms, request_id
+                       cache_read_tokens, cache_write_tokens, status, duration_ms, request_id, reported_cost_usd_ticks
                 FROM gateway_usage
                 WHERE ts >= ? AND ts < ?
                 """
@@ -1041,7 +1047,8 @@ final class CatalogDB: @unchecked Sendable {
                         cacheWriteTokens: columnOptionalInt(stmt, 8),
                         status: Int(sqlite3_column_int(stmt, 9)),
                         durationMs: Int(sqlite3_column_int(stmt, 10)),
-                        requestId: columnText(stmt, 11)
+                        requestId: columnText(stmt, 11),
+                        reportedCostUsdTicks: sqlite3_column_type(stmt, 12) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 12)
                     )
                 )
             }
@@ -1296,6 +1303,7 @@ final class CatalogDB: @unchecked Sendable {
             try exec("DELETE FROM meta WHERE key = 'last_ingest_at';")
             try exec("DELETE FROM meta WHERE key = 'claude_dedup';")
             try exec("DELETE FROM meta WHERE key = 'gateway_owner_pid';")
+            try exec("DELETE FROM meta WHERE key = 'product_analytics_v1';")
         }
     }
 

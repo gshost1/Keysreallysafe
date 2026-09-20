@@ -1,0 +1,114 @@
+{
+  "name": "keys-jev-optimizer",
+  "version": "0.1.0",
+  "description": "Bounded Jev context optimization through the KeysReallySafe gateway.",
+  "license": "MIT",
+  "userConfig": {
+    "apiKey": {
+      "type": "string",
+      "title": "Standalone Vercel key",
+      "description": "For standalone Vercel use only. Leave unset when using the Keys launcher: its temporary grant overrides saved credentials for either Vercel or TypeSafe.",
+      "sensitive": true
+    },
+    "keepThreshold": {
+      "type": "number",
+      "title": "Keep threshold",
+      "description": "Keep probability at or above which the item stays; 0.2 preserves uncertain evidence.",
+      "default": 0.2
+    },
+    "preserveRecentMessages": {
+      "type": "number",
+      "title": "Recent messages to preserve",
+      "description": "Number of newest messages pinned from compaction.",
+      "default": 6
+    },
+    "compactAtPercent": {
+      "type": "number",
+      "title": "Compaction percentage",
+      "description": "Context percentage at which turn.complete requests compaction.",
+      "default": 60
+    },
+    "minReductionRatio": {
+      "type": "number",
+      "title": "Minimum reduction ratio",
+      "description": "Minimum estimated character reduction required to replace history.",
+      "default": 0.25
+    },
+    "maxStateTokens": {
+      "type": "number",
+      "title": "Maximum state tokens",
+      "description": "Estimated token budget for the conversation state sent with every request.",
+      "default": 25000
+    },
+    "maxRequestTokens": {
+      "type": "number",
+      "title": "Maximum request tokens",
+      "description": "Estimated token budget for state plus questions in one request.",
+      "default": 30000
+    },
+    "truncateHeadChars": {
+      "type": "number",
+      "title": "Truncated tool result head",
+      "description": "Characters of a tool result kept when the model decides its full output is no longer needed; 0 keeps only the note.",
+      "default": 300
+    },
+    "model": {
+      "type": "string",
+      "title": "Evaluation model",
+      "description": "Standalone Vercel model ID. A Keys scoped launcher connection selects its reviewed provider model (typesafe-ai/jev or jev-latest), overriding this setting.",
+      "default": "typesafe-ai/jev"
+    },
+    "baseUrl": {
+      "type": "string",
+      "title": "Gateway endpoint URL",
+      "description": "Standalone Vercel endpoint override. Must be https, or http on localhost. The key and conversation state are sent here. The Keys launcher overrides this setting with its exact local scoped endpoint."
+    },
+    "minRemovableChars": {
+      "type": "number",
+      "title": "Minimum removable characters",
+      "description": "Skip evaluation when eligible output text cannot remove this many characters; not a token or dollar estimate.",
+      "default": 4000
+    },
+    "maxCandidates": {
+      "type": "number",
+      "title": "Maximum outputs scored",
+      "description": "Score the largest eligible outputs only; all others remain unchanged.",
+      "default": 16
+    },
+    "maxDecisionInputTokens": {
+      "type": "number",
+      "title": "Total estimated decision input budget",
+      "description": "Maximum estimated input across uncached requests, including repeated state; checked before any request.",
+      "default": 60000
+    },
+    "maxRequests": {
+      "type": "number",
+      "title": "Maximum evaluation requests",
+      "description": "Maximum uncached requests per compaction, checked before sending any.",
+      "default": 3
+    },
+    "maxConcurrency": {
+      "type": "number",
+      "title": "Evaluation concurrency",
+      "description": "Maximum simultaneous evaluation requests; clamped to 1\u20138.",
+      "default": 2
+    },
+    "minContextGrowthTokens": {
+      "type": "number",
+      "title": "Automatic compaction growth gate",
+      "description": "Minimum new context tokens between early automatic compaction attempts.",
+      "default": 8000
+    },
+    "mode": {
+      "type": "string",
+      "title": "Optimization mode",
+      "description": "apply prunes eligible history. observe measures only on early automatic runs; manual and host compactions use the built-in summarizer.",
+      "default": "apply"
+    }
+  },
+  "author": {
+    "name": "gshost1",
+    "url": "https://github.com/gshost1"
+  },
+  "repository": "https://github.com/gshost1/Keysreallysafe"
+}

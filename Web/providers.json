@@ -50,6 +50,21 @@
       "note": null
     },
     {
+      "id": "typesafe",
+      "name": "TypeSafe",
+      "group": "labs",
+      "host": "api.typesafe.ai",
+      "api": "typesafe-systemone",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer ",
+      "path_prefix": "",
+      "key_prefix": null,
+      "usage_endpoint": null,
+      "docs": null,
+      "gateway": true,
+      "note": "SystemOne evaluation API"
+    },
+    {
       "id": "anthropic",
       "name": "Anthropic",
       "group": "labs",

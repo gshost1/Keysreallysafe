@@ -1,0 +1,6 @@
+node_modules
+dist
+.env
+# Generated per Claude Code build with /plugin-types; not redistributed.
+types/claude-code*.d.ts
+types/claude-code-plugins/

@@ -17,3 +17,28 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test with synthetic fixtures
         run: swift test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Plugins/jev-optimizer/package-lock.json
+      - name: Check Jev optimizer (mocked provider only)
+        working-directory: Plugins/jev-optimizer
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Check optimizer clients (no credentials)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+      - name: Check analytics collector (synthetic loopback requests only)
+        run: |
+          python3 -m unittest Analytics/test_collector.py Analytics/test_deployment.py
+          python3 Analytics/validate_deployment.py
+      - name: Check unattended release prerequisites (no live authorization)
+        run: python3 scripts/optimizer-preflight.py --root . --strict
+      - name: Check dashboard scripts
+        run: |
+          node --check Web/app.js
+          node --check Web/optimizer.js
+          node --check Web/analytics.js
