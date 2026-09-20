@@ -179,8 +179,9 @@ enum GatewayPath {
         // fixture prefix is itself only a version: Vercel AI Gateway serves the
         // OpenAI-compatible API under /v1 and the AI SDK's native one under
         // /v4/ai, and Gemini serves /v1 beside /v1beta. Prefixes with a real
-        // path (/api/gateway) still apply to everything.
-        if isVersionSegment(trimmedPrefix.split(separator: "/").first),
+        // path (/api/gateway, and versioned ones like DeepInfra's /v1/openai)
+        // still apply to everything, so the whole prefix must be the version.
+        if isVersionSegment(trimmedPrefix[...]),
            isVersionSegment(trimmedRest.split(separator: "/").first) {
             return restPath
         }

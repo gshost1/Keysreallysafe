@@ -33,6 +33,24 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(GatewayPath.join(prefix: "/api/gateway", rest: "v1/chat/completions"), "/api/gateway/v1/chat/completions")
         XCTAssertEqual(GatewayPath.join(prefix: "/v1", rest: "vendor/x"), "/v1/vendor/x")
         XCTAssertEqual(GatewayPath.join(prefix: "/v1", rest: "v/x"), "/v1/v/x")
+        // A versioned multi-segment prefix (DeepInfra /v1/openai, Novita /v3/openai)
+        // is a real path, not a version, so the client's version must not drop it.
+        XCTAssertEqual(
+            GatewayPath.join(prefix: "/v1/openai", rest: "v1/chat/completions"),
+            "/v1/openai/v1/chat/completions"
+        )
+        XCTAssertEqual(
+            GatewayPath.join(prefix: "/v3/openai", rest: "v1/chat/completions"),
+            "/v3/openai/v1/chat/completions"
+        )
+        XCTAssertEqual(
+            GatewayPath.join(prefix: "/v1/openai", rest: "chat/completions"),
+            "/v1/openai/chat/completions"
+        )
+        XCTAssertEqual(
+            GatewayPath.join(prefix: "/v1/openai", rest: "v1/openai/models"),
+            "/v1/openai/models"
+        )
     }
 
     func testUsageParserOpenAIChatAndResponses() throws {
