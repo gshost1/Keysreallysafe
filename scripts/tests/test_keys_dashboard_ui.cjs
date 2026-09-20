@@ -52,11 +52,16 @@ const baseLedger = () => [
     cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
 ];
 
-let keys, ledger, failures, delays, requests, unexpected;
+// The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
+// fills it, so every case written against the empty local shape keeps that shape.
+let keys, ledger, localRows, plans, failures, delays, requests, unexpected;
 
 function reset() {
   keys = baseKeys();
   ledger = baseLedger();
+  localRows = [];
+  // The plan cards. Empty unless a test fills it, as most of this suite expects.
+  plans = [];
   failures = new Map();   // "METHOD /path" -> {status, body} | "drop"
   delays = new Map();     // "METHOD /path" -> milliseconds
   requests = [];
@@ -78,7 +83,35 @@ function spend(params) {
   // could pass a stale filter and never be told.
   if (provider && source !== "keys") return [400, { error: "provider requires source=keys" }];
   const day = localDay(new Date());
-  if (source !== "keys") return [200, { source, by, totals: {}, rows: [], daily: [], points: [], models: [] }];
+  if (source !== "keys") {
+    if (!localRows.length) return [200, { source, by, totals: {}, rows: [], daily: [], points: [], models: [] }];
+    // A local row is a model the tool priced in its own log, or left unpriced; there is no call
+    // count, which is why requests are not a unit outside the gateway ledger.
+    const fam = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude" : "openai");
+    const rows = localRows.filter((r) => source === "all" || fam(r.model) === source);
+    const sum = (f, pick) => rows.filter((r) => fam(r.model) === f).reduce((a, r) => a + (pick(r) || 0), 0);
+    // The engine's own token rule (`TokenTotals.normalized`): Claude counts cache reads and
+    // writes, the others count reasoning tokens. A bucket carries that total, not a raw sum.
+    const normalized = (r) => (r.input_tokens || 0) + (r.output_tokens || 0)
+      + (fam(r.model) === "claude"
+        ? (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0)
+        : (r.reasoning_tokens || 0));
+    return [200, {
+      range: params.get("range") || "today", by, source,
+      start_day: day, end_day: day, last_ingest_at: day + "T00:00:00Z",
+      totals: {
+        grok_usd: sum("grok", (r) => r.usd),
+        claude_usd_estimate: sum("claude", (r) => r.usd_estimate),
+        openai_usd_estimate: sum("openai", (r) => r.usd_estimate),
+      },
+      rows,
+      daily: by === "hour" ? [] : rows.map((r) => ({ ...r, day, tokens: normalized(r), usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null })),
+      points: by === "hour"
+        ? rows.map((r) => ({ ...r, hour: `${day}T${pad2(new Date().getHours())}:00`, tokens: normalized(r), usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null }))
+        : [],
+      models: [...new Set(rows.map((r) => r.model))],
+    }];
+  }
   const rows = ledger.filter((r) => (!key || r.key === key) && (!provider || r.provider === provider));
   // A gateway call's dollars arrive in `usd_estimate`, receipt or list price alike, and a
   // provider-reported zero arrives as an explicit 0 there — `SpendQueries.gatewayUsd` returns the
@@ -169,7 +202,7 @@ function handle(method, pathname, body, params) {
   if (pathname === "/api/optimizer/keys") return [200, { keys: [], providers: [] }];
   if (pathname === "/api/optimizer/status") return [200, { locked: true }];
   if (pathname === "/api/models") return [200, []];
-  if (pathname === "/api/status") return [200, { plans: [] }];
+  if (pathname === "/api/status") return [200, { plans }];
   if (pathname.startsWith("/api/spend")) return spend(params);
 
   unexpected.push(rule(method, pathname));
@@ -546,6 +579,12 @@ const openKeysSource = async (page, origin, query = "range=week") => {
 };
 const spendSearches = () => requests.filter((r) => r.pathname === "/api/spend").map((r) => r.search);
 const totalsText = (page) => page.locator("#totals").textContent();
+// Dollars are a price put on the measurement afterwards, so they are on screen only once the
+// unit chips are asked for them. Every cost assertion below goes through here first.
+const chooseUsd = async (page) => {
+  await page.getByRole("radio", { name: "USD", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-unit="usd"]').getAttribute("aria-checked") === "true");
+};
 
 test("the API keys scope charts the gateway ledger with requests, tokens and a partial cost", async (page, origin) => {
   await openKeysSource(page, origin);
@@ -555,6 +594,14 @@ test("the API keys scope charts the gateway ledger with requests, tokens and a p
   const models = await page.locator("#mix .mix-name").allTextContents();
   assert.deepEqual(models.sort(), ["claude-sonnet-5", "system-one"]);
 
+  // Default unit: the measured counts, and not one dollar figure anywhere on the line.
+  const measured = await totalsText(page);
+  assert.match(measured, /1\.7K tokens/, "tokens lead by default");
+  assert.match(measured, /6 requests/, "requests lead: every routed call is countable");
+  assert.doesNotMatch(measured, /\$/, "no dollar figure until USD is chosen");
+  assert.doesNotMatch(await page.locator("#mix").textContent(), /\$/, "nor on a model row");
+
+  await chooseUsd(page);
   const totals = await totalsText(page);
   assert.match(totals, /6 requests/, "requests lead: every routed call is countable");
   assert.match(totals, /1\.7K tokens/);
@@ -580,6 +627,7 @@ test("the API keys scope charts the gateway ledger with requests, tokens and a p
 
 test("a provider filter separates TypeSafe from Vercel without inventing a third source", async (page, origin) => {
   await openKeysSource(page, origin);
+  await chooseUsd(page);
   const chips = page.locator("#provider-filter [data-provider-filter]");
   assert.deepEqual(await chips.evaluateAll((els) => els.map((e) => e.textContent)),
     ["All providers", "TypeSafe", "Vercel AI Gateway"]);
@@ -631,6 +679,7 @@ test("choosing a provider drops a key that belongs to another one", async (page,
 
 test("the per-key picker names every key and filters to one, all keys included", async (page, origin) => {
   await openKeysSource(page, origin);
+  await chooseUsd(page);
   const chips = page.locator("#keys-filter [data-key-filter]");
   assert.deepEqual(await chips.evaluateAll((els) => els.map((e) => e.textContent)), ["All keys", "alpha", "charlie"]);
   assert.equal(await chips.first().getAttribute("aria-checked"), "true", "all keys is the default");
@@ -895,14 +944,23 @@ test("switching scope clears the filters that belong to the other one", async (p
   await page.waitForFunction(() => document.querySelector('[data-source="claude"]').getAttribute("aria-checked") === "true");
 });
 
-test("a key's gateway dollars open that key in the API keys scope", async (page, origin) => {
+test("a key's gateway cell opens that key in the API keys scope", async (page, origin) => {
   await openKeys(page, origin);
+  // Default unit: the column counts requests, the only figure a key's own row can always answer
+  // for, and puts no price on screen.
+  assert.equal((await rowCell(page, "charlie", "usd").textContent()).trim(), "2 requests");
+  assert.doesNotMatch(await page.locator("#keys-table").textContent(), /\$/, "no dollars until USD is chosen");
+
   await rowCell(page, "charlie", "usd").click();
   await page.waitForFunction(inKeysScope);
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
   assert.equal(await page.locator("#pane-chart").isVisible(), true);
   assert.ok(spendSearches().some((s) => s.includes("source=keys") && s.includes("key=charlie")),
     `landed with ${spendSearches().join(" | ")}`);
+  await page.waitForFunction(() => /no reported tokens/.test(document.getElementById("totals").textContent));
+  // Absent token counts are not a measured zero, and the requests are still counted.
+  assert.match(await totalsText(page), /2 requests/);
+  await chooseUsd(page);
   await page.waitForFunction(() => /cost unknown/.test(document.getElementById("totals").textContent));
 
   // The same cell again must land on the same view, not toggle the filter off.
@@ -942,6 +1000,263 @@ test("the subscriptions scope says its figures come from local logs, not plan in
   await page.waitForFunction(inKeysScope);
   await page.waitForFunction(() => /calls this Mac routed through the local gateway with a key from the vault/
     .test(document.getElementById("chart-caption").textContent));
+});
+
+// ---------- tokens first ----------
+
+// What this Mac measured is tokens and requests; a dollar figure is this repo's price table put
+// on them afterwards. The page leads with the measurement and prices it only when asked.
+const subscriptionRows = () => [
+  { model: "claude-sonnet-5", input_tokens: 900, output_tokens: 300, cached_read_tokens: 400, cache_creation_tokens: 100, usd: null, usd_estimate: 0.02 },
+  { model: "grok-4", input_tokens: 500, output_tokens: 200, cached_read_tokens: 0, cache_creation_tokens: 0, usd: 0.01, usd_estimate: null },
+];
+
+test("the subscriptions chart leads with tokens and prices nothing until USD is chosen", async (page, origin) => {
+  localRows = subscriptionRows();
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+
+  assert.equal(await page.locator('[data-unit="tokens"]').getAttribute("aria-checked"), "true", "tokens is the default unit");
+  const totals = await totalsText(page);
+  assert.match(totals, /2\.4K tokens/, "Claude's cache reads and writes are billed tokens and count");
+  assert.doesNotMatch(totals, /\$/, "no dollar figure until USD is chosen");
+  assert.doesNotMatch(await page.locator("#mix").textContent(), /\$/);
+  assert.match(totals, /cached input/, "cached input is named, not hidden inside the total");
+  assert.match(await page.locator("#totals .totals-main").getAttribute("title"),
+    /Cached input is counted on each request that reads it again/);
+  assert.match(await page.locator("#daily-unit").textContent(), /^tokens per/);
+
+  // USD is one click away, and everything the honest-cost work put on this line survives it.
+  await chooseUsd(page);
+  const priced = await totalsText(page);
+  assert.match(priced, /≈ \$0\.03/);
+  assert.match(priced, /estimate from list prices, not an invoice/);
+
+  // And the choice is remembered for the next visit, tokens or dollars alike.
+  await page.reload();
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-unit="usd"]').getAttribute("aria-checked") === "true");
+  await page.getByRole("radio", { name: "Tokens" }).click();
+  await page.reload();
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-unit="tokens"]').getAttribute("aria-checked") === "true");
+});
+
+test("the Usage summary and the Keys column follow the same unit, with the switch beside them", async (page, origin) => {
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
+  assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/, "the month summary leads with tokens");
+
+  // The switch is on the line itself: nobody has to find another pane to change the unit.
+  await page.getByRole("button", { name: "Show this month in USD instead of tokens" }).click();
+  await page.waitForFunction(() => /\$/.test(document.getElementById("usage-totals").textContent));
+  assert.match(await page.locator("#usage-totals").textContent(), /≈ \$0\.03/);
+
+  // One unit for the page: the Keys column answers in it too, from its own switch.
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
+  assert.match((await rowCell(page, "alpha", "usd").textContent()).trim(), /\$0\.01/);
+  await page.getByRole("button", { name: "Showing USD; switch the gateway column to requests" }).click();
+  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-table").textContent));
+  assert.equal((await rowCell(page, "alpha", "usd").textContent()).trim(), "3 requests");
+  await page.getByRole("tab", { name: "Usage" }).click();
+  assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/, "the summary follows the same switch");
+});
+
+test("the Keys unit switch survives the narrow layout that drops the table head", async (page, origin) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openKeys(page, origin);
+  assert.equal(await page.locator("#keys-table thead").isVisible(), false, "the narrow layout drops the head");
+  const control = page.getByRole("button", { name: "Showing requests; switch the gateway column to USD" });
+  await control.waitFor({ state: "visible" });
+  // Reachable by keyboard, not only by pointer, and it really changes the column.
+  await control.focus();
+  assert.equal(await page.evaluate(() => document.activeElement.id), "keys-unit");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => /\$/.test(document.getElementById("keys-table").textContent));
+  await page.getByRole("button", { name: "Showing USD; switch the gateway column to requests" }).click();
+  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-table").textContent));
+});
+
+// The plan cards carry provider-reported money too, and they follow the same rule: what was
+// measured by default, a sum only when USD is chosen.
+test("the plan cards hide local dollars and OpenRouter credit until USD is chosen", async (page, origin) => {
+  plans = [
+    { source: "grok", title: "Grok", kind: "local", weekly_usd: 1.25, weekly_tokens: 120000 },
+    { source: "openrouter", title: "OpenRouter", kind: "api", limit: 20, limit_remaining: 5, usage_weekly: 3.5 },
+  ];
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#live-status .live-row").first().waitFor();
+  const cards = () => page.locator("#live-status").textContent();
+  const measured = await cards();
+  assert.doesNotMatch(measured, /\$/, "no provider or local dollars on a card until USD is chosen");
+  assert.match(measured, /120K tokens/, "the local week still says what it measured");
+  assert.match(measured, /25% of the credit limit left/, "a share is the same fact without a sum");
+  assert.match(measured, /choose USD below for the amount/, "and it says where the amount is");
+
+  await page.getByRole("button", { name: "Show this month in USD instead of tokens" }).click();
+  await page.waitForFunction(() => /\$/.test(document.getElementById("live-status").textContent));
+  const priced = await cards();
+  assert.match(priced, /\$1\.25/, "the local week's dollars come back with the unit");
+  assert.match(priced, /\$5\.00 left of \$20\.00/);
+  assert.match(priced, /\$3\.50 billed by OpenRouter/);
+});
+
+// The engine's token rule counts reasoning tokens for Codex, OpenAI and Grok. A headline that
+// dropped them would disagree with the bars the same payload drew.
+test("token headlines count reasoning tokens exactly as the engine's buckets do", async (page, origin) => {
+  localRows = [
+    { model: "gpt-5", source: "codex-local", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.01 },
+  ];
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+  assert.match(await totalsText(page), /200 tokens/, "reasoning tokens are part of the count");
+  assert.equal((await page.locator("#mix .mix-val").first().textContent()).trim(), "200");
+  assert.match(await page.locator("#totals .totals-main").getAttribute("title"), /80 reasoning/);
+  // The bars come from the engine's own normalized bucket, so the two must agree.
+  const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(labels.some((l) => /gpt-5 200/.test(l)), `the bar and the headline must agree: ${labels.join(" | ")}`);
+
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
+  assert.match(await page.locator("#usage-totals").textContent(), /200 tokens/,
+    "the monthly summary counts them the same way");
+});
+
+// ---------- model identity ----------
+
+// A palette has four shades per family. A family with more models than that keeps every model:
+// colour capacity is not a reason to drop a name into "Other models".
+const manyModelLedger = () => [
+  { key: "alpha", provider: "vercel-ai-gateway", model: "claude-sonnet-5", model_calls: 1, input_tokens: 700, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.007 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "claude-opus-5", model_calls: 1, input_tokens: 600, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.006 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "claude-haiku-4-5", model_calls: 1, input_tokens: 500, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.005 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "claude-sonnet-4-5", model_calls: 1, input_tokens: 400, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.004 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "claude-fable-5-1", model_calls: 2, input_tokens: 300, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.003 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "claude-opus-4-8", model_calls: 1, input_tokens: 200, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.002 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "gpt-5", model_calls: 1, input_tokens: 190, output_tokens: 10, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.001 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "gpt-5-mini", model_calls: 1, input_tokens: 180, output_tokens: 10, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.001 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "gpt-5-nano", model_calls: 1, input_tokens: 170, output_tokens: 10, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.001 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "o4-mini", model_calls: 1, input_tokens: 160, output_tokens: 10, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.001 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "codex-mini", model_calls: 1, input_tokens: 150, output_tokens: 10, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.001 },
+];
+
+test("more models than palette shades keeps every model named, coloured and filterable", async (page, origin) => {
+  ledger = manyModelLedger();
+  await openKeysSource(page, origin);
+  await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, ledger.length);
+
+  const named = await page.locator("#mix .mix-name").allTextContents();
+  assert.equal(named.length, ledger.length, "every model has its own legend row");
+  assert.equal(new Set(named).size, named.length, "and no two rows are the same model");
+  assert.ok(named.includes("claude-fable-5-1"), "a recognised model is named, never folded away");
+  assert.ok(!named.includes("Other models"), "nothing is merged into Other to save colours");
+  // Six Claude models and five OpenAI ones: both families overflow the four hand-picked shades.
+  assert.equal(named.filter((m) => m.startsWith("claude-")).length, 6);
+  assert.equal(named.filter((m) => /^(gpt-|o[1-9]|codex)/.test(m)).length, 5);
+
+  // Each series keeps its own colour value, so a stack of eleven is still readable as eleven.
+  const colours = await page.locator("#mix .mix-row").evaluateAll((rows) => rows.map((r) => r.style.getPropertyValue("--c")));
+  assert.equal(new Set(colours).size, colours.length, `colours must stay distinct: ${colours.join(" | ")}`);
+
+  // The totals count every model, and the bars in the day column do too.
+  const totals = await totalsText(page);
+  assert.match(totals, /12 requests/);
+  assert.match(totals, /4\.2K tokens/);
+  const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(labels.some((l) => /claude-fable-5-1 400/.test(l)), `fable must have its own bar: ${labels.join(" | ")}`);
+
+  // And it filters like any other model: one row selected, one model charted.
+  await page.locator('#mix .mix-row[data-model="claude-fable-5-1"]').click();
+  await page.waitForFunction(() => document.querySelector('#mix .mix-row[data-model="claude-fable-5-1"]').getAttribute("aria-selected") === "true");
+  const filtered = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(filtered.every((l) => !/claude-opus-5/.test(l)), "a filtered chart draws the chosen model alone");
+  assert.ok(filtered.some((l) => /claude-fable-5-1 400/.test(l)));
+
+  // Today's hourly view is the same eleven models, so an hour cannot lose one the day kept.
+  await page.getByRole("radio", { name: "Today" }).click();
+  await page.waitForFunction(() => /by hour/.test(document.getElementById("daily-title").textContent));
+  await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, ledger.length);
+  assert.ok((await page.locator("#mix .mix-name").allTextContents()).includes("claude-fable-5-1"));
+});
+
+test("a model no provider named stays unknown rather than borrowing a name", async (page, origin) => {
+  ledger = manyModelLedger().concat([
+    { key: "alpha", provider: "vercel-ai-gateway", model: "", model_calls: 1, input_tokens: 10, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: null },
+  ]);
+  await openKeysSource(page, origin);
+  await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, ledger.length);
+  const named = await page.locator("#mix .mix-name").allTextContents();
+  assert.ok(named.includes("unknown"), `an unnamed model stays unknown: ${named.join(", ")}`);
+});
+
+// ---------- first use and experimental labelling ----------
+
+test("an empty vault gets the first-use guide, dismisses it and keeps it in help", async (page, origin) => {
+  keys = [];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#onboard:visible").waitFor();
+  const guide = await page.locator("#onboard").textContent();
+  assert.match(guide, /Add a key/);
+  assert.match(guide, /Keychain/);
+  assert.match(guide, /Touch ID/);
+  assert.match(guide, /login password/, "the password fallback is named, not implied");
+  assert.match(guide, /You do not need a/, "an .env file is not required");
+  assert.match(guide, /expiry/, "a grant is scoped and expires");
+  assert.match(guide, /only those/, "only routed calls are observable");
+  assert.match(guide, /optional and experimental/i, "the Optimizer is labelled where a new user reads");
+  assert.doesNotMatch(guide, /\$/, "no invented usage or cost in the guide");
+  // Cloning the help guide must not leave two elements answering to the same id.
+  assert.equal(await page.locator("#guide").count(), 1);
+  assert.equal(await page.locator("#guide-title").count(), 1);
+
+  // Always reachable from help, whether or not the card is on screen.
+  await page.locator("#onboard-help").click();
+  await waitDialog(page, "dlg-help", true);
+  assert.match(await page.locator("#dlg-help #guide").textContent(), /Add a key/);
+  await page.locator("#dlg-help [data-close]").click();
+  await waitDialog(page, "dlg-help", false);
+
+  await page.locator("#onboard-dismiss").click();
+  await page.waitForFunction(() => document.getElementById("onboard").hidden);
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  assert.equal(await page.locator("#onboard").isHidden(), true, "a dismissed guide stays dismissed");
+  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await waitDialog(page, "dlg-help", true);
+  assert.match(await page.locator("#dlg-help").textContent(), /Getting started/);
+});
+
+test("a vault that already has keys is not interrupted by the first-use guide", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
+  await page.getByRole("tab", { name: "Usage" }).click();
+  assert.equal(await page.locator("#onboard").isHidden(), true, "an existing user is not onboarded");
+});
+
+test("the Optimizer is labelled optional and experimental in the pane and in help", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Optimizer" }).click();
+  const head = await page.locator(".optimizer-head").textContent();
+  assert.match(head, /Experimental/);
+  assert.match(head, /Optional and experimental/);
+  assert.match(head, /work without it/, "the core features do not depend on it");
+  assert.match(head, /No net saving is claimed/);
+  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await waitDialog(page, "dlg-help", true);
+  assert.match(await page.locator("#dlg-help").textContent(), /optional and experimental/i);
 });
 
 test("a chart request that fails leaves a sticky reason and no stale drawing", async (page, origin) => {
@@ -1230,10 +1545,20 @@ async function shoot(browser, origin) {
       && document.querySelectorAll("#mix .mix-row").length === 1);
     await capture(page, `chart-api-keys-one-${viewport.name}`, { fullPage: true });
 
+    // A family with more models than palette shades: every model keeps its name and its colour.
+    reset();
+    ledger = manyModelLedger();
+    await openKeysSource(page, origin);
+    await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, ledger.length);
+    await capture(page, `chart-many-models-${viewport.name}`, { fullPage: true });
+
     reset();
     keys = [];
     await page.reload();
     await page.waitForLoadState("networkidle");
+    // First use: the guide on the Usage pane, before it is dismissed.
+    await page.locator("#onboard:visible").waitFor();
+    await capture(page, `first-use-guide-${viewport.name}`, { fullPage: true });
     await page.getByRole("tab", { name: "Keys" }).click();
     await page.locator("#keys-empty:visible").waitFor();
     await capture(page, `keys-empty-${viewport.name}`, { fullPage: true });

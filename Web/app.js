@@ -34,6 +34,7 @@
     group: "model",
     eventsOpen: null,
     spend: null,
+    monthSpend: null,
     series: [],
     keys: [],
     grants: [],
@@ -55,7 +56,13 @@
     engineDown: false,
   };
 
+  // Hand-picked shades per family. It is a palette size, not a limit on how many models a family
+  // may have: a fifth Claude model is still its own series, legend row and filter.
   const SLOTS = 4;
+  // Family bases leave room for as many models as a family actually has, so the slot order that
+  // sorts the legend and the stack can never run one family into the next.
+  const FAM_BASE = { grok: 0, claude: 10000, openai: 20000, other: 30000 };
+  const OTHER_SLOT = 900000;
   const OTHER = "Other models";
   const TOKEN = (document.querySelector('meta[name="ksf-token"]') || {}).content || "";
 
@@ -551,8 +558,27 @@
     // "requests" belongs to the API keys source only, so it is not remembered for the next visit.
     if (state.unit !== "requests") { try { localStorage.setItem("ksf.unit", state.unit); } catch { /* fine */ } }
     unitChips.sync(state.unit);
-    if (state.spend) { renderMix(); drawChart(); }
+    // One unit for the whole page: the chart, the key table's gateway column and the Usage
+    // summary all answer in it, so switching in one place does not leave another contradicting it.
+    syncKeysUnit();
+    if (state.keys.length) renderKeys();
+    renderUsageTotals();
+    // The plan cards are redrawn from the status already in hand, so the switch does not wait for
+    // the next poll to take effect — and does not ask the engine again to change a unit.
+    if (state.status) renderStatus();
+    if (state.spend) { renderTotals(state.spend); renderMix(); drawChart(); }
   }
+  // The Keys pane has no chart chips, so the switch sits above the column it changes — outside the
+  // table head, which the narrow layout drops. Tokens are not recorded per key, so this column's
+  // two honest answers are requests and USD.
+  function syncKeysUnit() {
+    const btn = $("keys-unit");
+    if (!btn) return;
+    btn.textContent = usdMode() ? "USD" : "requests";
+    btn.setAttribute("aria-label", usdMode() ? "Showing USD; switch the gateway column to requests" : "Showing requests; switch the gateway column to USD");
+    btn.title = btn.getAttribute("aria-label");
+  }
+  $("keys-unit").addEventListener("click", () => setUnit(usdMode() ? "tokens" : "usd"));
   const usdMode = () => state.unit === "usd";
   const requestMode = () => state.unit === "requests";
 
@@ -613,6 +639,19 @@
 
   // Colour follows the model. The engine's colour registry gives every model a stable slot, so a
   // family's shades are handed out in slot order and never move between loads or restarts.
+  // Colour capacity is not identity. Past the four hand-picked shades a family keeps going: the
+  // same four are reused, each step lightened or darkened by a fixed amount, so the palette
+  // extends as far as the models do and stays the same across loads and restarts. A known model
+  // name is never dropped into "Other" because the page ran out of colours.
+  function shadeFor(fam, i) {
+    const base = `var(--s-${fam}-${(i % SLOTS) + 1})`;
+    const level = Math.floor(i / SLOTS);
+    if (level === 0) return base;
+    const toward = level % 2 ? "#ffffff" : "#000000";
+    const pct = Math.min(64, 22 * Math.ceil(level / 2));
+    return `color-mix(in oklab, ${base} ${100 - pct}%, ${toward})`;
+  }
+
   const PROJECT_PALETTE = ["claude-1", "grok-1", "openai-1", "claude-2", "grok-2", "openai-2", "claude-3", "grok-3", "openai-3", "claude-4", "grok-4", "openai-4"];
   function assignColors(models) {
     if (projectMode()) {
@@ -633,19 +672,37 @@
     for (const [fam, list] of byFam) {
       list.sort((a, b) => (state.slots.get(a) ?? 1e9) - (state.slots.get(b) ?? 1e9) || a.localeCompare(b));
       list.forEach((m, i) => {
-        if (i >= SLOTS) return;
-        const base = fam === "grok" ? 0 : fam === "claude" ? 10 : fam === "openai" ? 20 : 30;
-        state.colors.set(m, { color: `var(--s-${fam}-${i + 1})`, slot: base + i, family: fam });
+        state.colors.set(m, { color: shadeFor(fam, i), slot: FAM_BASE[fam] + i, family: fam });
       });
     }
   }
-  const colorFor = (model) => (model === OTHER || model === "Other projects" ? { color: "var(--s-other)", slot: 90, family: "other" } : state.colors.get(model) || null);
+  const colorFor = (model) => (model === OTHER || model === "Other projects" ? { color: "var(--s-other)", slot: OTHER_SLOT, family: "other" } : state.colors.get(model) || null);
 
   // One identity for a row, a daily point and an hourly point alike. The gateway records model=""
   // when the caller named no model and the provider reported none, so the empty name is a real
   // bucket: it becomes "unknown" here, and every lookup has to ask the same question or those
   // requests would count in the totals and the mix while their bars went missing.
   const seriesId = (r) => (projectMode() ? (r.cwd || r.project || "unknown") : (r.model || "unknown"));
+
+  // The engine's own token rule, applied to a row here so a headline, a legend row and the bars
+  // the engine drew cannot disagree about the same range: Claude counts cache reads and writes
+  // because they are billed separately, OpenAI, Codex and Grok count reasoning tokens instead,
+  // and a gateway row follows the API its provider speaks. A row names its source where the
+  // engine sends one; otherwise the model's family answers the same question.
+  const anthropicApi = (id) => (providerById(id) || {}).api === "anthropic";
+  function rowTokens(r, projects = false) {
+    const input = r.input_tokens || 0;
+    const output = r.output_tokens || 0;
+    const cache = (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0);
+    const reasoning = r.reasoning_tokens || 0;
+    const src = r.source || "";
+    // A project row is a folder's Claude sessions; it names no model, and Claude is the only
+    // source with a project path.
+    if (projects || src === "claude-local") return input + output + cache;
+    if (src === "codex-local" || src === "openai-api" || src === "grok-local") return input + output + reasoning;
+    if (src === "gateway" || (!src && r.provider)) return input + output + (anthropicApi(r.provider) ? cache : reasoning);
+    return input + output + (family(r.model || "") === "claude" ? cache : reasoning);
+  }
 
   function buildSeries(rows) {
     const order = { grok: 0, claude: 1, openai: 2, other: 3 };
@@ -662,8 +719,11 @@
     for (const r of rows.filter(isReal)) {
       const id = seriesId(r);
       const m = merged.get(id);
-      if (!m) { merged.set(id, { ...r }); continue; }
-      for (const f of ["input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "model_calls"]) m[f] = (m[f] || 0) + (r[f] || 0);
+      // Each row is counted under its own source's rule before the merge, so a model served by
+      // two providers is not re-counted under whichever one happened to be named first.
+      if (!m) { merged.set(id, { ...r, counted: rowTokens(r, projectMode()) }); continue; }
+      m.counted += rowTokens(r, projectMode());
+      for (const f of ["input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "reasoning_tokens", "model_calls"]) m[f] = (m[f] || 0) + (r[f] || 0);
       if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
       if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
       m.key = m.key && r.key && m.key !== r.key ? m.key + ", " + r.key : m.key || r.key || null;
@@ -676,12 +736,12 @@
       model: seriesId(r),
       label: projectMode() ? (r.project || r.cwd || "unknown") : (r.model || "unknown"),
       cwd: r.cwd || null,
-      tokens: (r.input_tokens || 0) + (r.output_tokens || 0)
-        + (projectMode() || family(r.model || "") === "claude" ? (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0) : 0),
+      tokens: r.counted || 0,
       input: r.input_tokens || 0,
       output: r.output_tokens || 0,
       cached: r.cached_read_tokens || 0,
       created: r.cache_creation_tokens || 0,
+      reasoning: r.reasoning_tokens || 0,
       calls: r.model_calls || 0,
       key: r.key || null,
       provider: r.provider || null,
@@ -703,9 +763,10 @@
       if (entry) {
         out.push({ ...it, color: entry.color, slot: entry.slot, members: [it.model] });
       } else {
-        if (!other) other = { model: projectMode() ? "Other projects" : OTHER, label: projectMode() ? "Other projects" : OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, calls: 0, usd: null, est: null, color: "var(--s-other)", slot: 99, members: [] };
+        if (!other) other = { model: projectMode() ? "Other projects" : OTHER, label: projectMode() ? "Other projects" : OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, reasoning: 0, calls: 0, usd: null, est: null, color: "var(--s-other)", slot: OTHER_SLOT + 1, members: [] };
         other.tokens += it.tokens; other.input += it.input; other.output += it.output;
         other.cached += it.cached; other.created += it.created; other.calls += it.calls || 0;
+        other.reasoning += it.reasoning || 0;
         if (it.usd != null) other.usd = (other.usd || 0) + it.usd;
         if (it.est != null) other.est = (other.est || 0) + it.est;
         other.members.push(it.model);
@@ -790,6 +851,19 @@
     const unpricedCalls = Number(k.gateway_month_unpriced_calls) || 0;
     const calls = Number(k.gateway_month_calls) || 0;
     const open = () => showKeyInChart(k.name);
+    // The unit this page is in decides what this cell says. Requests are what a key's own row can
+    // always answer for, and no dollar figure is put on screen unless USD was asked for.
+    if (!usdMode()) {
+      if (!calls) {
+        return el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Requests appear once the gateway routes this key." });
+      }
+      return el("td", {
+        class: "td-usd", "data-label": "Via gateway", text: plural(calls, "request", "requests"),
+        title: "This month, requests through the local gateway with this key. The switch above the"
+          + " table shows cost in USD instead. Click to chart.",
+        onclick: open,
+      });
+    }
     if (kind === "none") {
       return el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Dollars appear once the gateway routes this key." });
     }
@@ -799,6 +873,26 @@
     const partial = kind === "partial" ? ` ${plural(unpricedCalls, "call", "calls")} unpriced and left out.` : "";
     return el("td", { class: "td-usd", "data-label": "Via gateway", text: (kind === "partial" ? "≥ " : "") + fmtUsd(k.usd_month), title: "This month, calls through the local gateway with this key. Uses provider-reported cost where available, otherwise a list-price estimate." + partial + " Click to chart.", onclick: open });
   }
+
+  // What the rows in view are made of. The chart's own figures come from the same merged series,
+  // so the breakdown a tooltip offers is the breakdown behind the headline.
+  const seriesBreakdown = () => state.series.reduce((a, s) => ({
+    input: a.input + (s.input || 0),
+    output: a.output + (s.output || 0),
+    cached: a.cached + (s.cached || 0),
+    created: a.created + (s.created || 0),
+    reasoning: a.reasoning + (s.reasoning || 0),
+    tokens: a.tokens + (s.tokens || 0),
+    calls: a.calls + (s.calls || 0),
+  }), { input: 0, output: 0, cached: 0, created: 0, reasoning: 0, tokens: 0, calls: 0 });
+  // Cached input is re-read by every request that reuses it, so it is counted once per request.
+  // It is not new output, and it is not free of tokens.
+  const CACHE_NOTE = "Cached input is counted on each request that reads it again; it is reused input, not new output.";
+  const breakdownTitle = (b) =>
+    `${fmtInt(b.input)} input · ${fmtInt(b.output)} output · ${fmtInt(b.cached)} cached input read · ${fmtInt(b.created)} cache writes`
+    + (b.reasoning ? ` · ${fmtInt(b.reasoning)} reasoning` : "") + `. ${CACHE_NOTE}`;
+  const tokensPart = (n, title) => el("span", { class: "totals-part", title }, el("b", { text: fmtTokens(n) }), " tokens");
+  const requestsPart = (n, title) => el("span", { class: "totals-part", title }, el("b", { text: fmtInt(n) }), " " + (n === 1 ? "request" : "requests"));
 
   // The API keys view is the gateway's own ledger, so requests lead: a call is always countable,
   // while tokens and dollars depend on what the provider reported. An unpriced call is shown as
@@ -818,6 +912,37 @@
       state.key ? "key " + state.key : "every key",
       state.provider ? "at " + providerName(state.provider) : "at every provider",
     ].join(" ");
+    // Tokens and requests are what this Mac measured; dollars are a price put on them afterwards.
+    // Unless USD was asked for, no dollar figure goes on screen.
+    if (!usdMode()) {
+      const b = seriesBreakdown();
+      const measured = Math.max(tokens, b.tokens);
+      const reported = measured > 0;
+      const tokenText = reported ? fmtTokens(measured) + " tokens" : calls ? "no reported tokens" : "0 tokens";
+      // A provider that reports no token counts has not measured zero tokens. Saying "0" would
+      // claim a measurement nobody made; the requests are the count that does exist.
+      const tokenTitle = reported
+        ? `Tokens the providers reported for ${scope}. ${breakdownTitle(b)}`
+        : calls
+          ? `These requests went through the gateway with ${scope}, but the providers reported no token counts. Unknown, not a measured zero — the requests themselves are counted.`
+          : `No requests with ${scope} in this range.`;
+      const nodes = [el("span", {
+        class: "totals-main" + (requestMode() || reported ? "" : " none"),
+        text: requestMode() ? plural(calls, "request", "requests") : tokenText,
+        title: requestMode() ? `Requests routed through the local gateway with ${scope}.` : tokenTitle,
+      })];
+      appendParts(nodes, [requestMode()
+        ? el("span", { class: "totals-part" + (reported ? "" : " none"), title: tokenTitle }, el("b", { text: reported ? fmtTokens(measured) : "—" }), " tokens")
+        : requestsPart(calls, "Requests routed through the local gateway in this range."),
+      ]);
+      if (b.cached > 0) {
+        nodes.push(el("span", { class: "totals-sep", text: "·" }));
+        nodes.push(el("span", { class: "totals-note", text: fmtTokens(b.cached) + " cached input", title: CACHE_NOTE }));
+      }
+      nodes.push(el("span", { class: "totals-note", text: "routed through Keys only · choose USD above for cost" }));
+      $("totals").replaceChildren(...nodes);
+      return;
+    }
     const nodes = [el("span", {
       class: "totals-main" + (usd == null ? " none" : " est"),
       text: main,
@@ -849,12 +974,41 @@
   }
   const appendParts = (nodes, list) => list.forEach((p) => { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
 
-  // One line: the dollar figure first, then the parts that make it up.
+  // One line in the chosen unit: the headline figure first, then the parts that make it up.
   function renderTotals(data) {
     if (keysMode()) return renderKeysTotals(data);
     const t = data.totals || {};
     const src = state.source;
     const parts = [];
+    // Tokens are what the tools' own logs measured; the dollar figure is this repo's price table
+    // applied to them afterwards. Only an explicit USD choice puts money on screen.
+    if (!usdMode()) {
+      const b = seriesBreakdown();
+      const byFamily = new Map();
+      for (const s of state.series) {
+        const f = projectMode() ? "project" : family(s.model || "");
+        byFamily.set(f, (byFamily.get(f) || 0) + (s.tokens || 0));
+      }
+      const nodes = [el("span", {
+        class: "totals-main" + (b.tokens ? "" : " none"),
+        text: fmtTokens(b.tokens) + " tokens",
+        title: breakdownTitle(b),
+      })];
+      if (src === "all" && !projectMode()) {
+        for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["other", "other"]]) {
+          const n = byFamily.get(fam) || 0;
+          if (n > 0) parts.push(el("span", { class: "totals-part" }, el("b", { text: fmtTokens(n) }), " " + label));
+        }
+      }
+      parts.forEach((p) => { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
+      if (b.cached > 0) {
+        nodes.push(el("span", { class: "totals-sep", text: "·" }));
+        nodes.push(el("span", { class: "totals-note", text: fmtTokens(b.cached) + " cached input", title: CACHE_NOTE }));
+      }
+      nodes.push(el("span", { class: "totals-note", text: "counted from the tools' own local logs on this Mac · choose USD above for cost" }));
+      $("totals").replaceChildren(...nodes);
+      return;
+    }
     const showGrok = src === "all" || src === "grok";
     const showClaude = src === "all" || src === "claude";
     const showOpenAI = src === "all" || src === "openai";
@@ -951,9 +1105,19 @@
           text: (partial ? "≥ " : "") + (isEst ? "≈ " : "") + fmtUsd(d),
           title: partial ? partialNote.trim() : null,
         });
-      const tokNode = keysMode()
-        ? el("span", { class: "mix-val" + (usd ? "" : " mix-primary"), text: requestMode() ? plural(s.calls || 0, "request", "requests") : fmtTokens(s.tokens) })
-        : el("span", { class: "mix-val" + (usd ? "" : " mix-primary"), text: fmtTokens(s.tokens) });
+      const noTokens = keysMode() && !s.tokens && (s.calls || 0) > 0;
+      const tokNode = el("span", {
+        class: "mix-val" + (usd ? "" : " mix-primary") + (!usd && noTokens && !requestMode() ? " none" : ""),
+        text: requestMode()
+          ? plural(s.calls || 0, "request", "requests")
+          : noTokens ? "no reported tokens" : fmtTokens(s.tokens),
+        title: noTokens && !requestMode() ? "This provider reported no token counts for these requests: unknown, not a measured zero." : null,
+      });
+      // In a token or request view the second figure is the other measured count, never a price.
+      // Dollars appear on this row only when USD was chosen.
+      const sideNode = usd ? tokNode : keysMode()
+        ? el("span", { class: "mix-val", text: requestMode() ? (s.tokens ? fmtTokens(s.tokens) + " tok" : "—") : plural(s.calls || 0, "request", "requests") })
+        : el("span", { class: "mix-val" });
       const barFrac = seriesValue(s) / max;
       const detail = (s.cwd ? s.cwd + "\n" : "")
         + (keysMode()
@@ -962,9 +1126,10 @@
             + `${s.key ? " · key " + s.key : ""}\n`
           : "")
         + `${fmtInt(s.input)} in, ${fmtInt(s.output)} out, ${fmtInt(s.cached)} cached reads, ${fmtInt(s.created)} cache writes`
-        + (isEst ? "\nUSD is an estimate from list prices" : "")
-        + (keysMode() && d == null ? "\nUSD unknown: no receipt and no list price" : "")
-        + (partial && d != null ? partialNote : "")
+        + (s.cached ? "\n" + CACHE_NOTE : "")
+        + (usd && isEst ? "\nUSD is an estimate from list prices" : "")
+        + (usd && keysMode() && d == null ? "\nUSD unknown: no receipt and no list price" : "")
+        + (usd && partial && d != null ? partialNote : "")
         + (s.members.length > 1 ? `\n${(s.labels || s.members).join(", ")}` : "");
       const on = state.mixFilter === s.model;
       const li = el("li", {
@@ -980,11 +1145,13 @@
         el("span", { class: "mix-name", text: s.label || s.model }),
         el("span", { class: "mix-bar" }, el("i", { style: `width:${Math.max(0, barFrac * 100).toFixed(1)}%` })),
         usd ? usdNode : tokNode,
-        usd ? tokNode : usdNode,
+        sideNode,
       );
       li.style.setProperty("--c", s.color);
       return li;
     });
+    // A long legend scrolls; no model is merged away to shorten it.
+    list.classList.toggle("mix-many", items.length > 12);
     list.replaceChildren(...items);
   }
 
@@ -1322,7 +1489,9 @@
     const body = $("keys-body");
     const keys = state.keys;
     $("keys-count").textContent = plural(keys.length, "key", "keys");
+    syncOnboard();
     $("keys-table").hidden = keys.length === 0;
+    $("keys-toolbar").hidden = keys.length === 0;
     $("keys-empty").hidden = keys.length > 0;
     if (!keys.some((k) => k.name === state.selected)) state.selected = keys[0] ? keys[0].name : null;
 
@@ -2183,6 +2352,9 @@
 
   // ---------- export ----------
 
+  // The CSV is an explicit export of the rows as the engine reported them, so it keeps the raw
+  // token and cost columns whatever unit the screen is in. Only the on-screen figures and the
+  // copied totals line follow the unit.
   const csvCell = (v) => {
     if (v == null) return "";
     const s = String(v);
@@ -2211,7 +2383,7 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    say(`Saved ${name}.`);
+    say(`Saved ${name}, with the raw token and cost columns.`);
   }
 
   function totalsMarkdown() {
@@ -2221,6 +2393,24 @@
     const src = state.source;
     const rangeHead = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
       : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
+    // The copied line is the line on screen, so it carries the same unit. Dollars are copied only
+    // when USD is the chosen unit.
+    if (!usdMode()) {
+      const b = seriesBreakdown();
+      const scope = keysMode()
+        ? ` · API keys${state.provider ? " · " + providerName(state.provider) : " · every provider"}${state.key ? " · key " + state.key : " · every key"}`
+        : ` · Subscriptions${projectMode() ? " · by project" : ""}`;
+      const head = `**Keysreallysafe${scope} · ${rangeHead}**`;
+      const measured = keysMode() ? Math.max(Number(t.gateway_tokens) || 0, b.tokens) : b.tokens;
+      const tokens = measured > 0 ? `${fmtTokens(measured)} tokens` : keysMode() && b.calls ? "no reported tokens" : "0 tokens";
+      const line = keysMode()
+        ? `${fmtInt(Number(t.gateway_calls) || 0)} ${(Number(t.gateway_calls) || 0) === 1 ? "request" : "requests"} · ${tokens}`
+        : `${tokens} · ${fmtInt(b.input)} in · ${fmtInt(b.output)} out · ${fmtInt(b.cached)} cached input read · ${fmtInt(b.created)} cache writes`;
+      const foot = keysMode()
+        ? "_Requests routed through the local gateway only; token counts are what the providers reported._"
+        : "_Counted from the tools' own local logs on this Mac, not a plan invoice._";
+      return `${head}\n${line}\n${foot}\n`;
+    }
     if (keysMode()) {
       const calls = Number(t.gateway_calls) || 0;
       const unpriced = Number(t.gateway_unpriced_calls) || 0;
@@ -2306,7 +2496,38 @@
   document.querySelectorAll("dialog").forEach((d) => {
     d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
   });
-  $("btn-help").addEventListener("click", () => $("dlg-help").showModal());
+  const openHelp = () => { if (!$("dlg-help").open) $("dlg-help").showModal(); };
+  $("btn-help").addEventListener("click", openHelp);
+
+  // ---------- first use ----------
+
+  // The same three steps in two places would drift, so the card on the Usage pane is the help
+  // dialog's own guide, cloned without its ids. The guide itself is always reachable from ?.
+  function renderOnboard() {
+    const body = $("onboard-body");
+    if (body.childElementCount) return;
+    const clone = $("guide").cloneNode(true);
+    clone.removeAttribute("id");
+    clone.removeAttribute("aria-labelledby");
+    for (const node of clone.querySelectorAll("[id]")) node.removeAttribute("id");
+    body.replaceChildren(clone);
+  }
+  const onboardDismissed = () => { try { return localStorage.getItem("ksf.onboarded") === "1"; } catch { return false; } };
+  const dismissOnboard = () => {
+    try { localStorage.setItem("ksf.onboarded", "1"); } catch { /* fine */ }
+    $("onboard").hidden = true;
+  };
+  // First use only: an empty vault that has not dismissed this before. Someone who already has a
+  // key has already done this, so the card never appears for them.
+  function syncOnboard() {
+    const show = !onboardDismissed() && state.keys.length === 0;
+    if (show) renderOnboard();
+    $("onboard").hidden = !show;
+  }
+  $("onboard-dismiss").addEventListener("click", dismissOnboard);
+  $("onboard-help").addEventListener("click", openHelp);
+  $("usage-empty-help").addEventListener("click", openHelp);
+  $("keys-empty-help").addEventListener("click", openHelp);
 
   // ---------- keyboard ----------
 
@@ -2466,19 +2687,29 @@
       meters.push(meter("Weekly", row.weekly_pct, usedRight(row.weekly_pct, row.weekly_resets_at)));
     }
     // No provider percentage at all: one plain line with what the local logs say for the week.
+    // These cards follow the page's unit too: tokens and percentages are what was measured, and a
+    // dollar figure waits for an explicit USD choice. The switch is on the summary line below.
+    const forUsd = " · choose USD below for the amount";
     if (row.source !== "claude" && row.five_hour_pct == null && row.fable_pct == null && row.weekly_pct == null) {
-      if (row.weekly_usd != null) meters.push(meter(weekly, null, fmtUsd(row.weekly_usd) + (row.weekly_tokens != null ? " · " + fmtTokens(row.weekly_tokens) + " tokens" : "") + " · local logs"));
-      else if (row.weekly_tokens != null) meters.push(meter(weekly, null, fmtTokens(row.weekly_tokens) + " tokens · local logs"));
+      const tokens = row.weekly_tokens != null ? fmtTokens(row.weekly_tokens) + " tokens" : null;
+      if (usdMode() && row.weekly_usd != null) meters.push(meter(weekly, null, fmtUsd(row.weekly_usd) + (tokens ? " · " + tokens : "") + " · local logs"));
+      else if (tokens) meters.push(meter(weekly, null, tokens + " · local logs"));
+      else if (row.weekly_usd != null) meters.push(meter(weekly, null, "cost recorded in the local logs" + forUsd));
     }
     if (row.source === "openrouter" && (row.limit_remaining != null || row.usage_weekly != null)) {
       if (row.limit != null && row.limit > 0 && row.limit_remaining != null) {
         const used = Math.max(0, row.limit - row.limit_remaining);
-        meters.push(meter("Credit limit", (used / row.limit) * 100,
-          el("span", {}, el("span", { class: "live-used", text: fmtUsd(row.limit_remaining) + " left of " + fmtUsd(row.limit) }))));
+        // The share left is the same fact without naming a sum, so the meter stays informative.
+        const text = usdMode()
+          ? fmtUsd(row.limit_remaining) + " left of " + fmtUsd(row.limit)
+          : trim((row.limit_remaining / row.limit) * 100) + "% of the credit limit left" + forUsd;
+        meters.push(meter("Credit limit", (used / row.limit) * 100, el("span", {}, el("span", { class: "live-used", text }))));
       } else if (row.limit_remaining != null) {
-        meters.push(meter("Credit", null, fmtUsd(row.limit_remaining) + " left · no limit set"));
+        meters.push(meter("Credit", null, usdMode() ? fmtUsd(row.limit_remaining) + " left · no limit set" : "credit remaining, no limit set" + forUsd));
       }
-      if (row.usage_weekly != null) meters.push(meter("Weekly", null, fmtUsd(row.usage_weekly) + " billed by OpenRouter"));
+      if (row.usage_weekly != null) {
+        meters.push(meter("Weekly", null, usdMode() ? fmtUsd(row.usage_weekly) + " billed by OpenRouter" : "billed by OpenRouter" + forUsd));
+      }
     }
     const note = row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null;
     const stale = (row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null || row.limit_remaining != null) ? asOf(row.snapshot_at) : "";
@@ -2553,33 +2784,74 @@
     box.replaceChildren(...nodes);
   }
 
-  // One quiet line under the plan rows: this month's local dollars, not a subscription figure.
+  // One quiet line under the plan rows: this month from the local logs, in the unit this page is
+  // in. It is never a subscription invoice, and no dollar figure appears unless USD was chosen.
   async function loadUsageTotals() {
     try {
-      const data = await api("/api/spend?range=month");
-      const t = data.totals || {};
-      const grok = Number(t.grok_usd) || 0;
-      const claude = Number(t.claude_usd_estimate) || 0;
-      const openai = Number(t.openai_usd_estimate) || 0;
-      const node = $("usage-totals");
-      node.replaceChildren(
+      state.monthSpend = await api("/api/spend?range=month");
+      renderUsageTotals();
+    } catch { state.monthSpend = null; $("usage-totals").replaceChildren(); }
+  }
+  function renderUsageTotals() {
+    const data = state.monthSpend;
+    const node = $("usage-totals");
+    if (!data) return;
+    const t = data.totals || {};
+    const toggle = el("button", {
+      type: "button", class: "link",
+      text: usdMode() ? "show tokens" : "show USD",
+      "aria-label": usdMode() ? "Show this month in tokens instead of USD" : "Show this month in USD instead of tokens",
+      onclick: () => setUnit(usdMode() ? "tokens" : "usd"),
+    });
+    const chart = el("button", { type: "button", class: "link", text: "open the chart", onclick: () => showPane("chart") });
+    if (!usdMode()) {
+      const rows = (data.rows || []).filter((r) => r.model !== "<synthetic>");
+      const byFamily = new Map();
+      let cached = 0;
+      for (const r of rows) {
+        const f = family(r.model || "");
+        byFamily.set(f, (byFamily.get(f) || 0) + rowTokens(r));
+        cached += (r.cached_read_tokens || 0);
+      }
+      const total = [...byFamily.values()].reduce((a, n) => a + n, 0);
+      const parts = [];
+      for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["other", "other"]]) {
+        const n = byFamily.get(fam) || 0;
+        if (n > 0) parts.push(el("span", {}, el("b", { text: fmtTokens(n) }), " " + label));
+      }
+      const nodes = [
         el("span", { text: "This month from local logs " }),
-        el("b", { text: (claude + openai > 0 ? "≈ " : "") + fmtUsd(grok + claude + openai) }),
-        el("span", { class: "totals-sep", text: "·" }),
-        el("span", {}, el("b", { text: fmtUsd(grok) }), " Grok"),
-        el("span", { class: "totals-sep", text: "·" }),
-        el("span", {}, el("b", { text: "≈ " + fmtUsd(claude) }), " Claude"),
-        el("span", { class: "totals-sep", text: "·" }),
-        el("span", {}, el("b", { text: "≈ " + fmtUsd(openai) }), " OpenAI"),
-        el("span", { class: "totals-sep", text: "·" }),
-        el("button", { type: "button", class: "link", text: "open the chart", onclick: () => showPane("chart") }),
-      );
-    } catch { $("usage-totals").replaceChildren(); }
+        el("b", { text: fmtTokens(total) + " tokens", title: cached ? CACHE_NOTE : null }),
+      ];
+      for (const p of parts) { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); }
+      nodes.push(el("span", { class: "totals-sep", text: "·" }), toggle,
+        el("span", { class: "totals-sep", text: "·" }), chart);
+      node.replaceChildren(...nodes);
+      return;
+    }
+    const grok = Number(t.grok_usd) || 0;
+    const claude = Number(t.claude_usd_estimate) || 0;
+    const openai = Number(t.openai_usd_estimate) || 0;
+    node.replaceChildren(
+      el("span", { text: "This month from local logs " }),
+      el("b", { text: (claude + openai > 0 ? "≈ " : "") + fmtUsd(grok + claude + openai) }),
+      el("span", { class: "totals-sep", text: "·" }),
+      el("span", {}, el("b", { text: fmtUsd(grok) }), " Grok"),
+      el("span", { class: "totals-sep", text: "·" }),
+      el("span", {}, el("b", { text: "≈ " + fmtUsd(claude) }), " Claude"),
+      el("span", { class: "totals-sep", text: "·" }),
+      el("span", {}, el("b", { text: "≈ " + fmtUsd(openai) }), " OpenAI"),
+      el("span", { class: "totals-sep", text: "·" }),
+      toggle,
+      el("span", { class: "totals-sep", text: "·" }),
+      chart,
+    );
   }
 
   // ---------- start ----------
 
   loadProviders();
+  syncKeysUnit();
   syncScopeChips();
   loadModels();
   showPane("usage", { keyboard: true });

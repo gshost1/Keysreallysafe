@@ -1,5 +1,9 @@
 # Optimizer library and clients
 
+**Optional and experimental.** The core features — vault, gateway, usage meter,
+dashboard — are usable without enabling anything here, and no proven net saving
+is claimed for it.
+
 The Optimizer extends the existing Keys vault and usage meter with optional
 encrypted project knowledge, plan retrieval, and bounded Jev decisions. It is
 disabled until configured. Its automated checks use synthetic data. Live

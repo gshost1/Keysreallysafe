@@ -27,6 +27,9 @@ PLUGIN_TREES = ("dist", "src", "hooks")
 SCRIPTS = ("optimizer-mcp.py", "claude-with-jev.py")
 DOC_FILES = (
     "LICENSE", "README.md", "SIGNING.md", "Analytics/README.md",
+    # The recipient of a package needs the install and acceptance instructions inside it, not in
+    # a checkout they do not have.
+    "docs/mvp-quickstart.md", "docs/mvp-acceptance.md",
     "docs/jev-optimizer.md", "docs/jev-research.md", "docs/optimizer-benchmarks.md",
     "docs/optimizer-candidates.md", "docs/optimizer-client-adapter.md",
     "docs/optimizer-deployment.md", "docs/optimizer-library.md", "docs/optimizer-providers.md",

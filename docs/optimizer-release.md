@@ -10,8 +10,9 @@ The package has a strict runtime allowlist: `bin/keys`, the static Web files (in
 the `models.json` fixture catalog, the Jev plugin runtime (`dist`, `src`, `hooks`, and
 selected plugin metadata), and `optimizer-mcp.py` plus `claude-with-jev.py`.
 An explicit documentation allowlist includes the MIT license, main README,
-signing guide, collector README, and the optimizer/provider/client/analytics
-guides under `docs/`. Other local notes are excluded. Collector deployment
+signing guide, collector README, the MVP quickstart and acceptance checklist
+(`docs/mvp-quickstart.md`, `docs/mvp-acceptance.md`), and the
+optimizer/provider/client/analytics guides under `docs/`. Other local notes are excluded. Collector deployment
 source is delivered separately; the application package does not deploy it.
 It refuses symlinks in every packaged input. It does not package
 `node_modules`, tests, development fixtures, `.env` files, or unlisted plugin

@@ -68,6 +68,12 @@ class OptimizerReleaseTests(unittest.TestCase):
             paths = {item["path"] for item in manifest["checksums"]}
             self.assertIn("bin/keys", paths)
             self.assertTrue(set(release.DOC_FILES).issubset(paths))
+            # A package is installed by someone without this checkout, so the install and
+            # acceptance instructions have to travel inside it.
+            self.assertIn("docs/mvp-quickstart.md", paths)
+            self.assertIn("docs/mvp-acceptance.md", paths)
+            self.assertTrue((output / "docs" / "mvp-quickstart.md").is_file())
+            self.assertTrue((output / "docs" / "mvp-acceptance.md").is_file())
             self.assertFalse((output / "docs" / "private-notes.md").exists())
             self.assertTrue((output / "Plugins" / "jev-optimizer" / "../../README.md").is_file())
             self.assertNotIn("release-manifest.json", paths)

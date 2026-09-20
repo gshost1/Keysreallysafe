@@ -35,7 +35,17 @@
   <main>
     <section id="pane-usage" role="tabpanel" aria-labelledby="nav-usage">
       <div id="live-status" class="live-status" hidden></div>
-      <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac.</p>
+      <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac. <button type="button" class="link" id="usage-empty-help">See how Keys works</button></p>
+      <!-- First use only: an empty vault with nothing dismissed yet. It is filled from the help
+           dialog's guide so the two can never drift apart, and it stays reachable from ? later. -->
+      <section id="onboard" class="onboard" aria-labelledby="onboard-title" hidden>
+        <div class="onboard-head">
+          <h2 id="onboard-title">Welcome to Keysreallysafe</h2>
+          <button type="button" id="onboard-dismiss" class="btn-quiet" aria-label="Dismiss this guide; it stays in help">Dismiss</button>
+        </div>
+        <div id="onboard-body"></div>
+        <p class="guide-note">This stays available under <button type="button" class="link" id="onboard-help">?&nbsp;help</button>.</p>
+      </section>
       <div id="usage-totals" class="usage-totals"></div>
     </section>
 
@@ -90,6 +100,12 @@
         <ul id="grants-list" class="grants-list"></ul>
         <ul id="clients-list" class="grants-list"></ul>
       </div>
+      <!-- The unit for the gateway column, outside the table head so it survives the narrow
+           layout that drops the head entirely. -->
+      <div class="keys-toolbar" id="keys-toolbar" hidden>
+        <span id="keys-unit-label">Via gateway, in</span>
+        <button type="button" id="keys-unit" class="link th-unit"></button>
+      </div>
       <table class="keys" id="keys-table">
         <thead>
           <tr>
@@ -104,7 +120,7 @@
         </thead>
         <tbody id="keys-body"></tbody>
       </table>
-      <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button></p>
+      <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button> or <button type="button" class="link" id="keys-empty-help">see how Keys works</button>.</p>
     </section>
 
     <section id="pane-optimizer" role="tabpanel" aria-labelledby="nav-optimizer" hidden>
@@ -112,8 +128,9 @@
         <div class="optimizer-head">
           <div>
             <p class="optimizer-kicker">local task memory</p>
-            <h1>Optimizer</h1>
+            <h1>Optimizer <span class="badge badge-experimental" title="Optional and experimental. The vault, the gateway and the usage meter work without it, and no net saving is claimed.">Experimental</span></h1>
             <p class="optimizer-subtitle">Reuse checked plans and project knowledge when they still fit the current task.</p>
+            <p class="optimizer-subtitle optimizer-experimental-note">Optional and experimental. Nothing here is enabled for you: the vault, the gateway and the usage meter work without it. Jev context compaction is opt-in per launch and sends the conversation state you select to the provider you choose. No net saving is claimed.</p>
           </div>
           <div class="optimizer-head-actions">
             <span id="optimizer-live-badge" class="optimizer-badge" hidden>Pending live data</span>
@@ -416,8 +433,39 @@
     </form>
   </dialog>
 
-  <dialog id="dlg-help" class="dlg" aria-labelledby="help-title">
-    <h2 id="help-title">Shortcuts</h2>
+  <dialog id="dlg-help" class="dlg dlg-wide" aria-labelledby="help-title">
+    <h2 id="help-title">How Keys works</h2>
+    <section id="guide" class="guide" aria-labelledby="guide-title">
+      <h3 id="guide-title">Getting started</h3>
+      <ol class="guide-steps">
+        <li>
+          <b>Add a key.</b> <span class="guide-body">Use <b>Add key</b> in the toolbar. The value you type is
+          stored in the macOS Keychain and is not written to a file in this repo. The key list shows names, never
+          values; adding, copying or revealing a key shows it for that action alone, and reading one back asks for
+          Touch ID every time, with the login password fallback macOS offers.</span>
+        </li>
+        <li>
+          <b>Use it from a tool.</b> <span class="guide-body">Keys can hand the value to one child process as an
+          environment variable, or route a tool through the local gateway with a scoped grant: one key, one host,
+          a method and path scope, an expiry. A grant dies on screen lock, revoke, expiry, gateway off or restart.
+          You do not need a <code>.env</code> file, and nothing is written to your shell profile.</span>
+        </li>
+        <li>
+          <b>Watch it, revoke it, remove it.</b> <span class="guide-body">The <b>Chart</b> pane's <b>API keys</b>
+          scope shows the calls the local gateway routed — only those; a provider called directly from somewhere
+          else is not observable here. In <b>Keys</b> you can revoke a grant or a client token and delete a key
+          from this vault; the credential itself is revoked with the provider that issued it. The
+          <b>Subscriptions</b> scope is a separate ledger: what Claude Code, Codex and Grok wrote to their own
+          logs on this Mac.</span>
+        </li>
+      </ol>
+      <p class="guide-note">Figures are shown in tokens and requests by default. Choose <b>USD</b> in the chart's
+      unit chips, on the Usage summary line, or above the Keys table to price them from this repo's list-price
+      table — an estimate, never an invoice. Cached input is counted on each request that reads it again.</p>
+      <p class="guide-note"><b>Optimizer</b> and Jev context compaction are <b>optional and experimental</b>.
+      Everything above works without enabling them, and no saving is claimed or measured for you.</p>
+    </section>
+    <h3 class="help-heading">Shortcuts</h3>
     <dl class="shortcuts">
       <dt><kbd>⌘</kbd><kbd>1</kbd></dt><dd>Usage</dd>
       <dt><kbd>⌘</kbd><kbd>2</kbd></dt><dd>Chart</dd>

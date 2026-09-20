@@ -30,6 +30,9 @@
   --s-openai-3: #0d8c6d;
   --s-openai-4: #a8d8c8;
   --s-other-1: #c7c7cc;
+  --s-other-2: #9a9aa0;
+  --s-other-3: #e0e0e5;
+  --s-other-4: #7c7c84;
   --s-other: #c7c7cc;
   --live-claude: #c45c38;
   --live-track: #e8e8ea;
@@ -65,6 +68,9 @@
     --s-openai-3: #10a37f;
     --s-openai-4: #1f6b52;
     --s-other-1: #48484a;
+    --s-other-2: #6c6c70;
+    --s-other-3: #34343a;
+    --s-other-4: #8a8a90;
     --s-other: #48484a;
     --live-claude: #e08a6a;
     --live-track: #2a2a2e;
@@ -300,6 +306,7 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .totals-main.none { color: var(--fg-2); font-weight: 500; }
 .totals-part { color: var(--fg-2); }
 .totals-part b { font-weight: 500; color: var(--fg); }
+.totals-part.none b { color: var(--fg-3); font-weight: 400; }
 .totals-sep { color: var(--fg-3); }
 .totals-note { color: var(--fg-3); font-size: 12px; }
 .totals-note.warn { color: var(--live-claude); }
@@ -475,6 +482,9 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .tip .tip-note { margin-top: 4px; color: var(--fg-2); font-size: 11px; }
 
 .mix { list-style: none; padding: 0; margin-top: 6px; border-top: 1px solid var(--line); }
+/* Many models stay one scrollable legend rather than pushing the page past a screen. Every model
+   keeps its own row: nothing is merged away to make the list shorter. */
+.mix-many { max-height: 19rem; overflow-y: auto; }
 .mix-row {
   display: grid;
   grid-template-columns: 16px minmax(140px, 1fr) minmax(80px, 200px) 96px 80px;
@@ -678,6 +688,38 @@ main { flex: 1; min-height: 0; overflow: auto; }
   user-select: all;
   -webkit-user-select: all;
 }
+/* ---------- first-use guidance ---------- */
+
+.guide { margin-bottom: 18px; }
+.guide h3, .help-heading { font-size: 13px; margin: 0 0 8px; }
+.guide-steps { margin: 0 0 10px; padding-left: 20px; display: grid; gap: 8px; }
+.guide-steps li { line-height: 1.45; }
+.guide-body { color: var(--fg-2); }
+.guide-note { margin: 6px 0 0; color: var(--fg-2); font-size: 12px; line-height: 1.45; }
+.onboard {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+.onboard-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.onboard-head h2 { font-size: 15px; margin: 0 0 8px; }
+.onboard .guide h3 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+/* The gateway column's unit, above the table so the narrow layout (which drops the table head)
+   keeps it visible and focusable. */
+.keys-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 16px 6px;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.badge-experimental { color: var(--live-claude); user-select: auto; -webkit-user-select: auto; word-break: normal; }
+.optimizer-experimental-note { color: var(--fg-2); }
+
 .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; margin-bottom: 14px; }
 .shortcuts dt { display: flex; gap: 3px; }
 .shortcuts dd { color: var(--fg-2); }

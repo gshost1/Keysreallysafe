@@ -1,5 +1,11 @@
 # Jev context optimization in Keysreallysafe
 
+**Optional and experimental.** Nothing in this document is enabled for you. The
+vault, the local gateway, the usage meter and the dashboard work without any of
+it, and this repository claims no proven net saving from using it. Unlike the
+local usage meter, the optimizer sends the conversation state you select to the
+provider you choose, once you enable it for a launch.
+
 Keys includes the existing Vercel Jev compactor as a Claude Code plugin under
 `Plugins/jev-optimizer`. The Swift gateway keeps the provider key in the vault,
 enforces a temporary grant, and records model, token counts and reported cost.

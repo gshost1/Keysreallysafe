@@ -60,8 +60,10 @@ shows `C —`. All plan windows are in the dropdown. Re-run it
 after every build; the login item serves a snapshot. Put `.build/debug/keys`
 on your `PATH` as `keys` for the commands below.
 
-The repository also includes an optional [Jev context optimizer](docs/jev-optimizer.md)
-for Claude Code. It prunes eligible old tool content, reuses identical decisions,
+The repository also includes an optional, experimental
+[Jev context optimizer](docs/jev-optimizer.md)
+for Claude Code. Everything above works without it, and no proven net saving is
+claimed for it. It prunes eligible old tool content, reuses identical decisions,
 and bounds the work spent deciding what to remove. Keys supplies a scoped grant
 and records Jev usage and available provider-reported cost. The optimizer is
 enabled explicitly per launch; unlike the local usage meter, it sends selected
@@ -91,6 +93,11 @@ existing Claude login. Readings older than one hour or past their reset are igno
 Remove everything with `keys autostart --remove` (login item and snapshot) and
 `keys purge` (catalog and every Keychain item, after Touch ID).
 
+To run a prepared package on a second Mac without a Swift toolchain there, see
+the [MVP quickstart](docs/mvp-quickstart.md) and the still-pending
+[acceptance checklist](docs/mvp-acceptance.md). That package is a signed private
+preview, not a notarized public release.
+
 ## The site
 
 Four panes, switched with the segmented control or `⌘1` through `⌘4`.
@@ -99,15 +106,23 @@ Four panes, switched with the segmented control or `⌘1` through `⌘4`.
 locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
 windows; Codex has five-hour and weekly windows; Grok has a weekly one. Tools whose quota is not in any local file
 sit in a collapsed "not tracked" group with a link to their own dashboard. One
-quiet line underneath gives this month's local dollars.
+quiet line underneath gives this month from the local logs, in tokens by
+default, with a switch on the line itself for USD. A first run with an empty
+vault also gets a short getting-started guide there; it stays available under
+**?** in the toolbar.
 
 **Chart** starts on today by hour and switches to this week or this month by
 day (`D` / `W` / `M`). Two things this Mac pays for are charted, and `S`
 switches between them: **Subscriptions**, the tools' own local logs, and **API
 keys**, the local gateway's ledger. The filters underneath belong to whichever
-is chosen, and switching drops the ones that do not carry over. `T` flips
-tokens and USD; the model list under the chart shows every model by default,
-and clicking one shows it alone. `X` downloads the rows as CSV, `⇧C` copies the
+is chosen, and switching drops the ones that do not carry over. Figures are in
+tokens — and requests, where the ledger counts them — until USD is chosen: a
+token count is what this Mac measured, while a dollar figure is this repo's
+list-price table applied to it afterwards. `T` flips tokens and USD, the choice
+is remembered, and the Usage summary and the Keys table's gateway column follow
+the same unit from their own switches. The model list under the chart shows
+every model by default, each with its own name, colour and filter however many
+a family has, and clicking one shows it alone. `X` downloads the rows as CSV, `⇧C` copies the
 totals line as Markdown.
 
 Under **Subscriptions**, chips narrow the view to Grok, Claude or OpenAI.
@@ -124,7 +139,7 @@ Gateway, or any other provider a vault key reached), then the key, both
 defaulting to all and both naming keys only, never values. A workload that runs
 on more than one provider, such as Jev, is a model under each of them rather
 than a source of its own. Requests lead the totals because every routed call is
-countable, and `T` adds a requests unit here — a provider like TypeSafe's
+countable, and `T` adds a requests unit here alongside tokens and USD — a provider like TypeSafe's
 System One reports no tokens and no cost, so those calls are shown as requests
 with the cost left unknown rather than counted as zero. A partly priced range
 is shown as a floor (`≥ ≈ $…`), and that label stays visible under a model,

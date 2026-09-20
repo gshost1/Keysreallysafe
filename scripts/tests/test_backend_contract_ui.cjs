@@ -149,6 +149,22 @@ const checks = [];
 const only = process.env.KEYS_CONTRACT_ONLY || "";
 const test = (name, fn) => { if (!only || name.includes(only)) checks.push({ name, fn }); };
 
+// The page leads with what was measured — tokens, and requests where the ledger counts them — and
+// prices it only when asked. Every cost assertion below therefore chooses USD first. Both helpers
+// are idempotent: asking for a unit the page is already in changes nothing.
+const inUsd = () => document.querySelector('[data-unit="usd"]').getAttribute("aria-checked") === "true";
+const chooseUsd = async (page) => {
+  if (await page.evaluate(inUsd)) return;
+  await page.getByRole("radio", { name: "USD", exact: true }).click();
+  await page.waitForFunction(inUsd);
+};
+// The Keys pane's own switch, on the column it changes.
+const chooseKeysUsd = async (page) => {
+  if (await page.evaluate(inUsd)) return;
+  await page.locator("#keys-unit").click();
+  await page.waitForFunction(inUsd);
+};
+
 // ---------- the real key list ----------
 
 test("the rendered list matches the real /api/keys payload field by field", async (page) => {
@@ -174,6 +190,19 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
   const providers = await get(page, "/providers.json");
   assert.equal(providers.status, 200);
   const byId = new Map(providers.data.providers.map((p) => [p.id, p.name]));
+
+  // The default unit is what this Mac measured, so the gateway column counts the real routed
+  // requests for every key and puts no price on screen until USD is chosen.
+  for (const key of payload) {
+    const cell = (await rowCell(page, key.name, "usd").textContent()).trim();
+    if (key.gateway_month_calls === 0) assert.match(cell, /^(—|no calls yet)$/, `${key.name}: an unrouted key counts nothing`);
+    else assert.equal(cell, `${key.gateway_month_calls} ${key.gateway_month_calls === 1 ? "request" : "requests"}`,
+      `${key.name}: the gateway column counts the real requests`);
+  }
+  assert.equal((await page.locator("#keys-table").textContent()).includes("$"), false, "no dollars until USD is chosen");
+  // The switch sits on the column it changes, so the cost view is one click away from here.
+  await chooseKeysUsd(page);
+
   for (const key of payload) {
     const expected = byId.get(key.provider) || key.provider;
     const cell = (await rowCell(page, key.name, "provider").textContent()).trim();
@@ -246,6 +275,12 @@ test("the API keys scope charts the real gateway ledger and keeps an unpriced co
   assert.equal(served.data.totals.gateway_unpriced_calls, 2);
   assert.equal(JSON.stringify(served.data).includes(ALPHA_SECRET), false, "a report leaked a stored secret");
 
+  // Default unit first: the real measured counts, and no price anywhere on the line.
+  const measured = await page.locator("#totals").textContent();
+  assert.match(measured, /3 requests/);
+  assert.doesNotMatch(measured, /\$/, "no dollar figure until USD is chosen");
+
+  await chooseUsd(page);
   const totals = await page.locator("#totals").textContent();
   assert.match(totals, /≥ ≈ \$/, "a partly priced real ledger is a floor, not a total");
   assert.match(totals, /3 requests/);
