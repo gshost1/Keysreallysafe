@@ -269,10 +269,13 @@ struct SpendQueries {
         source: SourceFilter,
         now: Date,
         timeZone: TimeZone,
-        key: String? = nil
+        key: String? = nil,
+        provider: String? = nil
     ) throws -> SpendReport {
         let (start, end) = range.interval(now: now, timeZone: timeZone)
-        let events = try db.usageEvents(from: UTC.iso(start), to: UTC.iso(end), source: source, key: key)
+        let events = try db.usageEvents(
+            from: UTC.iso(start), to: UTC.iso(end), source: source, key: key, provider: provider
+        )
         var assembled = Self.assemble(
             events: events,
             range: range,
@@ -304,12 +307,16 @@ struct SpendQueries {
         cal.timeZone = timeZone
 
         var totals = SpendTotals()
-        let (events, correlated) = dropCorrelatedGatewayEvents(allEvents)
+        // `source=keys` is the gateway's own ledger, so a gateway call stays in it even when a
+        // local log recorded the same upstream request. Dropping the correlated copy is how the
+        // local scope avoids counting one call twice; here there is no local figure to protect.
+        let keysMode = source == .keys
+        let (events, correlated) = keysMode ? (allEvents, 0) : dropCorrelatedGatewayEvents(allEvents)
         totals.gatewayCorrelatedCalls = correlated
         // Rows, daily buckets and hourly points follow the headline: without a key filter they
         // are the local ledger, and gateway calls appear only in the gateway totals. A keyed
         // report is the gateway's own ledger (local events carry no key), so everything shows.
-        let charted = keyed ? events : events.filter { $0.source != "gateway" }
+        let charted = keyed || keysMode ? events : events.filter { $0.source != "gateway" }
         var grokTicks: Int64 = 0
         var claudeEstimate: Double = 0
         var hasClaudeEstimate = false
@@ -327,6 +334,16 @@ struct SpendQueries {
                 let tok = TokenTotals.normalized(event)
                 totals.gatewayTokens += tok
                 totals.gatewayCalls += 1
+                if keysMode {
+                    // This report is the gateway ledger, so its token totals are the headline
+                    // ones and agree with the rows and buckets below. Dollars stay in the
+                    // gateway fields: unpriced calls must not read as zero.
+                    totals.inputTokens += event.inputTokens
+                    totals.outputTokens += event.outputTokens
+                    totals.cachedReadTokens += event.cachedReadTokens
+                    totals.reasoningTokens += event.reasoningTokens
+                    totals.tokens += tok
+                }
                 if let est = gatewayUsd(event) {
                     gatewayEstimate += est
                     hasGatewayEstimate = true
@@ -395,7 +412,8 @@ struct SpendQueries {
         if let est = totals.openaiUsdEstimate { grand += est }
         // Gateway dollars stay in gatewayUsdEstimate. Adding them here double-counted every
         // Claude Code or Codex call that went through the gateway.
-        totals.usdEstimate = grand
+        totals.usdEstimate = keysMode ? nil : grand
+        if keysMode { totals.usdEstimateScope = SpendTotals.keysScope }
         totals.tokenRule = TokenTotals.rule
 
         let rows: [SpendRow]
@@ -453,7 +471,13 @@ struct SpendQueries {
 
     private static func gatewayUsd(_ event: UsageEvent) -> Double? {
         guard event.source == "gateway" else { return nil }
+        // A reported zero is a known zero; only an absent receipt is unknown.
         if let ticks = event.costUsdTicks { return Ticks.usd(ticks) }
+        // The recorder normalizes absent token counts to zero, so a call whose provider reported
+        // no usage at all arrives here as all-zero counters. Pricing those would publish $0.00 as
+        // a known cost for a call nothing is known about. A genuine zero-token call with no cost
+        // receipt is treated as unknown too, which is the conservative direction.
+        guard event.tokenCount > 0 else { return nil }
         let model = event.model.isEmpty ? nil : event.model
         return GatewayEstimate.usd(
             model: model,
@@ -538,6 +562,7 @@ struct SpendQueries {
             var cacheCreate: Int
             var usdEstimate: Double?
             var project: String
+            var modelCalls: Int
         }
         var acc: [Key: Acc] = [:]
         for event in events {
@@ -547,8 +572,9 @@ struct SpendQueries {
             let key = Key(day: day, cwd: cwd)
             var cur = acc[key] ?? Acc(
                 usd: nil, tokens: 0, input: 0, output: 0, cachedRead: 0, cacheCreate: 0,
-                usdEstimate: nil, project: projectName(event.cwd)
+                usdEstimate: nil, project: projectName(event.cwd), modelCalls: 0
             )
+            cur.modelCalls += event.modelCalls ?? 0
             cur.tokens += TokenTotals.normalized(event)
             cur.input += event.inputTokens
             cur.output += event.outputTokens
@@ -583,7 +609,8 @@ struct SpendQueries {
                 cacheCreationTokens: v.cacheCreate,
                 usdEstimate: v.usdEstimate,
                 project: v.project,
-                cwd: key.cwd.isEmpty ? nil : key.cwd
+                cwd: key.cwd.isEmpty ? nil : key.cwd,
+                modelCalls: v.modelCalls
             )
         }
     }
@@ -594,6 +621,9 @@ struct SpendQueries {
         for event in events {
             let accKey = AccKey(model: event.model, key: event.keyName)
             var row = acc[accKey] ?? SpendRow(model: event.model, key: event.keyName)
+            // Only a gateway call has a vault key and therefore a provider to name. Local rows
+            // keep provider nil so that adding this field does not split any existing grouping.
+            if event.source == "gateway", !event.provider.isEmpty { row.provider = event.provider }
             row.inputTokens += event.inputTokens
             row.outputTokens += event.outputTokens
             row.cachedReadTokens += event.cachedReadTokens
@@ -703,6 +733,7 @@ struct SpendQueries {
             var cachedRead: Int
             var cacheCreate: Int
             var usdEstimate: Double?
+            var modelCalls: Int = 0
         }
         var acc: [Key: Acc] = [:]
         for event in events {
@@ -710,6 +741,7 @@ struct SpendQueries {
             let day = SpendRange.localDay(date, timeZone: calendar.timeZone)
             let key = Key(day: day, model: event.model)
             var cur = acc[key] ?? Acc(usd: nil, tokens: 0, input: 0, output: 0, cachedRead: 0, cacheCreate: 0, usdEstimate: nil)
+            cur.modelCalls += event.modelCalls ?? 0
             cur.tokens += TokenTotals.normalized(event)
             cur.input += event.inputTokens
             cur.output += event.outputTokens
@@ -759,7 +791,8 @@ struct SpendQueries {
                 outputTokens: v.output,
                 cachedReadTokens: v.cachedRead,
                 cacheCreationTokens: v.cacheCreate,
-                usdEstimate: v.usdEstimate
+                usdEstimate: v.usdEstimate,
+                modelCalls: v.modelCalls
             )
         }
     }
@@ -781,6 +814,7 @@ struct SpendQueries {
             var cachedRead: Int
             var cacheCreate: Int
             var usdEstimate: Double?
+            var modelCalls: Int = 0
         }
         var acc: [Key: Acc] = [:]
         for event in events {
@@ -793,6 +827,7 @@ struct SpendQueries {
             var cur = acc[key] ?? Acc(
                 usd: nil, tokens: 0, input: 0, output: 0, cachedRead: 0, cacheCreate: 0, usdEstimate: nil
             )
+            cur.modelCalls += event.modelCalls ?? 0
             cur.tokens += TokenTotals.normalized(event)
             cur.input += event.inputTokens
             cur.output += event.outputTokens
@@ -842,7 +877,8 @@ struct SpendQueries {
                 outputTokens: v.output,
                 cachedReadTokens: v.cachedRead,
                 cacheCreationTokens: v.cacheCreate,
-                usdEstimate: v.usdEstimate
+                usdEstimate: v.usdEstimate,
+                modelCalls: v.modelCalls
             )
         }
     }

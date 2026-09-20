@@ -28,19 +28,90 @@ const assets = new Map([
 
 const SECRET = "sk-fixture-NEVER-REAL-0000000000";
 const baseKeys = () => [
-  { name: "alpha", provider: "openai", kind: "runtime", created_at: "2026-09-01T10:00:00Z", last_used_at: "2026-09-18T09:00:00Z", checkable: true, notes: "first fixture key" },
-  { name: "bravo", provider: "anthropic", kind: "billing", created_at: "2026-09-05T10:00:00Z", last_used_at: null, checkable: false },
-  { name: "charlie", provider: "typesafe", kind: "runtime", created_at: "2026-09-09T10:00:00Z", last_used_at: null, checkable: false },
+  { name: "alpha", provider: "openai", kind: "runtime", created_at: "2026-09-01T10:00:00Z", last_used_at: "2026-09-18T09:00:00Z", checkable: true, notes: "first fixture key",
+    usd_month: 0.0105, usd_month_kind: "estimate", gateway_month_calls: 3, gateway_month_unpriced_calls: 0 },
+  { name: "bravo", provider: "anthropic", kind: "billing", created_at: "2026-09-05T10:00:00Z", last_used_at: null, checkable: false,
+    usd_month: null, usd_month_kind: "none", gateway_month_calls: 0, gateway_month_unpriced_calls: 0 },
+  // A TypeSafe key: its System One calls report no tokens and no cost receipt.
+  { name: "charlie", provider: "typesafe", kind: "runtime", created_at: "2026-09-09T10:00:00Z", last_used_at: null, checkable: false,
+    usd_month: null, usd_month_kind: "unknown", gateway_month_calls: 2, gateway_month_unpriced_calls: 2 },
 ];
 
-let keys, failures, delays, requests, unexpected;
+// The gateway's own ledger, as the engine reports it for source=keys. `alpha` routes to the Vercel
+// AI Gateway and its calls carry tokens and a list-price estimate; `charlie` routes to TypeSafe,
+// whose calls carry neither, so their cost is unknown rather than zero. `system-one` runs on both
+// providers — a workload is a model under a provider, not a billing source of its own — which also
+// makes it the review's mixed bucket: a priced part and an unpriced part under one model.
+// Invented rows: no call was ever made.
+const baseLedger = () => [
+  { key: "alpha", provider: "vercel-ai-gateway", model: "claude-sonnet-5", model_calls: 3, input_tokens: 900, output_tokens: 300,
+    cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: 0.0105 },
+  { key: "alpha", provider: "vercel-ai-gateway", model: "system-one", model_calls: 1, input_tokens: 400, output_tokens: 100,
+    cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: 0.0095 },
+  { key: "charlie", provider: "typesafe", model: "system-one", model_calls: 2, input_tokens: 0, output_tokens: 0,
+    cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
+];
+
+let keys, ledger, failures, delays, requests, unexpected;
 
 function reset() {
   keys = baseKeys();
+  ledger = baseLedger();
   failures = new Map();   // "METHOD /path" -> {status, body} | "drop"
   delays = new Map();     // "METHOD /path" -> milliseconds
   requests = [];
   unexpected = [];
+}
+
+const pad2 = (n) => String(n).padStart(2, "0");
+const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+// The spend endpoint, answering only what the query asked for. Local sources keep the empty
+// shape the rest of this suite relies on; the API keys source serves the ledger above.
+function spend(params) {
+  const source = params.get("source") || "all";
+  const by = params.get("by") || "model";
+  const key = params.get("key");
+  const provider = params.get("provider");
+  if (by === "project" && source !== "claude") return [400, { error: "by=project requires source=claude" }];
+  // The engine refuses a provider outside the gateway ledger; the fixture must too, or the page
+  // could pass a stale filter and never be told.
+  if (provider && source !== "keys") return [400, { error: "provider requires source=keys" }];
+  const day = localDay(new Date());
+  if (source !== "keys") return [200, { source, by, totals: {}, rows: [], daily: [], points: [], models: [] }];
+  const rows = ledger.filter((r) => (!key || r.key === key) && (!provider || r.provider === provider));
+  // A gateway call's dollars arrive in `usd_estimate`, receipt or list price alike, and a
+  // provider-reported zero arrives as an explicit 0 there — `SpendQueries.gatewayUsd` returns the
+  // known zero and nil only when there is no receipt at all. So null, and only null, is unpriced.
+  const priced = rows.filter((r) => r.usd_estimate != null);
+  // The engine aggregates a day (or hour) of one model into one bucket and sums only the dollars
+  // it has, so a bucket can be priced at zero and still cover a call that was never priced. A row
+  // may say so with `unpriced_calls`; the bucket it serves carries no such field, exactly as the
+  // real payload carries none, which is why the range totals are the only place to learn of it.
+  const unpricedCalls = (r) => (r.unpriced_calls != null ? r.unpriced_calls
+    : r.usd_estimate == null ? r.model_calls : 0);
+  const point = (extra) => rows.map((r) => ({
+    model: r.model, tokens: r.input_tokens + r.output_tokens, usd: null, usd_estimate: r.usd_estimate,
+    input_tokens: r.input_tokens, output_tokens: r.output_tokens, cached_read_tokens: 0,
+    cache_creation_tokens: 0, model_calls: r.model_calls, ...extra,
+  }));
+  return [200, {
+    range: params.get("range") || "today", by, source,
+    start_day: day, end_day: day, last_ingest_at: day + "T00:00:00Z",
+    totals: {
+      gateway_calls: rows.reduce((a, r) => a + r.model_calls, 0),
+      gateway_tokens: rows.reduce((a, r) => a + r.input_tokens + r.output_tokens, 0),
+      gateway_usd_estimate: priced.length ? priced.reduce((a, r) => a + r.usd_estimate, 0) : null,
+      gateway_unpriced_calls: rows.reduce((a, r) => a + unpricedCalls(r), 0),
+      gateway_unpriced_models: rows.filter((r) => unpricedCalls(r) > 0).map((r) => r.model),
+      gateway_correlated_calls: 0,
+      usd_estimate: null,
+      usd_estimate_scope: "api keys only: calls routed through the local gateway",
+    },
+    rows,
+    daily: by === "hour" ? [] : point({ day }),
+    points: by === "hour" ? point({ hour: `${day}T${pad2(new Date().getHours())}:00` }) : [],
+  }];
 }
 
 const rule = (method, pathname) => `${method} ${pathname}`;
@@ -52,7 +123,7 @@ function json(response, status, value) {
   response.end(body);
 }
 
-function handle(method, pathname, body) {
+function handle(method, pathname, body, params) {
   const keyMatch = /^\/api\/keys\/([^/]+)(\/[a-z]+)?$/.exec(pathname);
   const name = keyMatch ? decodeURIComponent(keyMatch[1]) : null;
   const leaf = keyMatch ? (keyMatch[2] || "") : null;
@@ -99,7 +170,7 @@ function handle(method, pathname, body) {
   if (pathname === "/api/optimizer/status") return [200, { locked: true }];
   if (pathname === "/api/models") return [200, []];
   if (pathname === "/api/status") return [200, { plans: [] }];
-  if (pathname.startsWith("/api/spend")) return [200, { totals: {}, points: [], models: [] }];
+  if (pathname.startsWith("/api/spend")) return spend(params);
 
   unexpected.push(rule(method, pathname));
   return [404, { error: "not_found" }];
@@ -131,7 +202,7 @@ const server = http.createServer((request, response) => {
     if (raw) { try { body = JSON.parse(raw); } catch { body = {}; } }
     // The answer is computed now and delivered late, which is how a slow reply
     // carries a view of the vault that has since moved on.
-    const [status, value] = handle(method, url.pathname, body);
+    const [status, value] = handle(method, url.pathname, body, url.searchParams);
     const wait = delays.get(key);
     if (wait) await sleep(wait);
     json(response, status, value);
@@ -445,18 +516,432 @@ test("range and source chips drive the query, the URL and the group chips", asyn
   assert.equal(await page.locator('[data-group="model"]').getAttribute("aria-checked"), "true");
 });
 
-test("a key filter shows a clearable chip and leaves the URL clean when removed", async (page, origin) => {
+test("a link that names a key boots into the API keys scope with that key chosen", async (page, origin) => {
   await page.goto(`${origin}/?key=alpha&range=week`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#key-chip:visible").waitFor();
-  assert.match(await page.locator("#key-chip").textContent(), /key · alpha/);
+  await page.locator("#keys-filter:visible").waitFor();
+  assert.equal(await page.evaluate(inKeysScope), true, "a key only means anything in that scope");
+  assert.equal(await page.locator('#keys-filter [data-key-filter="alpha"]').getAttribute("aria-checked"), "true");
+  // The picker carries the choice, so the standalone chip would only repeat it.
+  assert.equal(await page.locator("#key-chip").isHidden(), true);
   const filtered = requests.filter((r) => r.pathname === "/api/spend" && r.search.includes("key=alpha"));
   assert.ok(filtered.length > 0, "the key filter must reach the engine");
 
-  await page.locator("#key-chip .chip-clear").click();
+  await page.getByRole("radio", { name: "Show every key" }).click();
   await page.waitForFunction(() => !new URL(location.href).searchParams.get("key"));
-  assert.equal(await page.locator("#key-chip").isHidden(), true);
+  assert.equal(await page.locator('#keys-filter [data-key-filter=""]').getAttribute("aria-checked"), "true");
+});
+
+// ---------- API keys usage ----------
+
+const inKeysScope = () => document.querySelector('[data-scope="keys"]').getAttribute("aria-checked") === "true";
+const openKeysSource = async (page, origin, query = "range=week") => {
+  await page.goto(`${origin}/?${query}`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  if (!(await page.evaluate(inKeysScope))) await page.getByRole("radio", { name: "API keys" }).click();
+  await page.waitForFunction(inKeysScope);
+  await page.locator("#mix .mix-row").first().waitFor();
+};
+const spendSearches = () => requests.filter((r) => r.pathname === "/api/spend").map((r) => r.search);
+const totalsText = (page) => page.locator("#totals").textContent();
+
+test("the API keys scope charts the gateway ledger with requests, tokens and a partial cost", async (page, origin) => {
+  await openKeysSource(page, origin);
+  assert.ok(spendSearches().some((s) => s.includes("source=keys")), "the API keys scope must reach the engine");
+
+  // Every key's models are charted, including the one whose provider reported no tokens.
+  const models = await page.locator("#mix .mix-name").allTextContents();
+  assert.deepEqual(models.sort(), ["claude-sonnet-5", "system-one"]);
+
+  const totals = await totalsText(page);
+  assert.match(totals, /6 requests/, "requests lead: every routed call is countable");
+  assert.match(totals, /1\.7K tokens/);
+  assert.match(totals, /≥ ≈ \$0\.02/, "a partly priced range is a floor, not a total");
+  assert.match(totals, /partial cost · 2 requests unpriced/);
+  assert.match(totals, /routed through Keys only/);
+
+  // Selecting one model does not make the view complete: a bucket may mix priced and
+  // unpriced calls, so the partial label has to survive the filter.
+  await page.locator('#mix .mix-row[data-model="claude-sonnet-5"]').click();
+  await page.waitForFunction(() => document.querySelector('#mix .mix-row[data-model="claude-sonnet-5"]').getAttribute("aria-selected") === "true");
+  assert.match(await totalsText(page), /partial cost · 2 requests unpriced/, "a filtered view must not read as complete");
+
+  // system-one is the review's mixed bucket: one priced Vercel call and two unpriced TypeSafe
+  // ones under a single model. Its dollars keep a number, so the row itself must say the number
+  // is a floor rather than let it be read as this model's complete cost.
+  const mixedRow = page.locator('#mix .mix-row[data-model="system-one"]');
+  assert.match((await mixedRow.locator(".mix-usd").textContent()).trim(), /^≥ ≈ \$/, "a mixed row reads as a floor");
+  assert.match(await mixedRow.getAttribute("title"), /Partial: some calls in this range have no cost receipt/);
+  assert.match(await mixedRow.getAttribute("title"), /TypeSafe/, "the row names the providers behind it");
+  assert.match(await mixedRow.getAttribute("title"), /Vercel/);
+});
+
+test("a provider filter separates TypeSafe from Vercel without inventing a third source", async (page, origin) => {
+  await openKeysSource(page, origin);
+  const chips = page.locator("#provider-filter [data-provider-filter]");
+  assert.deepEqual(await chips.evaluateAll((els) => els.map((e) => e.textContent)),
+    ["All providers", "TypeSafe", "Vercel AI Gateway"]);
+  assert.equal(await chips.first().getAttribute("aria-checked"), "true", "all providers is the default");
+
+  // TypeSafe alone: the same workload model, now with nothing priced at all.
+  await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
+  assert.ok(spendSearches().some((s) => s.includes("provider=typesafe") && s.includes("source=keys")));
+  assert.equal(await page.locator("#mix .mix-name").textContent(), "system-one");
+  assert.match(await totalsText(page), /cost unknown/, "TypeSafe reports no cost: unknown, not $0");
+  assert.match(await totalsText(page), /2 requests/);
+  assert.equal((await page.locator("#mix .mix-usd").textContent()).trim(), "—");
+  // The key picker narrows with it: a key belongs to exactly one provider.
+  assert.deepEqual(await page.locator("#keys-filter [data-key-filter]").evaluateAll((els) => els.map((e) => e.textContent)),
+    ["All keys", "charlie"]);
+
+  // Vercel alone: the same model again, this time priced, and nothing left unpriced to warn about.
+  await page.getByRole("radio", { name: "Show only calls routed to Vercel AI Gateway" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "vercel-ai-gateway");
+  // Both views have two rows, so the request count is what says the new answer has landed.
+  await page.waitForFunction(() => /4 requests/.test(document.getElementById("totals").textContent));
+  const vercel = await totalsText(page);
+  assert.doesNotMatch(vercel, /partial cost/, "nothing in this narrower view is unpriced");
+  assert.doesNotMatch(vercel, /≥/, "and so its figure is not a floor");
+
+  // Back to every provider from the picker itself.
+  await page.getByRole("radio", { name: "Show every provider these keys reached" }).click();
+  await page.waitForFunction(() => !new URL(location.href).searchParams.get("provider"));
+  await page.waitForFunction(() => /6 requests/.test(document.getElementById("totals").textContent));
+  assert.match(await totalsText(page), /partial cost · 2 requests unpriced/, "and the warning comes back with it");
+});
+
+test("choosing a provider drops a key that belongs to another one", async (page, origin) => {
+  await openKeysSource(page, origin, "range=week&source=keys&key=alpha");
+  await page.waitForFunction(() => document.querySelectorAll("#keys-filter [data-key-filter]").length === 3);
+
+  await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
+  await page.waitForFunction(() => !new URL(location.href).searchParams.get("key"));
+  // The unfiltered picker index goes out alongside the filtered report, so the one that carries
+  // the provider is the one to read — and no request may still carry the dropped key.
+  const provided = spendSearches().filter((s) => s.includes("provider=typesafe"));
+  assert.ok(provided.length > 0, "the provider filter must reach the engine");
+  assert.ok(provided.every((s) => !s.includes("key=")),
+    `alpha is a Vercel key and cannot survive a TypeSafe filter: ${provided.join(" | ")}`);
+  assert.equal(await page.locator('#keys-filter [data-key-filter=""]').getAttribute("aria-checked"), "true");
+});
+
+test("the per-key picker names every key and filters to one, all keys included", async (page, origin) => {
+  await openKeysSource(page, origin);
+  const chips = page.locator("#keys-filter [data-key-filter]");
+  assert.deepEqual(await chips.evaluateAll((els) => els.map((e) => e.textContent)), ["All keys", "alpha", "charlie"]);
+  assert.equal(await chips.first().getAttribute("aria-checked"), "true", "all keys is the default");
+  // A key is named, never its value.
+  assert.equal((await page.locator("#keys-filter").textContent()).includes(SECRET), false);
+
+  await page.getByRole("radio", { name: "Show only key charlie" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
+  assert.ok(spendSearches().some((s) => s.includes("key=charlie") && s.includes("source=keys")));
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
+  assert.equal(await page.locator("#mix .mix-name").textContent(), "system-one");
+  assert.match(await totalsText(page), /cost unknown/, "an unpriced key reads as unknown, not $0");
+  assert.match(await totalsText(page), /2 requests/);
+
+  // Back to every key, from the picker itself.
+  await page.getByRole("radio", { name: "Show every key" }).click();
+  await page.waitForFunction(() => !new URL(location.href).searchParams.get("key"));
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 2);
+  assert.equal(await page.evaluate(inKeysScope), true, "clearing a key stays in the API keys scope");
+});
+
+test("requests are a chartable unit in the API keys scope and nowhere else", async (page, origin) => {
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  assert.equal(await page.locator('[data-unit="requests"]').isHidden(), true, "local logs do not count every call");
+
+  await page.getByRole("radio", { name: "API keys" }).click();
+  await page.locator('[data-unit="requests"]:visible').waitFor();
+  await page.getByRole("radio", { name: "Requests" }).click();
+  await page.waitForFunction(() => document.getElementById("daily-unit").textContent.startsWith("requests per"));
+  // The bars come from the request counts, so the unpriced, token-less key is still drawn.
+  const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(labels.some((l) => /system-one 3/.test(l)), "a call with no tokens still has a bar");
+  assert.ok(labels.some((l) => /claude-sonnet-5 3/.test(l)));
+
+  // Leaving the scope drops a unit that only means something there.
+  await page.getByRole("radio", { name: "Subscriptions" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-unit="requests"]').hidden);
+  assert.equal(await page.locator('[data-unit="tokens"]').getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator("#keys-filter").isHidden(), true);
+  assert.equal(await page.locator("#provider-filter").isHidden(), true);
+  assert.equal(await page.locator("#source-chips").isHidden(), false, "the tool filter comes back with it");
+});
+
+test("a key whose provider reports no tokens says so instead of drawing nothing", async (page, origin) => {
+  await openKeysSource(page, origin, "range=week&key=charlie&source=keys");
+  await page.locator("#chart-nothing:visible").waitFor();
+  assert.match(await page.locator("#chart-nothing").textContent(),
+    /No tokens were reported for these requests\. Switch to Requests to chart them\./);
+  assert.match(await totalsText(page), /2 requests/, "the requests are counted even so");
+
+  await page.getByRole("radio", { name: "Requests" }).click();
+  await page.waitForFunction(() => document.getElementById("chart-nothing").hidden);
+  const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(labels.some((l) => /system-one 2/.test(l)), "requests chart what tokens cannot");
+});
+
+test("a key opened from the Keys pane cannot inherit another provider's filter", async (page, origin) => {
+  await openKeysSource(page, origin);
+  await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
+
+  // alpha routes to the Vercel gateway. Charting it under the TypeSafe filter still standing in
+  // the chart would ask for an intersection that cannot exist, and report nothing for a key whose
+  // calls are right there in the Keys table.
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
+  await rowCell(page, "alpha", "usd").click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "alpha");
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 2);
+
+  assert.notEqual(new URL(await page.url()).searchParams.get("provider"), "typesafe");
+  const keyed = spendSearches().filter((s) => s.includes("key=alpha"));
+  assert.ok(keyed.length > 0, "the drilldown must reach the engine");
+  assert.ok(keyed.every((s) => !s.includes("provider=typesafe")),
+    `a TypeSafe filter survived a Vercel key: ${keyed.join(" | ")}`);
+  assert.match(await totalsText(page), /4 requests/, "alpha's own calls, not an empty intersection");
+  assert.deepEqual((await page.locator("#mix .mix-name").allTextContents()).sort(), ["claude-sonnet-5", "system-one"]);
+  assert.equal(await page.locator('#provider-filter [data-provider-filter="typesafe"]').getAttribute("aria-checked"), "false");
+
+  // The picker inside the chart is the other case: its key list is already narrowed to the chosen
+  // provider, so choosing a key there must not throw that provider away.
+  await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
+  await page.getByRole("radio", { name: "Show only key charlie" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
+  assert.equal(new URL(await page.url()).searchParams.get("provider"), "typesafe", "an ordinary key pick keeps its provider");
+});
+
+test("an explicit subscription source drops a gateway key and provider, URL included", async (page, origin) => {
+  await page.goto(`${origin}/?range=week&source=claude&key=alpha&provider=typesafe`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  // The link asked for Claude Code's local log. A gateway key cannot narrow local rows to
+  // anything but nothing, so the explicit source wins and both filters go.
+  assert.equal(await page.locator('[data-scope="subs"]').getAttribute("aria-checked"), "true");
+  assert.equal(await page.locator('[data-source="claude"]').getAttribute("aria-checked"), "true");
+  const url = new URL(await page.url());
+  assert.equal(url.searchParams.get("key"), null, "the URL must stop advertising a dropped filter");
+  assert.equal(url.searchParams.get("provider"), null);
+  // The Usage pane's own month total is a sourceless request and not part of this question.
+  const searches = spendSearches().filter((s) => s.includes("source="));
+  assert.ok(searches.length > 0, "the chart must still load");
+  assert.ok(searches.every((s) => s.includes("source=claude") && !s.includes("key=") && !s.includes("provider=")),
+    `a local source carried a gateway filter: ${searches.join(" | ")}`);
+
+  // A later tool choice cannot bring them back either.
+  await page.getByRole("radio", { name: "Grok", exact: true }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("source") === "grok");
+  const grok = spendSearches().filter((s) => s.includes("source=grok"));
+  assert.ok(grok.length > 0 && grok.every((s) => !s.includes("key=") && !s.includes("provider=")),
+    `stale filter survived a source change: ${grok.join(" | ")}`);
+
+  // And a key with no source at all still means the gateway ledger.
+  await page.goto(`${origin}/?range=week&key=alpha`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#keys-filter:visible").waitFor();
+  assert.equal(await page.evaluate(inKeysScope), true, "a source-less key still enters the API keys scope");
+  assert.equal(new URL(await page.url()).searchParams.get("key"), "alpha");
+});
+
+test("a reported cost of zero is a known $0, not a missing receipt", async (page, origin) => {
+  // One call the provider priced at exactly zero, and one it did not price at all. The engine
+  // serializes the first as `usd_estimate: 0` and the second as null, which is the whole
+  // difference between a cost that is known and one that was never reported.
+  const bare = { key: "charlie", provider: "typesafe", model_calls: 1, input_tokens: 0, output_tokens: 0,
+    cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null };
+  ledger = [{ ...bare, model: "system-one", usd_estimate: 0 }, { ...bare, model: "free-tier" }];
+  await openKeysSource(page, origin);
+  await page.getByRole("radio", { name: "USD", exact: true }).click();
+  await page.waitForFunction(() => /cost/.test(document.getElementById("chart-nothing").textContent));
+
+  // Mixed: a known zero beside an unknown. The note has to say both, and neither as the other.
+  assert.equal(await page.locator("#chart-nothing").textContent(),
+    "Part of these requests cost $0.00; no cost was reported for the rest. Switch to Requests to chart them.");
+  assert.match(await totalsText(page), /\$0/, "the totals already read as a known zero");
+  assert.match(await totalsText(page), /1 request unpriced/);
+
+  // Selecting a model narrows what the note is about: this one's cost is known, and zero. The
+  // range still holds a call nobody priced, and the view-wide legend cannot be read from this
+  // sentence, so the zero is reported as what was reported rather than as the whole story.
+  await page.locator('#mix .mix-row[data-model="system-one"]').click();
+  await page.waitForFunction(() => document.getElementById("chart-nothing").textContent.startsWith("The cost reported"));
+  assert.equal(await page.locator("#chart-nothing").textContent(),
+    "The cost reported for these requests is $0.00; some calls in this range are unpriced."
+    + " Switch to Requests to chart them.");
+
+  // And this one's cost really is missing, which is a different sentence.
+  await page.locator('#mix .mix-row[data-model="system-one"]').click();
+  await page.locator('#mix .mix-row[data-model="free-tier"]').click();
+  await page.waitForFunction(() => document.getElementById("chart-nothing").textContent.startsWith("No cost"));
+  assert.equal(await page.locator("#chart-nothing").textContent(),
+    "No cost was reported for these requests. Switch to Requests to chart them.");
+});
+
+test("a bucket priced at zero that still hides an unpriced call never claims a flat $0", async (page, origin) => {
+  // One model, one key, one day: a call the provider priced at exactly zero and a call it never
+  // priced at all. The engine adds what it has, so the bucket arrives as usd_estimate 0 over
+  // model_calls 2 with nothing to say which half was priced — only the range totals count the
+  // unpriced one. A note that read completeness out of that sum would promise a total of $0.00
+  // for a request whose cost nobody knows.
+  ledger = [{ key: "charlie", provider: "typesafe", model: "system-one", model_calls: 2, unpriced_calls: 1,
+    input_tokens: 0, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0,
+    usd: null, usd_estimate: 0 }];
+  const note = () => page.locator("#chart-nothing").textContent();
+  const flat = "These requests cost $0.00. Switch to Requests to chart them.";
+  const qualified = "The cost reported for these requests is $0.00; some calls in this range are unpriced."
+    + " Switch to Requests to chart them.";
+
+  await openKeysSource(page, origin);
+  await page.getByRole("radio", { name: "USD", exact: true }).click();
+  await page.waitForFunction(() => /cost/.test(document.getElementById("chart-nothing").textContent));
+  assert.match(await totalsText(page), /1 request unpriced/, "the range knows what the bucket cannot say");
+  assert.notEqual(await note(), flat, "a summed zero is not a receipt for every call in it");
+  assert.equal(await note(), qualified);
+
+  // Selecting the model asks the same question of the same bucket, and gets the same answer.
+  await page.locator('#mix .mix-row[data-model="system-one"]').click();
+  await page.waitForFunction(() => document.querySelector('#mix .mix-row[data-model="system-one"]').getAttribute("aria-selected") === "true");
+  assert.notEqual(await note(), flat, "narrowing to the model cannot reveal what the payload omits");
+  assert.equal(await note(), qualified);
+
+  // Today charts the hourly buckets, which are summed the same way and must read the same.
+  await page.getByRole("radio", { name: "Today", exact: true }).click();
+  await page.waitForFunction(() => document.getElementById("daily-title").textContent === "Today by hour");
+  await page.waitForFunction(() => /cost/.test(document.getElementById("chart-nothing").textContent));
+  assert.notEqual(await note(), flat, "an hour's sum hides an unpriced call just as a day's does");
+  assert.equal(await note(), qualified);
+
+  // A range with nothing unpriced keeps the plain sentence: the zero there really is the whole cost.
+  ledger = [{ key: "charlie", provider: "typesafe", model: "system-one", model_calls: 2,
+    input_tokens: 0, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0,
+    usd: null, usd_estimate: 0 }];
+  await openKeysSource(page, origin);
+  await page.getByRole("radio", { name: "USD", exact: true }).click();
+  await page.waitForFunction(() => /cost/.test(document.getElementById("chart-nothing").textContent));
+  assert.doesNotMatch(await totalsText(page), /unpriced/);
+  assert.equal(await note(), flat);
+});
+
+test("a request whose provider named no model keeps its bar under unknown", async (page, origin) => {
+  // The gateway records model="" when the caller named none and the response reported none.
+  ledger = [
+    { key: "charlie", provider: "typesafe", model: "", model_calls: 1, input_tokens: 0, output_tokens: 0,
+      cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
+    { key: "alpha", provider: "vercel-ai-gateway", model: "claude-sonnet-5", model_calls: 2, input_tokens: 600,
+      output_tokens: 200, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: 0.01 },
+  ];
+  await openKeysSource(page, origin);
+  await page.getByRole("radio", { name: "Requests" }).click();
+  await page.waitForFunction(() => document.getElementById("daily-unit").textContent.startsWith("requests per"));
+  const barLabels = () => page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+
+  assert.ok((await page.locator("#mix .mix-name").allTextContents()).includes("unknown"), "the mix names it unknown");
+  assert.match(await totalsText(page), /3 requests/);
+  assert.ok((await barLabels()).some((l) => /unknown 1/.test(l)), "the day bar keeps the call the totals counted");
+
+  // Today draws from the hourly buckets instead, which must ask the identity question the same way.
+  await page.getByRole("radio", { name: "Today", exact: true }).click();
+  await page.waitForFunction(() => document.getElementById("daily-title").textContent === "Today by hour");
+  await page.waitForFunction(() => document.querySelectorAll("#daily-svg g.col").length > 0);
+  assert.ok((await barLabels()).some((l) => /unknown 1/.test(l)), "and so does the hour bar");
+
+  // Selecting that series must leave it drawn rather than empty the plot.
+  await page.locator('#mix .mix-row[data-model="unknown"]').click();
+  await page.waitForFunction(() => document.querySelector('#mix .mix-row[data-model="unknown"]').getAttribute("aria-selected") === "true");
+  const only = await barLabels();
+  assert.ok(only.some((l) => /unknown 1/.test(l)), "the selected series is the one still drawn");
+  assert.ok(only.every((l) => !/claude-sonnet-5/.test(l)), "and it is the only one");
+});
+
+test("switching scope clears the filters that belong to the other one", async (page, origin) => {
+  await openKeysSource(page, origin, "range=week&key=alpha&provider=vercel-ai-gateway&source=keys");
+  assert.equal(await page.locator("#source-chips").isHidden(), true, "a tool filter means nothing in the gateway ledger");
+  assert.equal(await page.locator("#group-chips").isHidden(), true, "projects are a Claude-only grouping");
+
+  // Out to Subscriptions: the provider and key go with it, and the local filters come back.
+  await page.getByRole("radio", { name: "Subscriptions" }).click();
+  await page.waitForFunction(() => !new URL(location.href).searchParams.get("key"));
+  await page.locator("#source-chips:visible").waitFor();
+  assert.equal(new URL(await page.url()).searchParams.get("provider"), null);
+  let last = spendSearches().pop();
+  assert.ok(last.includes("source=all") && !last.includes("key=") && !last.includes("provider="),
+    `stale filter survived: ${last}`);
+
+  // Into Claude, then back to API keys: the project grouping cannot follow.
+  await page.getByRole("radio", { name: "Claude", exact: true }).click();
+  await page.locator("#group-chips:visible").waitFor();
+  await page.getByRole("radio", { name: "Projects" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-group="project"]').getAttribute("aria-checked") === "true");
+
+  await page.getByRole("radio", { name: "API keys" }).click();
+  await page.waitForFunction(() => document.getElementById("group-chips").hidden);
+  assert.equal(await page.locator('[data-group="model"]').getAttribute("aria-checked"), "true");
+  last = spendSearches().pop();
+  assert.ok(last.includes("source=keys") && last.includes("by=model"), `stale grouping survived: ${last}`);
+
+  // And leaving again comes back to the subscription source that was last chosen, not to All.
+  await page.getByRole("radio", { name: "Subscriptions" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-source="claude"]').getAttribute("aria-checked") === "true");
+});
+
+test("a key's gateway dollars open that key in the API keys scope", async (page, origin) => {
+  await openKeys(page, origin);
+  await rowCell(page, "charlie", "usd").click();
+  await page.waitForFunction(inKeysScope);
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
+  assert.equal(await page.locator("#pane-chart").isVisible(), true);
+  assert.ok(spendSearches().some((s) => s.includes("source=keys") && s.includes("key=charlie")),
+    `landed with ${spendSearches().join(" | ")}`);
+  await page.waitForFunction(() => /cost unknown/.test(document.getElementById("totals").textContent));
+
+  // The same cell again must land on the same view, not toggle the filter off.
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await rowCell(page, "charlie", "usd").click();
+  await page.waitForFunction(() => document.getElementById("pane-chart").hidden === false);
+  assert.equal(await page.evaluate(inKeysScope), true);
+  assert.equal(await page.locator('#keys-filter [data-key-filter="charlie"]').getAttribute("aria-checked"), "true");
+  assert.equal(new URL(await page.url()).searchParams.get("key"), "charlie");
+});
+
+test("an empty API keys view explains that only routed requests are recorded", async (page, origin) => {
+  ledger = [];
+  await page.goto(`${origin}/?range=week&source=keys`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#spend-empty:visible").waitFor();
+  const text = await page.locator("#spend-empty").textContent();
+  assert.match(text, /No API key calls in this range/);
+  assert.match(text, /Only requests routed through Keys are recorded here; a provider called directly is not observable/);
+  assert.equal(await page.locator("#totals").isHidden(), true, "no ledger means no totals line, not a zero one");
+
+  await page.getByRole("button", { name: "Show subscriptions" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-scope="subs"]').getAttribute("aria-checked") === "true");
+  assert.equal(await page.locator('[data-source="all"]').getAttribute("aria-checked"), "true");
+});
+
+test("the subscriptions scope says its figures come from local logs, not plan invoices", async (page, origin) => {
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  assert.equal(await page.locator('[data-scope="subs"]').getAttribute("aria-checked"), "true", "subscriptions lead");
+  await page.waitForFunction(() => /estimated from the tools' own local logs on this Mac, not from plan invoices/
+    .test(document.getElementById("chart-caption").textContent));
+
+  await page.getByRole("radio", { name: "API keys" }).click();
+  await page.waitForFunction(inKeysScope);
+  await page.waitForFunction(() => /calls this Mac routed through the local gateway with a key from the vault/
+    .test(document.getElementById("chart-caption").textContent));
 });
 
 test("a chart request that fails leaves a sticky reason and no stale drawing", async (page, origin) => {
@@ -723,6 +1208,29 @@ async function shoot(browser, origin) {
     await capture(page, `keys-reveal-${viewport.name}`);
     await page.locator("#dlg-reveal [data-close]").click();
 
+    // The subscriptions scope is what the chart opens on; shoot it before leaving.
+    await page.getByRole("tab", { name: "Chart" }).click();
+    await page.locator("#scope-chips:visible").waitFor();
+    await capture(page, `chart-subscriptions-${viewport.name}`, { fullPage: true });
+
+    // The API keys scope: every provider and key, then one provider, then one key.
+    await openKeysSource(page, origin);
+    await capture(page, `chart-api-keys-all-${viewport.name}`, { fullPage: true });
+    await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
+    // The filtered answer has to land first, or the shot shows the previous view.
+    await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe"
+      && document.querySelectorAll("#mix .mix-row").length === 1);
+    await capture(page, `chart-api-keys-provider-${viewport.name}`, { fullPage: true });
+
+    await page.getByRole("radio", { name: "Show every provider these keys reached" }).click();
+    await page.waitForFunction(() => !new URL(location.href).searchParams.get("provider")
+      && document.querySelectorAll("#mix .mix-row").length === 2);
+    await page.getByRole("radio", { name: "Show only key charlie" }).click();
+    await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie"
+      && document.querySelectorAll("#mix .mix-row").length === 1);
+    await capture(page, `chart-api-keys-one-${viewport.name}`, { fullPage: true });
+
+    reset();
     keys = [];
     await page.reload();
     await page.waitForLoadState("networkidle");

@@ -50,7 +50,7 @@ for (const [name, value] of Object.entries({ base, token, projectRoot, ALPHA_SEC
   }
 }
 
-const SEEDED = ["contract-alpha", "contract-bravo", "contract-typesafe"];
+const SEEDED = ["contract-alpha", "contract-bravo", "contract-typesafe", "contract-vercel"];
 const NEW_KEY = "contract-delta";
 // Written and removed by the non-browser control requests; never by a forged one.
 const RAW_KEY = "contract-echo";
@@ -162,7 +162,7 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
   const payload = listed.data.keys;
   assert.deepEqual(payload.map((k) => k.name).sort(), SEEDED, "the real vault rows");
   assert.deepEqual((await rowNames(page)).sort(), SEEDED, "every real row is rendered");
-  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
+  assert.equal(await page.locator("#keys-count").textContent(), `${SEEDED.length} keys`);
   assert.equal(await page.locator("#keys-empty").isHidden(), true);
 
   // No secret may appear in a listing, whatever the real serializer emits.
@@ -183,17 +183,30 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
     const created = (await rowCell(page, key.name, "created").textContent()).trim();
     assert.notEqual(created, "—", `${key.name}: no created date rendered`);
     assert.notEqual(created, key.created_at, `${key.name}: created_at was not parsed as a date`);
-    assert.equal((await rowCell(page, key.name, "used").textContent()).trim(), "Never",
-      `${key.name}: a freshly seeded key has never been used`);
+    // Only the key the harness routed synthetic gateway calls through has been used.
+    const used = (await rowCell(page, key.name, "used").textContent()).trim();
+    if (key.last_used_at == null) assert.equal(used, "Never", `${key.name}: an untouched key reads as never used`);
+    else assert.notEqual(used, "Never", `${key.name}: a routed key must show its real last-used time`);
     // The Check affordance is decided by the real provider catalog, not a fixture.
     assert.equal(await rowButton(page, key.name, "check").isDisabled(), !key.checkable,
       `${key.name}: Check enablement must follow checkable=${key.checkable}`);
-    // The real serializer sends usd_month: null with usd_month_kind "none" for a
-    // key the gateway never routed; the cell must read as no dollars, not $0.00.
-    assert.equal(key.usd_month, null);
-    assert.equal(key.usd_month_kind, "none");
-    assert.equal((await rowCell(page, key.name, "usd").textContent()).trim(), "—",
-      `${key.name}: an unrouted key must not show a dollar figure`);
+    // Zero, unknown, priced and none are different things, and the real serializer says which.
+    // A key the gateway never routed reads as no dollars, not $0.00; a key whose routed calls
+    // carried no cost receipt reads as unpriced, not as zero either; a key whose calls could be
+    // priced reads as a figure. The harness seeds one of each.
+    const usdCell = (await rowCell(page, key.name, "usd").textContent()).trim();
+    if (key.gateway_month_calls === 0) {
+      assert.equal(key.usd_month, null, `${key.name}: an unrouted key has no dollars at all`);
+      assert.equal(key.usd_month_kind, "none");
+      assert.equal(usdCell, "—", `${key.name}: an unrouted key must not show a dollar figure`);
+    } else if (key.usd_month_kind === "unknown") {
+      assert.equal(key.usd_month, null, `${key.name}: an unpriced call is unknown, not zero`);
+      assert.equal(usdCell, `${key.gateway_month_calls} calls, unpriced`);
+    } else {
+      assert.equal(key.usd_month_kind, "estimate", `${key.name}: a fully priced key reads as an estimate`);
+      assert.ok(key.usd_month > 0, `${key.name}: a priced call must carry a figure`);
+      assert.match(usdCell, /^\$/, `${key.name}: a priced key shows its dollars`);
+    }
   }
 });
 
@@ -201,12 +214,112 @@ test("the Optimizer affordance follows the real /api/optimizer/keys answer", asy
   await openKeys(page);
   const compatible = await get(page, "/api/optimizer/keys");
   assert.equal(compatible.status, 200);
-  const names = compatible.data.keys.map((k) => k.name);
-  assert.deepEqual(names, ["contract-typesafe"], "only the real optimizer-compatible provider qualifies");
+  const names = compatible.data.keys.map((k) => k.name).sort();
+  // Both Jev-capable providers in the vault qualify and nothing else does; the list is the real
+  // adapter answer, not a fixture.
+  assert.deepEqual(names, ["contract-typesafe", "contract-vercel"],
+    "only the real optimizer-compatible providers qualify");
   assert.ok(compatible.data.providers.some((p) => p.id === "typesafe"), "the real adapter list");
   await rowButton(page, "contract-typesafe", "optimizer").waitFor();
+  await rowButton(page, "contract-vercel", "optimizer").waitFor();
   assert.equal(await rowButton(page, "contract-alpha", "optimizer").count(), 0,
     "an incompatible key must not offer Optimizer");
+});
+
+// ---------- the real gateway ledger in the API keys view ----------
+
+test("the API keys scope charts the real gateway ledger and keeps an unpriced cost unknown", async (page) => {
+  await page.goto(base, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.getByRole("radio", { name: "API keys" }).click();
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length > 0);
+
+  // What the engine really answers for this scope, and what the page made of it.
+  const served = await get(page, "/api/spend?range=month&by=model&source=keys");
+  assert.equal(served.status, 200);
+  assert.deepEqual(served.data.rows.map((r) => r.key).sort(), ["contract-typesafe", "contract-vercel"],
+    "the real ledger names both keys");
+  const ts = served.data.rows.find((r) => r.provider === "typesafe");
+  assert.equal(ts.usd_estimate, null, "no receipt and no list price: unknown, not zero");
+  assert.equal(ts.model_calls, 2);
+  assert.equal(served.data.totals.gateway_calls, 3);
+  assert.equal(served.data.totals.gateway_unpriced_calls, 2);
+  assert.equal(JSON.stringify(served.data).includes(ALPHA_SECRET), false, "a report leaked a stored secret");
+
+  const totals = await page.locator("#totals").textContent();
+  assert.match(totals, /≥ ≈ \$/, "a partly priced real ledger is a floor, not a total");
+  assert.match(totals, /3 requests/);
+  assert.match(totals, /partial cost · 2 requests unpriced/);
+
+  // The provider picker offers both real providers by name, and choosing one asks the real engine.
+  assert.deepEqual(await page.locator("#provider-filter [data-provider-filter]").evaluateAll((els) => els.map((e) => e.textContent)),
+    ["All providers", "TypeSafe", "Vercel AI Gateway"]);
+  await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
+  await page.waitForFunction(() => /cost unknown/.test(document.getElementById("totals").textContent));
+  const tsServed = await get(page, "/api/spend?range=month&by=model&source=keys&provider=typesafe");
+  assert.equal(tsServed.data.totals.gateway_calls, 2);
+  assert.equal(tsServed.data.totals.gateway_usd_estimate, null, "TypeSafe gains no price by being filtered to");
+  assert.equal(await page.locator("#mix .mix-name").first().textContent(), "system-one");
+  // The key picker narrows with the provider: this one has exactly one key.
+  assert.deepEqual(await page.locator("#keys-filter [data-key-filter]").evaluateAll((els) => els.map((e) => e.textContent)),
+    ["All keys", "contract-typesafe"]);
+  // A provider outside the gateway ledger is refused rather than answered with a local view.
+  assert.equal((await get(page, "/api/spend?range=month&by=model&source=all&provider=typesafe")).status, 400);
+
+  // The per-key picker offers the real key by name, and filtering asks the real engine for it.
+  await page.getByRole("radio", { name: "Show only key contract-typesafe" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "contract-typesafe");
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
+  const keyed = await get(page, "/api/spend?range=month&by=model&source=keys&key=contract-typesafe");
+  assert.equal(keyed.data.totals.gateway_calls, 2);
+  const other = await get(page, "/api/spend?range=month&by=model&source=keys&key=contract-alpha");
+  assert.deepEqual(other.data.rows, [], "a key with no routed calls has no ledger");
+
+  // Requests are countable even here, where no token count exists.
+  await page.getByRole("radio", { name: "Requests" }).click();
+  await page.waitForFunction(() => document.getElementById("daily-unit").textContent.startsWith("requests per"));
+  const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(labels.some((l) => /system-one 2/.test(l)), `no request bar was drawn: ${labels.join(" | ")}`);
+
+  // The local scope is untouched by all of this.
+  const local = await get(page, "/api/spend?range=month&by=model&source=all");
+  assert.equal(local.data.totals.gateway_calls, 3, "the local view still reports the gateway separately");
+  assert.equal(local.data.rows.some((r) => r.key === "contract-typesafe"), false,
+    "gateway rows must not enter the local ledger");
+});
+
+test("a real key opened from the Keys table cannot inherit another provider's filter", async (page) => {
+  const spend = [];
+  page.on("request", (r) => {
+    const u = new URL(r.url());
+    if (u.pathname === "/api/spend") spend.push(u.search);
+  });
+  await page.goto(base, { waitUntil: "domcontentloaded" });
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.getByRole("radio", { name: "API keys" }).click();
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length > 0);
+  await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
+
+  // contract-vercel belongs to the other provider, and its real ledger holds one priced call.
+  // The drilldown has to show that call, not the empty intersection of two filters that cannot
+  // both hold of the same key.
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body tr[data-name="contract-vercel"]').waitFor();
+  await page.locator('#keys-body tr[data-name="contract-vercel"] .td-usd').first().click();
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "contract-vercel");
+  await page.waitForFunction(() => /1 request/.test(document.getElementById("totals").textContent));
+  assert.notEqual(new URL(page.url()).searchParams.get("provider"), "typesafe");
+  const keyed = spend.filter((s) => s.includes("key=contract-vercel"));
+  assert.ok(keyed.length > 0 && keyed.every((s) => !s.includes("provider=typesafe")),
+    `a TypeSafe filter survived a Vercel key: ${keyed.join(" | ")}`);
+  assert.equal(await page.locator("#mix .mix-name").first().textContent(), "claude-sonnet-5");
+
+  // And the engine confirms what the page refused to ask for really would have been empty.
+  const crossed = await get(page, "/api/spend?range=month&by=model&source=keys&key=contract-vercel&provider=typesafe");
+  assert.equal(crossed.status, 200, "a key of another provider is an empty intersection, not an error");
+  assert.deepEqual(crossed.data.rows, []);
 });
 
 // ---------- create, edit, reveal, copy, delete against the real vault ----------
@@ -223,7 +336,7 @@ test("the add dialog creates a real key through POST /api/keys", async (page) =>
   await waitDialog(page, "dlg-add", false);
   await page.locator(`#keys-body tr[data-name="${NEW_KEY}"]`).waitFor();
   assert.equal(await status(page), `Added ${NEW_KEY}.`);
-  assert.equal(await page.locator("#keys-count").textContent(), "4 keys");
+  assert.equal(await page.locator("#keys-count").textContent(), `${SEEDED.length + 1} keys`);
 
   const listed = await get(page, "/api/keys");
   const row = listed.data.keys.find((k) => k.name === NEW_KEY);

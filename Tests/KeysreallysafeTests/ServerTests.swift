@@ -313,6 +313,91 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(ok.status, 200)
     }
 
+    /// The dashboard's API keys view over HTTP: the gateway ledger, filterable by key name,
+    /// and the groupings that do not apply to it are refused rather than answered wrongly.
+    func testSpendKeysSourceServesTheGatewayLedgerByKey() throws {
+        let (handler, service, _) = try makeHandler()
+        try service.add(name: "alpha", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        try service.add(name: "jev", provider: "typesafe", kind: "runtime", notes: "", secret: fixtureSecret)
+        let day = UTC.iso(Date())
+        try service.recordGatewayUsage(GatewayUsageRow(
+            ts: day, key: "alpha", provider: "anthropic", model: "claude-sonnet-5",
+            inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0,
+            status: 200, durationMs: 9, requestId: "alpha-1"
+        ))
+        // No tokens and no receipt: the request is still countable and must still be served.
+        try service.recordGatewayUsage(GatewayUsageRow(
+            ts: day, key: "jev", provider: "typesafe", model: "system-one",
+            inputTokens: nil, outputTokens: nil, cacheReadTokens: nil, cacheWriteTokens: nil,
+            status: 200, durationMs: 9, requestId: "jev-1"
+        ))
+        _ = try service.catalog.insertUsage(grokEvent(at: day, usd: 3, prompt: "local-only"))
+
+        let all = handle(handler, method: "GET", path: "/api/spend", query: ["range": "month", "source": "keys"])
+        XCTAssertEqual(all.status, 200)
+        let obj = try JSONSerialization.jsonObject(with: all.body) as! [String: Any]
+        XCTAssertEqual(obj["source"] as? String, "keys")
+        let rows = obj["rows"] as! [[String: Any]]
+        XCTAssertEqual(Set(rows.compactMap { $0["key"] as? String }), ["alpha", "jev"])
+        XCTAssertFalse(rows.contains { ($0["model"] as? String) == "grok-4.6-build" }, "local rows stay out")
+        let unpriced = try XCTUnwrap(rows.first { ($0["model"] as? String) == "system-one" })
+        XCTAssertTrue(unpriced["usd_estimate"] is NSNull, "unknown cost, not zero")
+        XCTAssertEqual(unpriced["model_calls"] as? Int, 1)
+        let totals = obj["totals"] as! [String: Any]
+        XCTAssertEqual(totals["gateway_calls"] as? Int, 2)
+        XCTAssertEqual(totals["usd_estimate_scope"] as? String, SpendTotals.keysScope)
+        XCTAssertFalse(String(data: all.body, encoding: .utf8)!.contains(fixtureSecret))
+
+        let keyed = handle(
+            handler, method: "GET", path: "/api/spend",
+            query: ["range": "month", "source": "keys", "key": "jev"]
+        )
+        XCTAssertEqual(keyed.status, 200)
+        let keyedObj = try JSONSerialization.jsonObject(with: keyed.body) as! [String: Any]
+        XCTAssertEqual((keyedObj["totals"] as! [String: Any])["gateway_calls"] as? Int, 1)
+        XCTAssertEqual(Set((keyedObj["rows"] as! [[String: Any]]).compactMap { $0["key"] as? String }), ["jev"])
+
+        // Projects come from a Claude session path; the gateway has none.
+        let byProject = handle(
+            handler, method: "GET", path: "/api/spend",
+            query: ["range": "month", "source": "keys", "by": "project"]
+        )
+        XCTAssertEqual(byProject.status, 400)
+
+        let bogus = handle(handler, method: "GET", path: "/api/spend", query: ["source": "gateway"])
+        XCTAssertEqual(bogus.status, 400)
+
+        // The provider axis: TypeSafe alone, then a provider outside the gateway ledger, which is
+        // refused rather than answered with an empty local view.
+        let typesafe = handle(
+            handler, method: "GET", path: "/api/spend",
+            query: ["range": "month", "source": "keys", "provider": "typesafe"]
+        )
+        XCTAssertEqual(typesafe.status, 200)
+        let tsObj = try JSONSerialization.jsonObject(with: typesafe.body) as! [String: Any]
+        XCTAssertEqual((tsObj["totals"] as! [String: Any])["gateway_calls"] as? Int, 1)
+        let tsRows = tsObj["rows"] as! [[String: Any]]
+        XCTAssertEqual(tsRows.compactMap { $0["provider"] as? String }, ["typesafe"])
+        XCTAssertEqual(tsRows.compactMap { $0["model"] as? String }, ["system-one"])
+
+        let mismatched = handle(
+            handler, method: "GET", path: "/api/spend",
+            query: ["range": "month", "source": "keys", "provider": "anthropic", "key": "jev"]
+        )
+        XCTAssertEqual(mismatched.status, 200)
+        XCTAssertEqual(
+            ((try JSONSerialization.jsonObject(with: mismatched.body) as! [String: Any])["rows"] as! [[String: Any]]).count,
+            0,
+            "a key of one provider under another provider is an empty intersection, not an error"
+        )
+
+        let wrongScope = handle(
+            handler, method: "GET", path: "/api/spend",
+            query: ["range": "month", "source": "all", "provider": "typesafe"]
+        )
+        XCTAssertEqual(wrongScope.status, 400, "a provider means nothing outside the gateway ledger")
+    }
+
     func testSpendTodayByHourAndInvalidBy() throws {
         let (handler, service, _) = try makeHandler()
         let tz = TimeZone(identifier: "America/Denver")!

@@ -1009,7 +1009,8 @@ final class KeysService: @unchecked Sendable {
         source: SourceFilter,
         now: Date = Date(),
         timeZone: TimeZone = .current,
-        key: String? = nil
+        key: String? = nil,
+        provider: String? = nil
     ) throws -> SpendReport {
         try SpendQueries(db: catalog).report(
             range: range,
@@ -1017,7 +1018,8 @@ final class KeysService: @unchecked Sendable {
             source: source,
             now: now,
             timeZone: timeZone,
-            key: key
+            key: key,
+            provider: provider
         )
     }
 }

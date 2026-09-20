@@ -102,13 +102,38 @@ sit in a collapsed "not tracked" group with a link to their own dashboard. One
 quiet line underneath gives this month's local dollars.
 
 **Chart** starts on today by hour and switches to this week or this month by
-day (`D` / `W` / `M`). Chips narrow it to Grok, Claude or OpenAI; `T` flips
-tokens and USD. The model list under the chart shows every model by default;
-click one to see it alone. Dollar figures for Claude and Codex are estimates
-from list prices and are labelled as such; Grok's dollars come from its own
-cost log. With the Claude chip selected, `P` switches the breakdown to
-projects. `X` downloads the rows as CSV, `⇧C` copies the totals line as
-Markdown.
+day (`D` / `W` / `M`). Two things this Mac pays for are charted, and `S`
+switches between them: **Subscriptions**, the tools' own local logs, and **API
+keys**, the local gateway's ledger. The filters underneath belong to whichever
+is chosen, and switching drops the ones that do not carry over. `T` flips
+tokens and USD; the model list under the chart shows every model by default,
+and clicking one shows it alone. `X` downloads the rows as CSV, `⇧C` copies the
+totals line as Markdown.
+
+Under **Subscriptions**, chips narrow the view to Grok, Claude or OpenAI.
+Everything here is estimated from what those tools wrote to their own logs on
+this Mac — not from a plan invoice, and the plan windows themselves stay in the
+Usage pane rather than being redrawn as bars. Claude and Codex dollars are
+list-price estimates and are labelled as such; Grok's come from its own cost
+log. With the Claude chip selected, `P` switches the breakdown to projects.
+
+Under **API keys** the chart is a different ledger: the calls this Mac routed
+through the local gateway with a key from the vault. Two pickers narrow it, in
+the order the billing works — first the provider (TypeSafe, the Vercel AI
+Gateway, or any other provider a vault key reached), then the key, both
+defaulting to all and both naming keys only, never values. A workload that runs
+on more than one provider, such as Jev, is a model under each of them rather
+than a source of its own. Requests lead the totals because every routed call is
+countable, and `T` adds a requests unit here — a provider like TypeSafe's
+System One reports no tokens and no cost, so those calls are shown as requests
+with the cost left unknown rather than counted as zero. A partly priced range
+is shown as a floor (`≥ ≈ $…`), and that label stays visible under a model,
+provider, day or hour, because a bucket that mixes a priced call with an
+unpriced one still carries a number. Only routed requests are observable: a
+provider called directly, or with a key this Mac never proxied, leaves nothing
+to chart, so this view will not match a provider's own dashboard. The
+subscription sources are unaffected — gateway dollars are never folded into
+them, because a routed Claude Code or Codex call also appears in a local log.
 
 **Keys** is a dense table: name, provider and the host requests are bound to,
 kind, created, last used, dollars routed through the gateway this month, and

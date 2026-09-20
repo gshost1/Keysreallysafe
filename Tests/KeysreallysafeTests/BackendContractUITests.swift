@@ -104,8 +104,42 @@ final class BackendContractUITests: XCTestCase {
                         notes: "", secret: "sk-contract-bravo-NEVER-REAL-00003", caller: "harness")
         try service.add(name: "contract-typesafe", provider: "typesafe", kind: "runtime",
                         notes: "", secret: "sk-contract-typesafe-NEVER-REAL-04", caller: "harness")
+        try service.add(name: "contract-vercel", provider: "vercel-ai-gateway", kind: "runtime",
+                        notes: "", secret: "vck-contract-NEVER-REAL-00005", caller: "harness")
         let seeded = try service.list().map(\.name).sorted()
-        XCTAssertEqual(seeded, ["contract-alpha", "contract-bravo", "contract-typesafe"])
+        XCTAssertEqual(seeded, ["contract-alpha", "contract-bravo", "contract-typesafe", "contract-vercel"])
+
+        // Synthetic gateway calls so the browser can see the real API keys view over a real ledger,
+        // on both of the providers that bill by key. Invented rows written straight to the real
+        // recorder: nothing was sent anywhere. TypeSafe's System One protocol reports no tokens and
+        // no cost, so this is also the real unknown-cost path rather than a zero one; the Vercel
+        // rows carry usage, so the same view is partly priced and must read as a floor.
+        for id in ["contract-1", "contract-2"] {
+            try service.recordGatewayUsage(GatewayUsageRow(
+                ts: UTC.iso(Date()), key: "contract-typesafe", provider: "typesafe", model: "system-one",
+                inputTokens: nil, outputTokens: nil, cacheReadTokens: nil, cacheWriteTokens: nil,
+                status: 200, durationMs: 11, requestId: id
+            ))
+        }
+        try service.recordGatewayUsage(GatewayUsageRow(
+            ts: UTC.iso(Date()), key: "contract-vercel", provider: "vercel-ai-gateway",
+            model: "claude-sonnet-5", inputTokens: 900, outputTokens: 300,
+            cacheReadTokens: 0, cacheWriteTokens: 0, status: 200, durationMs: 11, requestId: "contract-3"
+        ))
+        let ledger = try service.spend(range: .month, by: .model, source: .keys)
+        XCTAssertEqual(ledger.totals.gatewayCalls, 3)
+        XCTAssertEqual(ledger.totals.gatewayUnpricedCalls, 2, "the TypeSafe half stays unpriced")
+        XCTAssertEqual(Set(ledger.rows.compactMap(\.provider)), ["typesafe", "vercel-ai-gateway"])
+
+        // The provider axis over the real engine: each side is its own ledger, and together they
+        // are the whole one. TypeSafe never acquires a price by being filtered to.
+        let typesafe = try service.spend(range: .month, by: .model, source: .keys, provider: "typesafe")
+        XCTAssertEqual(typesafe.totals.gatewayCalls, 2)
+        XCTAssertNil(typesafe.totals.gatewayUsdEstimate, "TypeSafe reports no cost; it must stay unknown")
+        let vercel = try service.spend(range: .month, by: .model, source: .keys, provider: "vercel-ai-gateway")
+        XCTAssertEqual(vercel.totals.gatewayCalls, 1)
+        XCTAssertNotNil(vercel.totals.gatewayUsdEstimate)
+        XCTAssertEqual(vercel.totals.gatewayUnpricedCalls, 0)
 
         let handler = APIHandler(service: service, webRoot: webRoot)
         let server = try LoopbackHTTPServer(host: "127.0.0.1", port: 0, handler: handler.handle)
@@ -163,7 +197,7 @@ final class BackendContractUITests: XCTestCase {
         // What the browser did must be visible in the real service state, not
         // only in the page it rendered.
         let names = try service.list().map(\.name).sorted()
-        XCTAssertEqual(names, ["contract-alpha", "contract-bravo", "contract-typesafe"],
+        XCTAssertEqual(names, seeded,
                        "the dialog-created key must have been created and then deleted through the real API")
         XCTAssertThrowsError(try secrets.get(name: "contract-delta"),
                              "deleting through the dashboard must drop the stored secret too")
@@ -177,6 +211,11 @@ final class BackendContractUITests: XCTestCase {
         // storage: the event log is the service's own record of it.
         let events = try service.keyEvents(name: "contract-alpha", limit: 50).map(\.action)
         XCTAssertTrue(events.contains("copy"), "\(events)")
+
+        // Reading the API keys view changes nothing in the ledger it reported.
+        let afterBrowsing = try service.spend(range: .month, by: .model, source: .keys)
+        XCTAssertEqual(afterBrowsing.totals.gatewayCalls, 3)
+        XCTAssertEqual(Set(afterBrowsing.rows.compactMap(\.key)), ["contract-typesafe", "contract-vercel"])
 
         // The forged requests the driver sent are refused at the HTTP gates, so
         // their effects must be absent from the service too, not merely from the

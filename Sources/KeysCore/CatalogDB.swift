@@ -906,7 +906,8 @@ final class CatalogDB: @unchecked Sendable {
         from startISO: String,
         to endISO: String,
         source: SourceFilter,
-        key: String? = nil
+        key: String? = nil,
+        provider: String? = nil
     ) throws -> [UsageEvent] {
         try withLock {
             var sql = """
@@ -923,6 +924,11 @@ final class CatalogDB: @unchecked Sendable {
             if key != nil {
                 sql += " AND key_name = ?"
             }
+            // Narrowing to one provider happens here, before any aggregation, so totals, rows,
+            // daily and hourly buckets all describe the same set of calls.
+            if provider != nil {
+                sql += " AND provider = ?"
+            }
             sql += " ORDER BY occurred_at, model;"
             let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
@@ -937,6 +943,10 @@ final class CatalogDB: @unchecked Sendable {
             }
             if let key {
                 bindText(stmt, idx, key)
+                idx += 1
+            }
+            if let provider {
+                bindText(stmt, idx, provider)
             }
             var events: [UsageEvent] = []
             while sqlite3_step(stmt) == SQLITE_ROW {

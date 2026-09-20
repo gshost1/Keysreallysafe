@@ -296,6 +296,8 @@ main { flex: 1; min-height: 0; overflow: auto; }
   line-height: 20px;
 }
 .totals-main { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+/* An unknown cost reads as unknown, never as a confident figure. */
+.totals-main.none { color: var(--fg-2); font-weight: 500; }
 .totals-part { color: var(--fg-2); }
 .totals-part b { font-weight: 500; color: var(--fg); }
 .totals-sep { color: var(--fg-3); }
@@ -469,6 +471,8 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .tip .row span:nth-child(2) { color: var(--fg-2); flex: 1; }
 .tip .total { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; }
 .tip .total span:first-child { color: var(--fg-2); }
+/* The figure above covers only the priced calls; this says so without shouting. */
+.tip .tip-note { margin-top: 4px; color: var(--fg-2); font-size: 11px; }
 
 .mix { list-style: none; padding: 0; margin-top: 6px; border-top: 1px solid var(--line); }
 .mix-row {

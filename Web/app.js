@@ -5,13 +5,32 @@
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 
   const readUnit = () => { try { return localStorage.getItem("ksf.unit") === "usd" ? "usd" : "tokens"; } catch { return "tokens"; } };
+  // A link that names a key or a provider is a request to see that gateway ledger, so it lands in
+  // the API keys scope unless the link says otherwise. `source=keys` is the wire name for that
+  // scope; the four local sources are the subscription one. A link that asks for a local source
+  // *and* carries a key or a provider asks for two things that cannot both be true: neither filter
+  // describes a local log, and a key sent with a local source narrows those rows to nothing. The
+  // explicit source wins and the gateway filters are dropped here, URL included, so a reload
+  // cannot re-apply what this boot refused.
+  const boot = (() => {
+    const q = new URLSearchParams(location.search);
+    const asked = q.get("source");
+    const key = q.get("key") || null;
+    const provider = q.get("provider") || null;
+    if (["all", "grok", "claude", "openai"].includes(asked)) return { source: asked, key: null, provider: null, dropped: Boolean(key || provider) };
+    if (asked === "keys") return { source: "keys", key, provider, dropped: false };
+    return { source: key || provider ? "keys" : "all", key, provider, dropped: false };
+  })();
 
   const state = {
     pane: "usage",
-    source: "all",
+    source: boot.source,
     range: ["today", "week", "month"].includes(new URLSearchParams(location.search).get("range")) ? new URLSearchParams(location.search).get("range") : "today",
     unit: readUnit(),
-    key: new URLSearchParams(location.search).get("key") || null,
+    key: boot.key,
+    provider: boot.provider,
+    // The subscription source to come back to when the scope leaves the API keys view.
+    subSource: boot.source === "keys" ? "all" : boot.source,
     group: "model",
     eventsOpen: null,
     spend: null,
@@ -27,6 +46,10 @@
     slots: new Map(),
     providers: null,
     optimizerCompatibleKeys: new Set(),
+    // The (provider, key name) pairs seen in the unfiltered API keys report, so the provider and
+    // key pickers can offer every choice even while one of them is already applied. Names only:
+    // a key's value never reaches this page.
+    keyIndex: [],
     catalogVersion: null,
     status: null,
     engineDown: false,
@@ -296,11 +319,13 @@
     for (const b of buttons) {
       b.addEventListener("click", () => set(b, false));
       b.addEventListener("keydown", (e) => {
-        const i = buttons.indexOf(b);
+        // A chip that does not apply to the current source is hidden; arrow keys skip it.
+        const live = buttons.filter((x) => !x.hidden);
+        const i = live.indexOf(b);
         let next = null;
-        if (e.key === "ArrowRight" || e.key === "ArrowDown") next = buttons[(i + 1) % buttons.length];
-        if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = buttons[(i - 1 + buttons.length) % buttons.length];
-        if (!next) return;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") next = live[(i + 1) % live.length];
+        if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = live[(i - 1 + live.length) % live.length];
+        if (!next || next === b) return;
         e.preventDefault();
         set(next, true);
         next.focus();
@@ -318,35 +343,186 @@
     };
   }
 
-  wireChips("data-source", (value) => { state.source = value; state.mixFilter = null; syncGroupChips(); loadSpend(); });
+  // Two things this Mac pays for, and they are not the same kind of record. Subscriptions are the
+  // tools' own local logs; API keys are the gateway's ledger of calls it routed. Picking between
+  // them comes first, and only then does a narrower filter — a tool, or a provider and a key —
+  // mean anything. A flat list would put Claude beside TypeSafe as if they were the same axis.
+  const scopeChips = wireChips("data-scope", (value) => setScope(value));
+  const sourceChips = wireChips("data-source", (value) => setSource(value));
+  const keysMode = () => state.source === "keys";
+  function setScope(value) {
+    if (value === "keys" && keysMode()) return;
+    if (value !== "keys" && !keysMode()) return;
+    // Each scope's own filters are dropped on the way out: a provider or key means nothing to a
+    // local log, and the project grouping means nothing to the gateway ledger.
+    state.source = value === "keys" ? "keys" : state.subSource;
+    state.key = null;
+    state.provider = null;
+    state.keyIndex = [];
+    state.mixFilter = null;
+    if (!keysMode() && state.unit === "requests") state.unit = readUnit();
+    syncScopeChips();
+    writeChartUrl();
+    loadSpend();
+  }
+  function setSource(value) {
+    state.source = value;
+    state.subSource = value;
+    // A tool chip is a local source, and a local source never carries a gateway filter — not even
+    // one that arrived from outside the chart. Clearing here is what keeps `loadSpend` from
+    // sending a key with a local source however the view got into one.
+    state.key = null;
+    state.provider = null;
+    state.mixFilter = null;
+    syncScopeChips();
+    writeChartUrl();
+    loadSpend();
+  }
+  // One place decides which filter rows belong to the current scope, so no row is ever left
+  // showing a filter the request no longer sends.
+  function syncScopeChips() {
+    scopeChips.sync(keysMode() ? "keys" : "subs");
+    // The tool row keeps the last subscription choice while it is hidden, so coming back out of
+    // the API keys scope returns to where the user was rather than resetting to All.
+    sourceChips.sync(state.subSource);
+    $("source-chips").hidden = keysMode();
+    syncGroupChips();
+    syncUnitChips();
+    renderProviderFilter();
+    renderKeysFilter();
+  }
+  function writeChartUrl() {
+    const url = new URL(location.href);
+    url.searchParams.set("range", state.range);
+    if (state.source === "all") url.searchParams.delete("source"); else url.searchParams.set("source", state.source);
+    if (state.key) url.searchParams.set("key", state.key); else url.searchParams.delete("key");
+    if (state.provider) url.searchParams.set("provider", state.provider); else url.searchParams.delete("provider");
+    history.replaceState(null, "", url);
+  }
+  // The gateway filters an explicit local source refused above are struck from the URL now, so the
+  // address bar says what the page is actually showing.
+  if (boot.dropped) writeChartUrl();
   const rangeChips = wireChips("data-range", (value) => {
     state.range = value;
-    const url = new URL(location.href);
-    url.searchParams.set("range", value);
-    history.replaceState(null, "", url);
+    writeChartUrl();
     loadSpend();
   });
   rangeChips.sync(state.range);
-  // A key filter narrows both charts and the model list to calls that went through the gateway with that key.
+  // A key filter narrows both charts and the model list to calls that went through the gateway
+  // with that key. It only means anything in the API keys source, so it takes the view there.
   function setKey(name) {
-    state.key = state.key === name ? null : name;
-    const url = new URL(location.href);
-    if (state.key) url.searchParams.set("key", state.key); else url.searchParams.delete("key");
-    history.replaceState(null, "", url);
+    applyKey(state.key === name ? null : name);
     loadSpend();
   }
+  // `keepProvider` is for the picker inside the chart, where the key list is already narrowed to
+  // the chosen provider and the two filters agree by construction. A key named from outside the
+  // chart agrees with nothing: it belongs to exactly one provider, which need not be the one still
+  // filtering the view, and the pair would report an empty intersection for a key that has calls.
+  function applyKey(name, keepProvider = true) {
+    state.key = name;
+    state.source = "keys";
+    if (!keepProvider) state.provider = name ? keyProvider(name) : null;
+    state.mixFilter = null;
+    syncScopeChips();
+    writeChartUrl();
+  }
+  // Providers and keys are one hierarchy: a vault key belongs to exactly one provider. Narrowing
+  // the provider therefore drops a key that is not its own, rather than showing an empty chart
+  // under two filters that cannot both be true.
+  function setProvider(id) {
+    const next = state.provider === id ? null : id;
+    state.provider = next;
+    state.mixFilter = null;
+    if (next && state.key && keyProvider(state.key) && keyProvider(state.key) !== next) state.key = null;
+    syncScopeChips();
+    writeChartUrl();
+    loadSpend();
+  }
+  const keyProvider = (name) => (state.keyIndex.find((e) => e.key === name) || {}).provider || null;
+  // The Keys pane's gateway cell lands here: the named key, in the API keys view, every time. A
+  // provider left over from an earlier look at the chart is not this key's, so it is derived from
+  // the key or dropped rather than carried into a filter pair that cannot both hold.
+  function showKeyInChart(name) {
+    applyKey(name, false);
+    showPane("chart");
+  }
+  // A standalone "key · name ×" chip, for a key filter arrived at from outside the chart. In the
+  // API keys view the picker already carries the same choice and an "All keys" way out of it.
   function renderKeyChip() {
     const box = $("key-chip");
-    box.hidden = !state.key;
+    box.hidden = !state.key || keysMode();
     box.replaceChildren();
-    if (!state.key) return;
+    if (!state.key || keysMode()) return;
     box.append(el("button", {
       type: "button", role: "button", class: "chip-clear", "aria-checked": "true", "aria-label": "Stop filtering by key " + state.key,
       onclick: () => setKey(state.key),
     }, el("span", { text: "key · " + state.key }), el("span", { class: "x", text: "×", "aria-hidden": "true" })));
   }
+  // Every gateway call is one request, so requests are countable even when a provider reports no
+  // tokens and no cost. Local logs do not always record a call count, so the unit is offered only
+  // for the API keys source.
   const unitChips = wireChips("data-unit", (value) => setUnit(value));
-  unitChips.sync(state.unit);
+  function syncUnitChips() {
+    const chip = document.querySelector('[data-unit="requests"]');
+    if (chip) chip.hidden = !keysMode();
+    if (!keysMode() && state.unit === "requests") state.unit = readUnit();
+    unitChips.sync(state.unit);
+  }
+  syncUnitChips();
+
+  // A picker row: "All …" first, then one chip per recorded value. Choosing a chip reloads and
+  // redraws the row, so keyboard focus follows the new choice rather than falling to the body.
+  function renderPicker(boxId, attr, allLabel, allHint, options, current, choose) {
+    const box = $(boxId);
+    const hadFocus = box.contains(document.activeElement);
+    box.hidden = !keysMode();
+    box.replaceChildren();
+    if (!keysMode() || !options.length) return;
+    const chip = (value, label, hint, on) => el("button", {
+      type: "button", role: "radio", "aria-checked": String(on), tabindex: on ? "0" : "-1",
+      [attr]: value || "", "aria-label": hint, title: hint,
+      onclick: () => { if (value !== current) choose(value); },
+    }, label);
+    box.append(chip(null, allLabel, allHint, !current));
+    for (const o of options) box.append(chip(o.value, o.label, o.hint, current === o.value));
+    if (hadFocus) box.querySelector('[aria-checked="true"]')?.focus();
+  }
+  function wirePickerKeys(boxId, attr) {
+    $(boxId).addEventListener("keydown", (e) => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+      const chips = [...$(boxId).querySelectorAll(`[${attr}]`)];
+      const i = chips.indexOf(e.target);
+      if (i < 0) return;
+      e.preventDefault();
+      const dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
+      chips[(i + dir + chips.length) % chips.length].click();
+    });
+  }
+
+  // One chip per provider with recorded gateway calls, plus "All providers". Both TypeSafe and
+  // the Vercel AI Gateway land here, and a workload like Jev appears as a model under whichever
+  // provider carried it, not as a source of its own.
+  function renderProviderFilter() {
+    const ids = [...new Set([...state.keyIndex.map((e) => e.provider), state.provider].filter(Boolean))];
+    const options = ids
+      .map((id) => ({ value: id, label: providerName(id), hint: "Show only calls routed to " + providerName(id) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    renderPicker("provider-filter", "data-provider-filter", "All providers",
+      "Show every provider these keys reached", options, state.provider, setProvider);
+  }
+  // One chip per key with gateway usage, plus "All keys". Names only; a key value never appears.
+  // With a provider chosen the list is that provider's keys, so the two rows read as one path.
+  function renderKeysFilter() {
+    const names = [...new Set(state.keyIndex
+      .filter((e) => !state.provider || e.provider === state.provider)
+      .map((e) => e.key)
+      .concat(state.key ? [state.key] : []))].sort();
+    renderPicker("keys-filter", "data-key-filter", "All keys",
+      "Show every key", names.map((n) => ({ value: n, label: n, hint: "Show only key " + n })),
+      state.key, (name) => setKey(name === null ? state.key : name));
+  }
+  wirePickerKeys("provider-filter", "data-provider-filter");
+  wirePickerKeys("keys-filter", "data-key-filter");
 
   // Projects are a Claude-only grouping (the only source with a project path). The chips hide otherwise.
   const groupChips = wireChips("data-group", (value) => setGroup(value));
@@ -365,19 +541,20 @@
   function setRange(value) {
     rangeChips.sync(value);
     state.range = value;
-    const url = new URL(location.href);
-    url.searchParams.set("range", value);
-    history.replaceState(null, "", url);
+    writeChartUrl();
     loadSpend();
   }
 
   function setUnit(value) {
-    state.unit = value === "usd" ? "usd" : "tokens";
-    try { localStorage.setItem("ksf.unit", state.unit); } catch { /* fine */ }
+    const wanted = value === "requests" && !keysMode() ? "tokens" : value;
+    state.unit = wanted === "usd" ? "usd" : wanted === "requests" ? "requests" : "tokens";
+    // "requests" belongs to the API keys source only, so it is not remembered for the next visit.
+    if (state.unit !== "requests") { try { localStorage.setItem("ksf.unit", state.unit); } catch { /* fine */ } }
     unitChips.sync(state.unit);
     if (state.spend) { renderMix(); drawChart(); }
   }
   const usdMode = () => state.unit === "usd";
+  const requestMode = () => state.unit === "requests";
 
   // ---------- spend ----------
 
@@ -387,18 +564,35 @@
     // Today draws by hour, which the engine only groups by model; the model list still needs rows.
     const q = new URLSearchParams({ range: state.range, by: projectMode() && !todayMode() ? "project" : "model", source: state.source });
     if (state.key) q.set("key", state.key);
+    if (keysMode() && state.provider) q.set("provider", state.provider);
     renderKeyChip();
     try {
-      const reqs = [api("/api/spend?" + q.toString())];
-      if (todayMode()) {
+      const hourlyReq = todayMode() ? (() => {
         const h = new URLSearchParams({ range: "today", by: "hour", source: state.source });
         if (state.key) h.set("key", state.key);
-        reqs.push(api("/api/spend?" + h.toString()).catch(() => null));
-      }
-      const [data, hourly] = await Promise.all(reqs);
+        if (keysMode() && state.provider) h.set("provider", state.provider);
+        return api("/api/spend?" + h.toString()).catch(() => null);
+      })() : null;
+      // A filtered report only names the provider and key already chosen, so the pickers would
+      // narrow to the current choice and strand the user there. The unfiltered report over the
+      // same range is what lists every choice; it is only needed while a filter is applied.
+      const filtered = keysMode() && (state.key || state.provider);
+      const indexReq = filtered
+        ? api("/api/spend?" + new URLSearchParams({ range: state.range, by: "model", source: "keys" }).toString()).catch(() => null)
+        : null;
+      const [data, hourly, index] = await Promise.all([api("/api/spend?" + q.toString()), hourlyReq, indexReq]);
       if (seq !== spendSeq) return;
       state.spend = data;
-      state.hourlyPoints = hourly ? hourly.points || [] : null;
+      state.hourlyPoints = todayMode() && hourly ? hourly.points || [] : null;
+      const indexReport = keysMode() ? (filtered ? index : data) : null;
+      const indexRows = indexReport ? indexReport.rows || [] : null;
+      if (indexRows) {
+        const seen = new Map();
+        for (const r of indexRows) if (r.key) seen.set(r.key, r.provider || null);
+        state.keyIndex = [...seen].map(([key, provider]) => ({ key, provider })).sort((a, b) => a.key.localeCompare(b.key));
+      }
+      renderProviderFilter();
+      renderKeysFilter();
       clearError(OWNER_SPEND);
       renderSpend();
     } catch (e) {
@@ -447,26 +641,39 @@
   }
   const colorFor = (model) => (model === OTHER || model === "Other projects" ? { color: "var(--s-other)", slot: 90, family: "other" } : state.colors.get(model) || null);
 
+  // One identity for a row, a daily point and an hourly point alike. The gateway records model=""
+  // when the caller named no model and the provider reported none, so the empty name is a real
+  // bucket: it becomes "unknown" here, and every lookup has to ask the same question or those
+  // requests would count in the totals and the mix while their bars went missing.
+  const seriesId = (r) => (projectMode() ? (r.cwd || r.project || "unknown") : (r.model || "unknown"));
+
   function buildSeries(rows) {
     const order = { grok: 0, claude: 1, openai: 2, other: 3 };
     // Same accounting as the engine's totals: Claude counts every bucket (cache reads and
     // writes are billed separately), Grok's cached reads already sit inside input_tokens.
+    // A gateway call is real even with no token counts: TypeSafe's System One protocol reports
+    // neither tokens nor cost, and dropping those rows would hide calls that did happen.
     const isReal = (r) => r.model !== "<synthetic>"
-      && ((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0)) > 0;
+      && (((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0)) > 0
+        || (keysMode() && (r.model_calls || 0) > 0));
     // The engine sends one row per (model, key); daily points are per model. Merge rows by model
     // first so a model with local and gateway usage, or two keys, is one series and one bucket.
     const merged = new Map();
     for (const r of rows.filter(isReal)) {
-      const id = projectMode() ? (r.cwd || r.project || "unknown") : (r.model || "unknown");
+      const id = seriesId(r);
       const m = merged.get(id);
       if (!m) { merged.set(id, { ...r }); continue; }
-      for (const f of ["input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens"]) m[f] = (m[f] || 0) + (r[f] || 0);
+      for (const f of ["input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "model_calls"]) m[f] = (m[f] || 0) + (r[f] || 0);
       if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
       if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
       m.key = m.key && r.key && m.key !== r.key ? m.key + ", " + r.key : m.key || r.key || null;
+      // A model can be served by more than one provider — Jev runs on both TypeSafe and the
+      // Vercel gateway — so the merged row names each one rather than picking a winner.
+      m.provider = m.provider && r.provider && m.provider !== r.provider
+        ? m.provider + "," + r.provider : m.provider || r.provider || null;
     }
     const items = [...merged.values()].map((r) => ({
-      model: projectMode() ? (r.cwd || r.project || "unknown") : (r.model || "unknown"),
+      model: seriesId(r),
       label: projectMode() ? (r.project || r.cwd || "unknown") : (r.model || "unknown"),
       cwd: r.cwd || null,
       tokens: (r.input_tokens || 0) + (r.output_tokens || 0)
@@ -475,6 +682,9 @@
       output: r.output_tokens || 0,
       cached: r.cached_read_tokens || 0,
       created: r.cache_creation_tokens || 0,
+      calls: r.model_calls || 0,
+      key: r.key || null,
+      provider: r.provider || null,
       usd: r.usd,
       est: r.usd_estimate,
     }));
@@ -493,9 +703,9 @@
       if (entry) {
         out.push({ ...it, color: entry.color, slot: entry.slot, members: [it.model] });
       } else {
-        if (!other) other = { model: projectMode() ? "Other projects" : OTHER, label: projectMode() ? "Other projects" : OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, usd: null, est: null, color: "var(--s-other)", slot: 99, members: [] };
+        if (!other) other = { model: projectMode() ? "Other projects" : OTHER, label: projectMode() ? "Other projects" : OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, calls: 0, usd: null, est: null, color: "var(--s-other)", slot: 99, members: [] };
         other.tokens += it.tokens; other.input += it.input; other.output += it.output;
-        other.cached += it.cached; other.created += it.created;
+        other.cached += it.cached; other.created += it.created; other.calls += it.calls || 0;
         if (it.usd != null) other.usd = (other.usd || 0) + it.usd;
         if (it.est != null) other.est = (other.est || 0) + it.est;
         other.members.push(it.model);
@@ -526,6 +736,14 @@
     $("mix").hidden = empty;
     $("mix").setAttribute("aria-label", projectMode() ? "Project mix" : "Model mix");
     $("totals").hidden = empty;
+    // The caption says which ledger is on screen. The subscription one is what the tools wrote to
+    // their own logs on this Mac — an estimate from those logs, never a plan invoice, and the plan
+    // windows themselves stay in the Usage pane rather than being redrawn here as bars.
+    $("chart-caption").textContent = keysMode()
+      ? "calls this Mac routed through the local gateway with a key from the vault"
+        + (state.provider ? " · " + providerName(state.provider) : "")
+        + " · click a model to see it alone"
+      : "estimated from the tools' own local logs on this Mac, not from plan invoices · click a model to see it alone";
     renderInterval(data);
     if (empty) return;
     state.series = buildSeries(rows);
@@ -540,7 +758,19 @@
     if (!empty) return;
     node.replaceChildren();
     const ingested = data && data.last_ingest_at;
-    if (state.key) {
+    // Only the local gateway sees a key being used. A provider called directly, from another
+    // machine, or before the key was routed through Keys leaves nothing here to count.
+    const onlyRouted = "Only requests routed through Keys are recorded here; a provider called directly is not observable.";
+    if (state.key && keysMode()) {
+      node.append(`No calls through the gateway with ${state.key} in this range. ${onlyRouted} `,
+        el("button", { type: "button", class: "link", text: "Show every key", onclick: () => setKey(state.key) }));
+    } else if (state.provider && keysMode()) {
+      node.append(`No calls through the gateway to ${providerName(state.provider)} in this range. ${onlyRouted} `,
+        el("button", { type: "button", class: "link", text: "Show every provider", onclick: () => setProvider(state.provider) }));
+    } else if (keysMode()) {
+      node.append(`No API key calls in this range. ${onlyRouted} `,
+        el("button", { type: "button", class: "link", text: "Show subscriptions", onclick: () => { document.querySelector('[data-scope="subs"]').click(); } }));
+    } else if (state.key) {
       node.append(`No calls through the gateway with ${state.key} in this range. `, el("button", { type: "button", class: "link", text: "Show everything", onclick: () => setKey(state.key) }));
     } else if (state.source !== "all") {
       const name = { grok: "Grok", claude: "Claude Code", openai: "Codex" }[state.source] || state.source;
@@ -559,7 +789,7 @@
     const kind = k.usd_month_kind || (Number(k.usd_month) > 0 ? "estimate" : "none");
     const unpricedCalls = Number(k.gateway_month_unpriced_calls) || 0;
     const calls = Number(k.gateway_month_calls) || 0;
-    const open = () => { setKey(k.name); showPane("chart"); };
+    const open = () => showKeyInChart(k.name);
     if (kind === "none") {
       return el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Dollars appear once the gateway routes this key." });
     }
@@ -570,8 +800,58 @@
     return el("td", { class: "td-usd", "data-label": "Via gateway", text: (kind === "partial" ? "≥ " : "") + fmtUsd(k.usd_month), title: "This month, calls through the local gateway with this key. Uses provider-reported cost where available, otherwise a list-price estimate." + partial + " Click to chart.", onclick: open });
   }
 
+  // The API keys view is the gateway's own ledger, so requests lead: a call is always countable,
+  // while tokens and dollars depend on what the provider reported. An unpriced call is shown as
+  // unknown, never as $0, and a partly priced range is a floor.
+  function renderKeysTotals(data) {
+    const t = data.totals || {};
+    const calls = Number(t.gateway_calls) || 0;
+    const unpricedCalls = Number(t.gateway_unpriced_calls) || 0;
+    const tokens = Number(t.gateway_tokens) || 0;
+    const usd = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
+    const partial = usd != null && unpricedCalls > 0;
+    const main = usd == null
+      ? (calls ? "cost unknown" : fmtUsd(0))
+      : (partial ? "≥ ≈ " : "≈ ") + fmtUsd(usd);
+    // Name what was counted, so a number under a filter is never read as the whole ledger.
+    const scope = [
+      state.key ? "key " + state.key : "every key",
+      state.provider ? "at " + providerName(state.provider) : "at every provider",
+    ].join(" ");
+    const nodes = [el("span", {
+      class: "totals-main" + (usd == null ? " none" : " est"),
+      text: main,
+      title: usd == null
+        ? `Calls with ${scope} went through the gateway, but none carried a cost receipt or matched a local price row. The cost is unknown, not zero.`
+        : `Calls with ${scope} through the local gateway. Provider-reported cost where available, otherwise a list-price estimate.`,
+    })];
+    appendParts(nodes, [
+      el("span", { class: "totals-part", title: "Requests routed through the local gateway in this range." },
+        el("b", { text: fmtInt(calls) }), " " + (calls === 1 ? "request" : "requests")),
+      el("span", { class: "totals-part", title: "Tokens the providers reported for those requests. A provider that reports none leaves this short of the request count." },
+        el("b", { text: fmtTokens(tokens) }), " tokens"),
+    ]);
+    // A view-wide statement about this range, not about the current selection: a bucket that
+    // mixes a priced and an unpriced call still carries a number, so no model, day or hour in
+    // this view can be read as complete while any request here is unpriced.
+    if (unpricedCalls > 0) {
+      nodes.push(el("span", { class: "totals-sep", text: "·" }));
+      nodes.push(el("span", {
+        class: "totals-note warn",
+        text: `partial cost · ${plural(unpricedCalls, "request", "requests")} unpriced`,
+        title: "Some calls in this range have no cost receipt and no local price row, so they are"
+          + " left out of every dollar figure here rather than counted as zero — including the ones"
+          + " shown for a single model, day or hour: " + ((t.gateway_unpriced_models || []).join(", ") || "no model reported"),
+      }));
+    }
+    nodes.push(el("span", { class: "totals-note", text: "routed through Keys only · ≈ estimate from list prices, not an invoice" }));
+    $("totals").replaceChildren(...nodes);
+  }
+  const appendParts = (nodes, list) => list.forEach((p) => { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
+
   // One line: the dollar figure first, then the parts that make it up.
   function renderTotals(data) {
+    if (keysMode()) return renderKeysTotals(data);
     const t = data.totals || {};
     const src = state.source;
     const parts = [];
@@ -648,20 +928,43 @@
     }
   }
 
+  // The bar follows the chosen unit; the two other figures stay on the row, so a model whose
+  // provider reported no tokens still shows its request count rather than reading as nothing.
+  const seriesValue = (s) => (usdMode() ? dollars(s) || 0 : requestMode() ? s.calls || 0 : s.tokens);
   function renderMix() {
     const list = $("mix");
     const usd = usdMode();
-    const max = Math.max(1e-9, ...state.series.map((s) => (usd ? dollars(s) || 0 : s.tokens)));
+    // A row's dollars are only the calls that could be priced. The engine reports unpriced calls
+    // for the range, not per row, so while any exist no row's figure may be read as complete —
+    // the row tooltip has to say so too, not just the totals line.
+    const partial = keysMode() && Number((state.spend.totals || {}).gateway_unpriced_calls) > 0;
+    const partialNote = "\nPartial: some calls in this range have no cost receipt and no list price,"
+      + " and are left out of this figure rather than counted as zero";
+    const max = Math.max(1e-9, ...state.series.map(seriesValue));
     const items = state.series.map((s) => {
       const d = dollars(s);
       const isEst = s.usd == null && s.est != null;
       const usdNode = d == null
-        ? el("span", { class: "mix-usd none", text: "—" })
-        : el("span", { class: "mix-usd" + (usd ? " mix-primary" : ""), text: (isEst ? "≈ " : "") + fmtUsd(d) });
-      const tokNode = el("span", { class: "mix-val" + (usd ? "" : " mix-primary"), text: fmtTokens(s.tokens) });
-      const barFrac = (usd ? d || 0 : s.tokens) / max;
-      const detail = (s.cwd ? s.cwd + "\n" : "") + `${fmtInt(s.input)} in, ${fmtInt(s.output)} out, ${fmtInt(s.cached)} cached reads, ${fmtInt(s.created)} cache writes`
+        ? el("span", { class: "mix-usd none", text: "—", title: keysMode() ? "No cost receipt and no list price for this model: unknown, not zero." : null })
+        : el("span", {
+          class: "mix-usd" + (usd ? " mix-primary" : ""),
+          text: (partial ? "≥ " : "") + (isEst ? "≈ " : "") + fmtUsd(d),
+          title: partial ? partialNote.trim() : null,
+        });
+      const tokNode = keysMode()
+        ? el("span", { class: "mix-val" + (usd ? "" : " mix-primary"), text: requestMode() ? plural(s.calls || 0, "request", "requests") : fmtTokens(s.tokens) })
+        : el("span", { class: "mix-val" + (usd ? "" : " mix-primary"), text: fmtTokens(s.tokens) });
+      const barFrac = seriesValue(s) / max;
+      const detail = (s.cwd ? s.cwd + "\n" : "")
+        + (keysMode()
+          ? `${plural(s.calls || 0, "request", "requests")}`
+            + `${s.provider ? " · " + s.provider.split(",").map(providerName).join(", ") : ""}`
+            + `${s.key ? " · key " + s.key : ""}\n`
+          : "")
+        + `${fmtInt(s.input)} in, ${fmtInt(s.output)} out, ${fmtInt(s.cached)} cached reads, ${fmtInt(s.created)} cache writes`
         + (isEst ? "\nUSD is an estimate from list prices" : "")
+        + (keysMode() && d == null ? "\nUSD unknown: no receipt and no list price" : "")
+        + (partial && d != null ? partialNote : "")
         + (s.members.length > 1 ? `\n${(s.labels || s.members).join(", ")}` : "");
       const on = state.mixFilter === s.model;
       const li = el("li", {
@@ -767,19 +1070,21 @@
   function drawBars(opts) {
     const { svg, tipId, buckets, points, keyOf, labelOf, tickOf, labelEvery, maxLabels } = opts;
     const usd = usdMode();
-    const fmt = usd ? fmtUsd : fmtTokens;
-    const fmtAxis = usd ? fmtUsdAxis : fmtTokens;
+    const requests = requestMode();
+    const fmt = usd ? fmtUsd : requests ? fmtInt : fmtTokens;
+    // Requests are whole things: a gridline reading "2.5 requests" would be a lie about the data.
+    const fmtAxis = usd ? fmtUsdAxis : requests ? (v) => fmtInt(Math.round(v)) : fmtTokens;
 
     const memberOf = new Map();
     for (const s of state.series) for (const m of s.members) memberOf.set(m, s);
 
     const byBucket = new Map(buckets.map((b) => [b, new Map()]));
     for (const p of points) {
-      const s = memberOf.get(projectMode() ? (p.cwd || p.project || p.model) : p.model);
+      const s = memberOf.get(seriesId(p));
       if (!s) continue;
       const m = byBucket.get(keyOf(p));
       if (!m) continue;
-      const v = usd ? (dollars(p) || 0) : Number(p.tokens) || 0;
+      const v = usd ? (dollars(p) || 0) : requests ? Number(p.model_calls) || 0 : Number(p.tokens) || 0;
       m.set(s.model, (m.get(s.model) || 0) + v);
     }
     const totals = buckets.map((b) => {
@@ -863,9 +1168,50 @@
   }
 
   function unitLabel(per) {
-    if (!usdMode()) return "tokens per " + per;
+    if (requestMode()) return "requests per " + per;
+    if (!usdMode()) return "tokens per " + per + (keysMode() ? " · providers that report none are absent here" : "");
+    if (keysMode()) return "USD per " + per + " · receipt where reported, else list-price estimate; unpriced calls absent";
     const grokOnly = state.source === "grok";
     return "USD per " + per + (grokOnly ? "" : " · estimate except Grok");
+  }
+
+  // The plot can only draw the chosen unit, and a gateway call may carry no tokens and no cost
+  // at all. Saying so — and naming the unit that does have data — beats an empty plot that reads
+  // as "nothing happened".
+  function setChartNote(points, emptyText) {
+    const node = $("chart-nothing");
+    // A chosen mix row is part of the question: with one model selected the plot draws only that
+    // model, so the explanation has to describe that model's requests and not the whole range's.
+    const memberOf = new Map();
+    for (const s of state.series) for (const m of s.members) memberOf.set(m, s.model);
+    const pool = keysMode() && state.mixFilter
+      ? points.filter((p) => memberOf.get(seriesId(p)) === state.mixFilter)
+      : points;
+    const value = (p) => (usdMode() ? dollars(p) || 0 : requestMode() ? p.model_calls || 0 : p.tokens || 0);
+    const drawable = pool.some((p) => value(p) > 0);
+    const routed = pool.filter((p) => (p.model_calls || 0) > 0);
+    if (!drawable && keysMode() && !requestMode() && routed.length) {
+      // Zero and unknown are different answers. A cost of zero the provider actually reported is
+      // knowledge; calling it missing would contradict a totals line that reads $0.00. Only an
+      // absent figure — dollars(p) === null — is a receipt this view never got.
+      const known = usdMode() ? routed.filter((p) => dollars(p) != null).length : 0;
+      // A bucket's dollars are a sum, so a priced figure of zero can still hide an unpriced call
+      // beside it: one day, one model, a receipt of $0 plus a call with no receipt at all sums to
+      // usd_estimate 0 with no per-bucket count of what went unpriced. Counting priced buckets
+      // therefore cannot establish that nothing is missing. The range-wide unpriced count can:
+      // while it is above zero, the flat "$0.00" claim is withheld and the doubt said out loud.
+      const unpricedInRange = Number((state.spend.totals || {}).gateway_unpriced_calls) > 0;
+      const why = !usdMode() ? "No tokens were reported for these requests."
+        : known === 0 ? "No cost was reported for these requests."
+          : known < routed.length ? "Part of these requests cost $0.00; no cost was reported for the rest."
+            : unpricedInRange ? "The cost reported for these requests is $0.00; some calls in this range are unpriced."
+              : "These requests cost $0.00.";
+      node.textContent = why + " Switch to Requests to chart them.";
+      node.hidden = false;
+      return;
+    }
+    node.textContent = emptyText;
+    node.hidden = drawable || !emptyText;
   }
 
   function drawChart() {
@@ -882,8 +1228,7 @@
       for (let h = 0; h <= now.getHours(); h++) hours.push(`${today}T${pad2(h)}:00`);
       for (const p of points) if (p.hour && !hours.includes(p.hour)) hours.push(p.hour);
       hours.sort();
-      const any = points.some((p) => (usdMode() ? dollars(p) : p.tokens) > 0);
-      $("chart-nothing").hidden = any;
+      setChartNote(points, "Nothing yet today.");
       drawBars({
         svg, tipId: "daily-tip", buckets: hours, points,
         keyOf: (p) => p.hour, labelOf: (h) => "Today " + fmtHour(h), tickOf: fmtHourTick,
@@ -891,9 +1236,9 @@
       });
       return;
     }
-    $("chart-nothing").hidden = true;
     $("daily-title").textContent = (state.range === "week" ? "This week by day" : "This month by day") + (projectMode() ? " · by project" : "");
     $("daily-unit").textContent = unitLabel("day");
+    setChartNote(data.daily || [], "");
     const days = axisDays(data);
     drawBars({
       svg, tipId: "daily-tip", buckets: days, points: data.daily || [],
@@ -914,6 +1259,11 @@
       el("b", { text: title }),
       ...(rows.length ? rows : [el("div", { class: "row" }, el("span", { text: "nothing" }))]),
       ...(rows.length > 1 ? [el("div", { class: "total" }, el("span", { text: "total" }), el("span", { text: fmt(total) }))] : []),
+      // A day or hour's dollars cover only the calls that could be priced, and the engine counts
+      // unpriced calls for the range rather than per bucket. While any exist, say so here too.
+      ...(usdMode() && keysMode() && Number((state.spend.totals || {}).gateway_unpriced_calls) > 0
+        ? [el("div", { class: "row tip-note", text: "partial · some calls in this range are unpriced" })]
+        : []),
     );
     tip.hidden = false;
     const fw = fig.clientWidth;
@@ -1233,6 +1583,8 @@
       if (data && Array.isArray(data.providers)) {
         state.providers = data;
         renderKeys();
+        // Until this lands the provider chips read as raw ids; redraw them with the real names.
+        renderProviderFilter();
       }
     } catch { state.providers = null; }
   }
@@ -1841,13 +2193,17 @@
     if (!data || !(data.rows || []).length) { say("Nothing to export in this range."); return; }
     const cols = projectMode()
       ? ["project", "cwd", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate"]
-      : ["model", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate", "key"];
+      : keysMode()
+        // An empty usd_estimate means unpriced, not zero; the request count is always there.
+        ? ["provider", "key", "model", "model_calls", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate"]
+        : ["model", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate", "key"];
     const lines = [cols.join(",")];
     for (const r of data.rows) {
       if (r.model === "<synthetic>") continue;
       lines.push(cols.map((c) => csvCell(r[c])).join(","));
     }
-    const name = `keysreallysafe-${state.range}-${data.start_day || ""}-${data.end_day || ""}${state.key ? "-" + state.key : ""}.csv`;
+    const name = `keysreallysafe-${state.range}-${data.start_day || ""}-${data.end_day || ""}`
+      + `${state.provider ? "-" + state.provider : ""}${state.key ? "-" + state.key : ""}.csv`;
     const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = el("a", { href: url, download: name });
@@ -1863,6 +2219,20 @@
     if (!data) return "";
     const t = data.totals || {};
     const src = state.source;
+    const rangeHead = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
+      : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
+    if (keysMode()) {
+      const calls = Number(t.gateway_calls) || 0;
+      const unpriced = Number(t.gateway_unpriced_calls) || 0;
+      const usd = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
+      const money = usd == null ? (calls ? "cost unknown" : fmtUsd(0)) : (unpriced > 0 ? "≥ ≈ " : "≈ ") + fmtUsd(usd);
+      const head = `**Keysreallysafe · API keys · ${rangeHead}`
+        + `${state.provider ? " · " + providerName(state.provider) : " · every provider"}`
+        + `${state.key ? " · key " + state.key : " · every key"}**`;
+      const line = `${money} · ${fmtInt(calls)} ${calls === 1 ? "request" : "requests"} · ${fmtTokens(Number(t.gateway_tokens) || 0)} tokens`
+        + (unpriced > 0 ? ` · ${plural(unpriced, "request", "requests")} unpriced` : "");
+      return `${head}\n${line}\n_Calls routed through the local gateway only. Receipt where reported, else a list-price estimate; unpriced calls are left out rather than counted as zero._\n`;
+    }
     const showGrok = src === "all" || src === "grok";
     const showClaude = src === "all" || src === "claude";
     const showOpenAI = src === "all" || src === "openai";
@@ -1877,9 +2247,11 @@
     parts.push(`${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens`);
     const rangeLabel = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
       : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
-    const head = `**Keysreallysafe · ${rangeLabel}${state.key ? " · key " + state.key : ""}${projectMode() ? " · by project" : ""}**`;
+    const head = `**Keysreallysafe · Subscriptions · ${rangeLabel}${projectMode() ? " · by project" : ""}**`;
     const line = `${anyEst ? "≈ " : ""}${fmtUsd(grok + claude + openai)} total · ${parts.join(" · ")}`;
-    const foot = anyEst ? "_Estimate from list prices on local logs, not an invoice._" : "_From Grok's own cost log._";
+    const foot = anyEst
+      ? "_Estimated from the tools' own local logs on this Mac, not a plan invoice._"
+      : "_From Grok's own cost log; local logs only, not a plan invoice._";
     return `${head}\n${line}\n${foot}\n`;
   }
   async function copyTotals() {
@@ -1958,7 +2330,15 @@
     if (isTyping(e.target)) return;
     if (e.key === "?") { e.preventDefault(); $("dlg-help").showModal(); return; }
     if (state.pane === "chart") {
-      if (e.key === "t") { e.preventDefault(); setUnit(usdMode() ? "tokens" : "usd"); return; }
+      // Tokens → USD → requests, with requests only where every call is countable.
+      if (e.key === "t") {
+        e.preventDefault();
+        const cycle = keysMode() ? ["tokens", "usd", "requests"] : ["tokens", "usd"];
+        setUnit(cycle[(cycle.indexOf(state.unit) + 1) % cycle.length]);
+        return;
+      }
+      // The top-level choice gets a key of its own: it is the one that decides what the rest mean.
+      if (e.key === "s") { e.preventDefault(); setScope(keysMode() ? "subs" : "keys"); return; }
       if (e.key === "d") { e.preventDefault(); setRange("today"); return; }
       if (e.key === "w") { e.preventDefault(); setRange("week"); return; }
       if (e.key === "m") { e.preventDefault(); setRange("month"); return; }
@@ -2200,7 +2580,7 @@
   // ---------- start ----------
 
   loadProviders();
-  syncGroupChips();
+  syncScopeChips();
   loadModels();
   showPane("usage", { keyboard: true });
   document.addEventListener("DOMContentLoaded", () => window.KeysAnalytics?.event("view_usage"), { once: true });

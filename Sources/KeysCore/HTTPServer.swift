@@ -536,9 +536,15 @@ final class APIHandler: @unchecked Sendable {
         if by == .project && source != .claude {
             return HTTPResponse.json(400, ["error": "by=project requires source=claude"])
         }
+        // A provider names the upstream a vault key routes to, which only gateway calls have.
+        // Refusing it elsewhere keeps a stale filter from silently returning an empty local view.
+        let provider = request.query["provider"].flatMap { $0.isEmpty ? nil : $0 }
+        if provider != nil && source != .keys {
+            return HTTPResponse.json(400, ["error": "provider requires source=keys"])
+        }
         try? service.ingestIfStale()
         let key = request.query["key"].flatMap { $0.isEmpty ? nil : $0 }
-        let report = try service.spend(range: range, by: by, source: source, key: key)
+        let report = try service.spend(range: range, by: by, source: source, key: key, provider: provider)
         return HTTPResponse.json(200, report.jsonObject())
     }
 

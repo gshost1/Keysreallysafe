@@ -25,6 +25,12 @@ struct GatewayUsageRow: Equatable {
         // TypeSafe's published System One protocol has no cost receipt. A model
         // name from that response must not acquire an unrelated catalog price.
         if provider == "typesafe" { return nil }
+        // No usage receipt at all: the request named a model, the response reported
+        // neither tokens nor cost. Estimating from absent counts would report $0.00
+        // as a known cost, so the cost stays unknown.
+        if inputTokens == nil, outputTokens == nil, cacheReadTokens == nil, cacheWriteTokens == nil {
+            return nil
+        }
         return GatewayEstimate.usd(
             model: model, input: inputTokens ?? 0, output: outputTokens ?? 0,
             cacheRead: cacheReadTokens ?? 0, cacheWrite: cacheWriteTokens ?? 0,

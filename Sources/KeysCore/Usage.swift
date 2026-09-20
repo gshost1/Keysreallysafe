@@ -59,6 +59,9 @@ enum SourceFilter: String {
     case grok
     case claude
     case openai
+    /// The local gateway's own ledger: calls this Mac routed through an API key in the vault.
+    /// Nothing else observes a key, so a provider called directly is not in here.
+    case keys
 
     var sqlValues: [String]? {
         switch self {
@@ -66,6 +69,7 @@ enum SourceFilter: String {
         case .grok: return ["grok-local"]
         case .claude: return ["claude-local"]
         case .openai: return ["codex-local", "openai-api"]
+        case .keys: return ["gateway"]
         }
     }
 }
@@ -202,6 +206,9 @@ struct SpendTotals: Equatable {
     var tokenRule: String = TokenTotals.rule
 
     static let localScope = "local logs only; gateway dollars are reported separately because a routed call can also appear in a local log"
+    /// `source=keys`: the report is the gateway ledger, so there is no local figure to headline.
+    /// Dollars, tokens and calls are the gateway ones, and unpriced calls stay unpriced.
+    static let keysScope = "api keys only: calls routed through the local gateway; see gateway_usd_estimate, which is unknown rather than zero when a call has no receipt or list price"
 }
 
 struct SpendRow: Equatable {
@@ -221,6 +228,10 @@ struct SpendRow: Equatable {
     var usdEstimate: Double?
     var key: String? = nil
     var project: String? = nil
+    /// The provider a gateway call was routed to (`typesafe`, `vercel-ai-gateway`, …). Only
+    /// gateway rows carry one: it is the vault key's provider, which is the axis the API keys
+    /// view filters on. Local log rows leave it nil so their grouping is unchanged.
+    var provider: String? = nil
 }
 
 struct DailyPoint: Equatable {
@@ -235,6 +246,9 @@ struct DailyPoint: Equatable {
     var usdEstimate: Double?
     var project: String? = nil
     var cwd: String? = nil
+    /// Upstream calls in this bucket. One per gateway request; local logs count model calls,
+    /// which they do not always record. Lets a chart show requests when tokens are unknown.
+    var modelCalls: Int = 0
 }
 
 struct HourlyPoint: Equatable {
@@ -247,6 +261,8 @@ struct HourlyPoint: Equatable {
     var cachedReadTokens: Int = 0
     var cacheCreationTokens: Int = 0
     var usdEstimate: Double?
+    /// Upstream calls in this bucket; see `DailyPoint.modelCalls`.
+    var modelCalls: Int = 0
 }
 
 struct SpendReport: Equatable {
@@ -349,6 +365,7 @@ struct SpendReport: Equatable {
                     "cached_read_tokens": point.cachedReadTokens,
                     "cache_creation_tokens": point.cacheCreationTokens,
                     "usd_estimate": point.usdEstimate as Any? ?? NSNull(),
+                    "model_calls": point.modelCalls,
                 ]
                 if let project = point.project { obj["project"] = project }
                 if let cwd = point.cwd { obj["cwd"] = cwd }
@@ -365,6 +382,7 @@ struct SpendReport: Equatable {
                     "cached_read_tokens": point.cachedReadTokens,
                     "cache_creation_tokens": point.cacheCreationTokens,
                     "usd_estimate": point.usdEstimate as Any? ?? NSNull(),
+                    "model_calls": point.modelCalls,
                 ]
             },
         ]
@@ -397,6 +415,7 @@ extension SpendRow {
         if let cwd { obj["cwd"] = cwd }
         if let title { obj["title"] = title }
         if let key { obj["key"] = key }
+        if let provider { obj["provider"] = provider }
         if let project { obj["project"] = project }
         if !models.isEmpty { obj["models"] = models }
         return obj

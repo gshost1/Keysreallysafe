@@ -46,20 +46,27 @@
           <button type="button" role="radio" data-range="week" aria-checked="false" tabindex="-1">This week</button>
           <button type="button" role="radio" data-range="month" aria-checked="false" tabindex="-1">This month</button>
         </div>
-        <div class="chips" role="radiogroup" aria-label="Source">
+        <div class="chips" role="radiogroup" aria-label="What is being charted" id="scope-chips" title="Subscription tools or API keys (S)">
+          <button type="button" role="radio" data-scope="subs" aria-checked="true" title="What the subscription tools on this Mac wrote to their own logs. Estimates from those logs, not plan invoices.">Subscriptions</button>
+          <button type="button" role="radio" data-scope="keys" aria-checked="false" tabindex="-1" title="Calls this Mac routed through the local gateway with a key from the vault">API keys</button>
+        </div>
+        <div class="chips" role="radiogroup" aria-label="Source" id="source-chips" title="Which subscription tool">
           <button type="button" role="radio" data-source="all" aria-checked="true">All</button>
           <button type="button" role="radio" data-source="grok" aria-checked="false" tabindex="-1">Grok</button>
           <button type="button" role="radio" data-source="claude" aria-checked="false" tabindex="-1">Claude</button>
           <button type="button" role="radio" data-source="openai" aria-checked="false" tabindex="-1">OpenAI</button>
         </div>
+        <div class="chips" role="radiogroup" aria-label="Provider" id="provider-filter" hidden title="One provider or all of them"></div>
+        <div class="chips" role="radiogroup" aria-label="API key" id="keys-filter" hidden title="One key or all of them"></div>
         <div class="chips" role="radiogroup" aria-label="Group by" id="group-chips" hidden title="Models or projects (P)">
           <button type="button" role="radio" data-group="model" aria-checked="true">Models</button>
           <button type="button" role="radio" data-group="project" aria-checked="false" tabindex="-1">Projects</button>
         </div>
         <div class="chips" id="key-chip" hidden></div>
-        <div class="chips" role="radiogroup" aria-label="Unit" title="Tokens or USD (T)">
+        <div class="chips" role="radiogroup" aria-label="Unit" title="Tokens, USD or requests (T)">
           <button type="button" role="radio" data-unit="tokens" aria-checked="true">Tokens</button>
           <button type="button" role="radio" data-unit="usd" aria-checked="false" tabindex="-1">USD</button>
+          <button type="button" role="radio" data-unit="requests" aria-checked="false" tabindex="-1" hidden title="Gateway requests, countable even when a provider reports no tokens or cost">Requests</button>
         </div>
       </div>
       <div class="chart-top">
@@ -73,7 +80,7 @@
         <p id="chart-nothing" class="chart-empty" hidden>Nothing yet today.</p>
       </figure>
       <ol id="mix" class="mix" role="listbox" aria-label="Model mix" aria-multiselectable="false"></ol>
-      <p class="caption">local tool spend, not a subscription bar · click a model to see it alone</p>
+      <p class="caption" id="chart-caption">local tool spend, not a subscription bar · click a model to see it alone</p>
       <p id="spend-empty" class="empty" hidden></p>
     </section>
 
@@ -417,7 +424,8 @@
       <dt><kbd>⌘</kbd><kbd>3</kbd></dt><dd>Keys</dd>
       <dt><kbd>⌘</kbd><kbd>4</kbd></dt><dd>Optimizer</dd>
       <dt><kbd>⌘</kbd><kbd>R</kbd></dt><dd>Ingest sessions</dd>
-      <dt><kbd>T</kbd></dt><dd>Tokens / USD</dd>
+      <dt><kbd>S</kbd></dt><dd>Subscriptions / API keys</dd>
+      <dt><kbd>T</kbd></dt><dd>Tokens / USD / requests (requests in the API keys view)</dd>
       <dt><kbd>N</kbd></dt><dd>Add key</dd>
       <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Move in a list</dd>
       <dt><kbd>C</kbd></dt><dd>Copy the selected key</dd>
