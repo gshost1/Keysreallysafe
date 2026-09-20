@@ -69,7 +69,7 @@ BASE = {
     "policy": {
         "max_requests": 100,
         "max_input_tokens": 30_000,
-        "threshold": 0.75,
+        "threshold": 0.9,  # the value Keys sets for live evaluations (OptimizerAPI.swift)
         "optimizer_cost_usd": 0.001,
     },
 }
@@ -80,6 +80,7 @@ def tool_case(case_id, kind, candidate, expected_reason):
     return {
         "id": case_id,
         "kind": kind,
+        "fallback": {"selected_ids": []},
         "tool": "keys_tools_select",
         "expected": {"reason": expected_reason, "selected_ids": ["Read"] if kind == "semantic" else []},
         "args": arguments,
@@ -119,6 +120,7 @@ CASES = (
     {
         "id": "memory_duplicate",
         "kind": "duplicate",
+        "fallback": {},
         "tool": "keys_memory_assess",
         "expected": {"reason": "exact_duplicate", "disposition": "duplicate", "related_id": "m1"},
         "args": {
@@ -136,6 +138,7 @@ CASES = (
     {
         "id": "model_semantic",
         "kind": "semantic",
+        "fallback": {"selected_id": "large"},
         "tool": "keys_models_recommend",
         "expected": {"reason": "lower_estimated_cost_with_quality_gate", "selected_id": "small"},
         "args": {
@@ -154,6 +157,168 @@ CASES = (
         },
     },
 )
+
+
+# Opt-in, one call. The default cases are terse on purpose (three-word request, a
+# description that repeats it); this one resembles what a client really sends so a
+# live run can show whether an abstention follows the input or the protocol.
+REALISTIC_TOOLS = [
+    {"id": "Read", "name": "Read", "description": "Reads a file from the local filesystem and returns its contents with line numbers."},
+    {"id": "Grep", "name": "Grep", "description": "Searches file contents in the project with a regular expression."},
+    {"id": "Deploy", "name": "Deploy", "description": "Deploys the current build to the production environment."},
+]
+REALISTIC_ARGS = {
+    "request_text": "Open src/parser.ts and show me the tokenizer function so I can see how it handles escaped quotes. Do not change anything.",
+    "candidates": REALISTIC_TOOLS,
+}
+REALISTIC_CASES = (
+    {
+        "id": "tools_realistic_read",
+        "kind": "semantic",
+        "tool": "keys_tools_select",
+        "fallback": {"selected_ids": []},
+        "expected": {"reason": "tool_candidates_ranked"},
+        "expected_includes": {"selected_ids": ["Read"]},
+        "expected_excludes": {"selected_ids": ["Deploy"]},
+        "args": REALISTIC_ARGS,
+        "engine": {"command": "select_tools", **REALISTIC_ARGS},
+        "mock": {"unsuitable_ids": ["Deploy"]},
+    },
+)
+SUITES = {"structural": CASES, "realistic": REALISTIC_CASES, "all": CASES + REALISTIC_CASES}
+
+STRUCTURAL_KINDS = {"stale", "expired", "duplicate"}
+# Abstentions with these reasons never received an evaluator judgment.
+UNAVAILABLE_REASONS = {
+    "provider_unavailable", "evaluation_failed", "invalid_evaluation", "engine_unavailable", "circuit_open",
+    "budget_exhausted", "jev_not_authorized", "provider_disabled", "project_disabled", "project_off",
+    "feature_disabled", "policy_expired", "input_limit", "evaluation_unavailable",
+}
+
+
+def category(kind):
+    return "structural" if kind in STRUCTURAL_KINDS else "semantic"
+
+
+def conservative(actual, fallback):
+    """True when an abstention kept the do-nothing default (full catalog / current model)."""
+    if not isinstance(fallback, dict):
+        return False
+    return all(actual.get(key) == value for key, value in fallback.items())
+
+
+def classify(item, fallback):
+    """Separate label misses that changed nothing from ones that acted wrongly.
+
+    match            the labelled outcome
+    safe_abstention  semantic label missed; the engine abstained and kept the default
+    safe_mismatch    structural label missed, yet nothing was selected or switched
+    unsafe_error     a selection the label did not allow, or an abstention that still moved the default
+    """
+    if item.get("correct") is True:
+        return "match"
+    actual = item.get("actual") if isinstance(item.get("actual"), dict) else {}
+    if item.get("abstained") is True and conservative(actual, fallback):
+        return "safe_abstention" if category(item.get("kind")) == "semantic" else "safe_mismatch"
+    return "unsafe_error"
+
+
+def abstention_cause(item, evidence):
+    if item.get("abstained") is not True:
+        return None
+    actual = item.get("actual") if isinstance(item.get("actual"), dict) else {}
+    if actual.get("reason") in UNAVAILABLE_REASONS:
+        return "evaluator_unavailable"
+    if evidence:
+        return evidence["outcome"]
+    usage_row = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+    if usage_row.get("requests") or usage_row.get("cache_hits"):
+        # Engines before decision_evidence answered but did not say which score fell short.
+        return "evaluator_declined_scores_not_reported"
+    return "rejected_before_evaluation"
+
+
+def decision_evidence(body):
+    raw = body.get("decision_evidence")
+    if not isinstance(raw, dict):
+        return None
+
+    def probability(value):
+        return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+
+    rows = raw.get("candidates")
+    if not (probability(raw.get("threshold")) and probability(raw.get("none_fit")) and isinstance(rows, list)
+            and isinstance(raw.get("outcome"), str) and len(rows) <= 64
+            and all(isinstance(row, dict) and probability(row.get("suitable")) and probability(row.get("conflict")) for row in rows)):
+        return None
+    # Candidate ids are caller data; keep positions and numbers only.
+    return {
+        "threshold": raw["threshold"],
+        "none_fit": raw["none_fit"],
+        "outcome": raw["outcome"][:64],
+        "scores": [{"index": index, "suitable": row["suitable"], "conflict": row["conflict"]} for index, row in enumerate(rows)],
+    }
+
+
+def label_correct(case, body):
+    if not all(body.get(key) == value for key, value in case["expected"].items()):
+        return False
+    for key, values in case.get("expected_includes", {}).items():
+        if not isinstance(body.get(key), list) or any(value not in body[key] for value in values):
+            return False
+    for key, values in case.get("expected_excludes", {}).items():
+        if not isinstance(body.get(key), list) or any(value in body[key] for value in values):
+            return False
+    return True
+
+
+def summarize(results):
+    """Schema 4 breakdown. Counts only; none of it is routing accuracy or savings."""
+    def bucket(name):
+        rows = [item for item in results if item["category"] == name]
+        return {
+            "cases": len(rows),
+            "matched": sum(item["outcome"] == "match" for item in rows),
+            "safe_abstentions": sum(item["outcome"] == "safe_abstention" for item in rows),
+            "safe_mismatches": sum(item["outcome"] == "safe_mismatch" for item in rows),
+            "unsafe_errors": sum(item["outcome"] == "unsafe_error" for item in rows),
+        }
+
+    thresholds = sorted({item["decision_evidence"]["threshold"] for item in results if item.get("decision_evidence")})
+    return {
+        "structural": bucket("structural"),
+        "semantic": bucket("semantic"),
+        "unsafe_errors": sum(item["outcome"] == "unsafe_error" for item in results),
+        "safe_abstentions": sum(item["outcome"] == "safe_abstention" for item in results),
+        "safe_mismatches": sum(item["outcome"] == "safe_mismatch" for item in results),
+        "observed_thresholds": thresholds,
+        "accuracy_note": "accuracy is the label match rate over these fixtures only; a semantic miss "
+                         "classified safe_abstention changed nothing. Not routing accuracy or savings.",
+    }
+
+
+def reclassify(report):
+    """Add the schema 4 outcome view to an existing report (schema 3 or 4) without running anything."""
+    if not isinstance(report, dict) or not isinstance(report.get("results"), list) or not isinstance(report.get("summary"), dict):
+        raise ValueError("not_a_benchmark_report")
+    fallbacks = {case["id"]: case["fallback"] for case in SUITES["all"]}
+    results = []
+    for item in report["results"]:
+        if not isinstance(item, dict) or not isinstance(item.get("kind"), str):
+            raise ValueError("not_a_benchmark_report")
+        evidence = item.get("decision_evidence") if isinstance(item.get("decision_evidence"), dict) else None
+        # An unknown case id has no known default, so a miss there is never called safe.
+        row = {**item, "category": category(item["kind"]), "outcome": classify(item, fallbacks.get(item.get("case_id")))}
+        row["abstention_cause"] = abstention_cause(item, evidence)
+        row.setdefault("decision_evidence", None)
+        results.append(row)
+    return {
+        **report,
+        "schema_version": 4,
+        "reclassified_from_schema_version": report.get("schema_version"),
+        "summary": {**report["summary"], **summarize(results)},
+        "results": results,
+    }
 
 
 class StdioTransport:
@@ -291,14 +456,15 @@ def extract(result):
 
 
 def chosen(args):
-    return [case for _ in range(args.repetitions) for case in CASES][: args.max_calls]
+    cases = SUITES[getattr(args, "suite", "structural")]
+    return [case for _ in range(args.repetitions) for case in cases][: args.max_calls]
 
 
 def offline(cases):
     # dist/ is a build product and absent from a fresh checkout.
     if not ENGINE_BUILD.is_file():
         raise MissingEngineBuild(BUILD_HINT)
-    payload = [{"case_id": case["id"], "input": {**BASE, **case["engine"]}} for case in cases]
+    payload = [{"case_id": case["id"], "input": {**BASE, **case["engine"]}, "mock": case.get("mock", {})} for case in cases]
     clean_env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
     process = subprocess.run(
         ["node", str(HARNESS)],
@@ -346,7 +512,7 @@ def run(args, transport=None):
         "will_launch_keys": bool(args.live and not args.dry_run),
     }
     if args.dry_run:
-        return {"schema_version": 3, "benchmark": "optimizer_structural", "dry_run": True, "plan": plan}
+        return {"schema_version": 4, "benchmark": "optimizer_structural", "dry_run": True, "plan": plan}
 
     outputs = []
     if args.live:
@@ -371,26 +537,36 @@ def run(args, transport=None):
         body = item["result"]
         numeric, unknown = usage(body)
         expected = case["expected"]
-        results.append(
-            {
-                "sequence": index,
-                "case_id": case["id"],
-                "kind": case["kind"],
-                "expected": expected,
-                "actual": {key: body.get(key) for key in expected},
-                "correct": all(body.get(key) == value for key, value in expected.items()),
-                "abstained": body.get("status") == "abstained",
-                "latency_ms": item["latency_ms"],
-                "usage": numeric,
-                "usage_unknown_fields": unknown,
-            }
-        )
+        fields = [*expected, *case.get("expected_includes", {}), *case["fallback"]]
+        row = {
+            "sequence": index,
+            "case_id": case["id"],
+            "kind": case["kind"],
+            "category": category(case["kind"]),
+            "expected": {
+                **expected,
+                **{f"{key}_include": value for key, value in case.get("expected_includes", {}).items()},
+                **{f"{key}_exclude": value for key, value in case.get("expected_excludes", {}).items()},
+            },
+            "actual": {key: body.get(key) for key in dict.fromkeys(fields)},
+            "correct": label_correct(case, body),
+            "abstained": body.get("status") == "abstained",
+            "latency_ms": item["latency_ms"],
+            "usage": numeric,
+            "usage_unknown_fields": unknown,
+        }
+        evidence = decision_evidence(body)
+        row["outcome"] = classify(row, case["fallback"])
+        row["abstention_cause"] = abstention_cause(row, evidence)
+        row["decision_evidence"] = evidence
+        results.append(row)
     costs = [item["usage"]["optimizer_cost_usd"] for item in results if "optimizer_cost_usd" in item["usage"]]
     correct = sum(item["correct"] for item in results)
     cost_label = "synthetic_mock_cost_usd" if mode == "offline" else "provider_reported_cost_usd"
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "benchmark": "optimizer_structural",
+        "suite": getattr(args, "suite", "structural"),
         "mode": mode,
         "usage_source": "synthetic_mock" if mode == "offline" else "provider_reported",
         "interpretation": "production-engine structural fixtures; not general model quality or savings",
@@ -406,6 +582,7 @@ def run(args, transport=None):
             "baseline_savings": None,
             "net_savings": None,
             "human_quality": None,
+            **summarize(results),
         },
         "results": results,
     }
@@ -424,12 +601,29 @@ def parser():
     result.add_argument("--initialize-timeout", type=float, default=120)
     result.add_argument("--dry-run", action="store_true")
     result.add_argument("--report", type=Path)
+    result.add_argument("--suite", choices=sorted(SUITES), default="structural",
+                        help="realistic adds one opt-in tool-selection call with client-like input")
+    result.add_argument("--reclassify", type=Path, metavar="REPORT",
+                        help="print the schema 4 outcome view of an existing report; runs nothing")
     return result
 
 
 def main(argv=None):
     argument_parser = parser()
     args = argument_parser.parse_args(argv)
+    if args.reclassify:
+        if args.live or args.dry_run:
+            argument_parser.error("--reclassify reads a report and cannot be combined with --live or --dry-run")
+        try:
+            report = reclassify(json.loads(args.reclassify.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            print("not a readable optimizer benchmark report", file=sys.stderr)
+            return 2
+        encoded = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        if args.report:
+            args.report.write_text(encoded, encoding="utf-8")
+        sys.stdout.write(encoded)
+        return 0
     if not 1 <= args.repetitions <= 20 or not 1 <= args.max_calls <= 100:
         argument_parser.error("repetitions must be 1-20 and max-calls 1-100")
     if not 1 <= args.minutes <= 120:

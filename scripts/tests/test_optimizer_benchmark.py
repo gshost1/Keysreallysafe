@@ -40,6 +40,8 @@ class BenchmarkTests(unittest.TestCase):
             "initialize_timeout": 3.0,
             "dry_run": False,
             "report": None,
+            "suite": "structural",
+            "reclassify": None,
         }
         values.update(changes)
         return argparse.Namespace(**values)
@@ -56,6 +58,93 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(actual["tools_expired"]["reason"], "full_catalog_fallback")
         self.assertEqual(actual["memory_duplicate"]["disposition"], "duplicate")
         self.assertEqual(actual["model_semantic"]["selected_id"], "small")
+
+    def live_row(self, case_id, kind, correct, abstained, actual, requests=1):
+        return {"sequence": 1, "case_id": case_id, "kind": kind, "expected": {}, "actual": actual, "correct": correct,
+                "abstained": abstained, "latency_ms": 1.0, "usage": {"requests": requests, "cache_hits": 0},
+                "usage_unknown_fields": []}
+
+    def test_schema_three_live_report_separates_safe_abstentions_from_unsafe_errors(self):
+        # Mirrors the shape of the first live run: both semantic labels missed by abstaining.
+        old = {"schema_version": 3, "mode": "live", "summary": {"correct": 3, "accuracy": 0.6, "cases_run": 5}, "results": [
+            self.live_row("tools_semantic", "semantic", False, True, {"reason": "full_catalog_fallback", "selected_ids": []}),
+            self.live_row("tools_stale_dependency", "stale", True, True, {"reason": "full_catalog_fallback", "selected_ids": []}, 0),
+            self.live_row("model_semantic", "semantic", False, True, {"reason": "retain_current_uncertain", "selected_id": "large"}),
+        ]}
+        report = benchmark.reclassify(old)
+        self.assertEqual([item["outcome"] for item in report["results"]], ["safe_abstention", "match", "safe_abstention"])
+        self.assertEqual(report["results"][0]["abstention_cause"], "evaluator_declined_scores_not_reported")
+        self.assertEqual(report["results"][1]["abstention_cause"], "rejected_before_evaluation")
+        summary = report["summary"]
+        self.assertEqual((summary["accuracy"], summary["correct"]), (0.6, 3), "legacy fields are preserved")
+        self.assertEqual((summary["unsafe_errors"], summary["safe_abstentions"]), (0, 2))
+        self.assertEqual(summary["semantic"], {"cases": 2, "matched": 0, "safe_abstentions": 2, "safe_mismatches": 0, "unsafe_errors": 0})
+        self.assertEqual(summary["structural"]["matched"], 1)
+        self.assertEqual(report["reclassified_from_schema_version"], 3)
+        with self.assertRaises(ValueError):
+            benchmark.reclassify({"results": "no"})
+
+    def test_acting_against_a_label_is_never_reported_as_safe(self):
+        tools = {"selected_ids": []}
+        cases = [
+            # A stale candidate was selected.
+            (self.live_row("tools_stale_dependency", "stale", False, False, {"reason": "tool_candidates_ranked", "selected_ids": ["Read"]}), tools, "unsafe_error"),
+            # Status says abstained but the default moved anyway.
+            (self.live_row("model_semantic", "semantic", False, True, {"reason": "retain_current_uncertain", "selected_id": "small"}), {"selected_id": "large"}, "unsafe_error"),
+            (self.live_row("tools_semantic", "semantic", False, True, {"reason": "full_catalog_fallback", "selected_ids": ["Deploy"]}), tools, "unsafe_error"),
+            # No known default for this case: a miss cannot be called safe.
+            (self.live_row("unknown_case", "semantic", False, True, {"reason": "full_catalog_fallback", "selected_ids": []}), None, "unsafe_error"),
+            (self.live_row("tools_expired", "expired", False, True, {"reason": "evaluation_failed", "selected_ids": []}), tools, "safe_mismatch"),
+        ]
+        for row, fallback, expected in cases:
+            self.assertEqual(benchmark.classify(row, fallback), expected, row["case_id"])
+        unavailable = self.live_row("tools_semantic", "semantic", False, True, {"reason": "evaluation_failed", "selected_ids": []})
+        self.assertEqual(benchmark.abstention_cause(unavailable, None), "evaluator_unavailable")
+
+    def test_decision_evidence_is_numeric_positional_and_strict(self):
+        body = {"decision_evidence": {"threshold": 0.9, "none_fit": 0.2, "outcome": "no_candidate_met_threshold",
+                                      "candidates": [{"id": "secret-tool-name", "suitable": 0.82, "conflict": 0.05}]}}
+        evidence = benchmark.decision_evidence(body)
+        self.assertEqual(evidence["scores"], [{"index": 0, "suitable": 0.82, "conflict": 0.05}])
+        self.assertNotIn("secret-tool-name", json.dumps(evidence))
+        for bad in ({"threshold": 1.5}, {"none_fit": float("nan")}, {"candidates": [{"suitable": True, "conflict": 0}]}, {"outcome": 3}):
+            self.assertIsNone(benchmark.decision_evidence({"decision_evidence": {**body["decision_evidence"], **bad}}))
+        self.assertIsNone(benchmark.decision_evidence({}))
+
+    def test_offline_fixture_uses_the_live_threshold_and_reports_evidence(self):
+        report = benchmark.run(self.args())
+        self.assertEqual(report["schema_version"], 4)
+        self.assertEqual(report["summary"]["observed_thresholds"], [0.9])
+        self.assertEqual(report["summary"]["unsafe_errors"], 0)
+        first = report["results"][0]
+        self.assertEqual((first["category"], first["outcome"], first["decision_evidence"]["outcome"]),
+                         ("semantic", "match", "candidate_met_threshold"))
+
+    def test_realistic_suite_is_opt_in_and_labels_inclusion_and_exclusion(self):
+        self.assertEqual(len(benchmark.chosen(self.args())), 5)
+        report = benchmark.run(self.args(suite="realistic"))
+        self.assertEqual(report["summary"]["cases_run"], 1)
+        row = report["results"][0]
+        self.assertEqual((row["case_id"], row["outcome"]), ("tools_realistic_read", "match"))
+        self.assertIn("Read", row["actual"]["selected_ids"])
+        self.assertNotIn("Deploy", row["actual"]["selected_ids"])
+        case = benchmark.REALISTIC_CASES[0]
+        self.assertFalse(benchmark.label_correct(case, {"reason": "tool_candidates_ranked", "selected_ids": ["Read", "Deploy"]}))
+        self.assertFalse(benchmark.label_correct(case, {"reason": "tool_candidates_ranked", "selected_ids": ["Grep"]}))
+        encoded = json.dumps(report)
+        self.assertNotIn("tokenizer", encoded)
+
+    def test_reclassify_cli_runs_nothing_and_rejects_other_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old.json"
+            path.write_text(json.dumps({"schema_version": 3, "summary": {"accuracy": 0}, "results": [
+                self.live_row("tools_semantic", "semantic", False, True, {"reason": "full_catalog_fallback", "selected_ids": []})]}))
+            done = subprocess.run([sys.executable, str(SCRIPT), "--reclassify", str(path), "--keys", "/missing/keys"],
+                                  text=True, capture_output=True, timeout=10)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(json.loads(done.stdout)["summary"]["safe_abstentions"], 1)
+            path.write_text("[]")
+            self.assertEqual(subprocess.run([sys.executable, str(SCRIPT), "--reclassify", str(path)], capture_output=True, timeout=10).returncode, 2)
 
     def test_repetitions_preserve_order_and_exercise_shared_engine_cache(self):
         report = benchmark.run(self.args(repetitions=2, max_calls=10))

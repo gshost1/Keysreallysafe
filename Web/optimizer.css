@@ -28,9 +28,10 @@
 .optimizer-grid-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
 .optimizer-card, .optimizer-panel { min-width: 0; border-top: 1px solid var(--line-strong); background: var(--bg); }
 .optimizer-card { padding: 12px 0 11px; }
-.optimizer-card-label { color: var(--fg-2); font-size: 11px; }
-.optimizer-card-value { margin: 4px 0 1px; font-size: 22px; line-height: 28px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
-.optimizer-card-note { color: var(--fg-3); font-size: 11px; }
+/* Card and accounting children are inline elements in the markup; stack them explicitly. */
+.optimizer-card-label { display: block; color: var(--fg-2); font-size: 11px; line-height: 15px; }
+.optimizer-card-value { display: block; margin: 4px 0 1px; font-size: 22px; line-height: 28px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.optimizer-card-note { display: block; color: var(--fg-3); font-size: 11px; line-height: 15px; }
 .optimizer-panel { margin-top: 12px; padding: 14px 0 0; }
 .optimizer-panel-wide { width: 100%; }
 .optimizer-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
@@ -39,8 +40,8 @@
 .optimizer-cli-note { margin-top: 7px !important; font-size: 11px !important; }
 .optimizer-accounting { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); }
 .optimizer-accounting-row { min-width: 0; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); }
-.optimizer-accounting-label { color: var(--fg-2); font-size: 11px; }
-.optimizer-accounting-value { display: block; margin-top: 3px; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.optimizer-accounting-label { display: block; color: var(--fg-2); font-size: 11px; }
+.optimizer-accounting-value { display: block; margin-top: 3px; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .optimizer-diagnostics-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0 0; }
 .optimizer-list { border-top: 1px solid var(--line); }
 .optimizer-list-empty { padding: 16px 0; color: var(--fg-3); font-size: 12px; }

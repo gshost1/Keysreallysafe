@@ -50,4 +50,5 @@ jobs:
           NODE_PATH: ${{ github.workspace }}/Plugins/jev-optimizer/node_modules
         run: |
           node scripts/tests/test_optimizer_workflow_ui.cjs
+          node scripts/tests/test_optimizer_layout_ui.cjs
           node scripts/tests/test_analytics_ui.cjs

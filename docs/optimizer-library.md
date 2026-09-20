@@ -95,6 +95,10 @@ startup_timeout_sec = 120
 tool_timeout_sec = 45
 ```
 
+For per-session commands that leave every client configuration untouched, and a
+helper that verifies them against the installed CLIs, see
+[project-local client setup](optimizer-client-setup.md).
+
 No user-level Codex configuration is changed by building this project.
 The [official Codex MCP documentation](https://developers.openai.com/codex/mcp)
 describes stdio configuration. MCP provides tools; it does not grant permission

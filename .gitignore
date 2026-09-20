@@ -24,3 +24,6 @@ xcuserdata/
 *.log
 Web/.cache/
 .github/.DS_Store
+
+# Project-local client examples from scripts/optimizer-client-setup.py (UUID and key name, no secrets).
+.keys/

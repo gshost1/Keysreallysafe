@@ -306,6 +306,28 @@ describe('tool selection', () => {
     expect(state.candidates[0]!.candidate).toMatchObject({ name: 'Read', description: 'read parser source and test' });
   });
 
+  it('explains a below-threshold abstention with numeric evidence and no candidate content', async () => {
+    // The shape seen live: a plausible match scored under a strict threshold is a safe abstention.
+    const lukewarm = (name: string): number => name.startsWith('suitable_') ? 0.82 : name === 'none_fit' ? 0.2 : 0.05;
+    const request = base({
+      command: 'select_tools',
+      policy: { max_requests: 4, max_input_tokens: 50_000, threshold: 0.9 },
+      candidates: [{ id: 'Read', name: 'Read', description: 'read parser source and test' }],
+    });
+    const result = await new OptimizerEngine({ asker: jev(lukewarm) }).handle(request);
+    expect(result).toMatchObject({ status: 'abstained', reason: 'full_catalog_fallback', selected_ids: [], full_catalog_fallback: true });
+    expect(result.decision_evidence).toEqual({
+      threshold: 0.9, none_fit: 0.2, outcome: 'no_candidate_met_threshold',
+      candidates: [{ id: 'Read', suitable: 0.82, conflict: 0.05 }],
+    });
+    expect(JSON.stringify(result.decision_evidence)).not.toContain('parser');
+
+    const refused = await new OptimizerEngine({ asker: jev((name) => name === 'none_fit' ? 0.95 : 0.5) }).handle(request);
+    expect(refused.decision_evidence).toMatchObject({ outcome: 'none_fit_at_or_above_threshold' });
+    const selected = await new OptimizerEngine({ asker: jev(positive) }).handle(request);
+    expect(selected).toMatchObject({ reason: 'tool_candidates_ranked', decision_evidence: { outcome: 'candidate_met_threshold' } });
+  });
+
   it('preserves essential tools even when the project is off', async () => {
     const result = await new OptimizerEngine().handle(base({
       command: 'select_tools', project_enabled: false,

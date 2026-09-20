@@ -278,6 +278,22 @@ function lexicalScore(query: string, candidate: JsonRecord): number {
   return overlap / Math.sqrt(queryWords.size * Math.max(1, candidateWords.size));
 }
 
+/** Evaluator probabilities behind a ranked decision; diagnostic only, never an approval. */
+export interface DecisionEvidence {
+  threshold: number;
+  none_fit: number;
+  candidates: { id: string; suitable: number; conflict: number }[];
+  outcome: 'none_fit_at_or_above_threshold' | 'no_candidate_met_threshold' | 'candidate_met_threshold';
+}
+
+interface RankOutcome {
+  selected: CheckedCandidate[];
+  evaluation?: Evaluation;
+  evidence?: DecisionEvidence;
+  failureReason?: string;
+  failureUsage?: OptimizerUsage;
+}
+
 interface CheckedCandidate {
   candidate: JsonRecord;
   id: string;
@@ -620,7 +636,7 @@ export class OptimizerEngine {
     request: ParsedRequest,
     checked: CheckedCandidate[],
     purpose: string,
-  ): Promise<{ selected: CheckedCandidate[]; evaluation?: Evaluation; failureReason?: string; failureUsage?: OptimizerUsage }> {
+  ): Promise<RankOutcome> {
     const state = {
       purpose,
       request: request.requestText,
@@ -634,20 +650,31 @@ export class OptimizerEngine {
     const attempt = await this.evaluate(request, state, questions);
     const evaluation = attempt.evaluation;
     if (!evaluation) return { selected: [], failureReason: attempt.failureReason, failureUsage: attempt.usage };
+    const threshold = request.policy.threshold;
     const noneFit = noulAnswer(evaluation.response.answers, 'none_fit');
-    if (noneFit >= request.policy.threshold) return { selected: [], evaluation };
-    const selected = checked.filter((_, index) => {
-      const suitable = noulAnswer(evaluation.response.answers, `suitable_${index}`);
-      const conflict = noulAnswer(evaluation.response.answers, `conflict_${index}`);
-      return suitable >= request.policy.threshold && conflict <= 1 - request.policy.threshold;
-    });
-    return { selected, evaluation };
+    const scores = checked.map((entry, index) => ({
+      id: entry.id,
+      suitable: noulAnswer(evaluation.response.answers, `suitable_${index}`),
+      conflict: noulAnswer(evaluation.response.answers, `conflict_${index}`),
+    }));
+    const selected = noneFit >= threshold
+      ? []
+      : checked.filter((_, index) => scores[index]!.suitable >= threshold && scores[index]!.conflict <= 1 - threshold);
+    // Numbers and caller-supplied ids only: explains an abstention without echoing content.
+    const evidence: DecisionEvidence = {
+      threshold,
+      none_fit: noneFit,
+      candidates: scores,
+      outcome: noneFit >= threshold ? 'none_fit_at_or_above_threshold'
+        : selected.length === 0 ? 'no_candidate_met_threshold' : 'candidate_met_threshold',
+    };
+    return { selected, evaluation, evidence };
   }
 
   private async retrieve(request: ParsedRequest): Promise<OptimizerResult> {
     const listed = shortlist(request);
     if (listed.candidates.length === 0) return abstain(request, 'no_candidates', { rejected: listed.rejected });
-    let ranked: { selected: CheckedCandidate[]; evaluation?: Evaluation; failureReason?: string; failureUsage?: OptimizerUsage };
+    let ranked: RankOutcome;
     try {
       ranked = await this.rank(request, listed.candidates, 'reusable plan retrieval');
     } catch {
@@ -660,7 +687,7 @@ export class OptimizerEngine {
       };
     }
     if (ranked.selected.length === 0) {
-      return { ...abstain(request, 'no_safe_match', { rejected: listed.rejected }), usage: ranked.evaluation.usage };
+      return { ...abstain(request, 'no_safe_match', { rejected: listed.rejected }), decision_evidence: ranked.evidence, usage: ranked.evaluation.usage };
     }
     const selected = ranked.selected.map((entry) => sanitizedCandidate(entry.candidate));
     return {
@@ -673,6 +700,7 @@ export class OptimizerEngine {
       selected,
       rejected: listed.rejected,
       verification_required: true,
+      decision_evidence: ranked.evidence,
       usage: ranked.evaluation.usage,
     };
   }
@@ -690,7 +718,7 @@ export class OptimizerEngine {
         full_catalog_fallback: true,
       });
     }
-    let ranked: { selected: CheckedCandidate[]; evaluation?: Evaluation; failureReason?: string; failureUsage?: OptimizerUsage };
+    let ranked: RankOutcome;
     try {
       ranked = await this.rank(request, listed.candidates, 'tool selection');
     } catch {
@@ -703,6 +731,7 @@ export class OptimizerEngine {
           preserved_essential_ids: essentialIds,
           full_catalog_fallback: true,
         }),
+        ...(ranked.evidence ? { decision_evidence: ranked.evidence } : {}),
         usage: ranked.evaluation?.usage ?? ranked.failureUsage ?? usage(),
       };
     }
@@ -718,6 +747,7 @@ export class OptimizerEngine {
       // A lexical prefilter or candidate bound cannot justify hiding unevaluated tools.
       full_catalog_fallback: request.mode === 'observe' || listed.candidates.length !== optional.length ||
         !Array.isArray(request.raw.candidates) || request.raw.candidates.length !== request.candidates.length,
+      decision_evidence: ranked.evidence,
       usage: ranked.evaluation.usage,
     };
   }
@@ -788,7 +818,7 @@ export class OptimizerEngine {
     const routingRequest = { ...request, candidates: eligible };
     const listed = shortlist(routingRequest);
     if (listed.candidates.length === 0) return abstain(request, 'retain_current_no_candidate', { selected_id: candidateId(current, 'current') });
-    let ranked: { selected: CheckedCandidate[]; evaluation?: Evaluation; failureReason?: string; failureUsage?: OptimizerUsage };
+    let ranked: RankOutcome;
     try {
       ranked = await this.rank(request, listed.candidates, 'model routing');
     } catch {
@@ -799,6 +829,7 @@ export class OptimizerEngine {
         ...abstain(request, ranked.evaluation ? 'retain_current_uncertain' : ranked.failureReason ?? 'evaluation_unavailable', {
           selected_id: candidateId(current, 'current'),
         }),
+        ...(ranked.evidence ? { decision_evidence: ranked.evidence } : {}),
         usage: ranked.evaluation?.usage ?? ranked.failureUsage ?? usage(),
       };
     }
@@ -812,13 +843,14 @@ export class OptimizerEngine {
       .filter((entry) => finiteNumber(entry.candidate.observed_success_rate)! >= currentSuccess)
       .sort((a, b) => proposedTotal(a.candidate) - proposedTotal(b.candidate))[0];
     if (!best || proposedTotal(best.candidate) >= baselineTotal) {
-      return { ...abstain(request, 'retain_current_no_proven_benefit', { selected_id: candidateId(current, 'current') }), usage: ranked.evaluation.usage };
+      return { ...abstain(request, 'retain_current_no_proven_benefit', { selected_id: candidateId(current, 'current') }), decision_evidence: ranked.evidence, usage: ranked.evaluation.usage };
     }
     return {
       ok: true, command: request.command, status: this.status(request), applied: false,
       reason: 'lower_estimated_cost_with_quality_gate', selected_id: best.id,
       current_estimated_total_cost_usd: baselineTotal,
       proposed_estimated_total_cost_usd: proposedTotal(best.candidate),
+      decision_evidence: ranked.evidence,
       usage: ranked.evaluation.usage,
     };
   }
