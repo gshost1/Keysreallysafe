@@ -191,6 +191,60 @@ final class OptimizerStoreTests: XCTestCase {
         XCTAssertEqual((events["events"] as? [[String: Any]])?.count, 1)
     }
 
+    /// Documented contract: repeated identities deduplicate "only within compatible
+    /// task/model identities". A paired evaluation runs its two arms as separate
+    /// tasks in one project, so an event id reused across them must never silently
+    /// fold one arm's usage into the other's task.
+    func testEventIdReusedUnderADifferentTaskIsRefusedNotSilentlyFolded() throws {
+        let dir = try TempDir.make()
+        let store = try OptimizerStore(directory: dir)
+        try store.unlock(key: key); try addProject(store, id: "project-a")
+        _ = try store.perform(operation: "task_start", payload: ["project_id": "project-a", "id": "baseline", "client": "test"])
+        _ = try store.perform(operation: "task_start", payload: ["project_id": "project-a", "id": "treatment", "client": "test"])
+        let base: [String: Any] = ["project_id": "project-a", "event_id": "turn-1", "source": "client",
+                                   "kind": "main", "model": "synthetic", "latency_ms": 1, "status": "success"]
+        var baseline = base; baseline["task_id"] = "baseline"; baseline["input_tokens"] = 100
+        var treatment = base; treatment["task_id"] = "treatment"; treatment["input_tokens"] = 40
+
+        let first = try store.perform(operation: "event_record", payload: baseline)
+        XCTAssertEqual(first["deduplicated"] as? Bool, false)
+        XCTAssertThrowsError(try store.perform(operation: "event_record", payload: treatment)) { error in
+            guard case OptimizerStoreError.conflict = error else {
+                return XCTFail("expected a conflict, got \(error)")
+            }
+        }
+
+        // The refusal must leave the baseline arm exactly as it was, and must not
+        // have written anything for the treatment arm.
+        let events = try store.perform(operation: "event_list", payload: ["project_id": "project-a"])
+        let rows = try XCTUnwrap(events["events"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0]["task_id"] as? String, "baseline")
+        XCTAssertEqual(rows[0]["input_tokens"] as? Int, 100)
+
+        // A distinct event id under the other task is still recorded normally.
+        var distinct = treatment; distinct["event_id"] = "turn-1-treatment"
+        XCTAssertEqual(try store.perform(operation: "event_record", payload: distinct)["deduplicated"] as? Bool, false)
+        let after = try store.perform(operation: "event_list", payload: ["project_id": "project-a"])
+        XCTAssertEqual((after["events"] as? [[String: Any]])?.count, 2)
+    }
+
+    /// The same event id, same task: an ordinary retry, which must stay idempotent.
+    func testEventIdRepeatedUnderTheSameTaskStaysIdempotent() throws {
+        let dir = try TempDir.make()
+        let store = try OptimizerStore(directory: dir)
+        try store.unlock(key: key); try addProject(store, id: "project-a")
+        _ = try store.perform(operation: "task_start", payload: ["project_id": "project-a", "id": "task-a", "client": "test"])
+        let event: [String: Any] = ["project_id": "project-a", "task_id": "task-a", "event_id": "turn-1",
+                                    "source": "client", "kind": "main", "model": "synthetic",
+                                    "input_tokens": 100, "latency_ms": 1, "status": "success"]
+        XCTAssertEqual(try store.perform(operation: "event_record", payload: event)["deduplicated"] as? Bool, false)
+        let retry = try store.perform(operation: "event_record", payload: event)
+        XCTAssertEqual(retry["deduplicated"] as? Bool, true)
+        XCTAssertEqual(retry["deduplication"] as? String, "event_id")
+        XCTAssertEqual((try store.perform(operation: "event_list", payload: ["project_id": "project-a"])["events"] as? [[String: Any]])?.count, 1)
+    }
+
     func testMixedUsageAggregateSeparatesOptimizerClientAndCache() throws {
         let dir = try TempDir.make()
         let store = try OptimizerStore(directory: dir)

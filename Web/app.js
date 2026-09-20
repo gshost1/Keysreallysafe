@@ -146,6 +146,7 @@
 
   // ---------- api (same origin only) ----------
 
+  const UNREACHABLE = "Can't reach the local site. Is keys dashboard still running?";
   // Every mutating call carries the per-launch token the server printed into index.html.
   async function api(path, options) {
     options = options || {};
@@ -158,7 +159,7 @@
       res = await fetch(path, options);
     } catch {
       setEngineDown(true);
-      throw new Error("Can't reach the local site. Is keys dashboard still running?");
+      throw new Error(UNREACHABLE);
     }
     setEngineDown(false);
     const text = await res.text();
@@ -189,11 +190,42 @@
       default: return code || `Request failed (${status}).`;
     }
   }
+  // A sticky message has no timer, so whoever puts a failure on the line owns
+  // taking it down: otherwise a stale error outlives the failure it described,
+  // and the user reads "engine_busy" over a chart that has since loaded. The
+  // two loaders and the reachability check post here independently and overlap
+  // routinely — the startup key load is still in flight when the chart pane
+  // asks for spend — so a failure is filed under its owner and a recovery
+  // takes down only what that owner filed. Anything else on the line is left
+  // alone, so neither a still-current failure from the other loader nor a
+  // newer "Copied bravo" is swallowed by an unrelated success.
+  const ENGINE_DOWN = "Engine is not answering. Run keys dashboard or keys menubar, then reload.";
+  const OWNER_SPEND = "spend", OWNER_KEYS = "keys", OWNER_ENGINE = "engine";
+  const stickyErrors = new Map();   // owner -> the exact text that owner last posted
+  function sayError(owner, msg) {
+    stickyErrors.delete(owner);     // re-inserted so the newest poster sorts last
+    stickyErrors.set(owner, msg);
+    say(msg, true);
+  }
+  function clearError(owner) {
+    const mine = stickyErrors.get(owner);
+    stickyErrors.delete(owner);
+    // Someone else's message is on the line: this recovery has nothing to say
+    // about it, and blanking it is how the stale-error bug runs in reverse.
+    if (!mine || $("status").textContent !== mine) return;
+    // Taking this one down uncovers whichever failure is still unresolved,
+    // rather than leaving a broken pane looking healthy.
+    const waiting = [...stickyErrors.values()];
+    say(waiting.length ? waiting[waiting.length - 1] : "", true);
+  }
   function setEngineDown(down) {
     if (state.engineDown === down) return;
     state.engineDown = down;
-    if (down) say("Engine is not answering. Run keys dashboard or keys menubar, then reload.", true);
-    else if ($("status").textContent.startsWith("Engine is not")) say("");
+    if (down) return sayError(OWNER_ENGINE, ENGINE_DOWN);
+    clearError(OWNER_ENGINE);
+    // A loader's UNREACHABLE came out of the same dead fetch as the banner, so
+    // the engine answering again retires it too, whoever filed it.
+    for (const [owner, msg] of [...stickyErrors]) if (msg === UNREACHABLE) clearError(owner);
   }
 
   // ---------- panes ----------
@@ -367,10 +399,11 @@
       if (seq !== spendSeq) return;
       state.spend = data;
       state.hourlyPoints = hourly ? hourly.points || [] : null;
+      clearError(OWNER_SPEND);
       renderSpend();
     } catch (e) {
       if (seq !== spendSeq) return;
-      say(e.message, true);
+      sayError(OWNER_SPEND, e.message);
     }
   }
 
@@ -894,15 +927,25 @@
 
   // ---------- keys ----------
 
+  // Refreshes overlap: a copy defers one by 2.5 s, closing the reveal dialog
+  // starts another, and every CRUD call ends with one. A slow reply carries the
+  // vault as it was when the engine answered, so landing it after a newer reply
+  // would resurrect a deleted key or drop one just added. Only the newest wins,
+  // as in loadSpend.
+  let keysSeq = 0;
   async function loadKeys(opts = {}) {
+    const seq = ++keysSeq;
     try {
       const data = await api("/api/keys");
+      if (seq !== keysSeq) return;
       state.keys = data.keys || [];
+      clearError(OWNER_KEYS);
       renderKeys(opts);
       loadOptimizerKeyMetadata();
       loadGrants();
     } catch (e) {
-      if (!opts.quiet) say(e.message, true);
+      if (seq !== keysSeq) return;
+      if (!opts.quiet) sayError(OWNER_KEYS, e.message);
     }
   }
 

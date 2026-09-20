@@ -28,6 +28,7 @@
     entryLoading: false,
     sessionGeneration: 0,
     expiryTimer: null,
+    countdownTimer: null,
     locking: false,
   };
 
@@ -141,6 +142,51 @@
     }, Math.min(delay, 2147483647));
   }
 
+  const plural = (count, unit) => `${count.toLocaleString("en-US")} ${unit}${count === 1 ? "" : "s"}`;
+
+  // Rounds down so the label never promises more time than the session has.
+  function remainingLabel(remaining) {
+    if (remaining < 60000) return "Expires in less than a minute";
+    const minutes = Math.floor(remaining / 60000);
+    if (minutes < 60) return `Expires in ${plural(minutes, "minute")}`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return `Expires in ${plural(hours, "hour")}${minutes % 60 ? ` ${plural(minutes % 60, "minute")}` : ""}`;
+    return `Expires in ${plural(Math.floor(hours / 24), "day")}`;
+  }
+
+  // Renders from the expiry already held in memory and the local clock; it never contacts the server.
+  function renderSessionStatus() {
+    if (state.countdownTimer) clearTimeout(state.countdownTimer);
+    state.countdownTimer = null;
+    const node = $("optimizer-session");
+    if (!node) return;
+    if (!state.unlocked) {
+      node.textContent = "Session inactive";
+      node.removeAttribute("title");
+      return;
+    }
+    const expiresAt = epochMillis(state.expiresAt);
+    if (expiresAt == null) {
+      node.textContent = "Session active · expiry time unknown";
+      node.title = "The server did not report a usable expiry time for this session.";
+      return;
+    }
+    const remaining = expiresAt - Date.now();
+    node.title = `Expires ${new Date(expiresAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "long" })}`;
+    if (remaining <= 0) {
+      node.textContent = "Session expired";
+      return;
+    }
+    node.textContent = `Session active · ${remainingLabel(remaining)}`;
+    const generation = state.sessionGeneration;
+    const sessionToken = state.sessionToken;
+    state.countdownTimer = setTimeout(() => {
+      state.countdownTimer = null;
+      if (!state.unlocked || state.sessionGeneration !== generation || state.sessionToken !== sessionToken) return;
+      renderSessionStatus();
+    }, (remaining >= 60000 ? remaining % 60000 : remaining) + 50);
+  }
+
   async function closeSession(sessionToken) {
     if (!sessionToken) return;
     try {
@@ -190,7 +236,7 @@
     $("optimizer-unlock").disabled = state.locking;
     $("optimizer-lock").hidden = true;
     $("optimizer-live-badge").hidden = true;
-    $("optimizer-session").textContent = "Session inactive";
+    renderSessionStatus();
     $("optimizer-entry-detail").replaceChildren(el("div", { class: "optimizer-detail-empty" }, el("h2", { text: "Select an entry" }), el("p", { text: "Unlock to inspect stored content." })));
     // Close only the discarded capability. A later unlock may already be in flight.
     if (close) void closeSession(sessionToken);
@@ -281,7 +327,7 @@
       $("optimizer-locked").hidden = true;
       $("optimizer-content").hidden = false;
       $("optimizer-lock").hidden = false;
-      $("optimizer-session").textContent = state.expiresAt ? `Session active · expires ${date(state.expiresAt)}` : "Session active";
+      renderSessionStatus();
       setAlert("");
       await loadData();
     } catch (error) {
@@ -869,6 +915,7 @@
     $("optimizer-entry-query").addEventListener("input", (event) => { state.query = event.target.value; loadEntries(); });
     $("optimizer-include-archived").addEventListener("change", (event) => { state.includeArchived = event.target.checked; loadEntries(); });
     window.addEventListener("focus", checkFocusedStatus);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden && state.unlocked) renderSessionStatus(); });
   }
 
   window.optimizerLoad = async function optimizerLoad() {

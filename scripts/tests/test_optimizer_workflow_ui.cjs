@@ -26,6 +26,7 @@ let lockDelay = 0;
 let lockFailure = false;
 let closeDelay = 0;
 let nextFailure = null;
+let unlockExpiry = "2099-01-01T00:00:00Z";
 const sessions = new Set();
 const closeRequests = [];
 const lockRequests = [];
@@ -83,7 +84,7 @@ const server = http.createServer((request, response) => {
     unlockRequests.push(body);
     const token = `kso_fixture_${unlockRequests.length}`;
     sessions.add(token);
-    json(response, 200, { token, expires_at: "2099-01-01T00:00:00Z" });
+    json(response, 200, { token, expires_at: unlockExpiry });
   });
   if (url.pathname === "/api/optimizer/lock") return read(request, () => {
     lockRequests.push(request.headers["x-ksf-optimizer"]);
@@ -390,9 +391,79 @@ const server = http.createServer((request, response) => {
     await page.waitForFunction(() => !document.getElementById("optimizer-unlock").disabled);
     assert.deepEqual(closeRequests, ["kso_fixture_2", "kso_fixture_4"], "failed global lock closes the captured old capability");
     assert.equal(sessions.size, 0);
+
+    // Session countdown: rendered from the unlock response and the local clock only.
+    const clockPage = await browser.newPage();
+    clockPage.on("pageerror", (error) => pageErrors.push(error.message));
+    const optimizerRequests = [];
+    clockPage.on("request", (request) => { if (request.url().includes("/api/optimizer/")) optimizerRequests.push(request.url()); });
+    const sessionNode = clockPage.locator("#optimizer-session");
+    const base = Date.parse("2026-09-19T12:00:00Z");
+    const unlockClockPage = async () => {
+      await clockPage.getByRole("button", { name: "Unlock with Touch ID" }).click();
+      await clockPage.locator("#optimizer-content").waitFor();
+      await clockPage.waitForLoadState("networkidle");
+    };
+    await clockPage.clock.install({ time: base });
+    await clockPage.goto(`http://127.0.0.1:${server.address().port}/`);
+    await clockPage.getByRole("tab", { name: "Optimizer" }).click();
+    await clockPage.waitForLoadState("networkidle");
+    assert.equal(await sessionNode.getAttribute("title"), null);
+    const expiresAt = base + 24 * 60000 + 30000;
+    unlockExpiry = new Date(expiresAt).toISOString();
+    await unlockClockPage();
+    assert.equal(await sessionNode.textContent(), "Session active · Expires in 24 minutes");
+    const expectedTitle = await clockPage.evaluate((ms) => `Expires ${new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "long" })}`, expiresAt);
+    assert.equal(await sessionNode.getAttribute("title"), expectedTitle, "tooltip carries the exact local expiry time");
+    assert.match(expectedTitle, /2026.*\d{1,2}:\d{2}:\d{2}/);
+    const countdownToken = `kso_fixture_${unlockRequests.length}`;
+    const requestsBeforeCountdown = optimizerRequests.length;
+    await clockPage.clock.fastForward(60000);
+    assert.equal(await sessionNode.textContent(), "Session active · Expires in 23 minutes");
+    await clockPage.clock.fastForward(22 * 60000);
+    assert.equal(await sessionNode.textContent(), "Session active · Expires in 1 minute");
+    await clockPage.clock.fastForward(60000);
+    assert.equal(await sessionNode.textContent(), "Session active · Expires in less than a minute");
+    assert.equal(await sessionNode.getAttribute("title"), expectedTitle);
+    assert.equal(optimizerRequests.length, requestsBeforeCountdown, "the countdown must not contact the server");
+    assert.equal(sessions.has(countdownToken), true);
+    await clockPage.clock.fastForward(60000);
+    await clockPage.locator("#optimizer-locked").waitFor();
+    assert.equal(await clockPage.locator("#optimizer-content").isHidden(), true);
+    assert.match(await clockPage.locator("#optimizer-alert").textContent(), /session expired/i);
+    assert.equal(await sessionNode.textContent(), "Session inactive");
+    assert.equal(await sessionNode.getAttribute("title"), null);
+    await clockPage.waitForLoadState("networkidle");
+    assert.equal(closeRequests.at(-1), countdownToken, "expiry closes exactly the expired capability");
+    assert.equal(closeRequests.filter((token) => token === countdownToken).length, 1);
+
+    for (const missing of [undefined, "not-a-date"]) {
+      unlockExpiry = missing;
+      await unlockClockPage();
+      assert.equal(await sessionNode.textContent(), "Session active · expiry time unknown");
+      assert.match(await sessionNode.getAttribute("title"), /did not report a usable expiry/);
+      await clockPage.clock.fastForward(5 * 60000);
+      assert.equal(await sessionNode.textContent(), "Session active · expiry time unknown", "no invented countdown");
+      assert.equal(await clockPage.locator("#optimizer-content").isVisible(), true);
+      await clockPage.locator("#optimizer-lock").click();
+      await clockPage.waitForFunction(() => !document.getElementById("optimizer-unlock").disabled);
+      assert.equal(await sessionNode.textContent(), "Session inactive");
+      assert.equal(await sessionNode.getAttribute("title"), null);
+    }
+
+    unlockExpiry = new Date(base - 60000).toISOString();
+    await clockPage.getByRole("button", { name: "Unlock with Touch ID" }).click();
+    await clockPage.waitForFunction(() => /session expired/i.test(document.getElementById("optimizer-alert").textContent));
+    assert.equal(await clockPage.locator("#optimizer-content").isHidden(), true, "an already expired session never stays open");
+    assert.equal(await sessionNode.textContent(), "Session inactive");
+    assert.equal(await sessionNode.getAttribute("title"), null);
+    await clockPage.waitForLoadState("networkidle");
+    assert.equal(closeRequests.at(-1), `kso_fixture_${unlockRequests.length}`);
+    unlockExpiry = "2099-01-01T00:00:00Z";
+    await clockPage.close();
     assert.deepEqual(fixtureErrors, []);
     assert.deepEqual(pageErrors, []);
-    console.log("Optimizer workflow UI passed: real form payloads, policy denials, candidate metadata, hidden state, and session cleanup races.");
+    console.log("Optimizer workflow UI passed: real form payloads, policy denials, candidate metadata, hidden state, session cleanup races, and the offline session countdown.");
   } finally {
     await browser.close();
     server.closeAllConnections();

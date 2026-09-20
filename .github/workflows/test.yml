@@ -49,6 +49,20 @@ jobs:
         env:
           NODE_PATH: ${{ github.workspace }}/Plugins/jev-optimizer/node_modules
         run: |
+          node scripts/tests/test_keys_dashboard_ui.cjs
           node scripts/tests/test_optimizer_workflow_ui.cjs
           node scripts/tests/test_optimizer_layout_ui.cjs
           node scripts/tests/test_analytics_ui.cjs
+      # The same real assets against the real Swift backend on a temporary
+      # synthetic vault: no keychain, Touch ID, clipboard or provider call.
+      # KEYS_CONTRACT_TIMEOUT_S bounds the browser half and KEYS_CONTRACT_GRACE_S
+      # bounds each teardown step, so a wedged browser fails this step rather
+      # than holding the runner open. `swift test` above already covers that
+      # teardown itself, in BoundedChildProcessTests, without a browser.
+      - name: Check the dashboard against the real backend (synthetic vault only)
+        env:
+          CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
+          GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
+          NODE_PATH: ${{ github.workspace }}/Plugins/jev-optimizer/node_modules
+          KEYS_BACKEND_CONTRACT_UI: "1"
+        run: swift test --filter BackendContractUITests

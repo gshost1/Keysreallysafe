@@ -633,6 +633,12 @@ final class OptimizerStore: @unchecked Sendable {
         let latency = try integer(p, "latency_ms", min: 0, max: 86_400_000)
         let status = try oneOf(try string(p, "status", max: 32, required: true), ["ok", "error", "failed", "cancelled", "timeout", "unknown", "success", "suggested", "selected", "observed", "abstained", "reused", "engine_unavailable"], field: "status")
         if let exact = ledger.events.first(where: { $0.projectID == projectID && $0.eventID == eventID }) {
+            // Idempotency is per task. Folding a reused id across tasks would drop
+            // the second task's usage and attribute it to the first, which is
+            // exactly how a paired baseline/treatment measurement gets corrupted.
+            guard exact.taskID == taskID else {
+                throw OptimizerStoreError.conflict("event_id already recorded under a different task")
+            }
             return ["event": eventObject(exact), "deduplicated": true, "deduplication": "event_id"]
         }
         let overlap = requestID.flatMap { request in
