@@ -25,6 +25,13 @@ FIXTURE_FILES = ("models.json",)
 PLUGIN_FILES = (".claude-plugin/plugin.json", "LICENSE", "README.md", "package.json")
 PLUGIN_TREES = ("dist", "src", "hooks")
 SCRIPTS = ("optimizer-mcp.py", "claude-with-jev.py")
+DOC_FILES = (
+    "LICENSE", "README.md", "SIGNING.md", "Analytics/README.md",
+    "docs/jev-optimizer.md", "docs/jev-research.md", "docs/optimizer-benchmarks.md",
+    "docs/optimizer-candidates.md", "docs/optimizer-client-adapter.md",
+    "docs/optimizer-deployment.md", "docs/optimizer-library.md", "docs/optimizer-providers.md",
+    "docs/optimizer-release.md", "docs/optimizer-task-workflow.md", "docs/product-analytics.md",
+)
 ALLOWED_PLUGIN_SUFFIXES = (".d.ts", ".d.ts.map", ".js", ".js.map", ".ts", ".json", ".md")
 SENSITIVE_JSON_TERMS = ("credential", "secret", "token")
 
@@ -226,6 +233,8 @@ def prepare(repo: Path, binary: Path, output: Path, check_codesign: bool, dry_ru
     require_regular(plugin / "dist" / "optimizer-cli.js", "plugin dist entrypoint", repo)
     for name in SCRIPTS:
         require_regular(repo / "scripts" / name, f"release script {name}", repo)
+    for name in DOC_FILES:
+        require_regular(repo / name, f"release documentation {name}", repo)
 
     codesign = verify_codesign(canonical_binary) if check_codesign else {
         "requested": "false", "status": "not_requested (no signing or signing verification performed)"
@@ -245,6 +254,8 @@ def prepare(repo: Path, binary: Path, output: Path, check_codesign: bool, dry_ru
             copy_tree(plugin / name, temporary / "Plugins" / "jev-optimizer" / name, files)
         for name in SCRIPTS:
             copy_file(repo / "scripts" / name, temporary / "scripts" / name, executable=True)
+        for name in DOC_FILES:
+            copy_file(repo / name, temporary / name)
         (temporary / "ROLLBACK.md").write_text(rollback_text(), encoding="utf-8")
         os.chmod(temporary / "ROLLBACK.md", 0o644)
         manifest = build_manifest(temporary, codesign)

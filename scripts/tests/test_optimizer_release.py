@@ -39,6 +39,10 @@ class OptimizerReleaseTests(unittest.TestCase):
             target = repo / "scripts" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        for name in release.DOC_FILES:
+            target = repo / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(name, encoding="utf-8")
         binary = repo / "build" / "keys"
         binary.parent.mkdir(parents=True)
         binary.write_bytes(b"fixture executable")
@@ -52,6 +56,7 @@ class OptimizerReleaseTests(unittest.TestCase):
             (repo / "Plugins" / "jev-optimizer" / "node_modules" / "secret.js").parent.mkdir(parents=True)
             (repo / "Plugins" / "jev-optimizer" / "node_modules" / "secret.js").write_text("private", encoding="utf-8")
             (repo / "Plugins" / "jev-optimizer" / ".env").write_text("credential", encoding="utf-8")
+            (repo / "docs" / "private-notes.md").write_text("private", encoding="utf-8")
             output = root / "release"
             release.prepare(repo, repo / "build" / "keys", output, check_codesign=False)
             self.assertTrue((output / "bin" / "keys").is_file())
@@ -62,6 +67,9 @@ class OptimizerReleaseTests(unittest.TestCase):
             manifest_text = (output / "release-manifest.json").read_text(encoding="utf-8")
             paths = {item["path"] for item in manifest["checksums"]}
             self.assertIn("bin/keys", paths)
+            self.assertTrue(set(release.DOC_FILES).issubset(paths))
+            self.assertFalse((output / "docs" / "private-notes.md").exists())
+            self.assertTrue((output / "Plugins" / "jev-optimizer" / "../../README.md").is_file())
             self.assertNotIn("release-manifest.json", paths)
             self.assertNotIn("fixture executable", manifest_text)
             self.assertNotIn("credential", manifest_text)
