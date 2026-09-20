@@ -573,7 +573,11 @@ final class OptimizerStore: @unchecked Sendable {
                 "budget": budgetObject(projectID, project: project),
             ]
         }
-        guard ledger.reservations.count < Self.maxEvents else { throw OptimizerStoreError.limit("reservation quota reached") }
+        // Every pending reservation must have room to settle, including work
+        // reserved concurrently by another process under this transaction lock.
+        guard ledger.reservations.count + ledger.budgetUsage.count < Self.maxEvents else {
+            throw OptimizerStoreError.limit("budget ledger quota reached")
+        }
         let used = budgetUsed(projectID)
         guard used.requests + requestCount <= project.maxRequests else { throw OptimizerStoreError.limit("project request budget exceeded") }
         // The controller reserves a per-call ceiling and passes this exact granted
@@ -846,7 +850,8 @@ final class OptimizerStore: @unchecked Sendable {
         for (projectID, age) in retention {
             ledger.events.removeAll { $0.projectID == projectID && now - $0.createdAt > age }
             ledger.tasks.removeAll { $0.projectID == projectID && now - $0.startedAt > age }
-            ledger.budgetUsage.removeAll { $0.projectID == projectID && now - $0.settledAt > age }
+            // Budgets are cumulative. Retention removes content/event history,
+            // never settled usage or uncertain outstanding reservations.
         }
         return originalEntries != content.entries.count || originalEvents != ledger.events.count || originalTasks != ledger.tasks.count || originalReservations != ledger.reservations.count || originalUsage != ledger.budgetUsage.count
     }

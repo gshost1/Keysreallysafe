@@ -32,8 +32,16 @@ interface Entry {
 
 const DEFAULT_ALLOWED = ['read_file', 'stat_file'];
 const FORBIDDEN_TOOL = /(write|edit|delete|remove|move|copy|deploy|publish|send|message|email|purchase|pay|credential|secret|shell|bash|exec|command)/i;
-const SENSITIVE_KEY = /(^|_)(authorization|credential|password|secret|token|api_?key)($|_)/i;
-const SENSITIVE_VALUE = /(?:^|\s)(?:Bearer\s+\S+|ksf_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{16,}|(?:api[_-]?key|password|secret|token)\s*[:=]\s*\S+)/i;
+const SENSITIVE_KEY = /(^|_)(authorization|credentials?|password|passwd|secret|token|api_?key|private_key)($|_)/i;
+// Conservative format heuristics, not a guarantee that arbitrary secrets can be discovered.
+const SENSITIVE_VALUES = [
+  /\bBearer\s+\S+/i,
+  /\b(?:ksf_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{20,})/,
+  /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+  /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})/,
+  /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/,
+  /\b(?:[a-z][a-z0-9_.-]*[_-])?(?:authorization|credentials?|password|passwd|secret|(?:access|refresh|auth)[_-]?token|token|api[_-]?key|private[_-]?key)\b["']?\s*[:=]\s*["']?[^\s"',}]+/i,
+];
 const SENSITIVE_PATH = /(?:^|\/)(?:\.env(?:\.[^/]*)?|\.ssh(?:\/.*)?|id_(?:rsa|ed25519)(?:\.[^/]*)?|credentials?(?:\.[^/]*)?|keychain(?:\.[^/]*)?|[^/]+\.(?:pem|key))$/i;
 const PATH_KEY = /(?:^|_)(?:file_?)?path$/i;
 
@@ -50,12 +58,18 @@ function stable(value: unknown): string {
 }
 
 function containsCredentials(value: unknown, seen = new Set<object>()): boolean {
-  if (typeof value === 'string') return SENSITIVE_VALUE.test(value);
+  if (typeof value === 'string') return SENSITIVE_VALUES.some((pattern) => pattern.test(value));
   if (value === null || typeof value !== 'object') return false;
   if (seen.has(value)) return true;
   seen.add(value);
   if (Array.isArray(value)) return value.some((item) => containsCredentials(item, seen));
-  return Object.entries(value as JsonRecord).some(([key, item]) => SENSITIVE_KEY.test(key) || containsCredentials(item, seen));
+  return Object.entries(value as JsonRecord).some(([key, item]) => {
+    const normalized = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').replace(/[-\s]/g, '_').toLowerCase();
+    const markedSensitive = (['sensitive', 'is_sensitive', 'contains_credentials', 'contains_secrets'].includes(normalized) && item === true) ||
+      (normalized === 'cacheable' && item === false) ||
+      (normalized === 'classification' && typeof item === 'string' && /^(?:secret|sensitive|confidential)$/i.test(item));
+    return markedSensitive || SENSITIVE_KEY.test(normalized) || containsCredentials(item, seen);
+  });
 }
 
 function cloneJson<T>(value: T): T | undefined {

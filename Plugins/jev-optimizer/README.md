@@ -136,8 +136,18 @@ npm run build
 npm run typecheck:hooks
 ```
 
+`npm run typecheck` checks the library and every non-hook test, including the
+provider transport, session adapter and fixture harness. Hook tests run under
+`npm test`; their static checking is included in `npm run typecheck:hooks`.
 Hook typechecking requires generated `types/claude-code.d.ts`: run
 `/plugin-types types` in a compatible Claude Code build. It is intentionally not
 redistributed. Tests use fake evaluator responses; a live host/gateway smoke test
 is still needed to validate a particular deployed Claude build and credentials.
+No local substitute declarations stand in for the private upstream hook contract.
+
+The gated `runLiveModelJudgeFixtures` harness accepts the Keys launcher's
+`KEYS_JEV_PROVIDER` selection (`typesafe` or `vercel-ai-gateway`) and paired scoped
+grant/endpoint. It requires `KEYS_JEV_LIVE_EVAL=1`; it uses the matching reviewed
+request adapter and rejects mismatched routes before dispatch. Automated tests
+inject a synthetic fetch transport and make no live evaluation calls.
 MIT licensed; original attribution is retained in `LICENSE`.

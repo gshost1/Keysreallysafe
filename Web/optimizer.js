@@ -28,6 +28,7 @@
     entryLoading: false,
     sessionGeneration: 0,
     expiryTimer: null,
+    locking: false,
   };
 
   const el = (tag, attrs, ...children) => {
@@ -129,15 +130,26 @@
     state.expiryTimer = null;
     const expiresAt = epochMillis(state.expiresAt);
     if (!state.unlocked || expiresAt == null) return;
+    const generation = state.sessionGeneration;
+    const sessionToken = state.sessionToken;
     const delay = Math.max(0, expiresAt - Date.now());
     state.expiryTimer = setTimeout(() => {
-      if (!state.unlocked) return;
+      if (!state.unlocked || state.sessionGeneration !== generation || state.sessionToken !== sessionToken) return;
+      if (Date.now() < expiresAt) { scheduleExpiry(); return; }
       clearSession();
       setAlert("Optimizer session expired. Unlock again to continue.", true);
     }, Math.min(delay, 2147483647));
   }
 
-  function clearSession() {
+  async function closeSession(sessionToken) {
+    if (!sessionToken) return;
+    try {
+      await request("/api/optimizer/close", { method: "POST", optimizer: sessionToken, headers: { "Content-Type": "application/json" }, body: "{}" });
+    } catch { /* The server may already have expired or revoked this exact session. */ }
+  }
+
+  function clearSession({ close = true } = {}) {
+    const sessionToken = state.sessionToken;
     state.sessionGeneration += 1;
     if (state.expiryTimer) clearTimeout(state.expiryTimer);
     state.expiryTimer = null;
@@ -175,16 +187,19 @@
     }
     $("optimizer-content").hidden = true;
     $("optimizer-locked").hidden = false;
-    $("optimizer-unlock").disabled = false;
+    $("optimizer-unlock").disabled = state.locking;
     $("optimizer-lock").hidden = true;
     $("optimizer-live-badge").hidden = true;
     $("optimizer-session").textContent = "Session inactive";
     $("optimizer-entry-detail").replaceChildren(el("div", { class: "optimizer-detail-empty" }, el("h2", { text: "Select an entry" }), el("p", { text: "Unlock to inspect stored content." })));
+    // Close only the discarded capability. A later unlock may already be in flight.
+    if (close) void closeSession(sessionToken);
   }
 
   function handleAuthError(error) {
-    if (error && error.stale) return true;
-    if (error && [401, 403, 423].includes(error.status)) {
+    if (error && (error.stale || error.sessionInvalidated)) return true;
+    if (error && error.payload && error.payload.error === "optimizer_locked") {
+      error.sessionInvalidated = true;
       clearSession();
       setAlert("Optimizer session expired or is locked. Unlock again to continue.", true);
       return true;
@@ -204,7 +219,7 @@
       try { data = JSON.parse(raw); } catch { data = { error: raw }; }
     }
     if (!response.ok) {
-      const error = new Error(data && data.error ? String(data.error) : `Request failed (${response.status})`);
+      const error = new Error(data && (data.message || data.error) ? String(data.message || data.error) : `Request failed (${response.status})`);
       error.status = response.status;
       error.payload = data;
       throw error;
@@ -240,15 +255,14 @@
       }
     } catch (error) {
       if (state.sessionGeneration !== generation || state.sessionToken !== sessionToken || !state.unlocked) return;
-      if ([401, 403, 423].includes(error.status)) {
-        clearSession();
-        setAlert("The optimizer session is locked or expired. Unlock again to continue.", true);
-      }
+      handleAuthError(error);
     }
   }
 
   async function unlock() {
+    if (state.locking || state.unlocked) return;
     const button = $("optimizer-unlock");
+    const generation = state.sessionGeneration;
     button.disabled = true;
     setAlert("Waiting for Touch ID…", true);
     try {
@@ -258,6 +272,7 @@
         body: JSON.stringify({ native_presence: true, jev_key: $("optimizer-jev-key").value.trim() || undefined }),
       });
       if (!data.token) throw new Error("Unlock did not return a session capability.");
+      if (state.sessionGeneration !== generation) { void closeSession(String(data.token)); return; }
       state.sessionGeneration += 1;
       state.sessionToken = String(data.token);
       state.expiresAt = data.expires_at || null;
@@ -270,26 +285,33 @@
       setAlert("");
       await loadData();
     } catch (error) {
+      if (state.sessionGeneration !== generation) return;
       if (!handleAuthError(error)) setAlert(error.message || "Touch ID could not unlock the optimizer.", true);
     } finally {
-      button.disabled = false;
+      button.disabled = state.locking;
     }
   }
 
   async function lock() {
+    if (state.locking) return;
+    const sessionToken = state.sessionToken;
+    state.locking = true;
+    clearSession({ close: false });
     try {
-      if (state.sessionToken) {
-        await request("/api/optimizer/lock", { method: "POST", optimizer: state.sessionToken, headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (sessionToken) {
+        await request("/api/optimizer/lock", { method: "POST", optimizer: sessionToken, headers: { "Content-Type": "application/json" }, body: "{}" });
       }
     } catch (error) {
-      if (!handleAuthError(error)) setAlert("The optimizer could not confirm its lock.", true);
+      await closeSession(sessionToken);
+      setAlert("The optimizer could not confirm its global lock. This page's session has been closed where possible.", true);
     } finally {
-      clearSession();
+      state.locking = false;
+      $("optimizer-unlock").disabled = false;
     }
   }
 
   async function rpc(operation, payload = {}) {
-    if (!state.sessionToken) throw Object.assign(new Error("Optimizer is locked."), { status: 423 });
+    if (!state.sessionToken) throw Object.assign(new Error("Optimizer is locked."), { status: 423, payload: { error: "optimizer_locked" } });
     const generation = state.sessionGeneration;
     const sessionToken = state.sessionToken;
     try {
@@ -469,7 +491,7 @@
     state.entryLoading = true;
     box.replaceChildren(el("p", { class: "optimizer-list-empty", text: "Loading entries…" }));
     try {
-      const data = await rpc("entry_list", { project_id: projectId(project), query: state.query, include_archived: state.includeArchived });
+      const data = await rpc("entry_list", { project_id: projectId(project), query: state.query.trim() || undefined, include_archived: state.includeArchived });
       state.entries = Array.isArray(data.entries) ? data.entries : [];
       if (state.selectedEntryId && !state.selectedCandidate && !state.entries.some((entry) => (entry.id || entry.entry_id) === state.selectedEntryId)) state.selectedEntryId = null;
       if (!state.selectedCandidate) state.selectedEntryData = null;
@@ -604,6 +626,16 @@
       el("p", { class: "optimizer-row-meta", text: `Source: ${text(entry.source, "Not recorded")} · captured from task: ${text(entry.captured_from_task_id, "Unknown")}` }),
       el("p", { class: "optimizer-row-meta", text: `Verification: ${Array.isArray(entry.verification) && entry.verification.length ? entry.verification.join(" · ") : "No verification evidence recorded"}` }),
     );
+    const metadata = el("dl", { class: "optimizer-candidate-metadata" });
+    const list = (values) => Array.isArray(values) && values.length ? values.join("\n") : "None recorded";
+    for (const [label, value] of [
+      ["Constraints", list(entry.constraints)],
+      ["Required tools", list(entry.required_tools)],
+      ["Dependencies", Object.entries(objectValue(entry.dependencies)).map(([path, fingerprint]) => `${path}: ${fingerprint}`).join("\n") || "None recorded"],
+      ["Tags", list(entry.tags)],
+      ["Expires", date(entry.expires_at)],
+    ]) metadata.append(el("dt", { text: label }), el("dd", { text: value }));
+    box.append(metadata);
     if (reviewState === "pending") {
       const actions = el("div", { class: "optimizer-form-actions-right" });
       for (const decision of ["reject", "approve"]) {
@@ -673,7 +705,7 @@
     grid.append(dependencyField, el("fieldset", {}, el("legend", { text: "Status" }), el("label", { class: "optimizer-check" }, el("input", { type: "checkbox", name: "pinned", checked: entry.pinned ? "checked" : null }), " Pin this entry")));
     grid.append(dependencyWrap);
     grid.lastChild.classList.add("optimizer-form-grid-wide");
-    form.append(grid, el("p", { class: "optimizer-form-help", text: "Content is sent only through the unlocked local optimizer session. Keep secrets and credentials out of stored entries." }));
+    form.append(grid, el("p", { class: "optimizer-form-help", text: "Content is sent only through the unlocked local optimizer session. Keep secrets and credentials out of stored entries. Project retention permanently deletes entries after the configured number of days since their last update, including pinned entries." }));
     const actionRight = el("div", { class: "optimizer-form-actions-right" });
     actionRight.append(el("button", { type: "button", class: "btn btn-row optimizer-danger", text: entry.archived ? "Restore" : "Archive", on: { click: () => archiveEntry(entry, !entry.archived) } }));
     actionRight.append(el("button", { type: "button", class: "btn btn-row optimizer-danger", text: "Delete", on: { click: () => deleteEntry(entry) } }));
@@ -689,7 +721,8 @@
       try {
         const persistentId = String(id).startsWith("new-") ? undefined : id;
         const expiry = data.get("expires_at");
-        await rpc("entry_save", { project_id: projectId(project), id: persistentId, kind: data.get("kind"), title: data.get("title"), content: data.get("content"), tags: String(data.get("tags") || "").split(",").map((value) => value.trim()).filter(Boolean), source: data.get("source"), constraints: String(data.get("constraints") || "").split("\n").map((value) => value.trim()).filter(Boolean), required_tools: String(data.get("required_tools") || "").split(",").map((value) => value.trim()).filter(Boolean), dependencies: dependenciesValue, verification: String(data.get("verification") || "").split("\n").map((value) => value.trim()).filter(Boolean), expires_at: expiry ? `${expiry}T00:00:00Z` : null, pinned: data.get("pinned") === "on" });
+        // entry_save replaces the entry; omitted source/expiry also clear prior values.
+        await rpc("entry_save", { project_id: projectId(project), id: persistentId, kind: data.get("kind"), title: data.get("title"), content: data.get("content"), tags: String(data.get("tags") || "").split(",").map((value) => value.trim()).filter(Boolean), source: String(data.get("source") || "").trim() || undefined, constraints: String(data.get("constraints") || "").split("\n").map((value) => value.trim()).filter(Boolean), required_tools: String(data.get("required_tools") || "").split(",").map((value) => value.trim()).filter(Boolean), dependencies: dependenciesValue, verification: String(data.get("verification") || "").split("\n").map((value) => value.trim()).filter(Boolean), expires_at: expiry ? `${expiry}T00:00:00Z` : undefined, pinned: data.get("pinned") === "on" });
         setAlert("Entry saved.");
         await loadEntries();
       } catch (error) { if (!handleAuthError(error)) setAlert(error.message || "Entry could not be saved.", true); }
@@ -729,6 +762,7 @@
     const mode = el("select", { name: "mode" }, el("option", { value: "off", text: "Off" }), el("option", { value: "observe", text: "Observe" }), el("option", { value: "suggest", text: "Suggest" }), el("option", { value: "auto", text: "Auto · pending validation", disabled: "disabled" })); mode.value = project && project.mode ? project.mode : "off";
     grid.append(el("label", {}, "Mode", mode));
     const retention = inputField("Retention (days)", "retention_days", project && project.retention_days, { type: "number", placeholder: "30" });
+    retention.append(el("span", { class: "optimizer-retention-help", text: "Permanently deletes entries after this many days since their last update, including pinned entries. Default: 30 days." }));
     grid.append(retention, inputField("Max optimizer requests", "max_requests", project && project.max_requests, { type: "number", placeholder: "1000" }), inputField("Max input tokens", "max_input_tokens", project && project.max_input_tokens, { type: "number", placeholder: "1000000" }));
     grid.lastChild.classList.add("optimizer-form-grid-wide");
     form.append(grid);
@@ -753,7 +787,7 @@
       event.preventDefault();
       const data = new FormData(form);
       const feature_flags = Object.fromEntries(FEATURE_FLAGS.map((name) => [name, form.elements[`feature_${name}`].checked]));
-      const payload = { id: projectId(project), name: data.get("name"), root: data.get("root"), mode: data.get("mode"), storage_enabled: storage.checked, provider_enabled: provider.checked, feature_flags, retention_days: numberOrNull(data.get("retention_days")) ?? 30, max_requests: numberOrNull(data.get("max_requests")) ?? 1000, max_input_tokens: numberOrNull(data.get("max_input_tokens")) ?? 1000000 };
+      const payload = { id: projectId(project) || undefined, name: data.get("name"), root: data.get("root"), mode: data.get("mode"), storage_enabled: storage.checked, provider_enabled: provider.checked, feature_flags, retention_days: numberOrNull(data.get("retention_days")) ?? 30, max_requests: numberOrNull(data.get("max_requests")) ?? 1000, max_input_tokens: numberOrNull(data.get("max_input_tokens")) ?? 1000000 };
       try { await rpc("project_save", payload); dialog.close(); setAlert("Project saved."); await loadProjects(); if (state.selectedProjectId) await loadEntries(); } catch (error) { if (!handleAuthError(error)) setAlert(error.message || "Project could not be saved.", true); }
     });
     dialog.replaceChildren(form);

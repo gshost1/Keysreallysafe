@@ -14,10 +14,15 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 
 
-def load_collector():
-    spec = importlib.util.spec_from_file_location("analytics_collector", HERE / "collector.py")
+def load_collector(bundle):
+    spec = importlib.util.spec_from_file_location("analytics_collector", bundle / "collector.py")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Validation must not leave bytecode caches inside the selected bundle.
+    previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
 
 
@@ -33,9 +38,13 @@ def validate(bundle=HERE, check_docker=False):
     if any(item["status"] == "blocker" for item in checks):
         return checks
 
-    dockerfile = (bundle / "Dockerfile").read_text(encoding="utf-8")
-    compose = (bundle / "compose.yaml").read_text(encoding="utf-8")
-    caddy = (bundle / "Caddyfile").read_text(encoding="utf-8")
+    try:
+        dockerfile = (bundle / "Dockerfile").read_text(encoding="utf-8")
+        compose = (bundle / "compose.yaml").read_text(encoding="utf-8")
+        caddy = (bundle / "Caddyfile").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        add("assets_readable", "blocker", "deployment assets must be readable UTF-8 text")
+        return checks
     add("container_nonroot", "pass" if "USER 10001:10001" in dockerfile else "blocker", "numeric non-root runtime user")
     add("persistent_database", "pass" if "analytics-data:/data" in compose else "blocker", "private named volume")
     add("domain_unset_gate", "pass" if "ANALYTICS_DOMAIN:?" in compose else "blocker", "hosting domain must be chosen explicitly")
@@ -48,9 +57,9 @@ def validate(bundle=HERE, check_docker=False):
     add("proxy_body_limit", "pass" if "max_size 16KB" in caddy else "blocker", "edge request-body cap")
     deadlines = ("max_header_size 16KB", "read_header 5s", "read_body 15s", "write 30s", "idle 30s")
     add("proxy_deadlines", "pass" if all(value in directives for value in deadlines) else "blocker", "bounded headers, body reads, writes and idle connections")
-    collector_section, proxy_section = compose.split("  proxy:", 1)
+    collector_section, proxy_marker, proxy_section = compose.partition("  proxy:")
     private_network = (
-        "internal: true" in compose
+        bool(proxy_marker) and "internal: true" in compose
         and "analytics-edge" not in collector_section
         and "analytics-edge" in proxy_section
         and "ports:" not in collector_section
@@ -58,14 +67,17 @@ def validate(bundle=HERE, check_docker=False):
     add("private_network", "pass" if private_network else "blocker", "collector is not host-published; proxy has an egress network")
     add("healthcheck", "pass" if "/healthz" in dockerfile and "/healthz" in caddy else "blocker", "content-free liveness route")
 
-    collector = load_collector()
-    with tempfile.TemporaryDirectory() as directory:
-        store = collector.Store(Path(directory) / "selftest.sqlite", max_reports=10)
-        try:
-            add("sqlite_open", "pass", "temporary private database opened")
-            add("empty_summary", "pass" if store.summary() == [] else "blocker", "fresh database contains no reports")
-        finally:
-            store.close()
+    try:
+        collector = load_collector(bundle)
+        with tempfile.TemporaryDirectory() as directory:
+            store = collector.Store(Path(directory) / "selftest.sqlite", max_reports=10)
+            try:
+                add("sqlite_open", "pass", "selected bundle opened a temporary private database")
+                add("empty_summary", "pass" if store.summary() == [] else "blocker", "fresh database contains no reports")
+            finally:
+                store.close()
+    except (Exception, SystemExit):
+        add("collector_self_test", "blocker", "selected bundle's collector could not complete the offline self-test")
 
     docker = shutil.which("docker")
     if not check_docker:

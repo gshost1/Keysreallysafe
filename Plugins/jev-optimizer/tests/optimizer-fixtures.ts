@@ -1,6 +1,9 @@
 import {
   evaluateOptimizerLabels,
+  JevClient,
   OptimizerEngine,
+  providerModel,
+  validScopedEndpoint,
   type JevAsker,
   type JevQuestions,
   type LabeledOptimizerCase,
@@ -135,14 +138,20 @@ export async function runOfflineStructuralFixtures() {
 }
 
 /** Live judge harness. It remains inert unless an explicit live flag and a real scoped Keys grant are present. */
-export async function runLiveModelJudgeFixtures(engine: OptimizerEngine, env: NodeJS.ProcessEnv = process.env) {
+export async function runLiveModelJudgeFixtures(env: NodeJS.ProcessEnv = process.env, fetcher?: typeof fetch) {
   const endpoint = env.AI_GATEWAY_BASE_URL ?? '';
+  const provider = env.KEYS_JEV_PROVIDER ?? 'vercel-ai-gateway';
   if (
-    env.KEYS_JEV_LIVE_EVAL !== '1' || env.KEYS_JEV_SCOPED_GRANT !== '1' || !env.AI_GATEWAY_API_KEY ||
-    !/^http:\/\/127\.0\.0\.1:12767\/[a-z0-9][a-z0-9._-]{0,127}\/v4\/ai\/evaluation-model$/.test(endpoint)
+    env.KEYS_JEV_LIVE_EVAL !== '1' || env.KEYS_JEV_SCOPED_GRANT !== '1' ||
+    !/^ksf_[0-9a-f]{8}_[A-Za-z0-9_-]{43}$/.test(env.AI_GATEWAY_API_KEY ?? '') ||
+    (provider !== 'typesafe' && provider !== 'vercel-ai-gateway') || !validScopedEndpoint(provider, endpoint)
   ) {
     throw new Error('live_scoped_grant_required');
   }
+  const engine = new OptimizerEngine({
+    asker: new JevClient({ provider, apiKey: env.AI_GATEWAY_API_KEY, baseUrl: endpoint, model: providerModel(provider), fetch: fetcher }),
+    modelId: providerModel(provider),
+  });
   const failures: string[] = [];
   for (const fixture of OPTIMIZER_FIXTURES) {
     const actual = (await engine.handle(fixture.input)).reason;

@@ -1,10 +1,19 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 enum OptimizerAccessError: Error {
+    case locked
     case denied
     case invalid
     case unavailable
+}
+
+/// Only the runner can prove it failed before launching the engine. Once the
+/// child starts, a transport/parse/timeout failure cannot prove no provider call.
+enum OptimizerEngineFailure: Error {
+    case notStarted
+    case startedOutcomeUnknown
 }
 
 /// Optional content access has its own presence-approved capability. The dashboard's
@@ -28,6 +37,9 @@ final class OptimizerController: @unchecked Sendable {
     private var sessions: [Data: Session] = [:]
     private var decisionCache: [Data: (expires: Date, result: [String: Any])] = [:]
     private var failures: [String: (count: Int, until: Date)] = [:]
+    // Numeric settlement facts only; no decrypted content or credentials. A
+    // crash can lose these facts, in which case persisted reservations stay held.
+    private var deferredSettlements: [String: [String: Any]] = [:]
     private var generation: UInt64 = 0
     private let loadKey: @Sendable () throws -> Data
     private let deleteKey: @Sendable () throws -> Void
@@ -145,10 +157,11 @@ final class OptimizerController: @unchecked Sendable {
             let key = try loadKey()
             mutex.lock()
             defer { mutex.unlock() }
-            guard generation == startGeneration else { throw OptimizerAccessError.denied }
+            guard generation == startGeneration else { throw OptimizerAccessError.locked }
             expire(now: now)
             guard sessions.count < 16 else { throw AppError.usage("too many optimizer sessions; lock and reconnect") }
             try store.unlock(key: key)
+            flushSettlementsLocked()
             if let project {
                 _ = try store.perform(operation: "project_get", payload: ["project_id": project], projectScope: project, allowWrite: false)
             }
@@ -200,7 +213,7 @@ final class OptimizerController: @unchecked Sendable {
         if sessions.isEmpty { store.lock() }
         decisionCache.removeAll()
         mutex.unlock()
-        guard let session else { throw OptimizerAccessError.denied }
+        guard let session else { throw OptimizerAccessError.locked }
         if let id = session.grantID { _ = try? service.revokeGrant(id: id, caller: "optimizer_disconnect") }
     }
 
@@ -210,7 +223,7 @@ final class OptimizerController: @unchecked Sendable {
         expire(now: now)
         guard token.hasPrefix("kso_"), let session = sessions[GrantToken.hash(token)],
               session.generation == generation, session.expires > now, store.isUnlocked else {
-            throw OptimizerAccessError.denied
+            throw OptimizerAccessError.locked
         }
         return session
     }
@@ -415,16 +428,30 @@ final class OptimizerController: @unchecked Sendable {
                                            "KEYS_JEV_SCOPED_GRANT": "1", "KEYS_JEV_PROVIDER": adapter.id])
         } catch {
             recordFailure(projectID)
-            // It may have dispatched before failing. Retain its reservation and
-            // report unknown cost rather than making the failure free.
-            _ = try? store.perform(operation: "event_record", payload: [
+            let notStarted: Bool
+            if case OptimizerEngineFailure.notStarted = error { notStarted = true } else { notStarted = false }
+            if notStarted, let reservationID = reservation["reservation_id"] as? String {
+                settleKnownOutcome(["project_id": projectID, "task_id": taskID,
+                    "reservation_id": reservationID, "dispatched": false])
+            }
+            // All other errors may follow a billed provider call. Keep their
+            // persisted reservation and unknown usage, including across locks.
+            var event: [String: Any] = [
                 "project_id": projectID, "task_id": taskID, "event_id": UUID().uuidString,
                 "source": "optimizer", "kind": "jev_decision", "model": adapter.modelID,
                 "status": "engine_unavailable", "latency_ms": max(0, Int(Date().timeIntervalSince(started) * 1000)),
-            ], projectScope: session.project, allowWrite: true)
+            ]
+            if notStarted {
+                event.merge(["input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "reported_cost_usd": 0]) { _, new in new }
+            }
+            _ = try? store.perform(operation: "event_record", payload: event, projectScope: session.project, allowWrite: true)
             return abstain("engine_unavailable")
         }
         let usage = result["usage"] as? [String: Any] ?? [:]
+        let noRequests: Bool
+        if let count = usage["requests"] as? NSNumber, CFGetTypeID(count) != CFBooleanGetTypeID(), count.doubleValue == 0 {
+            noRequests = true
+        } else { noRequests = false }
         if ["provider_unavailable", "evaluation_failed", "invalid_evaluation", "engine_unavailable"].contains(result["reason"] as? String ?? "") {
             recordFailure(projectID)
         } else {
@@ -432,9 +459,9 @@ final class OptimizerController: @unchecked Sendable {
         }
         if let reservationID = reservation["reservation_id"] as? String {
             var settlement: [String: Any] = ["project_id": projectID, "task_id": taskID,
-                "reservation_id": reservationID, "dispatched": (usage["requests"] as? Int ?? 1) > 0]
+                "reservation_id": reservationID, "dispatched": !noRequests]
             if let actual = usage["actual_input_tokens"] { settlement["actual_input_tokens"] = actual }
-            _ = try store.perform(operation: "task_settle", payload: settlement, projectScope: session.project, allowWrite: true)
+            settleKnownOutcome(settlement)
         }
         var event: [String: Any] = [
             "project_id": projectID, "task_id": taskID, "event_id": UUID().uuidString,
@@ -446,6 +473,9 @@ final class OptimizerController: @unchecked Sendable {
                                   ("optimizer_cost_usd", "reported_cost_usd")] {
             if let value = usage[source] { event[target] = value }
         }
+        if noRequests {
+            event.merge(["input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "reported_cost_usd": 0]) { _, new in new }
+        }
         _ = try store.perform(operation: "event_record", payload: event, projectScope: session.project, allowWrite: true)
         if ["suggested", "selected", "observed"].contains(result["status"] as? String ?? "") {
             mutex.lock()
@@ -455,6 +485,33 @@ final class OptimizerController: @unchecked Sendable {
             mutex.unlock()
         }
         return result
+    }
+
+    private func settleKnownOutcome(_ payload: [String: Any]) {
+        mutex.lock()
+        defer { mutex.unlock() }
+        guard let id = payload["reservation_id"] as? String else { return }
+        deferredSettlements[id] = payload
+        flushSettlementsLocked()
+    }
+
+    /// Called with the controller mutex held, using the same lock order as lock()
+    /// and unlock(). Never unlocks the store or releases an unknown reservation.
+    private func flushSettlementsLocked() {
+        guard store.isUnlocked else { return }
+        for (id, payload) in deferredSettlements {
+            do {
+                _ = try store.perform(operation: "task_settle", payload: payload,
+                                      projectScope: payload["project_id"] as? String)
+                deferredSettlements.removeValue(forKey: id)
+            } catch OptimizerStoreError.notFound {
+                // A reset/deletion or an already committed settlement removed it.
+                deferredSettlements.removeValue(forKey: id)
+            } catch {
+                // Keep known facts for a later unlock; persistent usage remains
+                // conservatively reserved while storage is unavailable.
+            }
+        }
     }
 
     private func recordFailure(_ project: String) {
@@ -479,10 +536,12 @@ enum OptimizerFiles {
     static func fingerprints(root: String, relativePaths: [String], fingerprint: (Data) throws -> String = { data in
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }) throws -> [String: String] {
-        guard root.hasPrefix("/"), relativePaths.count <= 64 else { return [:] }
+        guard root.hasPrefix("/") else { return [:] }
         let base = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL
         var result: [String: String] = [:]
-        for path in relativePaths {
+        // A shortlist contains at most eight entries with 128 dependencies each.
+        // Bound excess input without making one large entry discard every hash.
+        for path in Set(relativePaths).sorted().prefix(8 * 128) {
             let parts = path.split(separator: "/").map(String.init)
             guard !path.hasPrefix("/"), !parts.contains(".."), !parts.isEmpty,
                   !parts.contains(where: { $0.hasPrefix(".env") || [".git", ".ssh", ".aws", ".codex", ".claude"].contains($0) }),
@@ -503,18 +562,29 @@ enum OptimizerFiles {
 
 enum OptimizerProcess {
     static func run(_ request: [String: Any], _ environment: [String: String]) throws -> [String: Any] {
-        let root = try WebRoot.find().deletingLastPathComponent()
+        let root: URL
+        do { root = try WebRoot.find().deletingLastPathComponent() }
+        catch { throw OptimizerEngineFailure.notStarted }
         let script = root.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js")
-        guard FileManager.default.isReadableFile(atPath: script.path) else { throw OptimizerAccessError.unavailable }
-        let process = Process()
+        guard FileManager.default.isReadableFile(atPath: script.path) else { throw OptimizerEngineFailure.notStarted }
         let nodePaths = [ProcessInfo.processInfo.environment["KEYS_OPTIMIZER_NODE"],
                          FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/node").path,
                          "/opt/homebrew/bin/node", "/usr/local/bin/node"].compactMap { $0 }
         guard let node = nodePaths.first(where: { $0.hasPrefix("/") && FileManager.default.isExecutableFile(atPath: $0) }) else {
-            throw OptimizerAccessError.unavailable
+            throw OptimizerEngineFailure.notStarted
         }
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [script.path]
+        return try run(request, environment, executable: URL(fileURLWithPath: node), arguments: [script.path])
+    }
+
+    /// Explicit executable injection is used by isolated runner regressions.
+    static func run(_ request: [String: Any], _ environment: [String: String],
+                    executable: URL, arguments: [String]) throws -> [String: Any] {
+        let bytes: Data
+        do { bytes = try JSONValue.data(request) }
+        catch { throw OptimizerEngineFailure.notStarted }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
         var env = ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"]
         environment.forEach { env[$0.key] = $0.value }
         process.environment = env
@@ -522,22 +592,36 @@ enum OptimizerProcess {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        try process.run()
+        defer {
+            try? input.fileHandleForReading.close()
+            try? input.fileHandleForWriting.close()
+            try? output.fileHandleForReading.close()
+            try? output.fileHandleForWriting.close()
+        }
+        // Protect this exact pipe, without changing the app-wide signal policy.
+        // Broken pipes then reach FileHandle's throwing write as EPIPE.
+        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            throw OptimizerEngineFailure.notStarted
+        }
+        do { try process.run() }
+        catch { throw OptimizerEngineFailure.notStarted }
         let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + 25, execute: timeout)
         defer { timeout.cancel(); if process.isRunning { process.terminate() } }
-        try input.fileHandleForWriting.write(contentsOf: JSONValue.data(request))
-        try input.fileHandleForWriting.close()
-        var data = Data()
-        while let chunk = try output.fileHandleForReading.read(upToCount: 16_384), !chunk.isEmpty {
-            data.append(chunk)
-            guard data.count <= 256_000 else { throw OptimizerAccessError.invalid }
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0,
-              let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            throw OptimizerAccessError.unavailable
-        }
-        return result
+        do {
+            try input.fileHandleForWriting.write(contentsOf: bytes)
+            try input.fileHandleForWriting.close()
+            var data = Data()
+            while let chunk = try output.fileHandleForReading.read(upToCount: 16_384), !chunk.isEmpty {
+                data.append(chunk)
+                guard data.count <= 256_000 else { throw OptimizerAccessError.invalid }
+            }
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                throw OptimizerAccessError.unavailable
+            }
+            return result
+        } catch { throw OptimizerEngineFailure.startedOutcomeUnknown }
     }
 }

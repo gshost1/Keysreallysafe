@@ -714,7 +714,10 @@ export class OptimizerEngine {
       reason: 'tool_candidates_ranked',
       selected_ids: [...new Set([...essentialIds, ...ranked.selected.map((entry) => entry.id)])],
       preserved_essential_ids: essentialIds,
-      full_catalog_fallback: true,
+      evaluated_ids: listed.candidates.map((entry) => entry.id),
+      // A lexical prefilter or candidate bound cannot justify hiding unevaluated tools.
+      full_catalog_fallback: request.mode === 'observe' || listed.candidates.length !== optional.length ||
+        !Array.isArray(request.raw.candidates) || request.raw.candidates.length !== request.candidates.length,
       usage: ranked.evaluation.usage,
     };
   }

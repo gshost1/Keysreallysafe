@@ -229,6 +229,32 @@ final class ProductAnalyticsTests: XCTestCase {
         XCTAssertTrue(try reports(analytics).isEmpty)
     }
 
+    /// Fixtures/analytics/report-golden.json is also parsed by Analytics/test_collector.py;
+    /// a field or counter added on one side only fails one of the two suites.
+    func testUploadedReportMatchesSharedCollectorGolden() throws {
+        let data = try Data(contentsOf: Fixtures.root.appendingPathComponent("analytics/report-golden.json"))
+        let golden = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let decoded = try JSONDecoder().decode(ProductAnalytics.Report.self, from: data)
+        XCTAssertEqual(Set(decoded.counts.keys), Set(ProductAnalyticsEvent.allCases.map(\.rawValue)))
+        XCTAssertEqual(decoded.schema_version, 1)
+        XCTAssertEqual(decoded.consent_version, ProductAnalytics.consentVersion)
+
+        let (_, clock, transport, analytics) = try harness()
+        try analytics.setEnabled(true, consentVersion: 1)
+        for event in ProductAnalyticsEvent.allCases { analytics.record(event) }
+        clock.advance(86_400)
+        analytics.flushCompletedReports()
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(transport.calls.first).data) as? [String: Any])
+        XCTAssertEqual(Set(sent.keys), Set(golden.keys))
+        XCTAssertEqual(Set(try XCTUnwrap(sent["counts"] as? [String: Int]).keys), Set(try XCTUnwrap(golden["counts"] as? [String: Int]).keys))
+        XCTAssertEqual(sent["day"] as? String, golden["day"] as? String, "The fixed test clock is the golden's UTC day")
+        for key in ["schema_version", "consent_version"] { XCTAssertEqual(sent[key] as? Int, golden[key] as? Int, key) }
+        for key in ["report_id", "day", "app_version", "architecture"] { XCTAssertNotNil(sent[key] as? String, key) }
+        XCTAssertNotNil(sent["os_major"] as? Int)
+        let identifier = try XCTUnwrap(sent["report_id"] as? String)
+        XCTAssertEqual(identifier, UUID(uuidString: identifier)?.uuidString.lowercased(), "Collector requires canonical lowercase UUIDs")
+    }
+
     func testInvalidEndpointCannotReceiveConsent() throws {
         let (db, _, transport, _) = try harness()
         for raw in ["http://analytics.example/v1/reports", "https://user:password@analytics.example/v1/reports",

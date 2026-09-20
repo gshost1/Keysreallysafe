@@ -4,9 +4,12 @@
 
 The offline result is a structural check of production engine logic. It validates semantic selection, recognized dependency and expiry rejection, exact duplicate assessment, model routing with complete cost/capability inputs, repetition/call limits, and report generation. Transport framing is tested separately with bounded fake stdio peers. This is not evidence of general model quality, production savings, human quality, or safe unattended automation.
 
+The harness imports the compiled engine from `Plugins/jev-optimizer/dist`, a build product that is not committed. On a fresh checkout, build it once first (this installs development dependencies from the npm registry; the benchmark itself stays offline). Without it the benchmark exits with status 2 and prints this same instruction instead of a Node module error.
+
 Run the offline benchmark and its tests:
 
 ```sh
+(cd Plugins/jev-optimizer && npm ci && npm run build)
 python3 scripts/benchmark-optimizer.py
 python3 -m unittest scripts/tests/test_optimizer_benchmark.py
 ```

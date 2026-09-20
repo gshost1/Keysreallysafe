@@ -203,6 +203,142 @@ final class OptimizerAPITests: XCTestCase {
         XCTAssertNil(candidate?["revisions"])
         XCTAssertEqual(candidate?["content"] as? String, "Run tests and verify the exit status")
     }
+
+    func testDashboardJSONCreateListSaveAndClearOptionalFields() throws {
+        let h = try harness(), token = try unlock(h)
+        func send(_ json: String) throws -> (Int, [String: Any]) {
+            let response = h.handler.handle(HTTPRequest(method: "POST", path: "/api/optimizer/rpc", query: [:],
+                headers: ["host": "127.0.0.1:12765", "x-ksf-token": h.handler.originToken, "x-ksf-optimizer": token],
+                body: Data(json.utf8), serverPort: 12765))
+            return (response.status, try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any]))
+        }
+        let created = try send(#"{"operation":"project_save","payload":{"name":"UI fixture","root":"/tmp/fixture","mode":"suggest","storage_enabled":true,"provider_enabled":false,"retention_days":30,"max_requests":1000,"max_input_tokens":1000000,"feature_flags":{}}}"#)
+        XCTAssertEqual(created.0, 200)
+        let project = try XCTUnwrap(created.1["id"] as? String)
+        XCTAssertEqual(try send("""
+            {"operation":"entry_list","payload":{"project_id":"\(project)","kind":"all","include_archived":false}}
+            """).0, 200)
+        let saved = try send("""
+            {"operation":"entry_save","payload":{"project_id":"\(project)","kind":"memory","title":"UI memory","content":"Run fixture tests","tags":[],"constraints":[],"required_tools":[],"dependencies":{},"verification":[],"pinned":false}}
+            """)
+        XCTAssertEqual(saved.0, 200, "\(saved.1)")
+        let entry = try XCTUnwrap(saved.1["id"] as? String)
+        XCTAssertTrue(saved.1["source"] is NSNull)
+        XCTAssertTrue(saved.1["expires_at"] is NSNull)
+        XCTAssertEqual(try send("""
+            {"operation":"entry_save","payload":{"id":"\(entry)","project_id":"\(project)","kind":"memory","title":"UI memory","content":"Run fixture tests","source":"fixture evidence","expires_at":"2099-01-01T00:00:00Z"}}
+            """).0, 200)
+        let cleared = try send("""
+            {"operation":"entry_save","payload":{"id":"\(entry)","project_id":"\(project)","kind":"memory","title":"UI memory","content":"Run fixture tests"}}
+            """)
+        XCTAssertEqual(cleared.0, 200)
+        XCTAssertTrue(cleared.1["source"] is NSNull)
+        XCTAssertTrue(cleared.1["expires_at"] is NSNull)
+    }
+
+    func testPolicyAndCapabilityDenialsPreserveSessionButLocksReportAuthenticationLoss() throws {
+        let h = try harness(), admin = try unlock(h), project = try addProject(h, admin)
+        let reader = try unlock(h, project: project, writable: false)
+        let capability = try rpc(h, reader, "entry_save", ["project_id": project])
+        XCTAssertEqual(capability.0, 403)
+        XCTAssertEqual(capability.1["error"] as? String, "optimizer_access_denied")
+        XCTAssertEqual(try rpc(h, reader, "summary").0, 200)
+        var disabled = try rpc(h, admin, "project_get", ["project_id": project]).1
+        disabled["storage_enabled"] = false
+        XCTAssertEqual(try rpc(h, admin, "project_save", disabled).0, 200)
+        let policy = try rpc(h, admin, "entry_save", ["project_id": project])
+        XCTAssertEqual(policy.0, 403)
+        XCTAssertEqual(policy.1["error"] as? String, "optimizer_access_denied")
+        XCTAssertEqual(try rpc(h, admin, "summary").0, 200)
+        h.optimizer.store.lock()
+        XCTAssertEqual(try rpc(h, admin, "summary").1["error"] as? String, "optimizer_locked")
+        XCTAssertEqual(try rpc(h, "kso_missing", "summary").1["error"] as? String, "optimizer_locked")
+    }
+
+    private func budget(_ h: Harness, project: String, token: String) throws -> [String: Any] {
+        let task = try XCTUnwrap(h.optimizer.authorize(token).taskID)
+        let reserved = try h.optimizer.store.perform(operation: "task_reserve", payload: [
+            "project_id": project, "task_id": task, "request_count": 1, "estimated_input_tokens": 1])
+        return try XCTUnwrap(h.optimizer.store.perform(operation: "task_settle", payload: [
+            "project_id": project, "task_id": task, "reservation_id": reserved["reservation_id"]!, "dispatched": false])["budget"] as? [String: Any])
+    }
+
+    func testPreStartFailuresRefundBudgetButUnknownStartedFailuresRemainReserved() throws {
+        for neverStarted in [true, false] {
+            let h = try harness(engine: { _, _ in
+                if neverStarted {
+                    return try OptimizerProcess.run([:], [:], executable: URL(fileURLWithPath: "/missing/synthetic-engine"), arguments: [])
+                }
+                throw OptimizerEngineFailure.startedOutcomeUnknown
+            })
+            let admin = try unlock(h), project = try addProject(h, admin, provider: true)
+            let token = try jevSession(h, project: project)
+            let response = try rpc(h, token, "assess_memory", ["project_id": project, "request_text": "fixture"])
+            XCTAssertEqual(response.1["reason"] as? String, "engine_unavailable")
+            let after = try budget(h, project: project, token: token)
+            XCTAssertEqual(after["requests_used"] as? Int, neverStarted ? 0 : 1)
+            XCTAssertEqual(after["input_tokens_used"] as? Int, neverStarted ? 0 : 30_000)
+            let event = try XCTUnwrap((try rpc(h, token, "event_list", ["project_id": project]).1["events"] as? [[String: Any]])?.first)
+            if neverStarted { XCTAssertEqual(event["reported_cost_usd"] as? Double, 0) }
+            else { XCTAssertTrue(event["reported_cost_usd"] is NSNull) }
+        }
+    }
+
+    func testZeroRequestAbstentionRecordsExplicitZeroButUnknownCalledUsageStaysUnknown() throws {
+        for count in [0, 1] {
+            let h = try harness(engine: { _, _ in ["status": "abstained", "reason": "fixture", "usage": ["requests": count]] })
+            let admin = try unlock(h), project = try addProject(h, admin, provider: true)
+            let token = try jevSession(h, project: project)
+            XCTAssertEqual(try rpc(h, token, "route_model", ["project_id": project, "request_text": "fixture"]).0, 200)
+            let event = try XCTUnwrap((try rpc(h, token, "event_list", ["project_id": project]).1["events"] as? [[String: Any]])?.first)
+            for field in ["input_tokens", "output_tokens", "reported_cost_usd"] {
+                if count == 0 { XCTAssertEqual(event[field] as? Double, 0) }
+                else { XCTAssertTrue(event[field] is NSNull) }
+            }
+            XCTAssertEqual(try budget(h, project: project, token: token)["requests_used"] as? Int, count)
+        }
+    }
+
+    func testLockDuringEngineReconcilesOnlyKnownOutcomesAfterUnlock() throws {
+        for outcome in ["not_started", "known", "unknown"] {
+            let reference = EngineControllerReference()
+            let h = try harness(engine: { _, _ in
+                reference.controller?.lock()
+                if outcome == "not_started" { throw OptimizerEngineFailure.notStarted }
+                if outcome == "unknown" { throw OptimizerEngineFailure.startedOutcomeUnknown }
+                return EngineCapture.success
+            })
+            reference.controller = h.optimizer
+            let admin = try unlock(h), project = try addProject(h, admin, provider: true)
+            let token = try jevSession(h, project: project)
+            let response = try rpc(h, token, "assess_memory", ["project_id": project, "request_text": "fixture"])
+            XCTAssertEqual(response.0, 403)
+            XCTAssertEqual(response.1["error"] as? String, "optimizer_locked")
+            let reopened = try unlock(h, project: project)
+            let usage = try budget(h, project: project, token: reopened)
+            XCTAssertEqual(usage["requests_used"] as? Int, outcome == "not_started" ? 0 : 1)
+            XCTAssertEqual(usage["input_tokens_used"] as? Int, outcome == "known" ? 100 : outcome == "unknown" ? 30_000 : 0)
+        }
+    }
+
+    func testLargeDependencySetDoesNotPoisonAnotherContextCandidate() throws {
+        let h = try harness(), admin = try unlock(h), project = try addProject(h, admin)
+        try Data("fixture".utf8).write(to: h.directory.appendingPathComponent("source.txt"))
+        let hashes = try rpc(h, admin, "dependency_fingerprints", ["project_id": project, "paths": ["source.txt"]]).1["dependencies"] as! [String: String]
+        let many = Dictionary(uniqueKeysWithValues: (0..<128).map { ("missing-\($0)", "unknown") })
+        for (title, dependencies) in [("fixture large", many), ("fixture source", hashes)] {
+            XCTAssertEqual(try rpc(h, admin, "entry_save", ["project_id": project, "kind": "memory", "title": title,
+                "content": "fixture evidence", "dependencies": dependencies]).0, 200)
+        }
+        let context = try rpc(h, admin, "context_prepare", ["project_id": project, "query": "fixture"])
+        XCTAssertEqual(context.0, 200)
+        XCTAssertEqual((context.1["entries"] as? [[String: Any]])?.map { $0["title"] as? String }, ["fixture source"])
+        XCTAssertEqual((context.1["excluded"] as? [String: Int])?["dependencies"], 1)
+    }
+}
+
+private final class EngineControllerReference: @unchecked Sendable {
+    var controller: OptimizerController?
 }
 
 private final class EngineCapture: @unchecked Sendable {

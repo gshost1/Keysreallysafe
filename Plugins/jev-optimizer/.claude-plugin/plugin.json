@@ -4,6 +4,11 @@
   "description": "Bounded Jev context optimization through the KeysReallySafe gateway.",
   "license": "MIT",
   "userConfig": {
+    "goal": {
+      "type": "string",
+      "title": "Compaction goal",
+      "description": "Optional task goal used when evaluating context relevance. Leave unset to infer the goal from the latest user prompts."
+    },
     "apiKey": {
       "type": "string",
       "title": "Standalone Vercel key",

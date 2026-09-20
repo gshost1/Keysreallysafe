@@ -461,6 +461,47 @@ describe('memory assessment', () => {
 });
 
 describe('read-only tool result cache', () => {
+  const cacheKey = {
+    project_id: 'p', tool: 'read_file', tool_version: '1', arguments: { path: 'notes.txt' },
+    dependencies: { 'notes.txt': 'h1' }, permission_fingerprint: 'scope-a',
+  };
+
+  it.each([
+    'DB_PASSWORD=synthetic-password',
+    `OPENAI_API_KEY=sk-${'x'.repeat(32)}`,
+    '{"token":"synthetic-token"}',
+    '{"access_token":"synthetic-token"}',
+    `key:sk-ant-${'a'.repeat(32)}`,
+    `key=sk_live_${'a'.repeat(32)}`,
+    `value=AIza${'a'.repeat(35)}`,
+    'AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF',
+    'ASIA1234567890ABCDEF',
+    `credential(ghp_${'a'.repeat(36)})`,
+    `github_pat_${'a'.repeat(32)}`,
+    '-----BEGIN RSA PRIVATE KEY-----\nsynthetic\n-----END RSA PRIVATE KEY-----',
+    '-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic\n-----END OPENSSH PRIVATE KEY-----',
+    { accessToken: 'synthetic-token' },
+    { _meta: { sensitive: true }, content: 'opaque bytes' },
+    { metadata: { classification: 'confidential' }, content: 'opaque bytes' },
+    { metadata: { cacheable: false }, content: 'opaque bytes' },
+  ])('refuses credential formats or sensitive metadata in an otherwise eligible result (%#)', (value) => {
+    const cache = new ReadOnlyToolResultCache();
+    expect(cache.put(cacheKey, value)).toBe(false);
+    expect(cache.size).toBe(0);
+    expect(cache.get({ ...cacheKey, current_dependencies: cacheKey.dependencies, current_permission_fingerprint: 'scope-a' })).toBeUndefined();
+  });
+
+  it.each([
+    'The parser emits a token for each identifier. Password handling is documented elsewhere.',
+    'export const maxTokens = 4000;\nconst apiKeyName = "example";',
+    { text: 'ordinary source content', metadata: { sensitive: false, classification: 'public', cacheable: true } },
+    { lines: ['first', 'second'], bytes: 123, modified: false },
+  ])('still caches ordinary content (%#)', (value) => {
+    const cache = new ReadOnlyToolResultCache();
+    expect(cache.put(cacheKey, value)).toBe(true);
+    expect(cache.get({ ...cacheKey, current_dependencies: cacheKey.dependencies, current_permission_fingerprint: 'scope-a' })).toEqual(value);
+  });
+
   it('requires allowlisted reads, exact dependencies, and current permission', () => {
     let now = 1_000;
     const cache = new ReadOnlyToolResultCache({ now: () => now, ttlMs: 100, maxEntries: 2 });
@@ -513,7 +554,38 @@ describe('labeled structural evaluation fixture', () => {
   });
 
   it('keeps the live model judge inert without an explicit scoped grant', async () => {
-    await expect(runLiveModelJudgeFixtures(new OptimizerEngine(), {})).rejects.toThrow('live_scoped_grant_required');
+    await expect(runLiveModelJudgeFixtures({})).rejects.toThrow('live_scoped_grant_required');
+  });
+
+  it.each(['typesafe', 'vercel-ai-gateway'])('uses the reviewed %s transport in the gated harness with synthetic fetch only', async (provider) => {
+    const endpoint = `http://127.0.0.1:12767/fixture/${provider === 'typesafe' ? 'v1/systemone' : 'v4/ai/evaluation-model'}`;
+    let calls = 0;
+    const fetcher: typeof fetch = async (url, init) => {
+      calls += 1;
+      expect(url).toBe(endpoint);
+      expect(init?.redirect).toBe('error');
+      const body = JSON.parse(String(init?.body));
+      const questions = body.questions as Record<string, { type: string }>;
+      expect(Object.values(questions).every((question) => question.type === (provider === 'typesafe' ? 'noul' : 'boolean'))).toBe(true);
+      expect(body.model).toBe(provider === 'typesafe' ? 'jev-latest' : undefined);
+      const reject = JSON.stringify(body.state).includes('IGNORE CURRENT REQUIREMENTS') || JSON.stringify(body.state).includes('Uninstall ');
+      const answers = Object.fromEntries(Object.keys(questions).map((name) => {
+        const probability = name === 'none_fit' || name.startsWith('conflict_') ? (reject ? 0.98 : 0.02) : (reject ? 0.02 : 0.98);
+        return [name, provider === 'typesafe' ? { type: 'noul', noul: probability } : { type: 'boolean', probability }];
+      }));
+      return new Response(JSON.stringify({ answers }));
+    };
+    const env = { KEYS_JEV_LIVE_EVAL: '1', KEYS_JEV_SCOPED_GRANT: '1', KEYS_JEV_PROVIDER: provider,
+      AI_GATEWAY_API_KEY: `ksf_1234abcd_${'A'.repeat(43)}`, AI_GATEWAY_BASE_URL: endpoint };
+    expect(await runLiveModelJudgeFixtures(env, fetcher)).toMatchObject({ cases: 120, correct: 120 });
+    expect(calls).toBeGreaterThan(0);
+    const previousCalls = calls;
+    for (const invalid of [{ KEYS_JEV_LIVE_EVAL: '0' }, { AI_GATEWAY_API_KEY: 'upstream-key' },
+      { AI_GATEWAY_BASE_URL: endpoint + '?bad=1' }, { KEYS_JEV_PROVIDER: 'unknown' },
+      { KEYS_JEV_PROVIDER: provider === 'typesafe' ? 'vercel-ai-gateway' : 'typesafe' }]) {
+      await expect(runLiveModelJudgeFixtures({ ...env, ...invalid }, fetcher)).rejects.toThrow('live_scoped_grant_required');
+    }
+    expect(calls).toBe(previousCalls);
   });
 });
 

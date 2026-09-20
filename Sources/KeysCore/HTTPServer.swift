@@ -474,15 +474,19 @@ final class APIHandler: @unchecked Sendable {
             default:
                 return HTTPResponse.json(404, ["error": "not_found"])
             }
-        } catch OptimizerAccessError.denied {
+        } catch OptimizerAccessError.locked {
             return HTTPResponse.json(403, ["error": "optimizer_locked", "message": "Unlock or reconnect the optimizer session."])
+        } catch OptimizerAccessError.denied {
+            return HTTPResponse.json(403, ["error": "optimizer_access_denied"])
         } catch OptimizerAccessError.invalid {
             return HTTPResponse.json(400, ["error": "invalid_optimizer_request"])
         } catch OptimizerAccessError.unavailable {
             return HTTPResponse.json(503, ["error": "optimizer_unavailable"])
         } catch let error as OptimizerStoreError {
             switch error {
-            case .locked, .denied:
+            case .locked:
+                return HTTPResponse.json(403, ["error": "optimizer_locked", "message": "Unlock or reconnect the optimizer session."])
+            case .denied:
                 return HTTPResponse.json(403, ["error": "optimizer_access_denied"])
             case .notFound:
                 return HTTPResponse.json(404, ["error": "optimizer_not_found"])

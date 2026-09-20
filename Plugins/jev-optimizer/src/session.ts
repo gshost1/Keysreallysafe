@@ -1,5 +1,6 @@
 import { OptimizerEngine, type OptimizerResult } from './optimizer.js';
 import { ReadOnlyToolResultCache } from './optimizer-tools.js';
+import { createHash } from 'node:crypto';
 
 type JsonRecord = Record<string, unknown>;
 type Mode = 'observe' | 'suggest';
@@ -23,6 +24,8 @@ export interface SessionTask {
   dependencyHashes?: Record<string, string>;
   permissionFingerprint: string;
   taskRequirements?: JsonRecord;
+  /** Tool names that the host requires for this task, independent of ranking. */
+  requiredTools?: string[];
 }
 
 export interface ToolCatalogItem {
@@ -33,6 +36,8 @@ export interface ToolCatalogItem {
   mandatory?: boolean;
   permissionOrCoordination?: boolean;
   readOnly?: boolean;
+  /** Host-classified sensitive reads always use the normal executor without caching. */
+  sensitive?: boolean;
   /** Loaded only when a host explicitly requests this selected tool's detail. */
   load?: () => Promise<JsonRecord | undefined>;
 }
@@ -62,6 +67,8 @@ export interface Advice {
   tools: OptimizerResult;
   model?: OptimizerResult;
   toolIds: string[];
+  /** Ranked advisory IDs; never authorization to hide the full catalog. */
+  suggestedToolIds: string[];
   fullCatalogFallback: boolean;
   usage: { requests: number; cacheHits: number; unknown: boolean };
 }
@@ -122,7 +129,7 @@ function usage(results: OptimizerResult[]): Advice['usage'] {
   for (const result of results) {
     requests += typeof result.usage.requests === 'number' ? result.usage.requests : 0;
     cacheHits += typeof result.usage.cache_hits === 'number' ? result.usage.cache_hits : 0;
-    if (result.usage.actual_input_tokens === undefined || result.usage.actual_output_tokens === undefined) unknown = true;
+    if (result.usage.requests > 0 && (result.usage.actual_input_tokens === undefined || result.usage.actual_output_tokens === undefined)) unknown = true;
   }
   return { requests, cacheHits, unknown };
 }
@@ -145,28 +152,34 @@ function expiredAt(value: unknown): boolean {
 }
 function expired(policy: AdapterPolicy): boolean { return expiredAt(policy.policy.expires_at); }
 function policyMode(policy: AdapterPolicy): Mode { return policy.mode === 'observe' ? 'observe' : 'suggest'; }
+function binding(value: unknown): string { return createHash('sha256').update(stable(value)).digest('hex'); }
+const MAX_ADVICE = 64;
+const ADVICE_TTL_MS = 5 * 60_000;
 
 /** Host-embedded orchestration. It suggests only; hosts decide when to apply anything. */
 export class OptimizerSessionAdapter {
   private readonly cache: ReadOnlyToolResultCache;
-  private readonly advice = new Map<string, { plans: Set<string>; models: Set<string>; binding: string }>();
+  private readonly advice = new Map<string, { plans: Set<string>; models: Set<string>; binding: string; expiresAt: number }>();
   constructor(private readonly engine: OptimizerEngine, private readonly host: AdapterHost, cache = new ReadOnlyToolResultCache()) { this.cache = cache; }
 
   async advise(task: SessionTask): Promise<Advice | { reason: 'invalid_task' | 'policy_unavailable' }> {
     if (!validTask(task)) return { reason: 'invalid_task' };
+    this.pruneAdvice();
+    this.advice.delete(`${task.projectId}\u0000${task.taskId}`);
     let policy: AdapterPolicy;
     let plans: JsonRecord[];
     let catalog: ToolCatalogItem[];
     try { [policy, plans, catalog] = await Promise.all([this.host.loadPolicy(task), this.host.loadPlans(task), this.host.loadTools(task)]); } catch { return { reason: 'policy_unavailable' }; }
     const mode = policyMode(policy);
     const constraints = strings(task.currentConstraints, 64); const dependencies = hashes(task.dependencyHashes);
-    if (!constraints || !dependencies || !record(policy.policy)) return { reason: 'invalid_task' };
+    const requiredTools = strings(task.requiredTools, 64);
+    if (!constraints || !dependencies || !requiredTools || !record(policy.policy)) return { reason: 'invalid_task' };
     const completeCatalog = catalog.filter((item) => text(item.id, 256) && text(item.name, 256) && text(item.version, 256));
     if (completeCatalog.length !== catalog.length) return { reason: 'invalid_task' };
     const mandatory = completeCatalog.filter((tool) => tool.mandatory || tool.permissionOrCoordination).map((tool) => tool.id);
     const advisoryCatalog = completeCatalog.filter((tool) => !tool.mandatory && !tool.permissionOrCoordination);
     const toolMetadataValid = advisoryCatalog.every((tool) => tool.description === undefined || Boolean(text(tool.description, 2_000)));
-    const boundedTools = toolMetadataValid ? boundedCandidates(advisoryCatalog.slice(0, 64).map((tool) => ({ id: tool.id, name: tool.name, version: tool.version, description: tool.description ?? '', project_id: task.projectId }))) : undefined;
+    const boundedTools = toolMetadataValid ? boundedCandidates(advisoryCatalog.map((tool) => ({ id: tool.id, name: tool.name, version: tool.version, description: tool.description ?? '', project_id: task.projectId }))) : undefined;
     const boundedPlans = boundedCandidates(plans);
     const base = {
       project_id: task.projectId, task_id: task.taskId, request_text: task.requestText,
@@ -188,12 +201,21 @@ export class OptimizerSessionAdapter {
     }
     const known = new Set(completeCatalog.map((tool) => tool.id));
     const suggested = ids(toolsResult).filter((id) => known.has(id));
-    const fullCatalogFallback = toolsResult.reason !== 'tool_candidates_ranked';
-    const toolIds = fullCatalogFallback ? completeCatalog.map((tool) => tool.id) : [...new Set([...mandatory, ...suggested])];
-    const modelIds = modelResult && typeof modelResult.selected_id === 'string' ? [modelResult.selected_id] : [];
+    const fullCatalogFallback = toolsResult.reason !== 'tool_candidates_ranked' || toolsResult.full_catalog_fallback !== false;
+    toolsResult = { ...toolsResult, full_catalog_fallback: fullCatalogFallback };
+    const selectedPlans = new Set(ids(plansResult));
+    const requiredNames = new Set([...requiredTools, ...plans.filter((plan) => selectedPlans.has(String(plan.id))).flatMap((plan) => strings(plan.required_tools, 64) ?? [])].map((name) => name.trim().toLowerCase()));
+    const requiredIds = completeCatalog.filter((tool) => requiredNames.has(tool.name.trim().toLowerCase())).map((tool) => tool.id);
+    const toolIds = fullCatalogFallback ? completeCatalog.map((tool) => tool.id) : [...new Set([...mandatory, ...requiredIds, ...suggested])];
+    const modelIds = modelResult?.reason === 'lower_estimated_cost_with_quality_gate' && typeof modelResult.selected_id === 'string' ? [modelResult.selected_id] : [];
     this.advice.set(`${task.projectId}\u0000${task.taskId}`, { plans: new Set(ids(plansResult)), models: new Set(modelIds),
-      binding: stable({ task: { requestText: task.requestText, constraints, dependencies, permission: task.permissionFingerprint, requirements: task.taskRequirements ?? {} }, policy, plans, catalog, models: modelsSnapshot }) });
-    return { mode, plans: plansResult, tools: toolsResult, model: modelResult, toolIds, fullCatalogFallback, usage: usage([plansResult, toolsResult, ...(modelResult ? [modelResult] : [])]) };
+      binding: binding({ task: { requestText: task.requestText, constraints, dependencies, permission: task.permissionFingerprint, requirements: task.taskRequirements ?? {}, requiredTools }, policy, plans, catalog, models: modelsSnapshot }), expiresAt: Date.now() + ADVICE_TTL_MS });
+    while (this.advice.size > MAX_ADVICE) this.advice.delete(this.advice.keys().next().value!);
+    return { mode, plans: plansResult, tools: toolsResult, model: modelResult, toolIds, suggestedToolIds: suggested, fullCatalogFallback, usage: usage([plansResult, toolsResult, ...(modelResult ? [modelResult] : [])]) };
+  }
+
+  private pruneAdvice(): void {
+    for (const [key, value] of this.advice) if (value.expiresAt <= Date.now()) this.advice.delete(key);
   }
 
   async loadSelectedTool(task: SessionTask, id: string): Promise<JsonRecord | undefined> {
@@ -209,7 +231,7 @@ export class OptimizerSessionAdapter {
     let policy: AdapterPolicy;
     try { policy = await this.host.loadPolicy(task); } catch { return this.normalExecute(tool, arguments_, host); }
     if (!policy.projectEnabled || !policy.providerEnabled) return this.normalExecute(tool, arguments_, host);
-    if (tool.readOnly !== true) return this.normalExecute(tool, arguments_, host);
+    if (tool.readOnly !== true || tool.sensitive === true) return this.normalExecute(tool, arguments_, host);
     let key: { project_id: string; tool: string; tool_version: string; arguments: JsonRecord; dependencies: Record<string, string>; permission_fingerprint: string };
     try {
       const dependencies = hashes(await host.dependencyFingerprints(arguments_));
@@ -233,6 +255,7 @@ export class OptimizerSessionAdapter {
   }
 
   async applySuggestedPlan(task: SessionTask, planId: string, confirmed: boolean): Promise<boolean> {
+    this.pruneAdvice();
     let policy: AdapterPolicy; try { policy = await this.host.loadPolicy(task); } catch { return false; }
     const remembered = this.advice.get(`${task.projectId}\u0000${task.taskId}`);
     if (!confirmed || !policy.projectEnabled || !policy.providerEnabled || expired(policy) || policyMode(policy) !== 'suggest' || !policy.allowPlanApplication || !this.host.applyPlan || !validTask(task) || !text(planId, 256) || !remembered?.plans.has(planId)) return false;
@@ -241,18 +264,19 @@ export class OptimizerSessionAdapter {
       const currentConstraints = strings(task.currentConstraints, 64); const currentDependencies = hashes(task.dependencyHashes);
       if (!currentConstraints || !currentDependencies) return false;
       const [plans, catalog, models] = await Promise.all([this.host.loadPlans(task), this.host.loadTools(task), this.host.loadModels ? this.host.loadModels(task) : Promise.resolve([])]);
-      if (remembered.binding !== stable({ task: { requestText: task.requestText, constraints: currentConstraints, dependencies: currentDependencies, permission: task.permissionFingerprint, requirements: task.taskRequirements ?? {} }, policy, plans, catalog, models })) return false;
+      if (remembered.binding !== binding({ task: { requestText: task.requestText, constraints: currentConstraints, dependencies: currentDependencies, permission: task.permissionFingerprint, requirements: task.taskRequirements ?? {}, requiredTools: strings(task.requiredTools, 64) }, policy, plans, catalog, models })) return false;
       const plan = plans.find((item) => item.id === planId && item.project_id === task.projectId);
       if (!plan) return false;
       if (expiredAt(plan.expires_at)) return false;
       const planConstraints = strings(plan.constraints, 64); const planDependencies = hashes(plan.dependencies);
       if (!planConstraints || !planDependencies || planConstraints.some((value) => !currentConstraints.includes(value)) || Object.entries(planDependencies).some(([path, hash]) => currentDependencies[path] !== hash)) return false;
       const finalPolicy = await this.host.loadPolicy(task);
-      if (stable(finalPolicy) !== policyIdentity || expired(finalPolicy) || expiredAt(plan.expires_at)) return false;
+      if (stable(finalPolicy) !== policyIdentity || expired(finalPolicy) || expiredAt(plan.expires_at) || remembered.expiresAt <= Date.now()) return false;
     } catch { return false; }
     await this.host.applyPlan({ projectId: task.projectId, taskId: task.taskId, planId }); return true;
   }
   async applySuggestedModel(task: SessionTask, modelId: string, confirmed: boolean): Promise<boolean> {
+    this.pruneAdvice();
     let policy: AdapterPolicy; try { policy = await this.host.loadPolicy(task); } catch { return false; }
     const remembered = this.advice.get(`${task.projectId}\u0000${task.taskId}`);
     if (!confirmed || !policy.projectEnabled || !policy.providerEnabled || expired(policy) || policyMode(policy) !== 'suggest' || !policy.allowModelApplication || !this.host.applyModel || !this.host.loadModels || !validTask(task) || !text(modelId, 256) || !remembered?.models.has(modelId)) return false;
@@ -260,10 +284,10 @@ export class OptimizerSessionAdapter {
     try {
       const [plans, catalog, models] = await Promise.all([this.host.loadPlans(task), this.host.loadTools(task), this.host.loadModels(task)]);
       const constraints = strings(task.currentConstraints, 64); const dependencies = hashes(task.dependencyHashes);
-      if (!constraints || !dependencies || remembered.binding !== stable({ task: { requestText: task.requestText, constraints, dependencies, permission: task.permissionFingerprint, requirements: task.taskRequirements ?? {} }, policy, plans, catalog, models })) return false;
+      if (!constraints || !dependencies || remembered.binding !== binding({ task: { requestText: task.requestText, constraints, dependencies, permission: task.permissionFingerprint, requirements: task.taskRequirements ?? {}, requiredTools: strings(task.requiredTools, 64) }, policy, plans, catalog, models })) return false;
       if (!models.some((model) => model.id === modelId) || models.some((model) => model.explicitly_selected === true)) return false;
       const finalPolicy = await this.host.loadPolicy(task);
-      if (stable(finalPolicy) !== policyIdentity || expired(finalPolicy)) return false;
+      if (stable(finalPolicy) !== policyIdentity || expired(finalPolicy) || remembered.expiresAt <= Date.now()) return false;
     } catch { return false; }
     await this.host.applyModel({ projectId: task.projectId, taskId: task.taskId, modelId }); return true;
   }

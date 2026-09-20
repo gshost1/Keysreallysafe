@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.hooks.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["tests/hook*.test.ts", "types"]
+}

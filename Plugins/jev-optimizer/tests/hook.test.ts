@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SessionMessage } from 'claude-code';
 import {
   compactSession,
   decisionLog,
@@ -8,8 +9,6 @@ import {
   toSessionMessages,
 } from '../hooks/vercel-compaction.ts';
 import { applyDecisions, collectToolCalls, decideCall, type Message } from '../src/index.js';
-
-type SessionMessage = Message & { handle?: string };
 
 function message(role: Message['role'], text: string, extra: Partial<SessionMessage> = {}): SessionMessage {
   return { role, text, toolUses: [], ...extra };

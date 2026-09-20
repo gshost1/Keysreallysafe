@@ -65,6 +65,10 @@
 .optimizer-review-state { text-transform: capitalize; }
 .optimizer-candidate-detail { padding: 10px 0; }
 .optimizer-candidate-body { margin: 10px 0; padding: 10px; border: 1px solid var(--line); border-radius: 5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.optimizer-candidate-metadata { margin: 12px 0; font-size: 12px; }
+.optimizer-candidate-metadata dt { margin-top: 8px; color: var(--fg-2); font-weight: 500; }
+.optimizer-candidate-metadata dd { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.optimizer-retention-help { display: block; margin-top: 5px; color: var(--fg-3); line-height: 16px; }
 .optimizer-library-controls label, .optimizer-form label { display: block; color: var(--fg-2); font-size: 11px; }
 .optimizer-library-controls input, .optimizer-library-controls select, .optimizer-form input, .optimizer-form select, .optimizer-form textarea { display: block; width: 100%; margin-top: 4px; padding: 5px 7px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--bg); color: var(--fg); }
 .optimizer-library-controls input, .optimizer-library-controls select, .optimizer-form input, .optimizer-form select { height: 29px; }

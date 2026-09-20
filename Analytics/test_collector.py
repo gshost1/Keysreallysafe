@@ -76,6 +76,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(self.post(json.dumps(changed).encode()), 409)
         self.assertEqual(len(self.server.store.summary()), 3)
 
+    def test_shared_golden_report_matches_the_app_schema(self):
+        # Also decoded by ProductAnalyticsTests.swift; drift on either side fails a suite.
+        body = (Path(__file__).resolve().parents[1] / "Fixtures" / "analytics" / "report-golden.json").read_bytes()
+        value = collector.parse_report(body, today=dt.date(2026, 5, 19))
+        self.assertEqual(set(value), set(collector.FIELDS))
+        self.assertEqual(set(value["counts"]), set(collector.COUNT_KEYS))
+        self.assertEqual(self.server.store.insert(value), "accepted")
+        self.assertEqual(self.server.store.insert(value), "duplicate")
+
     def test_rejects_unknowns_bool_bad_days_and_free_text(self):
         tomorrow = (dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=1)).isoformat()
         old = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=8)).isoformat()

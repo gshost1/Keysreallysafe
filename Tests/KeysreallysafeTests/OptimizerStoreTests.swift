@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import XCTest
 @testable import KeysCore
 
@@ -229,6 +230,93 @@ final class OptimizerStoreTests: XCTestCase {
         let taskAggregate = try XCTUnwrap(task["aggregate"] as? [String: Any])
         XCTAssertEqual((taskAggregate["optimizer"] as? [String: Any])?["input_tokens_known"] as? Int, 10)
         XCTAssertEqual((taskAggregate["client"] as? [String: Any])?["input_tokens_known"] as? Int, 100)
+    }
+
+    private func rewriteLedger(_ directory: URL, change: (inout [String: Any]) throws -> Void) throws {
+        let path = directory.appendingPathComponent("optimizer-ledger.gcm")
+        let symmetricKey = SymmetricKey(data: key)
+        let bytes = try AES.GCM.open(AES.GCM.SealedBox(combined: Data(contentsOf: path)), using: symmetricKey)
+        var ledger = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        try change(&ledger)
+        try XCTUnwrap(AES.GCM.seal(JSONValue.data(ledger), using: symmetricKey).combined).write(to: path)
+    }
+
+    func testCumulativeSettledAndUnknownUsageSurviveRetentionAndReopen() throws {
+        let directory = try TempDir.make(), store = try OptimizerStore(directory: directory)
+        try store.unlock(key: key); try addProject(store)
+        _ = try store.perform(operation: "task_start", payload: ["project_id": "project-a", "id": "task-a", "client": "test"])
+        for id in ["settled", "unknown"] {
+            _ = try store.perform(operation: "task_reserve", payload: ["project_id": "project-a", "task_id": "task-a",
+                "reservation_id": id, "request_count": 1, "estimated_input_tokens": 100])
+        }
+        _ = try store.perform(operation: "task_settle", payload: ["project_id": "project-a", "task_id": "task-a",
+            "reservation_id": "settled", "dispatched": true, "actual_input_tokens": 75])
+        store.lock()
+        try rewriteLedger(directory) { ledger in
+            for (key, timestamp) in [("reservations", "createdAt"), ("budgetUsage", "settledAt")] {
+                var rows = try XCTUnwrap(ledger[key] as? [[String: Any]])
+                for index in rows.indices { rows[index][timestamp] = Int64(Date().addingTimeInterval(-31 * 86_400).timeIntervalSince1970 * 1_000) }
+                ledger[key] = rows
+            }
+        }
+        // A new controller/store has no in-memory outcome facts after a crash.
+        let reopened = try OptimizerStore(directory: directory)
+        try reopened.unlock(key: key)
+        let pending = try reopened.perform(operation: "task_reserve", payload: ["project_id": "project-a", "task_id": "task-a",
+            "reservation_id": "unknown", "request_count": 1, "estimated_input_tokens": 100])
+        let budget = try XCTUnwrap(pending["budget"] as? [String: Any])
+        XCTAssertEqual(budget["requests_used"] as? Int, 2)
+        XCTAssertEqual(budget["input_tokens_used"] as? Int, 175)
+        let released = try reopened.perform(operation: "task_settle", payload: ["project_id": "project-a", "task_id": "task-a",
+            "reservation_id": "unknown", "dispatched": false])
+        XCTAssertEqual((released["budget"] as? [String: Any])?["input_tokens_used"] as? Int, 75)
+    }
+
+    func testConcurrentReservationsReserveSettlementCapacityBeforeDispatch() throws {
+        let directory = try TempDir.make(), first = try OptimizerStore(directory: directory)
+        try first.unlock(key: key)
+        var configuration = project()
+        configuration["max_requests"] = 100_000
+        configuration["max_input_tokens"] = 100_000_000
+        _ = try first.perform(operation: "project_save", payload: configuration)
+        _ = try first.perform(operation: "task_start", payload: ["project_id": "project-a", "id": "task-a", "client": "test"])
+        _ = try first.perform(operation: "task_reserve", payload: ["project_id": "project-a", "task_id": "task-a",
+            "reservation_id": "seed", "request_count": 1, "estimated_input_tokens": 1])
+        _ = try first.perform(operation: "task_settle", payload: ["project_id": "project-a", "task_id": "task-a",
+            "reservation_id": "seed", "dispatched": true])
+        first.lock()
+        try rewriteLedger(directory) { ledger in
+            let row = try XCTUnwrap((ledger["budgetUsage"] as? [[String: Any]])?.first)
+            ledger["budgetUsage"] = Array(repeating: row, count: 9_999)
+        }
+        try first.unlock(key: key)
+        let second = try OptimizerStore(directory: directory)
+        try second.unlock(key: key)
+        let group = DispatchGroup(), errors = LockedErrors()
+        for (store, id) in [(first, "one"), (second, "two")] {
+            group.enter()
+            DispatchQueue.global().async {
+                defer { group.leave() }
+                do {
+                    _ = try store.perform(operation: "task_reserve", payload: ["project_id": "project-a", "task_id": "task-a",
+                        "reservation_id": id, "request_count": 1, "estimated_input_tokens": 1])
+                } catch { errors.append(error) }
+            }
+        }
+        group.wait()
+        XCTAssertEqual(errors.values.count, 1, "Only one settlement slot remains")
+        guard let error = errors.values.first, case OptimizerStoreError.limit = error else { return XCTFail("Expected reservation-time ledger limit") }
+        var settlements = 0
+        for id in ["one", "two"] {
+            do {
+                _ = try first.perform(operation: "task_settle", payload: ["project_id": "project-a", "task_id": "task-a",
+                    "reservation_id": id, "dispatched": true])
+                settlements += 1
+            } catch OptimizerStoreError.notFound { }
+        }
+        XCTAssertEqual(settlements, 1, "The admitted request always has a settlement slot")
+        XCTAssertThrowsError(try first.perform(operation: "task_reserve", payload: ["project_id": "project-a", "task_id": "task-a",
+            "reservation_id": "full", "request_count": 1, "estimated_input_tokens": 1]))
     }
 }
 

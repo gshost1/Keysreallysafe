@@ -42,3 +42,12 @@ jobs:
           node --check Web/app.js
           node --check Web/optimizer.js
           node --check Web/analytics.js
+      - name: Install the pinned browser (plugin Playwright dependency)
+        working-directory: Plugins/jev-optimizer
+        run: npx --no-install playwright install chromium
+      - name: Check dashboard workflows in a real browser (synthetic local fixtures only)
+        env:
+          NODE_PATH: ${{ github.workspace }}/Plugins/jev-optimizer/node_modules
+        run: |
+          node scripts/tests/test_optimizer_workflow_ui.cjs
+          node scripts/tests/test_analytics_ui.cjs

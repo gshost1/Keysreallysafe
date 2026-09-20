@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -100,10 +101,23 @@ class BenchmarkTests(unittest.TestCase):
             benchmark.os.environ,
             {"PATH": "/bin", "HOME": "/tmp/home", "NODE_OPTIONS": "--inspect", "AI_GATEWAY_API_KEY": "secret"},
             clear=True,
-        ), mock.patch.object(benchmark.subprocess, "run", return_value=completed) as run:
+        ), mock.patch.object(benchmark, "ENGINE_BUILD", benchmark.HARNESS), \
+                mock.patch.object(benchmark.subprocess, "run", return_value=completed) as run:
             benchmark.offline([benchmark.CASES[0]])
         environment = run.call_args.kwargs["env"]
         self.assertEqual(environment, {"PATH": "/bin", "HOME": "/tmp/home"})
+
+    def test_fresh_checkout_without_compiled_engine_gets_an_actionable_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "dist" / "index.js"
+            with mock.patch.object(benchmark, "ENGINE_BUILD", missing), \
+                    mock.patch.object(benchmark.subprocess, "run") as run, \
+                    mock.patch.object(benchmark.sys, "stderr", new=io.StringIO()) as stderr:
+                with self.assertRaises(benchmark.MissingEngineBuild):
+                    benchmark.offline([benchmark.CASES[0]])
+                self.assertEqual(benchmark.main([]), 2)
+            run.assert_not_called()
+            self.assertIn("npm ci && npm run build", stderr.getvalue())
 
     def test_dry_run_does_not_launch_and_minutes_are_bounded(self):
         report = benchmark.run(self.args(repetitions=3, max_calls=7, dry_run=True, live=True))

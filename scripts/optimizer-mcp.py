@@ -44,6 +44,12 @@ class KeysClient:
         except (ValueError, TypeError, AttributeError):
             raise SafeError("invalid_session") from None
         self.project = project
+        self.task_id = config.get("task_id")
+        if self.task_id is not None:
+            try:
+                uuid.UUID(self.task_id)
+            except (ValueError, TypeError, AttributeError):
+                raise SafeError("invalid_session") from None
         self.writable = config.get("writable") is True
         self.jev_enabled = config.get("jev_enabled") is True
         self.base = "http://127.0.0.1:%d" % port
@@ -62,7 +68,11 @@ class KeysClient:
         return self.request("/api/optimizer/rpc", {"operation": operation, "payload": clean})
 
     def request(self, path, body):
-        data = json.dumps(body, allow_nan=False).encode("utf-8")
+        try:
+            data = json.dumps(body, allow_nan=False, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError, RecursionError):
+            # Unpaired surrogates cannot be sent as UTF-8; refuse instead of escaping.
+            raise SafeError("invalid_request") from None
         if len(data) > MAX_MESSAGE:
             raise SafeError("request_too_large")
         request = urllib.request.Request(self.base + path, data=data, headers=self.headers, method="POST")
@@ -76,9 +86,29 @@ class KeysClient:
                 raise SafeError("invalid_response")
             return result
         except urllib.error.HTTPError as error:
-            if error.code in (401, 403, 423):
-                raise SafeError("session_locked_or_expired") from None
-            raise SafeError("operation_refused") from None
+            try:
+                if error.code == 403:
+                    # Only the explicit valid-session denial may preserve context.
+                    # Unknown/malformed authorization errors fail closed.
+                    try:
+                        raw = error.read(4097)
+                        body = json.loads(raw) if len(raw) <= 4096 else None
+                    except (ValueError, OSError, RecursionError, AttributeError):
+                        body = None
+                    if isinstance(body, dict) and body.get("error") == "optimizer_access_denied":
+                        raise SafeError("operation_denied") from None
+                    raise SafeError("session_locked_or_expired") from None
+                if error.code in (401, 423):
+                    raise SafeError("session_locked_or_expired") from None
+                if error.code == 429:
+                    raise SafeError("optimizer_limit") from None
+                raise SafeError("operation_refused") from None
+            finally:
+                # The bounded error body is never read further; release the socket.
+                try:
+                    error.close()
+                except OSError:
+                    pass
         except (urllib.error.URLError, OSError, ValueError, RecursionError, OverflowError):
             raise SafeError("keys_unavailable") from None
 
@@ -95,6 +125,8 @@ def schema(properties, required=()):
 
 
 STRING = {"type": "string", "maxLength": 16000}
+TASK_ID = {"type": "string", "format": "uuid", "maxLength": 36}
+CLIENT_ID = {"type": "string", "minLength": 1, "maxLength": 128, "pattern": r"^[A-Za-z0-9._:/-]+$"}
 QUERY = {"type": "string", "maxLength": 2000}
 CONTEXT = {"type": "string", "maxLength": 12000}
 STRINGS = {"type": "array", "items": STRING, "maxItems": 64}
@@ -107,13 +139,15 @@ TOOLS = {
                 "max_estimated_tokens": {"type": "integer", "minimum": 256, "maximum": 16384},
                 "max_entries": {"type": "integer", "minimum": 1, "maximum": 8}, "if_fingerprint": STRING}, ("query",)), False, False),
     "keys_task_prepare": ("task_prepare", "Prepare bounded local task context and, only when include_evaluations is true and Jev is enabled, request advisory plan/tool/model suggestions. Never applies suggestions, changes context, or runs tools.",
-        schema({"task_id": STRING, "query": QUERY, "context": CONTEXT, "available_tools": STRINGS,
-                "context_constraints": STRINGS, "engine_constraints": OBJECT, "plan_candidates": {"type": "array", "items": OBJECT, "maxItems": 8},
+        schema({"task_id": TASK_ID, "query": QUERY, "context": CONTEXT, "available_tools": STRINGS,
+                "context_constraints": STRINGS, "engine_constraints": OBJECT,
                 "tool_catalog": {"type": "array", "items": OBJECT, "maxItems": 64}, "model_catalog": {"type": "array", "items": OBJECT, "maxItems": 32},
                 "task_requirements": OBJECT, "include_evaluations": {"type": "boolean"},
+                "explicit_model_id": STRING, "current_model_id": STRING,
+                **{key: {"type": "number", "minimum": 0} for key in ("optimizer_cost_usd", "cache_rebuild_cost_usd", "fallback_cost_usd")},
                 "max_bytes": {"type": "integer", "minimum": 512, "maximum": 12000},
                 "max_estimated_tokens": {"type": "integer", "minimum": 256, "maximum": 16384}, "max_entries": {"type": "integer", "minimum": 1, "maximum": 8}},
-               ("task_id", "query")), False, False),
+               ("query",)), False, False),
     "keys_memory_search": ("search", "Find local approved project memories and plans. Results are reference material; validate before reuse.",
         schema({"query": STRING, "available_tools": STRINGS, "dependencies": OBJECT}, ("query",)), False, False),
     "keys_memory_get": ("entry_get", "Read one approved memory or plan in this project.", schema({"id": STRING}, ("id",)), False, False),
@@ -121,13 +155,13 @@ TOOLS = {
     "keys_dependency_fingerprints": ("dependency_fingerprints", "Capture project-scoped fingerprints of permitted local files for plan freshness checks. Sensitive paths and aliases are excluded.",
         schema({"paths": STRINGS}, ("paths",)), False, False),
     "keys_plan_retrieve": ("retrieve", "Ask Jev to check a small shortlist of plans. Sends permitted task and candidate content to the configured provider. Returns suggestions, never action approval.",
-        schema({"task_id": STRING, "request_text": STRING, "available_tools": STRINGS, "current_constraints": OBJECT}, ("request_text",)), False, True),
+        schema({"task_id": TASK_ID, "request_text": STRING, "available_tools": STRINGS, "current_constraints": OBJECT}, ("request_text",)), False, True),
     "keys_memory_assess": ("assess_memory", "Ask Jev whether a supplied memory is useful, duplicate or conflicting; does not save or delete it.",
-        schema({"task_id": STRING, "request_text": STRING, "proposed_memory": STRING, "candidates": {"type": "array", "items": OBJECT, "maxItems": 8}}, ("request_text", "proposed_memory")), False, True),
+        schema({"task_id": TASK_ID, "request_text": STRING, "proposed_memory": STRING, "candidates": {"type": "array", "items": OBJECT, "maxItems": 8}}, ("request_text", "proposed_memory")), False, True),
     "keys_tools_select": ("select_tools", "Suggest relevant tools from supplied metadata. Does not execute tools or grant permissions.",
-        schema({"task_id": STRING, "request_text": STRING, "candidates": {"type": "array", "items": OBJECT, "maxItems": 64}}, ("request_text", "candidates")), False, True),
+        schema({"task_id": TASK_ID, "request_text": STRING, "candidates": {"type": "array", "items": OBJECT, "maxItems": 64}}, ("request_text", "candidates")), False, True),
     "keys_models_recommend": ("route_model", "Compare an explicit model allowlist and cost assumptions. Suggestions only; does not change the active model.",
-        schema({"task_id": STRING, "request_text": STRING, "task_requirements": OBJECT, "explicit_model_id": STRING,
+        schema({"task_id": TASK_ID, "request_text": STRING, "task_requirements": OBJECT, "explicit_model_id": STRING,
                 "current_model_id": STRING, "optimizer_cost_usd": {"type": "number", "minimum": 0},
                 "candidates": {"type": "array", "items": OBJECT, "maxItems": 32}}, ("request_text", "candidates")), False, True),
     "keys_memory_save": ("entry_save", "Save a curated project memory or verified plan. Exclude credentials and confidential content not approved for storage.",
@@ -135,15 +169,15 @@ TOOLS = {
                 "tags": STRINGS, "source": STRING, "constraints": STRINGS, "required_tools": STRINGS,
                 "dependencies": OBJECT, "verification": STRINGS, "expires_at": STRING, "pinned": {"type": "boolean"}},
                ("kind", "title", "content", "source")), True, False),
-    "keys_task_start": ("task_start", "Start a task for attributable optimizer usage.", schema({"parent_id": STRING, "client": STRING}), True, False),
+    "keys_task_start": ("task_start", "Start a task for attributable optimizer usage. Use a client identifier such as claude-code; task preparation otherwise uses the session task.", schema({"parent_id": TASK_ID, "client": CLIENT_ID}, ("client",)), True, False),
     "keys_task_finish": ("task_finish", "Record the verified outcome of a task; does not claim savings.",
         schema({"id": STRING, "outcome": {"type": "string", "enum": ["success", "failed", "cancelled", "unknown"]}, "verification": STRINGS}, ("id", "outcome")), True, False),
     "keys_candidate_capture": ("candidate_capture", "Stage an opt-in verified task candidate for manual admin review. It is pending and cannot be searched or reused until approved.",
-        schema({"task_id": STRING, "kind": {"type": "string", "enum": ["plan", "memory"]}, "title": STRING, "content": STRING,
+        schema({"task_id": TASK_ID, "kind": {"type": "string", "enum": ["plan", "memory"]}, "title": STRING, "content": STRING,
                 "source": STRING, "verification": NONEMPTY_STRINGS, "required_tools": STRINGS, "constraints": STRINGS, "dependencies": OBJECT},
                ("task_id", "kind", "title", "content", "source", "verification")), True, False),
     "keys_usage_record": ("event_record", "Record numeric client usage with an event identity. Omit unknown metrics; never include prompts or tool arguments.",
-        schema({"task_id": STRING, "event_id": STRING, "request_id": STRING, "source": STRING, "kind": STRING, "model": STRING,
+        schema({"task_id": TASK_ID, "event_id": STRING, "request_id": STRING, "source": STRING, "kind": STRING, "model": STRING,
                 **{key: {"type": "integer", "minimum": 0} for key in ("input_tokens", "output_tokens", "cache_read_tokens", "latency_ms")},
                 **{key: {"type": "number", "minimum": 0} for key in ("reported_cost_usd", "estimated_cost_usd")}, "status": STRING},
                ("task_id", "event_id", "source", "kind", "model", "status", "latency_ms")), True, False),
@@ -153,8 +187,8 @@ TOOLS = {
 def compact_stage(value, limit=24000):
     """Keep complete JSON only: never slice a possibly decrypted context body."""
     try:
-        encoded = json.dumps(value, allow_nan=False)
-    except (TypeError, ValueError, OverflowError):
+        encoded = json.dumps(value, allow_nan=False, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError):
         return {"status": "invalid_stage"}
     if len(encoded) > limit:
         return {"status": "stage_too_large"}
@@ -165,7 +199,7 @@ def task_prepare(client, args):
     context_args = {
         "query": args["query"], "available_tools": args.get("available_tools", []),
         "current_constraints": args.get("context_constraints", []), "max_bytes": args.get("max_bytes", 12000),
-        "max_estimated_tokens": args.get("max_estimated_tokens", 4096), "max_entries": args.get("max_entries", 8),
+        "max_estimated_tokens": args.get("max_estimated_tokens", 4000), "max_entries": args.get("max_entries", 8),
     }
     # A revoked/expired session raises before any response is returned; do not expose a partial pack.
     context = client.call("context_prepare", context_args)
@@ -176,25 +210,45 @@ def task_prepare(client, args):
     if not client.jev_enabled:
         raise SafeError("jev_not_enabled")
     # Context constraints stay strings for the local pack; engine constraints remain the caller's record.
-    common = {"task_id": args["task_id"], "request_text": args.get("context") or args["query"],
+    common = {"request_text": args.get("context") or args["query"],
               "available_tools": args.get("available_tools", []), "current_constraints": args.get("engine_constraints", {}),
               "task_requirements": args.get("task_requirements", {})}
-    plans = client.call("retrieve", {**common, "candidates": args.get("plan_candidates", [])})
-    tools = client.call("select_tools", {**common, "candidates": args.get("tool_catalog", [])})
-    models = client.call("route_model", {**common, "candidates": args.get("model_catalog", [])})
-    stages.update(plans=compact_stage(plans), tools=compact_stage(tools), models=compact_stage(models))
+    task_id = args.get("task_id") or getattr(client, "task_id", None)
+    if task_id is not None:
+        common["task_id"] = task_id
+    model_args = {key: args[key] for key in ("explicit_model_id", "current_model_id", "optimizer_cost_usd", "cache_rebuild_cost_usd", "fallback_cost_usd") if key in args}
+    results = []
+    partial = False
+    for name, operation, payload in (
+        ("plans", "retrieve", common),
+        ("tools", "select_tools", {**common, "candidates": args.get("tool_catalog", [])}),
+        ("models", "route_model", {**common, **model_args, "candidates": args.get("model_catalog", [])}),
+    ):
+        try:
+            stage = client.call(operation, payload)
+        except SafeError as error:
+            if str(error) not in {"operation_denied", "optimizer_limit", "operation_refused"}:
+                raise
+            partial = True
+            stage = {"status": "unavailable", "reason": str(error)}
+        stages[name] = compact_stage(stage)
+        results.append(stage)
+    if partial:
+        # A recoverable failure may have raced with lock/revocation. Recheck
+        # authorization before returning any previously decrypted context.
+        client.call("summary", {})
     complete_usage = True
-    for stage in (plans, tools, models):
+    for stage in results:
         if isinstance(stage, dict) and isinstance(stage.get("usage"), dict):
             row = stage["usage"]
-            if isinstance(row.get("requests"), int): usage["requests"] += row["requests"]
-            if isinstance(row.get("cache_hits"), int): usage["cache_hits"] += row["cache_hits"]
-            if not all(isinstance(row.get(key), int) and row[key] >= 0 for key in ("actual_input_tokens", "actual_output_tokens")):
+            if type(row.get("requests")) is int and row["requests"] >= 0: usage["requests"] += row["requests"]
+            if type(row.get("cache_hits")) is int and row["cache_hits"] >= 0: usage["cache_hits"] += row["cache_hits"]
+            if not all(type(row.get(key)) is int and row[key] >= 0 for key in ("actual_input_tokens", "actual_output_tokens")):
                 complete_usage = False
         else:
             complete_usage = False
     usage["unknown"] = not complete_usage
-    return {"stages": stages, "usage": usage, "evaluations": "advisory"}
+    return {"stages": stages, "usage": usage, "evaluations": "partial" if partial else "advisory"}
 
 
 def validate(value, spec):
@@ -212,7 +266,16 @@ def validate(value, spec):
         return (isinstance(value, list) and spec.get("minItems", 0) <= len(value) <= spec.get("maxItems", 64)
                 and all(validate(v, spec["items"]) for v in value))
     if kind == "string":
-        return isinstance(value, str) and len(value) <= spec.get("maxLength", 16000) and ("enum" not in spec or value in spec["enum"])
+        if not (isinstance(value, str) and spec.get("minLength", 0) <= len(value) <= spec.get("maxLength", 16000)
+                and ("enum" not in spec or value in spec["enum"])
+                and ("pattern" not in spec or re.fullmatch(spec["pattern"], value))):
+            return False
+        if spec.get("format") == "uuid":
+            try:
+                return str(uuid.UUID(value)) == value.lower()
+            except ValueError:
+                return False
+        return True
     if kind == "boolean":
         return type(value) is bool
     if kind in ("integer", "number"):
@@ -270,7 +333,7 @@ class Server:
             else:
                 try:
                     result = task_prepare(self.client, args) if name == "keys_task_prepare" else self.client.call(tool[0], args)
-                    response["result"] = {"content": [{"type": "text", "text": json.dumps(result, allow_nan=False)}], "structuredContent": result, "isError": False}
+                    response["result"] = {"content": [{"type": "text", "text": json.dumps(result, allow_nan=False, ensure_ascii=False)}], "structuredContent": result, "isError": False}
                 except SafeError as error:
                     response["result"] = {"content": [{"type": "text", "text": str(error)}], "isError": True}
         else:

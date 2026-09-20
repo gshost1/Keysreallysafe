@@ -17,6 +17,12 @@ PROTOCOL = "2025-06-18"
 MAX_LINE = 256_000
 ROOT = Path(__file__).resolve().parents[1]
 HARNESS = Path(__file__).with_name("optimizer-benchmark-engine.mjs")
+ENGINE_BUILD = ROOT / "Plugins" / "jev-optimizer" / "dist" / "index.js"
+BUILD_HINT = "Compiled optimizer engine not found. Build it first: cd Plugins/jev-optimizer && npm ci && npm run build"
+
+
+class MissingEngineBuild(RuntimeError):
+    pass
 
 
 def model(model_id, input_cost, output_cost, current=False):
@@ -289,6 +295,9 @@ def chosen(args):
 
 
 def offline(cases):
+    # dist/ is a build product and absent from a fresh checkout.
+    if not ENGINE_BUILD.is_file():
+        raise MissingEngineBuild(BUILD_HINT)
     payload = [{"case_id": case["id"], "input": {**BASE, **case["engine"]}} for case in cases]
     clean_env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
     process = subprocess.run(
@@ -451,7 +460,11 @@ def main(argv=None):
             args.jev_key,
         ]
         transport = StdioTransport(command, args.timeout, args.initialize_timeout)
-    report = run(args, transport)
+    try:
+        report = run(args, transport)
+    except MissingEngineBuild as error:
+        print(str(error), file=sys.stderr)
+        return 2
     encoded = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
     if args.report:
         args.report.write_text(encoded, encoding="utf-8")
