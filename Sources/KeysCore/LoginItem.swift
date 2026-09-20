@@ -129,6 +129,10 @@ struct Installer {
     var label: String
     var run: Runner
     var validateSigning: (URL, URL?) throws -> Void = StableSigning.validate
+    /// File operations the swap and its rollback depend on. Tests replace these to inject a
+    /// deterministic failure at one step; both default to the real file system.
+    var moveItem: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
+    var removeItem: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
 
     static var live: Installer {
         Installer(root: Paths.appSupport, agentPlist: LoginItem.agentPlist, label: LoginItem.label, run: LoginItem.run)
@@ -172,17 +176,21 @@ struct Installer {
         let hadPrevious = fm.fileExists(atPath: binary.path)
         let oldPlist = try? Data(contentsOf: agentPlist)
         let backup = root.appendingPathComponent(".previous-\(UUID().uuidString)", isDirectory: true)
-        var moved = false
+        var swapStarted = false
+        // Exactly what the swap changed, so a rollback can undo that and nothing else.
+        var movedParts: [String] = []
+        var installedParts: [String] = []
         do {
             try bootout()
             // From the first move on, rollback must run even if moveLive itself fails halfway;
-            // rollback checks each part for existence, so a partial move is safe to undo.
-            moved = true
-            try moveLive(to: backup)
+            // it undoes only the parts recorded below, so a partial move is safe to undo.
+            swapStarted = true
+            try moveLive(to: backup, moved: &movedParts)
             for part in Self.parts {
                 let from = staging.appendingPathComponent(part)
                 if fm.fileExists(atPath: from.path) {
-                    try fm.moveItem(at: from, to: root.appendingPathComponent(part))
+                    try moveItem(from, root.appendingPathComponent(part))
+                    installedParts.append(part)
                 }
             }
             let xml = LoginItem.plistXML(binary: binary, webRoot: web, logFile: logFile)
@@ -192,8 +200,9 @@ struct Installer {
             try bootstrap()
         } catch {
             var restored = false
-            if moved {
-                restored = rollback(from: backup, hadPrevious: hadPrevious, oldPlist: oldPlist)
+            if swapStarted {
+                restored = rollback(from: backup, movedParts: movedParts, installedParts: installedParts,
+                                    hadPrevious: hadPrevious, oldPlist: oldPlist)
             }
             throw Failure(stage: "activation", underlying: error, rolledBack: restored)
         }
@@ -288,36 +297,52 @@ struct Installer {
         }
     }
 
-    /// Moves every live part into `backup`, preserving which parts existed.
-    private func moveLive(to backup: URL) throws {
+    /// Moves every live part into `backup`, recording in `moved` exactly which ones got there.
+    /// On a partial failure the parts still under `root` are untouched originals.
+    private func moveLive(to backup: URL, moved: inout [String]) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: backup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         for part in Self.parts {
             let live = root.appendingPathComponent(part)
             if fm.fileExists(atPath: live.path) {
-                try fm.moveItem(at: live, to: backup.appendingPathComponent(part))
+                try moveItem(live, backup.appendingPathComponent(part))
+                moved.append(part)
             }
         }
     }
 
-    /// Best effort, never throws: put the old parts back, restore the old plist, start the old agent.
-    private func rollback(from backup: URL, hadPrevious: Bool, oldPlist: Data?) -> Bool {
+    /// Best effort, never throws: remove the parts this install put in place, move back the
+    /// originals it moved aside, restore the old plist, start the old agent. Parts the swap
+    /// never touched are left alone. Returns true only if the previous version is whole again;
+    /// otherwise the backup is kept, together with the old plist, for manual recovery.
+    private func rollback(from backup: URL, movedParts: [String], installedParts: [String],
+                          hadPrevious: Bool, oldPlist: Data?) -> Bool {
         let fm = FileManager.default
         var ok = true
-        for part in Self.parts {
+        for part in installedParts {
             let live = root.appendingPathComponent(part)
-            try? fm.removeItem(at: live)
+            guard fm.fileExists(atPath: live.path) else { continue }
+            do { try removeItem(live) } catch { ok = false }
+        }
+        for part in movedParts {
             let saved = backup.appendingPathComponent(part)
-            if fm.fileExists(atPath: saved.path) {
-                do { try fm.moveItem(at: saved, to: live) } catch { ok = false }
-            }
+            let live = root.appendingPathComponent(part)
+            guard fm.fileExists(atPath: saved.path) else { ok = false; continue }
+            guard !fm.fileExists(atPath: live.path) else { ok = false; continue }
+            do { try moveItem(saved, live) } catch { ok = false }
         }
         if let oldPlist {
-            do {
-                try oldPlist.write(to: agentPlist, options: .atomic)
-            } catch { ok = false }
+            do { try oldPlist.write(to: agentPlist, options: .atomic) } catch { ok = false }
         } else {
             try? fm.removeItem(at: agentPlist)
+        }
+        guard ok else {
+            // Incomplete: keep every recovery artifact and do not restart a half-restored version.
+            if let oldPlist {
+                try? fm.createDirectory(at: backup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                try? oldPlist.write(to: backup.appendingPathComponent("agent.plist"), options: .atomic)
+            }
+            return false
         }
         try? fm.removeItem(at: backup)
         if hadPrevious, oldPlist != nil {
