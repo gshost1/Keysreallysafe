@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keysreallysafe — local usage meter and API-key vault for Mac</title>
+<meta name="description" content="A Mac menu bar app that shows your Claude Code, Codex and Grok usage from the files they already write, and keeps your API keys in the macOS Keychain behind Touch ID. Nothing leaves your Mac.">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234fd18b'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%23062b18' stroke-width='4'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/"><span class="mark"></span>Keysreallysafe</a>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+      <a class="cta" href="#pricing">Try free for 14 days</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero wrap">
+    <h1>See what your AI tools are using. Keep your keys where they belong.</h1>
+    <p class="lead">Keysreallysafe is a Mac menu bar app that reads the usage records Claude Code, Codex and Grok already write to your home folder, shows plan windows and spend at a glance, and stores your API keys in the macOS Keychain behind Touch ID. It runs entirely on your Mac.</p>
+    <div class="actions">
+      <a class="btn primary" href="#pricing">Try free for 14 days</a>
+      <a class="btn" href="#how">How it works</a>
+      <span class="fine">macOS 14 or newer · Apple Silicon · signed and notarized</span>
+    </div>
+    <figure class="shot">
+      <img src="img/dashboard-usage.png" width="1280" height="650" alt="The Usage pane: Claude weekly window 12% used, Codex weekly window 87% used, and this month's tokens from local logs." loading="eager">
+    </figure>
+  </div>
+
+  <section id="how">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="sub">Three things, all local: a usage meter, a key vault, and a gateway that lets a tool use a key without ever seeing it.</p>
+      <div class="grid">
+        <div class="card">
+          <h3>Usage meter</h3>
+          <p>Plan windows for Claude (five-hour, Fable, weekly), Codex (five-hour, weekly) and Grok (weekly) as <em>% used · resets in</em>, in the menu bar and on a local dashboard. Tokens are what your Mac measured; a dollar figure is only shown when you ask for it, priced from a published list-price table.</p>
+        </div>
+        <div class="card">
+          <h3>Key vault</h3>
+          <p>API keys go into the macOS Keychain under your login. The app asks for Touch ID (or your login password) every time a value is copied, revealed, exported or rotated. The key list shows names, never values. Clipboard copies wipe themselves after 20 seconds.</p>
+        </div>
+        <div class="card">
+          <h3>Scoped gateway</h3>
+          <p>Give a script or tool a one-task grant instead of the key itself: one Touch ID, one key, one host, a method and path scope, an expiry. The tool calls <code>127.0.0.1</code>; the gateway adds the real key. Lock the screen or revoke, and the grant is dead.</p>
+        </div>
+        <div class="card">
+          <h3>Honest numbers</h3>
+          <p>A provider whose quota isn't in a local file is listed as <em>not tracked</em> with a link to its own dashboard, never estimated. An unpriced call reads as unknown, never as $0. Cached input is counted the way providers bill it.</p>
+        </div>
+        <div class="card">
+          <h3>Chart and export</h3>
+          <p>Today by hour, or this week and month by day, split by tool and model. Subscriptions from local logs on one side, API-key calls from the gateway ledger on the other. CSV export with raw token and cost columns.</p>
+        </div>
+        <div class="card">
+          <h3>Stays out of your way</h3>
+          <p>One menu bar item. A dashboard on <code>http://127.0.0.1:12766</code> that opens in your browser. Starts at login. Removing it deletes the login item, the snapshot and every Keychain item it created, after Touch ID.</p>
+        </div>
+      </div>
+      <figure class="shot">
+        <img src="img/dashboard-keys.png" width="1280" height="650" alt="The Keys pane: a table of key names with provider, kind and last use, and actions to copy, reveal, grant and rotate. No values are shown." loading="lazy">
+      </figure>
+    </div>
+  </section>
+
+  <section id="privacy">
+    <div class="wrap">
+      <h2>Privacy boundaries</h2>
+      <p class="sub">These are the rules the app is built around, not a policy that can change under you.</p>
+      <div class="grid">
+        <div class="card">
+          <h3>Nothing leaves your Mac</h3>
+          <ul>
+            <li>The dashboard and its API bind to <code>127.0.0.1</code> only.</li>
+            <li>No account, no sign-up, no server of ours in the loop.</li>
+            <li>Optional product analytics is off by default, opt-in, aggregate counters only, and can't include prompts, credentials, key names, paths or device identifiers.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>No scraping, no borrowed logins</h3>
+          <ul>
+            <li>It never opens provider websites, cookies or browser sessions.</li>
+            <li>It never reads other tools' auth files (<code>~/.codex/auth.json</code>, <code>~/.grok/auth.json</code>).</li>
+            <li>Claude's subscription limits come from Claude Code's own built-in <code>/usage</code> command, through its existing login, with no model request.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Secrets stay secret</h3>
+          <ul>
+            <li>Key values never enter the local database, a log, the page, or the key-list API.</li>
+            <li>Gateway request bodies never reach the usage catalog.</li>
+            <li>Every read of a secret asks for your presence, every time.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="fine" style="margin-top:20px">Full detail, including what the optional analytics schema may and may not contain, is in the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/product-analytics.md">source repository</a> and on the <a href="privacy.html">privacy page</a>.</p>
+    </div>
+  </section>
+
+  <section id="pricing">
+    <div class="wrap">
+      <h2>Pricing</h2>
+      <p class="sub">Pay once. No subscription, no account, no seat count.</p>
+      <div class="price">
+        <div class="card main">
+          <h3>Keysreallysafe for Mac</h3>
+          <div class="amount">$29 <small>one-time</small></div>
+          <p class="fine">Per person, on every Mac you use.</p>
+          <ul class="checks">
+            <li>14-day free trial, full app, no card needed</li>
+            <li>All updates within the current major version</li>
+            <li>Usage meter, key vault, scoped gateway, chart and export</li>
+            <li>14-day refund, no questions asked</li>
+          </ul>
+          <div class="actions">
+            <a class="btn primary" href="STRIPE_PAYMENT_LINK">Buy for $29</a>
+            <a class="btn" href="https://github.com/gshost1/Keysreallysafe/releases">Download the trial</a>
+          </div>
+        </div>
+        <div>
+          <div class="note">
+            <strong>What you are not buying.</strong> Keysreallysafe is not an AI subscription and does not include API credits. You use your own Claude, OpenAI, xAI or other provider accounts and keys; the app only measures and protects them. The optional Optimizer is experimental and makes no savings promise.
+          </div>
+          <p class="fine" style="margin-top:16px">Payments are handled by Stripe. We never see your card number. Prices in US dollars; tax may be added at checkout where required.</p>
+          <p class="fine">Source code is public. New first-party work is proprietary; earlier MIT-licensed material and third-party components keep their licenses. Buying a license supports the project and gives you the signed, notarized build with updates.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" class="faq">
+    <div class="wrap">
+      <h2>Questions</h2>
+      <details>
+        <summary>Which tools does it read?</summary>
+        <p>Claude Code, OpenAI Codex CLI and Grok CLI, from the session logs and usage caches they already keep in your home folder. Anything else appears under <em>not tracked</em> with a link to that provider's own dashboard. Plan windows depend on what each tool writes locally; chat-app message caps are not in those files.</p>
+      </details>
+      <details>
+        <summary>Does it need my provider passwords?</summary>
+        <p>No. It reads files your tools already wrote, and never touches their login or auth files. For the vault you paste an API key once; from then on it lives in the Keychain and comes out only after Touch ID.</p>
+      </details>
+      <details>
+        <summary>Is the cost figure real?</summary>
+        <p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table applied afterwards, so they're hidden until you choose USD, and anything unpriced reads as unknown rather than $0.</p>
+      </details>
+      <details>
+        <summary>How does the trial work?</summary>
+        <p>Download, run, use everything for 14 days. When it ends, the dashboard and menu bar keep showing what you have but ask for a license to continue; nothing in the vault is ever locked away from you. Buy when you're ready and paste the license once.</p>
+      </details>
+      <details>
+        <summary>Can I get a refund?</summary>
+        <p>Yes, within 14 days of purchase, for any reason. Email support with the address you used at checkout. See the <a href="terms.html">terms</a>.</p>
+      </details>
+      <details>
+        <summary>What Macs does it run on?</summary>
+        <p>macOS 14 Sonoma or newer on Apple Silicon. The download is a Developer ID signed and Apple-notarized disk image, so it opens without any Gatekeeper workaround. An Intel build is not currently offered.</p>
+      </details>
+      <details>
+        <summary>How do I uninstall?</summary>
+        <p><code>keys autostart --remove</code> unloads and deletes the login item and its snapshot; <code>keys purge</code> removes the local catalog and every Keychain item the app created, after Touch ID. Nothing is left behind.</p>
+      </details>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms &amp; refunds</a>
+      <a href="mailto:SUPPORT_EMAIL">Support</a>
+      <a href="https://github.com/gshost1/Keysreallysafe">Source</a>
+    </div>
+    <div>© 2026 Keysreallysafe. Mac, macOS, Touch ID and Keychain are trademarks of Apple Inc. Claude, Codex and Grok belong to their respective owners; this product is not affiliated with them.</div>
+  </div>
+</footer>
+
+</body>
+</html>

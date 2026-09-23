@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy — Keysreallysafe</title>
+<meta name="description" content="What Keysreallysafe reads, what it stores, and what never leaves your Mac.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="/"><span class="mark"></span>Keysreallysafe</a><nav><a href="/#pricing">Pricing</a><a href="terms.html">Terms</a></nav></div></header>
+
+<article class="legal">
+<h1>Privacy</h1>
+<p class="meta">Effective 2026-09-22. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
+
+<h2>The short version</h2>
+<p>Keysreallysafe runs on your Mac and talks to nothing of ours. There is no account. We do not receive your usage data, your prompts, your keys, or your identity. The only data we ever hold about you is what Stripe gives us when you buy a license: your email address, the amount, and the date.</p>
+
+<h2>What the app reads on your Mac</h2>
+<ul>
+  <li>Usage records that Claude Code, OpenAI Codex CLI and Grok CLI write to your home folder (session logs and usage caches). Only counts and metadata are kept; prompt content is not stored.</li>
+  <li>Claude's subscription limits, through Claude Code's own <code>/usage</code> command using its existing login. No model request is made and no credentials are read.</li>
+  <li>API keys you add yourself. They are stored in the macOS Keychain under your login and are read back only after a Touch ID or login-password prompt.</li>
+</ul>
+<p>The app never reads other tools' authentication files (for example <code>~/.codex/auth.json</code> or <code>~/.grok/auth.json</code>), never opens provider websites, and never uses browser cookies or sessions.</p>
+
+<h2>What stays on your Mac</h2>
+<ul>
+  <li>The usage catalog (an SQLite database in Application Support) holds counters and metadata only. Key values never enter it. Gateway request bodies never enter it.</li>
+  <li>The dashboard and its API bind to <code>127.0.0.1</code> only and are not reachable from other machines.</li>
+  <li>The optional Optimizer keeps explicitly saved project notes in a separate encrypted local archive.</li>
+</ul>
+
+<h2>Optional product analytics</h2>
+<p>The app can send aggregate counters (for example, how many times a pane was opened per day) to a collector, but only after you turn it on in the Privacy dialog, and only to a destination shown to you there. It is off by default. The schema is fixed and excludes prompt content, credentials, key names, project names, file paths, and any persistent device or user identifier. The Privacy dialog shows unsent reports and lets you stop collection and discard them at any time. The current build has no collector configured and cannot upload.</p>
+
+<h2>Purchases</h2>
+<p>Payments are processed by Stripe, Inc. We do not see or store card numbers. Stripe's handling of your payment details is governed by <a href="https://stripe.com/privacy">Stripe's privacy policy</a>. We keep the email address, amount and date of your purchase to issue your license, honor refunds and answer support requests, and for tax and accounting records as the law requires.</p>
+
+<h2>This website</h2>
+<p>This site is static, sets no cookies, loads no third-party scripts, fonts or trackers, and has no analytics. It is served by Cloudflare Pages, which logs requests for security and operational purposes under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.</p>
+
+<h2>Contact</h2>
+<p>Questions about privacy: <a href="mailto:SUPPORT_EMAIL">SUPPORT_EMAIL</a>.</p>
+</article>
+
+<footer><div class="wrap"><div><a href="/">Home</a><a href="terms.html">Terms &amp; refunds</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></div><div>© 2026 Keysreallysafe</div></div></footer>
+</body>
+</html>

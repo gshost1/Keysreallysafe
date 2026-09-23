@@ -12,6 +12,9 @@ HTML/CSS/JS, no build step, no external resources), not a marketing site.
 `Plugins/jev-optimizer` is the optional, experimental optimizer (TypeScript,
 imported MIT code). `Analytics/` is the self-hosted aggregate collector.
 `Fixtures/` holds synthetic session logs, the price table and provider catalog.
+`Site/` is the public marketing site for Cloudflare Pages (static, no
+scripts, no external resources); `SUPPORT_EMAIL` and `STRIPE_PAYMENT_LINK`
+in it are placeholders that must be replaced before deploy.
 
 ## Build and test
 
@@ -82,10 +85,12 @@ publish it to npm.
 
 ## Commercial state
 
-The repo is public. Pricing, trial policy, billing model, business country,
-support contact, refund terms and domain are all undecided; don't invent
-them in docs, the dashboard or a website. Cloudflare Pages was chosen for a
-future marketing site and Stripe for checkout, but nothing has been created.
+The repo is public. Decided 2026-09-22: $29 one-time, 14-day free trial,
+updates within the current major version, US Stripe account, email support
+with a 14-day no-questions refund. Still undecided: the support email
+address, the legal entity for the EULA, and a custom domain; don't invent
+them. Cloudflare Pages will host `Site/`; Stripe Checkout takes payment.
+Neither has been created yet, and the app has no trial or license gating.
 
 ## Conventions
 
