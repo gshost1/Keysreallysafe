@@ -56,6 +56,9 @@ enum IngestScheduler {
         }
         running = true
         inFlight.unlock()
+        // The closure runs once on the ingest queue after the pass and is never shared,
+        // so the Sendable capture check adds nothing; same idiom as `running` above.
+        nonisolated(unsafe) let completion = completion
         queue.async {
             _ = try? service.ingest(.all)
             inFlight.lock()
@@ -236,7 +239,7 @@ enum IngestFiles {
             var bytes = line
             if bytes.last == 0x0D { bytes.removeLast() }
             guard !bytes.isEmpty else { return }
-            let keep = try bytes.withUnsafeBytes { raw -> Bool in
+            let keep = bytes.withUnsafeBytes { raw -> Bool in
                 let buf = raw.bindMemory(to: UInt8.self)
                 return keepLine == nil || keepLine!(buf)
             }
