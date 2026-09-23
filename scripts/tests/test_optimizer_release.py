@@ -70,6 +70,13 @@ class OptimizerReleaseTests(unittest.TestCase):
             self.assertTrue(set(release.DOC_FILES).issubset(paths))
             # A package is installed by someone without this checkout, so the install and
             # acceptance instructions have to travel inside it.
+            # Legal notices must survive packaging independently of the allowlist definition.
+            for notice in ("LICENSE", "THIRD_PARTY_NOTICES.md",
+                           "licenses/Keysreallysafe-legacy-MIT.txt",
+                           "licenses/swift-argument-parser.txt",
+                           "Plugins/jev-optimizer/LICENSE"):
+                self.assertIn(notice, paths)
+                self.assertEqual((output / notice).read_bytes(), (repo / notice).read_bytes())
             self.assertIn("docs/mvp-quickstart.md", paths)
             self.assertIn("docs/mvp-acceptance.md", paths)
             self.assertTrue((output / "docs" / "mvp-quickstart.md").is_file())

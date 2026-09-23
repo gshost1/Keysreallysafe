@@ -26,7 +26,9 @@ PLUGIN_FILES = (".claude-plugin/plugin.json", "LICENSE", "README.md", "package.j
 PLUGIN_TREES = ("dist", "src", "hooks")
 SCRIPTS = ("optimizer-mcp.py", "claude-with-jev.py")
 DOC_FILES = (
-    "LICENSE", "README.md", "SIGNING.md", "Analytics/README.md",
+    "LICENSE", "THIRD_PARTY_NOTICES.md",
+    "licenses/Keysreallysafe-legacy-MIT.txt", "licenses/swift-argument-parser.txt",
+    "README.md", "SIGNING.md", "Analytics/README.md",
     # The recipient of a package needs the install and acceptance instructions inside it, not in
     # a checkout they do not have.
     "docs/mvp-quickstart.md", "docs/mvp-acceptance.md",

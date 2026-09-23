@@ -408,4 +408,8 @@ provider responses. See the [research and source notes](docs/jev-research.md).
 
 ## License
 
-MIT. See `LICENSE`.
+Future first-party additions are proprietary unless explicitly stated otherwise.
+See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
+Previously granted MIT permissions and third-party licenses remain in effect.
+See [the licensing transition audit](docs/licensing-transition.md) for scope and
+remaining commercial-release work.

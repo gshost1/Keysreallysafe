@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Bounded Jev context optimization for KeysReallySafe and Claude Code.",
   "type": "module",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "node": ">=18"
   },
@@ -37,5 +37,6 @@
     "type": "git",
     "url": "git+https://github.com/gshost1/Keysreallysafe.git",
     "directory": "Plugins/jev-optimizer"
-  }
+  },
+  "private": true
 }
