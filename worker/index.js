@@ -350,7 +350,7 @@ async function licensePage(request, env, url) {
 </ol>
 <p class="sub">Or in a terminal: <code>keys license set '${escapeHTML(key)}'</code></p>
 <h2>Your Macs (${macs.length} of ${SEATS})</h2>
-${revoked ? `<p class="sub">This license was revoked after a refund or dispute and no longer activates.</p>` : ""}
+${revoked ? `<p class="sub">This license has been revoked (refunded, disputed or shared publicly) and no longer activates.</p>` : ""}
 ${macRows}
 <p class="sub">A license covers Keysrs ${MAJOR}.x on up to ${SEATS} Macs. Remove a Mac you no longer use to free its place. Bookmark this page; it shows the same key again. Refund within 14 days: <a href="mailto:support@keysrs.com">support@keysrs.com</a>.</p>`
     : `<h1>No license here yet.</h1>

@@ -147,7 +147,7 @@ enum LicenseServerError: Error, Equatable {
         case .seatLimit(let seats):
             return "This license is already active on \(seats) Macs. Remove one on your license page (the link is in your purchase email), or write to support@keysrs.com."
         case .revoked:
-            return "This license was revoked after a refund or dispute. Write to support@keysrs.com if that is a mistake."
+            return "This license has been revoked (refunded, disputed or shared publicly). Write to support@keysrs.com if that is a mistake."
         case .rejected:
             return "keysrs.com did not accept this key. Paste the whole line from your purchase email."
         case .unreachable:
