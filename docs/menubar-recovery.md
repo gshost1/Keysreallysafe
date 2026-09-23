@@ -32,12 +32,18 @@ menu preservation, deferral while open, recovery after close, explicitly hidden
 item repair, healthy refresh stability, burst coalescing, and shutdown cancellation.
 These simulate notifications; no physical sleep/wake reproduction was performed.
 
+Display-wake check on the installed build, 2026-09-22 23:00 PDT: `pmset
+displaysleepnow`, then a user wake. `menubar.log` gained exactly one line,
+`menubar item recovered: NSWorkspaceScreensDidWakeNotification`, from the same
+process, and the user confirmed the item was still visible afterwards. This
+exercises the trigger from the 22:19 incident but not full system sleep, unlock,
+or a display reconfiguration, and it does not reproduce the original loss.
+
 Independent read-only review found no blocking issues. The release build passed,
 was signed with the existing stable Apple identity, and was installed through
 `keys autostart` using the existing installed web assets. The installed binary
 hash matched the release binary and the dashboard returned HTTP 200 afterward.
 This local update has not been newly notarized or published.
 
-Workflow tracker status failed because trial-01-04 is missing or duplicated in
-the existing Desktop work log. No duplicate trial entry was created. Existing
-licensing, stylesheet, acceptance-document, and UI-test changes were preserved.
+Existing licensing, stylesheet, acceptance-document, and UI-test changes were
+preserved in separate commits.
