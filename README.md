@@ -94,9 +94,12 @@ Remove everything with `keys autostart --remove` (login item and snapshot) and
 `keys purge` (catalog and every Keychain item, after Touch ID).
 
 To run a prepared package on a second Mac without a Swift toolchain there, see
-the [MVP quickstart](docs/mvp-quickstart.md) and the still-pending
-[acceptance checklist](docs/mvp-acceptance.md). That package is a signed private
-preview, not a notarized public release.
+the [MVP quickstart](docs/mvp-quickstart.md) and the
+[acceptance checklist](docs/mvp-acceptance.md), which records what has been
+verified on a second Mac. Packages are Developer ID signed, notarized and
+stapled DMGs handed over directly; there is no public download yet. A
+candidate that has not been through notarization must be verified as the
+quickstart describes before it is trusted.
 
 ## The site
 

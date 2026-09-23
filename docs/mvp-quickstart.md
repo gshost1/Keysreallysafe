@@ -7,14 +7,17 @@ or work around a macOS security control.
 
 ## What this package is, and is not
 
-- **Signed private preview.** The binary is signed with the owner's Apple
-  Development or Developer ID certificate (see [the signing guide](../SIGNING.md)). Signing is what gives the app a stable
-  Keychain identity across updates.
-- **Not a notarized public release.** This package is not submitted to Apple for
-  notarization and is not stapled, so it is not the artifact a general user
-  should be given. Whether macOS accepts this candidate on the second Mac is
-  still unverified. If macOS refuses to run it, record the exact message and
-  stop; the release needs to satisfy the normal platform checks.
+- **Signed, and normally notarized.** The binary is signed with the owner's
+  Developer ID certificate (see [the signing guide](../SIGNING.md)); signing is
+  what gives the app a stable Keychain identity across updates. A delivered
+  DMG is submitted to Apple for notarization and stapled, and the release
+  folder keeps the submission status, the stapler and Gatekeeper logs and the
+  digests beside it. The 2026-09-22 arm64 candidate was accepted by Gatekeeper
+  on the build Mac and the second Mac.
+- **Still a private hand-over.** There is no public download; a package reaches
+  a second Mac directly from the owner with its digest. If a candidate arrives
+  without notarization evidence, or macOS refuses to run it, record the exact
+  message and stop; the release needs to satisfy the normal platform checks.
 
 ## Requirements
 
