@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — 2026-09-23
 
+Includes everything since 0.4.0 (0.5.0 and 0.6.0 shipped as DMGs without their own entries).
+
+- License review fixes: the trial gate covers every ingest path, including the dashboard's stale refresh; trial status no longer takes the catalog write lock; checkout delivery retries on Stripe errors, mails delayed payments, accepts rolled webhook secrets and rate-limits `/license`.
+- About shows the real version.
 - First launch: the menu bar app opens one welcome window before anything else. Every box starts unticked and Continue with nothing ticked is a full answer, never asked again. It asks whether to keep Claude plan limits fresh and, in a build with an analytics collector configured, whether to share anonymous usage counts (asked once per consent version; people who already opted in are not asked). **Continue and Open Keysrs** also opens the dashboard.
 - Claude limits: running Claude Code's `/usage` in the background every five minutes is now **opt-in** (welcome window, or **Keep Claude Limits Fresh** in the menu). Off, Claude limits come from the cache Claude Code writes itself; choosing **Refresh** asks Claude Code once. Upgrades start with it off.
 - Trial and license: Keysrs runs in full for 14 days from first launch, then asks for a license to keep ingesting usage and issuing gateway grants. The vault never depends on it: list, copy, reveal, env, rotate, delete, purge and `autostart --remove` work in every state. A license is an Ed25519-signed key (`keysrs1.…`) checked offline against a public key built into the app; `keys license`, `keys license set <key>` and `keys license remove` manage it, the dashboard shows a banner with a key field when the trial has a week or less left, and the menu bar reads "Keysrs · trial ended" when it lapses. Trial start and key live in the catalog's meta table; winding the clock back does not restart a trial. Stripe checkout now lands on keysrs.com/license, which shows the key and emails it from support@keysrs.com.
