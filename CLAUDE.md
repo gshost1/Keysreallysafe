@@ -1,4 +1,9 @@
-# Keysreallysafe
+# Keysrs (formerly Keysreallysafe)
+
+The product is called Keysrs since 2026-09-23; code identifiers, the
+signing identifier, the Keychain service name and the repo still say
+Keysreallysafe and must not be renamed without a plan that keeps the
+designated requirement and existing Keychain items working.
 
 Local Mac usage meter and API-key vault. Reads the usage files Claude Code,
 Codex and Grok already write, shows plan windows and estimated spend in a menu
@@ -17,8 +22,9 @@ scripts; Google Fonts is the only external resource). It is served by a
 Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
 custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
 deploy` after `wrangler login`. Support mail is support@keysrs.com via
-Cloudflare Email Routing. The Buy button points at support@ until the
-Stripe Payment Link exists.
+Cloudflare Email Routing. The Buy button is the Stripe Payment Link
+https://buy.stripe.com/8x2aEYcrmgbh9xu7HUbbG00 (product "Keysrs for Mac",
+$29 one-time, automatic tax).
 
 ## Build and test
 
@@ -93,8 +99,9 @@ The repo is public. Decided 2026-09-22: $29 one-time, 14-day free trial,
 updates within the current major version, US Stripe account, email support
 with a 14-day no-questions refund. Domain keysrs.com and support@keysrs.com
 exist (2026-09-23); the product name stays Keysreallysafe. Still undecided:
-the legal entity for the EULA. Stripe has not been created; the app has no
-trial or license gating yet.
+the legal entity for the EULA. Stripe account is active and verified (2026-09-23);
+the app has no trial or license gating yet, so a purchase is a receipt and
+nothing more until that ships.
 
 ## Conventions
 
