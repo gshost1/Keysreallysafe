@@ -592,7 +592,11 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .keys tbody tr[aria-selected="true"] td { background: var(--bg-raised); }
 .keys tbody tr:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .td-name { font-weight: 500; }
-.key-name { display: block; }
+/* Name and provider carry the only unbounded text (key names, notes, gateway URLs,
+   host, last-check summary). Let them wrap and cap the inner spans so the auto
+   table layout cannot hand them the whole row and push the actions offscreen. */
+.keys .td-name, .keys .td-provider { white-space: normal; overflow-wrap: anywhere; }
+.key-name { display: block; max-width: 280px; }
 .key-notes {
   display: block;
   font-weight: 400;
@@ -601,18 +605,26 @@ main { flex: 1; min-height: 0; overflow: auto; }
   max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.key-notes.gw-url { white-space: normal; overflow: visible; text-overflow: clip; }
+.key-host { max-width: 280px; }
 .td-provider, .td-kind, .td-created, .td-used { color: var(--fg-2); }
 .td-created, .td-used { font-variant-numeric: tabular-nums; }
-.td-actions { text-align: right; width: 1%; padding-right: 12px; white-space: nowrap; }
+/* Actions wrap onto extra lines instead of forcing one ~580px row; min-width keeps
+   a usable line length (roughly half the buttons) at every desktop width. */
+.keys .td-actions { text-align: right; width: auto; min-width: 300px; padding-right: 12px; white-space: normal; }
+/* Buttons wrap between items (flex-wrap); each button label stays on one line. */
 .row-actions {
-  display: inline-flex;
-  flex-wrap: nowrap;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 2px;
-  white-space: nowrap;
+  row-gap: 2px;
+  min-width: 0;
 }
+.row-actions > * { white-space: nowrap; flex: 0 0 auto; }
 .act-div {
   width: 1px;
   height: 14px;
@@ -745,8 +757,6 @@ main { flex: 1; min-height: 0; overflow: auto; }
 
 @media (max-width: 1100px) {
   .keys .td-created, .keys th:nth-child(4) { display: none; }
-  .row-actions { display: flex; flex-wrap: wrap; row-gap: 2px; justify-content: flex-end; }
-  .keys .td-actions { white-space: normal; width: auto; min-width: 340px; max-width: 460px; }
 }
 
 @media (max-width: 720px) {
@@ -784,10 +794,10 @@ main { flex: 1; min-height: 0; overflow: auto; }
   .keys th { padding: 0 12px; }
   .key-events li { grid-template-columns: 1fr 1fr; }
   .keys td { padding: 8px 12px; white-space: normal; }
-  .key-notes { max-width: 100%; }
+  .key-name, .key-notes, .key-host { max-width: 100%; }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 720px) {
   .keys thead { display: none; }
   .keys, .keys tbody, .keys tr, .keys td { display: block; width: 100%; }
   .keys tbody tr {
@@ -807,10 +817,10 @@ main { flex: 1; min-height: 0; overflow: auto; }
     font-size: 11px;
     font-weight: 500;
   }
-  .td-name::before { display: none; }
-  .td-name { font-size: 13px; padding-bottom: 4px; }
-  .td-actions { text-align: left; width: 100%; padding-top: 6px; }
-  .td-actions::before { display: none; }
+  .keys .td-name::before { display: none; }
+  .keys .td-name { font-size: 13px; padding-bottom: 4px; }
+  .keys .td-actions { text-align: left; width: 100%; min-width: 0; padding-top: 6px; }
+  .keys .td-actions::before { display: none; }
   .row-actions { justify-content: flex-start; }
   .td-created { display: block; }
 }
