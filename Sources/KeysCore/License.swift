@@ -266,7 +266,7 @@ struct KeychainInstallIdentity: InstallIdentity {
         guard size > 0, size < 64 else { return "Mac" }
         var bytes = [CChar](repeating: 0, count: size)
         sysctlbyname("hw.model", &bytes, &size, nil, 0)
-        let model = String(cString: bytes)
+        let model = String(decoding: bytes.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         return model.range(of: "^[A-Za-z0-9,._ -]{1,32}$", options: .regularExpression) != nil ? model : "Mac"
     }
 }
