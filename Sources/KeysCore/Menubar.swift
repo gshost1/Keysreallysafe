@@ -218,7 +218,8 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let service: KeysService
     private let server: LoopbackHTTPServer
     private let url: URL
-    private let item: NSStatusItem
+    private let itemController: MenubarItemController
+    private var item: NSStatusItem { itemController.item }
     private var timer: Timer?
     private var lastSnapshot: MenubarSnapshot?
     private var updatedAt: Date?
@@ -229,7 +230,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.service = service
         self.server = server
         self.url = url
-        self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.itemController = MenubarItemController()
         super.init()
         item.button?.imagePosition = .noImage
         panel.selectedTab = UserDefaults.standard.string(forKey: Self.tabKey) ?? "overview"
@@ -250,6 +251,8 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        timer?.invalidate()
+        itemController.stop()
         service.stopGateway()
         server.stop()
     }
@@ -274,10 +277,16 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Refresh right before the menu drops down, so the rows are never a minute stale.
     func menuWillOpen(_ menu: NSMenu) {
+        itemController.menuIsOpen = true
         refresh()
     }
 
+    func menuDidClose(_ menu: NSMenu) {
+        itemController.menuDidClose()
+    }
+
     @objc func refresh() {
+        itemController.checkVisibility()
         ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
         }
