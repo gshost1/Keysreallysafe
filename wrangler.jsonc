@@ -1,0 +1,13 @@
+{
+  // The public marketing site: static files from Site/, served by Cloudflare
+  // Workers static assets (what Cloudflare Pages became). `wrangler deploy`.
+  "$schema": "https://esm.sh/wrangler/config-schema.json",
+  "name": "keysrs",
+  "compatibility_date": "2026-09-21",
+  "assets": { "directory": "Site", "html_handling": "auto-trailing-slash", "not_found_handling": "404-page" },
+  "routes": [
+    { "pattern": "keysrs.com", "custom_domain": true },
+    { "pattern": "www.keysrs.com", "custom_domain": true }
+  ],
+  "observability": { "enabled": false }
+}

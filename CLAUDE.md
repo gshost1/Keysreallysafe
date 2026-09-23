@@ -12,9 +12,13 @@ HTML/CSS/JS, no build step, no external resources), not a marketing site.
 `Plugins/jev-optimizer` is the optional, experimental optimizer (TypeScript,
 imported MIT code). `Analytics/` is the self-hosted aggregate collector.
 `Fixtures/` holds synthetic session logs, the price table and provider catalog.
-`Site/` is the public marketing site for Cloudflare Pages (static, no
-scripts, no external resources); `SUPPORT_EMAIL` and `STRIPE_PAYMENT_LINK`
-in it are placeholders that must be replaced before deploy.
+`Site/` is the public marketing site at https://keysrs.com (static, no
+scripts; Google Fonts is the only external resource). It is served by a
+Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
+custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
+deploy` after `wrangler login`. Support mail is support@keysrs.com via
+Cloudflare Email Routing. The Buy button points at support@ until the
+Stripe Payment Link exists.
 
 ## Build and test
 
@@ -87,10 +91,10 @@ publish it to npm.
 
 The repo is public. Decided 2026-09-22: $29 one-time, 14-day free trial,
 updates within the current major version, US Stripe account, email support
-with a 14-day no-questions refund. Still undecided: the support email
-address, the legal entity for the EULA, and a custom domain; don't invent
-them. Cloudflare Pages will host `Site/`; Stripe Checkout takes payment.
-Neither has been created yet, and the app has no trial or license gating.
+with a 14-day no-questions refund. Domain keysrs.com and support@keysrs.com
+exist (2026-09-23); the product name stays Keysreallysafe. Still undecided:
+the legal entity for the EULA. Stripe has not been created; the app has no
+trial or license gating yet.
 
 ## Conventions
 

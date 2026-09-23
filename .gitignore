@@ -27,3 +27,8 @@ Web/.cache/
 
 # Project-local client examples from scripts/optimizer-client-setup.py (UUID and key name, no secrets).
 .keys/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
