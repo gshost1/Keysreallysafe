@@ -3,163 +3,206 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Keysreallysafe — local usage meter and API-key vault for Mac</title>
+<title>Keysreallysafe — usage meter and API-key vault for Mac</title>
 <meta name="description" content="A Mac menu bar app that shows your Claude Code, Codex and Grok usage from the files they already write, and keeps your API keys in the macOS Keychain behind Touch ID. Nothing leaves your Mac.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&display=swap">
 <link rel="stylesheet" href="styles.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234fd18b'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%23062b18' stroke-width='4'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23b8781e'/%3E%3Ccircle cx='12' cy='16' r='5.5' fill='none' stroke='%23fff' stroke-width='3'/%3E%3Cpath d='M17 16h9m-3 0v4m-3-4v3' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 </head>
 <body>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="mark"></span>Keysreallysafe</a>
+    <a class="brand" href="/">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#b8781e"/><circle cx="12" cy="16" r="5.5" fill="none" stroke="#fff" stroke-width="3"/><path d="M17 16h9m-3 0v4m-3-4v3" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>
+      Keysreallysafe
+    </a>
     <nav>
-      <a href="#how">How it works</a>
+      <a href="#meter">Meter</a>
+      <a href="#vault">Vault</a>
       <a href="#privacy">Privacy</a>
       <a href="#pricing">Pricing</a>
-      <a href="#faq">FAQ</a>
-      <a class="cta" href="#pricing">Try free for 14 days</a>
+      <a class="btn primary" href="#pricing">Try it free</a>
     </nav>
   </div>
 </header>
 
 <main>
-  <div class="hero wrap">
-    <h1>See what your AI tools are using. Keep your keys where they belong.</h1>
-    <p class="lead">Keysreallysafe is a Mac menu bar app that reads the usage records Claude Code, Codex and Grok already write to your home folder, shows plan windows and spend at a glance, and stores your API keys in the macOS Keychain behind Touch ID. It runs entirely on your Mac.</p>
+  <section class="hero wrap">
+    <h1>Your AI tools' usage, <span class="accent">in the menu bar.</span> Your API keys, in the Keychain.</h1>
+    <p class="lead">Keysreallysafe reads the usage files Claude Code, Codex and Grok already write on your Mac, shows plan windows and spend at a glance, and keeps every API key behind Touch ID. Nothing leaves your Mac.</p>
     <div class="actions">
       <a class="btn primary" href="#pricing">Try free for 14 days</a>
-      <a class="btn" href="#how">How it works</a>
-      <span class="fine">macOS 14 or newer · Apple Silicon · signed and notarized</span>
+      <a class="btn" href="#meter">See how it works</a>
     </div>
-    <figure class="shot">
-      <img src="img/dashboard-usage.png" width="1280" height="650" alt="The Usage pane: Claude weekly window 12% used, Codex weekly window 87% used, and this month's tokens from local logs." loading="eager">
-    </figure>
+    <p class="guarantee"><strong>$29 once.</strong> No subscription, no account. 14-day refund, no questions. macOS 14+, Apple Silicon.</p>
+  </section>
+
+  <div class="desk" aria-label="The Keysreallysafe menu bar item with its dropdown open">
+    <div class="menubar">
+      <span class="apple"></span><span class="app">Finder</span><span class="hide-s">File</span><span class="hide-s">Edit</span><span class="hide-s">View</span><span class="hide-s">Go</span><span class="hide-s">Window</span><span class="hide-s">Help</span>
+      <span class="spacer"></span>
+      <span class="item us">C 14%</span><span class="item hide-s">Wed 22 Sep</span><span class="item">11:13 PM</span>
+    </div>
+    <div class="dropdown">
+      <div class="tabs"><span>Overview</span><span class="on">Claude</span><span>Codex</span><span>Grok</span></div>
+      <div class="title">Claude</div>
+      <div class="when">Updated 11:13 PM</div>
+      <div class="row"><div class="l"><b>Claude 5-hour</b><span>3% used · resets today, 23:29</span></div><div class="bar"><i style="width:3%"></i></div></div>
+      <div class="row"><div class="l"><b>Claude Fable</b><span>14% used · resets 27 Sep at 00:59</span></div><div class="bar"><i style="width:14%"></i></div></div>
+      <div class="row"><div class="l"><b>Claude weekly</b><span>13% used · resets 27 Sep at 00:59</span></div><div class="bar"><i style="width:13%"></i></div></div>
+      <div class="menu">
+        <div><span>Plan Usage</span></div>
+        <div><span>Open Keysreallysafe</span><kbd>⌘R</kbd></div>
+        <div><span>About Keysreallysafe</span></div>
+      </div>
+    </div>
+    <div class="window">
+      <div class="bar-top"><i></i><i></i><i></i><span>127.0.0.1:12766 — Keysreallysafe</span></div>
+      <img src="img/usage.png" width="1200" height="700" alt="The Usage pane of the local dashboard: Claude weekly 12% used, Codex weekly 87% used, this month's tokens from local logs." loading="eager">
+    </div>
   </div>
 
-  <section id="how">
-    <div class="wrap">
-      <h2>What it does</h2>
-      <p class="sub">Three things, all local: a usage meter, a key vault, and a gateway that lets a tool use a key without ever seeing it.</p>
-      <div class="grid">
-        <div class="card">
-          <h3>Usage meter</h3>
-          <p>Plan windows for Claude (five-hour, Fable, weekly), Codex (five-hour, weekly) and Grok (weekly) as <em>% used · resets in</em>, in the menu bar and on a local dashboard. Tokens are what your Mac measured; a dollar figure is only shown when you ask for it, priced from a published list-price table.</p>
-        </div>
-        <div class="card">
-          <h3>Key vault</h3>
-          <p>API keys go into the macOS Keychain under your login. The app asks for Touch ID (or your login password) every time a value is copied, revealed, exported or rotated. The key list shows names, never values. Clipboard copies wipe themselves after 20 seconds.</p>
-        </div>
-        <div class="card">
-          <h3>Scoped gateway</h3>
-          <p>Give a script or tool a one-task grant instead of the key itself: one Touch ID, one key, one host, a method and path scope, an expiry. The tool calls <code>127.0.0.1</code>; the gateway adds the real key. Lock the screen or revoke, and the grant is dead.</p>
-        </div>
-        <div class="card">
-          <h3>Honest numbers</h3>
-          <p>A provider whose quota isn't in a local file is listed as <em>not tracked</em> with a link to its own dashboard, never estimated. An unpriced call reads as unknown, never as $0. Cached input is counted the way providers bill it.</p>
-        </div>
-        <div class="card">
-          <h3>Chart and export</h3>
-          <p>Today by hour, or this week and month by day, split by tool and model. Subscriptions from local logs on one side, API-key calls from the gateway ledger on the other. CSV export with raw token and cost columns.</p>
-        </div>
-        <div class="card">
-          <h3>Stays out of your way</h3>
-          <p>One menu bar item. A dashboard on <code>http://127.0.0.1:12766</code> that opens in your browser. Starts at login. Removing it deletes the login item, the snapshot and every Keychain item it created, after Touch ID.</p>
-        </div>
+  <div class="rows wrap">
+    <div class="row-f" id="meter">
+      <div class="text">
+        <p class="eyebrow">Usage meter</p>
+        <h2>Every plan window, without opening a single dashboard.</h2>
+        <p>Claude's five-hour, Fable and weekly windows. Codex's five-hour and weekly. Grok's weekly. As <em>% used · resets in</em>, read from the files each tool keeps on your Mac.</p>
+        <ul>
+          <li>Tokens are what your Mac measured. Dollars appear only when you ask, priced from a published list-price table.</li>
+          <li>A provider whose quota isn't in a local file says <em>not tracked</em>, with a link to its own page. Never a guess.</li>
+          <li>Today by hour, this week or month by day, split by tool and model. CSV export with the raw columns.</li>
+        </ul>
       </div>
-      <figure class="shot">
-        <img src="img/dashboard-keys.png" width="1280" height="650" alt="The Keys pane: a table of key names with provider, kind and last use, and actions to copy, reveal, grant and rotate. No values are shown." loading="lazy">
-      </figure>
+      <div class="frame"><div class="bar-top"><i></i><i></i><i></i><span>Chart</span></div><img src="img/chart.png" width="1200" height="700" alt="The Chart pane: tokens per day for the week, stacked by model, with model filters below." loading="lazy"></div>
     </div>
-  </section>
 
-  <section id="privacy">
+    <div class="row-f flip" id="vault">
+      <div class="text">
+        <p class="eyebrow">Key vault</p>
+        <h2>Keys live in the Keychain. You see names, never values.</h2>
+        <p>Paste a key once. From then on it sits in the macOS Keychain under your login, and every copy, reveal, export or rotate asks for Touch ID first.</p>
+        <ul>
+          <li>Clipboard copies wipe themselves after 20 seconds.</li>
+          <li>Values never enter the local database, a log, the page or the API.</li>
+          <li>Remove it all with one command, after Touch ID.</li>
+        </ul>
+      </div>
+      <div class="frame"><div class="bar-top"><i></i><i></i><i></i><span>Keys</span></div><img src="img/keys.png" width="1200" height="700" alt="The Keys pane: a table of key names with provider, kind, created and last-used dates, and copy, reveal, grant and rotate actions." loading="lazy"></div>
+    </div>
+
+    <div class="row-f" id="gateway">
+      <div class="text">
+        <p class="eyebrow">Scoped gateway</p>
+        <h2>Give a script one task, not your key.</h2>
+        <p>One Touch ID mints a grant: one key, one host, a method and path scope, an expiry. The script calls <code>127.0.0.1</code> with the grant as its API key and the gateway adds the real one.</p>
+        <ul>
+          <li>Lock the screen, revoke, or restart, and the grant is dead.</li>
+          <li>Every routed call lands in the usage chart. Request bodies never do.</li>
+          <li>No grant, no key lookup: a bare request gets 401.</li>
+        </ul>
+      </div>
+      <div class="term" aria-label="Terminal example"><span class="p">$</span> <span class="c">keys grant router --task "list models" --minutes 30 --methods GET --paths /models</span>
+<span class="o">Touch ID: Keys wants to let “list models” use router for 30 minutes</span>
+<span class="ok">✓ grant issued</span>  <span class="k">ksf_…</span>  base <span class="o">http://127.0.0.1:12767/router/v1</span>
+
+<span class="p">$</span> <span class="c">curl -H "Authorization: Bearer ksf_…" http://127.0.0.1:12767/router/v1/models</span>
+<span class="ok">200</span>  <span class="o">counted under router · API keys · 1 request</span>
+
+<span class="p">$</span> <span class="c">keys revoke ksf_…</span>
+<span class="p">$</span> <span class="c">curl -H "Authorization: Bearer ksf_…" http://127.0.0.1:12767/router/v1/models</span>
+<span class="no">403 grant_revoked</span></div>
+    </div>
+  </div>
+
+  <section class="band" id="privacy">
     <div class="wrap">
-      <h2>Privacy boundaries</h2>
-      <p class="sub">These are the rules the app is built around, not a policy that can change under you.</p>
-      <div class="grid">
-        <div class="card">
+      <h2>Built so there's nothing to trust us with.</h2>
+      <p class="sub">These aren't policy promises; they're how the app is wired, and the source is public so you can check.</p>
+      <div class="cols">
+        <div>
           <h3>Nothing leaves your Mac</h3>
           <ul>
-            <li>The dashboard and its API bind to <code>127.0.0.1</code> only.</li>
+            <li>Dashboard and API bind to <code>127.0.0.1</code> only.</li>
             <li>No account, no sign-up, no server of ours in the loop.</li>
-            <li>Optional product analytics is off by default, opt-in, aggregate counters only, and can't include prompts, credentials, key names, paths or device identifiers.</li>
+            <li>Optional analytics is off by default, aggregate counters only, and can't carry prompts, keys, names, paths or device IDs.</li>
           </ul>
-        </div>
-        <div class="card">
-          <h3>No scraping, no borrowed logins</h3>
-          <ul>
-            <li>It never opens provider websites, cookies or browser sessions.</li>
-            <li>It never reads other tools' auth files (<code>~/.codex/auth.json</code>, <code>~/.grok/auth.json</code>).</li>
-            <li>Claude's subscription limits come from Claude Code's own built-in <code>/usage</code> command, through its existing login, with no model request.</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>Secrets stay secret</h3>
-          <ul>
-            <li>Key values never enter the local database, a log, the page, or the key-list API.</li>
-            <li>Gateway request bodies never reach the usage catalog.</li>
-            <li>Every read of a secret asks for your presence, every time.</li>
-          </ul>
-        </div>
-      </div>
-      <p class="fine" style="margin-top:20px">Full detail, including what the optional analytics schema may and may not contain, is in the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/product-analytics.md">source repository</a> and on the <a href="privacy.html">privacy page</a>.</p>
-    </div>
-  </section>
-
-  <section id="pricing">
-    <div class="wrap">
-      <h2>Pricing</h2>
-      <p class="sub">Pay once. No subscription, no account, no seat count.</p>
-      <div class="price">
-        <div class="card main">
-          <h3>Keysreallysafe for Mac</h3>
-          <div class="amount">$29 <small>one-time</small></div>
-          <p class="fine">Per person, on every Mac you use.</p>
-          <ul class="checks">
-            <li>14-day free trial, full app, no card needed</li>
-            <li>All updates within the current major version</li>
-            <li>Usage meter, key vault, scoped gateway, chart and export</li>
-            <li>14-day refund, no questions asked</li>
-          </ul>
-          <div class="actions">
-            <a class="btn primary" href="STRIPE_PAYMENT_LINK">Buy for $29</a>
-            <a class="btn" href="https://github.com/gshost1/Keysreallysafe/releases">Download the trial</a>
-          </div>
         </div>
         <div>
-          <div class="note">
-            <strong>What you are not buying.</strong> Keysreallysafe is not an AI subscription and does not include API credits. You use your own Claude, OpenAI, xAI or other provider accounts and keys; the app only measures and protects them. The optional Optimizer is experimental and makes no savings promise.
-          </div>
-          <p class="fine" style="margin-top:16px">Payments are handled by Stripe. We never see your card number. Prices in US dollars; tax may be added at checkout where required.</p>
-          <p class="fine">Source code is public. New first-party work is proprietary; earlier MIT-licensed material and third-party components keep their licenses. Buying a license supports the project and gives you the signed, notarized build with updates.</p>
+          <h3>No scraping, no borrowed logins</h3>
+          <ul>
+            <li>Never opens provider websites, cookies or browser sessions.</li>
+            <li>Never reads other tools' auth files.</li>
+            <li>Claude limits come from Claude Code's own <code>/usage</code>, through its existing login, with no model request.</li>
+          </ul>
         </div>
+        <div>
+          <h3>Secrets stay secret</h3>
+          <ul>
+            <li>Key values never touch the database, a log, the page or the key-list API.</li>
+            <li>Gateway request bodies never reach the usage catalog.</li>
+            <li>Every read of a secret asks for your presence. Every time.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="fine">Full detail, including exactly what the optional analytics schema may contain, is in the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/product-analytics.md">source repository</a> and on the <a href="privacy.html">privacy page</a>.</p>
+    </div>
+  </section>
+
+  <section class="pricing wrap" id="pricing">
+    <h2>One price. Yours for good.</h2>
+    <p class="sub">Pay once, use it on every Mac you own, keep every update in this major version.</p>
+    <div class="pcard">
+      <div class="buy">
+        <h3>Keysreallysafe for Mac</h3>
+        <div class="amount">$29<small>one-time</small></div>
+        <p class="per">Per person. Updates within 1.x included.</p>
+        <ul class="checks">
+          <li>14-day free trial, full app, no card needed</li>
+          <li>Usage meter, key vault, scoped gateway, chart and export</li>
+          <li>Signed and notarized by Apple Developer ID</li>
+          <li>14-day refund, no questions asked</li>
+        </ul>
+        <div class="actions">
+          <a class="btn primary" href="STRIPE_PAYMENT_LINK">Buy for $29</a>
+          <a class="btn" href="https://github.com/gshost1/Keysreallysafe/releases">Download the trial</a>
+        </div>
+      </div>
+      <div class="what">
+        <h3>What you're not buying</h3>
+        <p>Keysreallysafe is not an AI subscription and includes no API credits. You use your own Claude, OpenAI, xAI or other accounts and keys; the app measures and protects them.</p>
+        <p>The optional Optimizer is experimental and makes no savings promise.</p>
+        <p>Payments are handled by Stripe. We never see your card. Prices in US dollars; tax may be added at checkout where required.</p>
+        <p>Source is public. New first-party work is proprietary; earlier MIT-licensed material and third-party components keep their licenses.</p>
       </div>
     </div>
   </section>
 
-  <section id="faq" class="faq">
-    <div class="wrap">
-      <h2>Questions</h2>
+  <section class="faq wrap" id="faq">
+    <h2>Questions</h2>
+    <div class="list">
       <details>
         <summary>Which tools does it read?</summary>
-        <p>Claude Code, OpenAI Codex CLI and Grok CLI, from the session logs and usage caches they already keep in your home folder. Anything else appears under <em>not tracked</em> with a link to that provider's own dashboard. Plan windows depend on what each tool writes locally; chat-app message caps are not in those files.</p>
+        <p>Claude Code, OpenAI Codex CLI and Grok CLI, from the session logs and usage caches they already keep in your home folder. Anything else appears under <em>not tracked</em> with a link to that provider's own dashboard. Chat-app message caps are not in those files, so they aren't shown.</p>
       </details>
       <details>
         <summary>Does it need my provider passwords?</summary>
-        <p>No. It reads files your tools already wrote, and never touches their login or auth files. For the vault you paste an API key once; from then on it lives in the Keychain and comes out only after Touch ID.</p>
+        <p>No. It reads files your tools already wrote and never touches their login or auth files. For the vault you paste an API key once; from then on it lives in the Keychain and comes out only after Touch ID.</p>
       </details>
       <details>
-        <summary>Is the cost figure real?</summary>
-        <p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table applied afterwards, so they're hidden until you choose USD, and anything unpriced reads as unknown rather than $0.</p>
+        <summary>Is the dollar figure real?</summary>
+        <p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table applied afterwards, hidden until you choose USD, and anything unpriced reads as unknown rather than $0.</p>
       </details>
       <details>
         <summary>How does the trial work?</summary>
-        <p>Download, run, use everything for 14 days. When it ends, the dashboard and menu bar keep showing what you have but ask for a license to continue; nothing in the vault is ever locked away from you. Buy when you're ready and paste the license once.</p>
+        <p>Download, run, use everything for 14 days. When it ends, the app asks for a license to keep measuring; nothing in the vault is ever locked away from you. Buy when you're ready and paste the license once.</p>
       </details>
       <details>
         <summary>Can I get a refund?</summary>
-        <p>Yes, within 14 days of purchase, for any reason. Email support with the address you used at checkout. See the <a href="terms.html">terms</a>.</p>
+        <p>Yes, within 14 days of purchase, for any reason. Email support from the address you used at checkout. See the <a href="terms.html">terms</a>.</p>
       </details>
       <details>
         <summary>What Macs does it run on?</summary>
@@ -181,7 +224,7 @@
       <a href="mailto:SUPPORT_EMAIL">Support</a>
       <a href="https://github.com/gshost1/Keysreallysafe">Source</a>
     </div>
-    <div>© 2026 Keysreallysafe. Mac, macOS, Touch ID and Keychain are trademarks of Apple Inc. Claude, Codex and Grok belong to their respective owners; this product is not affiliated with them.</div>
+    <div class="legalline">© 2026 Keysreallysafe. Mac, macOS, Touch ID and Keychain are trademarks of Apple Inc. Claude, Codex and Grok belong to their respective owners; this product is not affiliated with them.</div>
   </div>
 </footer>
 
