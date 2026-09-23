@@ -44,7 +44,7 @@ enum AppError: Error, CustomStringConvertible {
         case .alreadyExists(let name):
             return "already exists: \(name)"
         case .gatewayOwned(let pid):
-            return "gateway owned by another process (\(pid))"
+            return "the Keysrs menu bar app (process \(pid)) is managing your keys right now; do this from the dashboard (menu bar → Open Keysrs → Keys), or quit the menu bar app first"
         case .refusedBind(let host):
             return "refusing to bind \(host) (loopback 127.0.0.1 only)"
         }
