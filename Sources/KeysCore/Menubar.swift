@@ -301,8 +301,10 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         let status = try? service.liveStatus()
         let snap = MenubarSnapshot.from(report, status: status)
-        item.button?.title = snap.title
-        item.button?.toolTip = snap.tooltip
+        // A lapsed trial keeps the item and the dropdown; only the headline changes.
+        let lapsed = !service.license.isActive
+        item.button?.title = lapsed ? "Keysrs · trial ended" : snap.title
+        item.button?.toolTip = lapsed ? "Trial ended. Open Keysrs to enter a license; your keys are still available." : snap.tooltip
         item.button?.image = nil
         lastSnapshot = snap
         updatedAt = Date()

@@ -12,6 +12,16 @@ Keychain, and the app asks for Touch ID before it reads one out. The dashboard
 stays local; Claude's built-in `/usage` command refreshes subscription limits
 through its existing login.
 
+## Trial and license
+
+Everything works for 14 days from first launch. After that the usage meter
+stops ingesting and new gateway grants are refused until a license is
+entered; keys stay fully available. Buy at https://keysrs.com ($29, one
+major version), then paste the key into the dashboard banner or run
+`keys license set <key>`. `keys license` shows the state. The key is verified
+offline against a public key in `Sources/KeysCore/License.swift`; the app
+never contacts a license server.
+
 ## Privacy boundaries
 
 - The dashboard and its API bind to `127.0.0.1` only. Optional product analytics

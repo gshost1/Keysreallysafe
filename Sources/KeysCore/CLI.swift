@@ -32,6 +32,7 @@ public struct KeysCLI: ParsableCommand {
             ClientCommand.self,
             OptimizerCommand.self,
             PurgeCommand.self,
+            LicenseCommand.self,
         ]
     )
 }
@@ -745,4 +746,43 @@ struct PurgeCommand: ParsableCommand {
         try service.purge(confirmation: answer)
         print("purged catalog and keychain service keysreallysafe")
     }
+}
+
+struct LicenseCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "license",
+        abstract: "Show the trial or license state, or enter a license key.",
+        subcommands: [LicenseStatusCommand.self, LicenseSetCommand.self, LicenseRemoveCommand.self],
+        defaultSubcommand: LicenseStatusCommand.self
+    )
+}
+
+private func printLicense(_ status: LicenseStatus) {
+    switch status.state {
+    case .licensed:
+        print("licensed  \(status.license?.email ?? "")  id \(status.license?.id ?? "")  covers \(LicenseConfiguration.major).x")
+    case .trial:
+        print("trial  \(status.daysLeft) day\(status.daysLeft == 1 ? "" : "s") left  ends \(UTC.iso(status.trialEndsAt))")
+    case .expired:
+        print("trial ended  \(UTC.iso(status.trialEndsAt))  buy at \(LicenseConfiguration.buyURL); keys stay available")
+    }
+}
+
+struct LicenseStatusCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show the trial or license state.")
+    func run() throws { printLicense(try AppFactory.makeService().license.status()) }
+}
+
+struct LicenseSetCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "set", abstract: "Enter the license key from your purchase email.")
+    @Argument(help: "The whole key, starting with keysrs1.") var key: String
+    func run() throws {
+        do { printLicense(try AppFactory.makeService().license.activate(key)) }
+        catch is LicenseError { throw AppError.usage("that is not a valid Keysrs license key for \(LicenseConfiguration.major).x") }
+    }
+}
+
+struct LicenseRemoveCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Forget the stored license key on this Mac.")
+    func run() throws { printLicense(try AppFactory.makeService().license.deactivate()) }
 }

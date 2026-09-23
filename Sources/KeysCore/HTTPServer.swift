@@ -324,6 +324,10 @@ final class APIHandler: @unchecked Sendable {
         }
         do {
             switch (request.method, path) {
+            case ("GET", "/api/license"):
+                return HTTPResponse.json(200, try service.license.status().json)
+            case ("POST", "/api/license"), ("DELETE", "/api/license"):
+                return try licenseRequest(request)
             case ("GET", "/api/analytics"):
                 return try analyticsStatus()
             case ("POST", "/api/analytics"), ("POST", "/api/analytics/clear"), ("POST", "/api/analytics/event"):
@@ -411,6 +415,32 @@ final class APIHandler: @unchecked Sendable {
             return HTTPResponse.json(503, ["error": "analytics_unavailable"])
         }
         return HTTPResponse.json(200, try analytics.status())
+    }
+
+    /// Activation is offline: the key is verified against the embedded public key
+    /// and stored in the catalog. Removing it just returns the Mac to trial state.
+    private func licenseRequest(_ request: HTTPRequest) throws -> HTTPResponse {
+        if request.method == "DELETE" {
+            return HTTPResponse.json(200, try service.license.deactivate().json)
+        }
+        guard request.body.count <= 4_096,
+              let object = try JSONSerialization.jsonObject(with: request.body) as? [String: Any],
+              Set(object.keys) == ["key"], let key = object["key"] as? String else {
+            return HTTPResponse.json(400, ["error": "invalid_license_request"])
+        }
+        do {
+            return HTTPResponse.json(200, try service.license.activate(key).json)
+        } catch let error as LicenseError {
+            let reason: String
+            switch error {
+            case .malformed: reason = "That is not a Keysrs license key. Paste the whole line that starts with keysrs1."
+            case .badSignature: reason = "This key was not issued for Keysrs, or a character is missing."
+            case .unsupportedVersion: reason = "This key needs a newer version of Keysrs."
+            case .wrongMajor(let major): reason = "This key is for Keysrs \(major).x; this is \(LicenseConfiguration.major).x."
+            case .futureDated: reason = "This key is dated in the future; check the Mac's clock."
+            }
+            return HTTPResponse.json(400, ["error": "invalid_license", "reason": reason])
+        }
     }
 
     private func analyticsRequest(_ request: HTTPRequest, path: String) throws -> HTTPResponse {

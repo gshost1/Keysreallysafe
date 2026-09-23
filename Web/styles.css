@@ -857,3 +857,22 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .methods legend { padding: 0 4px; color: var(--fg-3); }
 .methods .inline { display: inline-flex; align-items: center; gap: 4px; margin: 0 12px 0 0; }
 .methods input { width: auto; margin: 0; }
+
+/* Trial / license banner: quiet while days remain, firm when lapsed. */
+.license {
+  margin: 0 0 14px;
+  padding: 12px 16px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--s-openai-3);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  display: grid;
+  gap: 10px;
+}
+.license[data-state="expired"] { border-left-color: var(--danger); }
+.license-text { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.license-text strong { font-size: 13px; }
+.license-text span { color: var(--fg-2); font-size: 13px; }
+.license-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.license-form input { flex: 1 1 320px; min-width: 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+.license[data-state="licensed"] .license-form { display: none; }

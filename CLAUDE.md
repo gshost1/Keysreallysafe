@@ -106,8 +106,12 @@ updates within the current major version, US Stripe account, email support
 with a 14-day no-questions refund. Domain keysrs.com and support@keysrs.com
 exist (2026-09-23); the product name stays Keysreallysafe. Still undecided:
 the legal entity for the EULA. Stripe account is active and verified (2026-09-23);
-the app has no trial or license gating yet, so a purchase is a receipt and
-nothing more until that ships.
+trial/license gating ships in the next release (`License.swift`; 14-day
+trial, Ed25519 keys `keysrs1.…`, gates ingestion and grants only). Keys are
+issued by `worker/index.js` on keysrs.com/license after Stripe checkout and
+emailed via Cloudflare Email Sending; the private seed is the login Keychain
+item `keysrs.license-signing` and the Worker secret LICENSE_SIGNING_SEED;
+`scripts/license-sign.mjs` issues a key by hand.
 
 ## Conventions
 

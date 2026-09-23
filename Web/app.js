@@ -202,6 +202,7 @@
       const err = new Error(friendly(code, res.status));
       err.status = res.status;
       err.code = code;
+      err.reason = data && typeof data.reason === "string" ? data.reason : undefined;
       throw err;
     }
     return data;
@@ -2861,4 +2862,56 @@
   setInterval(loadStatus, 15000);
   setInterval(() => { if (state.pane === "chart" && !document.hidden && !state.busy) loadSpend(); }, 60000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && state.pane === "chart") loadSpend(); });
+
+  // ---------- trial / license ----------
+  // The banner is the only place the license shows; the vault never checks it.
+  const licenseEl = document.getElementById("license-banner");
+  const licenseHead = document.getElementById("license-head");
+  const licenseBody = document.getElementById("license-body");
+  const licenseForm = document.getElementById("license-form");
+  const licenseKey = document.getElementById("license-key");
+  const licenseErr = document.getElementById("license-error");
+  function renderLicense(status) {
+    if (!licenseEl || !status || typeof status.state !== "string") return;
+    licenseEl.dataset.state = status.state;
+    licenseErr.textContent = "";
+    if (status.state === "licensed") {
+      licenseHead.textContent = "Licensed";
+      licenseBody.textContent = "Keysrs " + status.major + ".x · " + (status.license && status.license.email ? status.license.email : "");
+      licenseEl.hidden = true;
+      return;
+    }
+    if (status.state === "expired") {
+      licenseHead.textContent = "Trial ended";
+      licenseBody.textContent = "Usage stopped updating and new grants are paused. Your keys are all still here. Enter a license to continue, or buy one.";
+      licenseEl.hidden = false;
+      return;
+    }
+    const n = Number(status.days_left);
+    licenseHead.textContent = "Trial · " + n + (n === 1 ? " day" : " days") + " left";
+    licenseBody.textContent = "Everything works during the trial. A license keeps the usage meter and gateway running after it ends.";
+    licenseEl.hidden = n > 7;
+  }
+  async function loadLicense() {
+    try { renderLicense(await api("/api/license")); } catch { /* the banner stays as it was */ }
+  }
+  if (licenseForm) {
+    licenseForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const key = licenseKey.value.trim();
+      if (!key) { licenseErr.textContent = "Paste the key from your purchase email."; return; }
+      try {
+        const status = await api("/api/license", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+        licenseKey.value = "";
+        renderLicense(status);
+        say("License activated. Thank you.");
+        await loadStatus();
+        if (state.pane === "chart") await loadSpend();
+      } catch (err) {
+        licenseErr.textContent = (err && err.reason) || (err && err.message) || "That key could not be activated.";
+      }
+    });
+  }
+  loadLicense();
+
 })();
