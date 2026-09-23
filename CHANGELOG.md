@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Name: the product is now **Keysrs**, matching keysrs.com. Every user-facing string (menu bar, About, dashboard title and brand, CLI help and messages, presence prompts) says Keysrs. Nothing that existing installs depend on changed: the `keys` executable, the signing identifier and designated requirement, the Keychain services, the launchd label, `~/Library/Application Support/Keysreallysafe/` and the menu bar autosave name are unchanged, so an upgrade keeps every key and setting.
 - Display: figures lead with what this Mac measured. Tokens — and requests, where the gateway ledger counts them — are the default unit everywhere: the chart, its totals and model rows, the Usage pane's monthly summary and the Keys table's gateway column. A dollar figure is this repo's list-price table applied afterwards, so none appears until **USD** is chosen, and that choice is remembered. The switch sits beside what it changes: the chart's unit chips, a switch on the Usage summary line, and one above the Keys table's gateway column. Everything the honest-cost work established survives in USD — unknown is not zero, a partly priced range is a floor — and absent token counts are now distinguished from measured ones too: a provider that reports none reads as "no reported tokens" beside the requests that are counted, never as `0`. The token headline carries its input / output / cached-read / cache-write breakdown, and says that cached input is counted on each request that reads it again rather than being new output. The CSV export is unchanged: an explicit export still carries the raw token and cost columns whatever the screen is in; the copied totals line follows the unit.
 - Chart: a family with more models than the four hand-picked palette shades no longer loses the extra names to "Other models". The palette extends deterministically past four, so every model — `claude-fable-5-1` included — keeps its own name, colour, legend row, filter and bars, and a long legend scrolls instead of merging rows. A model no provider named still reads as `unknown`.
 - Dashboard: a first run with an empty vault gets a short getting-started guide on the Usage pane — add a key, use it through a child process or a scoped gateway grant, watch and revoke it — with the Keychain and Touch ID boundary, the login-password fallback, the fact that no `.env` file is needed, and the limit that only routed calls are observable. It is dismissible, never shown to a vault that already has keys, and always reachable from **?**, which now opens "How Keys works" above the shortcut list.
@@ -63,7 +64,7 @@ comes from the menubar site), cancel gives exit 3, screen lock revokes, and
   gets a web page back says so.
 
 
-All notable changes to Keysreallysafe. Each entry is a GitHub release.
+All notable changes to Keysrs (formerly Keysreallysafe). Each entry is a GitHub release.
 
 ## 0.2.0 — 2026-09-05
 

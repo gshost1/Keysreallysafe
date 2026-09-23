@@ -58,7 +58,7 @@ enum StableSigning {
         var actual: SecRequirement?
         guard SecCodeCopyDesignatedRequirement(candidateCode, [], &actual) == errSecSuccess, let actual,
               try canonical(actual) == canonical(expected) else {
-            throw AppError.http("build does not use the stable Keysreallysafe signing requirement; run scripts/codesign.sh")
+            throw AppError.http("build does not use the stable Keysrs signing requirement; run scripts/codesign.sh")
         }
         if let previous {
             let oldCode = try code(previous)

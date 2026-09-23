@@ -1,9 +1,13 @@
 # Keysrs (formerly Keysreallysafe)
 
-The product is called Keysrs since 2026-09-23; code identifiers, the
-signing identifier, the Keychain service name and the repo still say
-Keysreallysafe and must not be renamed without a plan that keeps the
-designated requirement and existing Keychain items working.
+The product is called Keysrs since 2026-09-23 and every user-facing string
+says so. Deliberately unchanged, because existing installs depend on them:
+the `keys` executable, the signing identifier `keysreallysafe` and its
+designated requirement, the Keychain services `keysreallysafe` and
+`keysreallysafe.optimizer`, the launchd label `com.keysreallysafe.menubar`,
+`~/Library/Application Support/Keysreallysafe/`, the status item autosave
+name `Keysreallysafe.usage`, the Swift package/target names and the GitHub
+repo `gshost1/Keysreallysafe`. Don't rename those without a migration.
 
 Local Mac usage meter and API-key vault. Reads the usage files Claude Code,
 Codex and Grok already write, shows plan windows and estimated spend in a menu

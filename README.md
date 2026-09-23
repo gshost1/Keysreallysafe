@@ -1,4 +1,7 @@
-# Keysreallysafe
+# Keysrs
+
+Formerly Keysreallysafe; the repository, the Application Support folder, the
+Keychain service and the signing identifier keep the old name on purpose.
 
 A local spend meter and API-key vault for the AI command-line tools on your Mac.
 
@@ -96,10 +99,10 @@ Remove everything with `keys autostart --remove` (login item and snapshot) and
 To run a prepared package on a second Mac without a Swift toolchain there, see
 the [MVP quickstart](docs/mvp-quickstart.md) and the
 [acceptance checklist](docs/mvp-acceptance.md), which records what has been
-verified on a second Mac. Packages are Developer ID signed, notarized and
-stapled DMGs handed over directly; there is no public download yet. A
-candidate that has not been through notarization must be verified as the
-quickstart describes before it is trusted.
+verified on a second Mac. Releases are Developer ID signed, notarized and
+stapled DMGs published on the GitHub Releases page and linked from
+https://keysrs.com. A candidate that has not been through notarization must be
+verified as the quickstart describes before it is trusted.
 
 ## The site
 

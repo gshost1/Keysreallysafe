@@ -144,7 +144,7 @@ def launch(args, claude_args):
         raise LaunchError("Bundled Jev plugin was not found next to this launcher.")
     identifier = None
     try:
-        print("Approve the Jev context optimization grant in Keysreallysafe.", file=sys.stderr)
+        print("Approve the Jev context optimization grant in Keysrs.", file=sys.stderr)
         issued = subprocess.run(
             [keys, "grant", args.key, "--task", "Jev context optimization",
              "--methods", "POST", "--paths", PROVIDERS[args.provider][1],

@@ -29,7 +29,7 @@ struct OptimizerConnectionOptions: ParsableArguments {
         let client = try ControlClient.connect()
         var body: [String: Any] = ["project_id": project, "minutes": minutes, "writable": writable]
         if let jevKey { body["jev_key"] = jevKey }
-        fputs("Approve optimizer project access in Keysreallysafe…\n", stderr)
+        fputs("Approve optimizer project access in Keysrs…\n", stderr)
         let (status, response) = try client.call(method: "POST", path: "/api/optimizer/unlock", body: body)
         guard status == 200, let token = response["token"] as? String, token.hasPrefix("kso_") else {
             throw ControlClient.raise(status: status, body: response)

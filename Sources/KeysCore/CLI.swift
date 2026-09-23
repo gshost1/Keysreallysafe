@@ -8,7 +8,7 @@ public struct KeysCLI: ParsableCommand {
 
     public static let configuration = CommandConfiguration(
         commandName: "keys",
-        abstract: "Keysreallysafe — local key vault and token spend meter.",
+        abstract: "Keysrs — local key vault and token spend meter.",
         subcommands: [
             AddCommand.self,
             ListCommand.self,
@@ -410,7 +410,7 @@ struct GrantCommand: ParsableCommand {
         if let jevProvider { body["jev_provider"] = jevProvider }
         if let maxRequests { body["max_requests"] = maxRequests }
         if let maxUsd { body["max_usd"] = maxUsd }
-        fputs("Touch ID in the Keysreallysafe site…\n", stderr)
+        fputs("Touch ID in the Keysrs site…\n", stderr)
         let (status, obj) = try client.call(method: "POST", path: "/api/keys/\(name)/grants", body: body)
         guard status == 201 else { throw ControlClient.raise(status: status, body: obj) }
         if json {
@@ -585,7 +585,7 @@ struct ModelsCommand: ParsableCommand {
 struct DashboardCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dashboard",
-        abstract: "Open the local Keysreallysafe site on 127.0.0.1."
+        abstract: "Open the local Keysrs site on 127.0.0.1."
     )
 
     @Flag var month = false
@@ -597,7 +597,7 @@ struct DashboardCommand: ParsableCommand {
         let service = try AppFactory.makeService()
         let server = try LoopbackSite.bind(service: service, preferredPort: LoginItem.dashboardPort)
         let url = URL(string: "http://127.0.0.1:\(server.boundPort)/?range=\(range)")!
-        let line = "Keysreallysafe  \(url.absoluteString)\n"
+        let line = "Keysrs  \(url.absoluteString)\n"
         FileHandle.standardOutput.write(Data(line.utf8))
         fflush(stdout)
         NSWorkspace.shared.open(url)
@@ -621,7 +621,7 @@ struct MenubarCommand: ParsableCommand {
         let service = try AppFactory.makeService()
         let server = try LoopbackSite.bind(service: service, preferredPort: LoginItem.menubarPort)
         let url = URL(string: "http://127.0.0.1:\(server.boundPort)/?range=month")!
-        let line = "Keysreallysafe menubar  \(url.absoluteString)\n"
+        let line = "Keysrs menubar  \(url.absoluteString)\n"
         FileHandle.standardOutput.write(Data(line.utf8))
         fflush(stdout)
         DispatchQueue.global(qos: .utility).async {
@@ -660,7 +660,7 @@ struct AutostartCommand: ParsableCommand {
         let web = try WebRoot.find()
         try LoginItem.install(fromBinary: binary, webRoot: web)
         print("starts at login  \(LoginItem.bookmarkURL.absoluteString)")
-        print("menu bar Open Keysreallysafe  (loopback only, not Vercel)")
+        print("menu bar Open Keysrs  (loopback only, not Vercel)")
     }
 }
 

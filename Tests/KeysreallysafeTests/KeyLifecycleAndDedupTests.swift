@@ -353,7 +353,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertThrowsError(try service.purge(confirmation: "nope"))
         XCTAssertEqual(try service.list().map(\.name), ["demo"])
         try service.purge(confirmation: "purge")
-        XCTAssertEqual(gate.reasons.last, "Purge Keysreallysafe")
+        XCTAssertEqual(gate.reasons.last, "Purge Keysrs")
         XCTAssertTrue(try service.list().isEmpty)
         XCTAssertThrowsError(try inner.get(name: "demo"))
     }

@@ -13,7 +13,7 @@ final class MenubarRecoveryTests: XCTestCase {
         original.button?.title = "C 12%  X 34%"
         original.button?.toolTip = "Usage"
         let menu = NSMenu()
-        menu.addItem(withTitle: "Open Keysreallysafe", action: nil, keyEquivalent: "")
+        menu.addItem(withTitle: "Open Keysrs", action: nil, keyEquivalent: "")
         original.menu = menu
         original.isVisible = true
         center.post(name: NSWorkspace.didWakeNotification, object: nil)

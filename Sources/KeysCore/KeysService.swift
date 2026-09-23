@@ -804,7 +804,7 @@ final class KeysService: @unchecked Sendable {
 
     func purge(confirmation: String) throws {
         try requireGatewayOwner()
-        try secrets.confirmPresence(reason: "Purge Keysreallysafe")
+        try secrets.confirmPresence(reason: "Purge Keysrs")
         guard confirmation == "purge" else {
             throw AppError.usage("type purge to confirm")
         }

@@ -2400,7 +2400,7 @@
       const scope = keysMode()
         ? ` · API keys${state.provider ? " · " + providerName(state.provider) : " · every provider"}${state.key ? " · key " + state.key : " · every key"}`
         : ` · Subscriptions${projectMode() ? " · by project" : ""}`;
-      const head = `**Keysreallysafe${scope} · ${rangeHead}**`;
+      const head = `**Keysrs${scope} · ${rangeHead}**`;
       const measured = keysMode() ? Math.max(Number(t.gateway_tokens) || 0, b.tokens) : b.tokens;
       const tokens = measured > 0 ? `${fmtTokens(measured)} tokens` : keysMode() && b.calls ? "no reported tokens" : "0 tokens";
       const line = keysMode()
@@ -2416,7 +2416,7 @@
       const unpriced = Number(t.gateway_unpriced_calls) || 0;
       const usd = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
       const money = usd == null ? (calls ? "cost unknown" : fmtUsd(0)) : (unpriced > 0 ? "≥ ≈ " : "≈ ") + fmtUsd(usd);
-      const head = `**Keysreallysafe · API keys · ${rangeHead}`
+      const head = `**Keysrs · API keys · ${rangeHead}`
         + `${state.provider ? " · " + providerName(state.provider) : " · every provider"}`
         + `${state.key ? " · key " + state.key : " · every key"}**`;
       const line = `${money} · ${fmtInt(calls)} ${calls === 1 ? "request" : "requests"} · ${fmtTokens(Number(t.gateway_tokens) || 0)} tokens`
@@ -2437,7 +2437,7 @@
     parts.push(`${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens`);
     const rangeLabel = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
       : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
-    const head = `**Keysreallysafe · Subscriptions · ${rangeLabel}${projectMode() ? " · by project" : ""}**`;
+    const head = `**Keysrs · Subscriptions · ${rangeLabel}${projectMode() ? " · by project" : ""}**`;
     const line = `${anyEst ? "≈ " : ""}${fmtUsd(grok + claude + openai)} total · ${parts.join(" · ")}`;
     const foot = anyEst
       ? "_Estimated from the tools' own local logs on this Mac, not a plan invoice._"

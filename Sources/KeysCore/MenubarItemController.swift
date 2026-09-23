@@ -69,7 +69,7 @@ final class MenubarItemController {
         pendingReason = nil
         let oldItem = item
         let menu = oldItem.menu
-        let title = oldItem.button?.title ?? "Keysreallysafe"
+        let title = oldItem.button?.title ?? "Keysrs"
         let tooltip = oldItem.button?.toolTip
         oldItem.menu = nil
         statusBar.removeStatusItem(oldItem)

@@ -337,7 +337,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "Keysreallysafe",
+            .applicationName: "Keysrs",
             .applicationVersion: "0.4.0",
             .version: "local vault + usage · loopback only",
             .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. Proprietary; third-party and prior-license rights retained."),
@@ -365,7 +365,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status.submenu = statusMenu
         menu.addItem(status)
         menu.addItem(.separator())
-        let open = NSMenuItem(title: "Open Keysreallysafe", action: #selector(openDashboard), keyEquivalent: "")
+        let open = NSMenuItem(title: "Open Keysrs", action: #selector(openDashboard), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
         let ingest = NSMenuItem(title: "Refresh", action: #selector(ingestNow), keyEquivalent: "r")
@@ -373,7 +373,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ingest.target = self
         ingest.toolTip = "Ingest the local session logs now"
         menu.addItem(ingest)
-        let about = NSMenuItem(title: "About Keysreallysafe", action: #selector(showAbout), keyEquivalent: "")
+        let about = NSMenuItem(title: "About Keysrs", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
         menu.addItem(.separator())
