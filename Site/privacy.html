@@ -35,10 +35,13 @@
 
 <article class="legal">
 <h1>Privacy</h1>
-<p class="meta">Effective 2026-09-22. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
+<p class="meta">Effective 2026-09-23. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
 
 <h2>The short version</h2>
-<p>Keysrs runs on your Mac and talks to nothing of ours. There is no account. We do not receive your usage data, your prompts, your keys, or your identity. The only data we ever hold about you is what Stripe gives us when you buy a license: your email address, the amount, and the date.</p>
+<p>Keysrs runs on your Mac. There is no account. We do not receive your usage data, your prompts, your keys, or your identity. What we hold about you is what Stripe gives us when you buy a license (your email address, the amount, and the date) and, once you enter a license, which Macs it is active on.</p>
+
+<h2>License activation</h2>
+<p>A license works on up to two Macs. When you enter a key, and then once every 30 days, the app sends keysrs.com three things: the license key, a random install ID created on that Mac, and the Mac's model identifier (for example <code>Mac15,6</code>) so you can tell your Macs apart on your license page. We store those with the date of each check-in, and nothing else: no usage, no names, no serial numbers. The install ID is kept in your login Keychain next to a hash of the Mac's hardware ID; the hash never leaves the Mac. If a check-in can't reach us, the app keeps working for 14 more days. You can free a Mac's place by removing the key on it, or from the link in your purchase email.</p>
 
 <h2>What the app reads on your Mac</h2>
 <ul>

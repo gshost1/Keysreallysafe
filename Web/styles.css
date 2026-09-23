@@ -869,7 +869,7 @@ main { flex: 1; min-height: 0; overflow: auto; }
   display: grid;
   gap: 10px;
 }
-.license[data-state="expired"] { border-left-color: var(--danger); }
+.license[data-state="expired"], .license[data-state="unconfirmed"] { border-left-color: var(--danger); }
 .license-text { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
 .license-text strong { font-size: 13px; }
 .license-text span { color: var(--fg-2); font-size: 13px; }

@@ -19,8 +19,10 @@ stops ingesting and new gateway grants are refused until a license is
 entered; keys stay fully available. Buy at https://keysrs.com ($29, one
 major version), then paste the key into the dashboard banner or run
 `keys license set <key>`. `keys license` shows the state. The key is verified
-offline against a public key in `Sources/KeysCore/License.swift`; the app
-never contacts a license server.
+against a public key in `Sources/KeysCore/License.swift` and activated at
+keysrs.com on at most two Macs; the app checks in every 30 days (key, a
+random install ID and the Mac model only) and keeps working for 14 days
+without a check-in. `keys license remove` frees the Mac's place.
 
 ## Privacy boundaries
 

@@ -440,6 +440,8 @@ final class APIHandler: @unchecked Sendable {
             case .futureDated: reason = "This key is dated in the future; check the Mac's clock."
             }
             return HTTPResponse.json(400, ["error": "invalid_license", "reason": reason])
+        } catch let error as LicenseServerError {
+            return HTTPResponse.json(error == .unreachable ? 503 : 400, ["error": "activation_failed", "reason": error.message])
         }
     }
 

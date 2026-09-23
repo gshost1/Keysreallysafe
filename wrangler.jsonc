@@ -8,6 +8,8 @@
   // /license and the Stripe webhook are handled by the Worker; everything else is a file in Site/.
   "assets": { "directory": "Site", "binding": "ASSETS", "run_worker_first": ["/license", "/api/*"], "html_handling": "auto-trailing-slash", "not_found_handling": "404-page" },
   "send_email": [{ "name": "EMAIL" }],
+  // Which Macs each license is active on, and revoked licenses (migrations/).
+  "d1_databases": [{ "binding": "DB", "database_name": "keysrs-licenses", "database_id": "5d62d3a0-08a2-4d5f-ab2c-328908f99351" }],
   // /license re-reads the Stripe session per view; 10 a minute per IP is plenty for a buyer.
   "ratelimits": [{ "name": "LICENSE_LIMIT", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }],
   "routes": [

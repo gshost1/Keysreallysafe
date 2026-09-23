@@ -2881,6 +2881,14 @@
       licenseEl.hidden = true;
       return;
     }
+    if (status.state === "unconfirmed") {
+      // A key is stored but this Mac's activation lapsed or was refused.
+      licenseHead.textContent = "License not confirmed";
+      licenseBody.textContent = (status.problem && status.problem.message) ||
+        "Keysrs confirms the license with keysrs.com once every 30 days and couldn't reach it. Connect to the internet, or paste the key again to retry. Your keys are all still here.";
+      licenseEl.hidden = false;
+      return;
+    }
     if (status.state === "expired") {
       licenseHead.textContent = "Trial ended";
       licenseBody.textContent = "Usage stopped updating and new grants are paused. Your keys are all still here. Enter a license to continue, or buy one.";

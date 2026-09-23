@@ -760,11 +760,14 @@ struct LicenseCommand: ParsableCommand {
 private func printLicense(_ status: LicenseStatus) {
     switch status.state {
     case .licensed:
-        print("licensed  \(status.license?.email ?? "")  id \(status.license?.id ?? "")  covers \(LicenseConfiguration.major).x")
+        let due = status.activation.map { "  next check-in \(UTC.iso(Date(timeIntervalSince1970: Double($0.due))))" } ?? ""
+        print("licensed  \(status.license?.email ?? "")  id \(status.license?.id ?? "")  covers \(LicenseConfiguration.major).x on up to \(LicenseConfiguration.seats) Macs\(due)")
     case .trial:
         print("trial  \(status.daysLeft) day\(status.daysLeft == 1 ? "" : "s") left  ends \(UTC.iso(status.trialEndsAt))")
     case .expired:
         print("trial ended  \(UTC.iso(status.trialEndsAt))  buy at \(LicenseConfiguration.buyURL); keys stay available")
+    case .unconfirmed:
+        print("license not confirmed on this Mac  \(status.license?.email ?? "")  \(status.problem?.message ?? LicenseStatus.unconfirmedMessage)")
     }
 }
 
@@ -779,10 +782,11 @@ struct LicenseSetCommand: ParsableCommand {
     func run() throws {
         do { printLicense(try AppFactory.makeService().license.activate(key)) }
         catch is LicenseError { throw AppError.usage("that is not a valid Keysrs license key for \(LicenseConfiguration.major).x") }
+        catch let error as LicenseServerError { throw AppError.usage(error.message) }
     }
 }
 
 struct LicenseRemoveCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Forget the stored license key on this Mac.")
+    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Forget the license on this Mac and free its place for another Mac.")
     func run() throws { printLicense(try AppFactory.makeService().license.deactivate()) }
 }

@@ -315,10 +315,22 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         let status = try? service.liveStatus()
         let snap = MenubarSnapshot.from(report, status: status)
+        // Activation and the 30-day check-in are network calls; never on the main thread.
+        let license = service.license
+        DispatchQueue.global(qos: .utility).async { license.checkInIfDue() }
         // A lapsed trial keeps the item and the dropdown; only the headline changes.
-        let lapsed = !service.license.isActive
-        item.button?.title = lapsed ? "Keysrs · trial ended" : snap.title
-        item.button?.toolTip = lapsed ? "Trial ended. Open Keysrs to enter a license; your keys are still available." : snap.tooltip
+        let licenseState = (try? license.status().state) ?? .trial
+        switch licenseState {
+        case .expired:
+            item.button?.title = "Keysrs · trial ended"
+            item.button?.toolTip = "Trial ended. Open Keysrs to enter a license; your keys are still available."
+        case .unconfirmed:
+            item.button?.title = "Keysrs · confirm license"
+            item.button?.toolTip = "Keysrs could not confirm the license with keysrs.com. Open Keysrs for details; your keys are still available."
+        case .trial, .licensed:
+            item.button?.title = snap.title
+            item.button?.toolTip = snap.tooltip
+        }
         item.button?.image = nil
         lastSnapshot = snap
         updatedAt = Date()
@@ -354,7 +366,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Keysrs",
-            .applicationVersion: "0.6.1",
+            .applicationVersion: "0.7.0",
             .version: "local vault + usage · loopback only",
             .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. Proprietary; third-party and prior-license rights retained."),
         ])

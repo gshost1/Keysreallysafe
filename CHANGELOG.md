@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 — 2026-09-23
+
+- License activation: a key now works on **up to two Macs**. Entering it activates this Mac at keysrs.com; the app checks in every 30 days and keeps working for 14 days without a check-in, so a leaked, refunded or disputed key stops at the next check-in. Each call carries only the key, a random install ID and the Mac's model identifier. The install ID lives in the login Keychain beside a local hash of the hardware UUID (never sent), so a Mac cloned with Migration Assistant needs its own place, and a catalog copied to another Mac does not carry the activation. `keys license remove` (or removing the key in the dashboard) frees the place; the license page lists the Macs and can remove one. New state **unconfirmed** (key stored, no current activation, trial over) behaves like an ended trial and says why; the menu bar reads "Keysrs · confirm license".
+- keysrs.com: `/api/license/activate` (activation and check-in), `/api/license/deactivate`, `/api/license/release`, backed by a D1 database (`migrations/`); a full refund or a dispute (`charge.refunded`, `charge.dispute.created`) revokes the license automatically.
+- The CLI's gateway-owner error says to use the dashboard; `scripts/resend-license-email.mjs` re-sends a lost license email.
+
 ## 0.6.1 — 2026-09-23
 
 Includes everything since 0.4.0 (0.5.0 and 0.6.0 shipped as DMGs without their own entries).
