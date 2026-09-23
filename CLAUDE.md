@@ -26,7 +26,9 @@ scripts; Google Fonts is the only external resource). It is served by a
 Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
 custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
 deploy` after `wrangler login`. Support mail is support@keysrs.com via
-Cloudflare Email Routing. The Buy button is the Stripe Payment Link
+Cloudflare Email Routing. PostHog (US cloud, project key in the pages, a
+public client token) counts page views and buy/download clicks, cookieless,
+no session replay; privacy.html describes exactly that and must stay true. The Buy button is the Stripe Payment Link
 https://buy.stripe.com/8x2aEYcrmgbh9xu7HUbbG00 (product "Keysrs for Mac",
 $29 one-time, automatic tax).
 

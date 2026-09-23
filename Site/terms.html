@@ -8,6 +8,26 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&display=swap">
 <link rel="canonical" href="https://keysrs.com/terms.html">
 <link rel="stylesheet" href="styles.css">
+<script>
+  // PostHog, cookieless: no cookie or localStorage identity, so a visitor is
+  // counted per page load and never followed across visits. Key set at deploy.
+  !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSurveysLoaded onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey canRenderSurveyAsync identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug getPageViewId captureTraceFeedback captureTraceMetric".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+  posthog.init("phc_sjUPiZsiJoN6asBQyAXsnteDMAgnsqi6FjqLXj49FvCb", {
+    api_host: "https://us.i.posthog.com",
+    persistence: "memory",
+    person_profiles: "identified_only",
+    disable_session_recording: true,
+    autocapture: false,
+    capture_pageview: true,
+    capture_pageleave: true
+  });
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest("a[href]"); if (!a) return;
+    var h = a.getAttribute("href") || "";
+    if (h.indexOf("buy.stripe.com") === 0 || h.indexOf("https://buy.stripe.com") === 0) posthog.capture("buy_click");
+    else if (h.indexOf("/releases/") !== -1) posthog.capture("download_click");
+  });
+</script>
 </head>
 <body>
 <header class="top"><div class="wrap"><a class="brand" href="/"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#b8781e"/><circle cx="12" cy="16" r="5.5" fill="none" stroke="#fff" stroke-width="3"/><path d="M17 16h9m-3 0v4m-3-4v3" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>Keysrs</a><nav><a href="/#pricing">Pricing</a><a href="privacy.html">Privacy</a></nav></div></header>
