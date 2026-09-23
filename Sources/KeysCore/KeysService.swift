@@ -22,6 +22,8 @@ final class KeysService: @unchecked Sendable {
     var analytics: ProductAnalytics?
     /// Trial/license state; gates ingestion and new grants only, never the vault.
     let license: LicenseManager
+    /// First-launch answers: background Claude limit refresh, analytics question asked.
+    let preferences: AppPreferences
     private var screenLockObserver: NSObjectProtocol?
 
     init(
@@ -43,6 +45,7 @@ final class KeysService: @unchecked Sendable {
         self.runner = runner
         self.openRouter = openRouter
         self.license = LicenseManager(catalog: catalog)
+        self.preferences = AppPreferences(catalog: catalog)
         ModelPrices.loadAtStartup()
         Providers.loadAtStartup()
     }

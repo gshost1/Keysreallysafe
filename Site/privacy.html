@@ -43,7 +43,7 @@
 <h2>What the app reads on your Mac</h2>
 <ul>
   <li>Usage records that Claude Code, OpenAI Codex CLI and Grok CLI write to your home folder (session logs and usage caches). Only counts and metadata are kept; prompt content is not stored.</li>
-  <li>Claude's subscription limits, through Claude Code's own <code>/usage</code> command using its existing login. No model request is made and no credentials are read.</li>
+  <li>Claude's subscription limits, from the cache Claude Code keeps and, when you ask for it, through Claude Code's own <code>/usage</code> command using its existing login. Refreshing in the background every five minutes is off unless you turn it on at first launch or from the menu. No model request is made and no credentials are read.</li>
   <li>API keys you add yourself. They are stored in the macOS Keychain under your login and are read back only after a Touch ID or login-password prompt.</li>
 </ul>
 <p>The app never reads other tools' authentication files (for example <code>~/.codex/auth.json</code> or <code>~/.grok/auth.json</code>), never opens provider websites, and never uses browser cookies or sessions.</p>

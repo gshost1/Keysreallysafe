@@ -224,6 +224,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastSnapshot: MenubarSnapshot?
     private var updatedAt: Date?
     private let panel = MenubarPanel()
+    private var claudeRefreshItem: NSMenuItem?
     private static let tabKey = "menubar.tab"
 
     init(service: KeysService, server: LoopbackHTTPServer, url: URL) {
@@ -250,6 +251,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
     }
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // After the run loop starts, so the status item is already in the menu bar.
+        DispatchQueue.main.async { [weak self] in self?.showWelcomeIfNeeded() }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         itemController.stop()
@@ -262,6 +268,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func ingestNow() {
+        // An explicit Refresh also asks Claude Code for its limits once, whether or
+        // not the background refresh is on: the person asked for it.
+        ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
+            DispatchQueue.main.async { self?.refresh() }
+        }
         // Never on the main thread: a pass over a large log tree would freeze the menu bar.
         let queued = IngestScheduler.enqueue(service: service) { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
@@ -278,6 +289,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Refresh right before the menu drops down, so the rows are never a minute stale.
     func menuWillOpen(_ menu: NSMenu) {
         itemController.menuIsOpen = true
+        claudeRefreshItem?.state = service.preferences.claudeUsageRefresh ? .on : .off
         refresh()
     }
 
@@ -287,8 +299,10 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func refresh() {
         itemController.checkVisibility()
-        ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
-            DispatchQueue.main.async { self?.refresh() }
+        if service.preferences.claudeUsageRefresh {
+            ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
+                DispatchQueue.main.async { self?.refresh() }
+            }
         }
         let report = (try? service.spend(range: .week, by: .model, source: .all)) ?? SpendReport(
             range: .week,
@@ -346,6 +360,75 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
     }
 
+    @objc func toggleClaudeRefresh() {
+        let on = !service.preferences.claudeUsageRefresh
+        try? service.preferences.setClaudeUsageRefresh(on)
+        claudeRefreshItem?.state = on ? .on : .off
+        if on { refresh() }
+    }
+
+    /// First launch, and once per new analytics consent version: one window, every
+    /// box unticked, one Continue button. Continuing with nothing ticked is a full
+    /// answer and is never asked again.
+    private func showWelcomeIfNeeded() {
+        let analytics = try? service.analytics?.status()
+        let configured = (analytics?["configured"] as? Bool) ?? false
+        let enabled = (analytics?["enabled"] as? Bool) ?? false
+        let plan = service.preferences.welcomePlan(analyticsConfigured: configured, analyticsEnabled: enabled)
+        guard !plan.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = plan.firstRun ? "Welcome to Keysrs" : "A quick question from Keysrs"
+        alert.informativeText = plan.firstRun
+            ? "Keysrs lives in your menu bar. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain. Nothing is ticked below; choose what you are comfortable with. You can change it later."
+            : "This version can share anonymous usage counts to help improve Keysrs. It is off unless you tick the box."
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        func note(_ text: String) -> NSTextField {
+            let label = NSTextField(wrappingLabelWithString: text)
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.textColor = .secondaryLabelColor
+            label.preferredMaxLayoutWidth = 320
+            return label
+        }
+        var claudeBox: NSButton?
+        if plan.firstRun {
+            let box = NSButton(checkboxWithTitle: "Keep Claude plan limits fresh", target: nil, action: nil)
+            box.state = .off
+            stack.addArrangedSubview(box)
+            stack.addArrangedSubview(note("Every 5 minutes, Keysrs runs Claude Code's own /usage command in the background with your existing login. No model request is made. If this is off, Claude limits appear when Claude Code has refreshed them recently, or when you choose Refresh."))
+            claudeBox = box
+        }
+        var analyticsBox: NSButton?
+        if plan.askAnalytics {
+            if plan.firstRun { stack.setCustomSpacing(14, after: stack.arrangedSubviews.last!) }
+            let box = NSButton(checkboxWithTitle: "Share anonymous usage counts", target: nil, action: nil)
+            box.state = .off
+            stack.addArrangedSubview(box)
+            stack.addArrangedSubview(note("A daily count of which features you used, plus the app and macOS version. Never your keys, prompts, projects, file names or spend. See exactly what would be sent, or turn it off, under Privacy in the dashboard."))
+            analyticsBox = box
+        }
+        stack.layoutSubtreeIfNeeded()
+        stack.frame = NSRect(origin: .zero, size: NSSize(width: 340, height: stack.fittingSize.height))
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Continue")
+        if plan.firstRun { alert.addButton(withTitle: "Continue and Open Keysrs") }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        let claudeOn = claudeBox?.state == .on
+        try? service.preferences.recordWelcome(plan, claudeRefresh: claudeOn)
+        if analyticsBox?.state == .on {
+            try? service.analytics?.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
+        }
+        claudeRefreshItem?.state = service.preferences.claudeUsageRefresh ? .on : .off
+        if claudeOn { refresh() }
+        if response == .alertSecondButtonReturn { openDashboard() }
+    }
+
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
         let host = NSMenuItem()
@@ -375,6 +458,12 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ingest.target = self
         ingest.toolTip = "Ingest the local session logs now"
         menu.addItem(ingest)
+        let claude = NSMenuItem(title: "Keep Claude Limits Fresh", action: #selector(toggleClaudeRefresh), keyEquivalent: "")
+        claude.target = self
+        claude.toolTip = "Every 5 minutes, run Claude Code's own /usage in the background (no model request)"
+        claude.state = service.preferences.claudeUsageRefresh ? .on : .off
+        claudeRefreshItem = claude
+        menu.addItem(claude)
         let about = NSMenuItem(title: "About Keysrs", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)
