@@ -136,25 +136,28 @@ final class LicenseManager: @unchecked Sendable {
 
     /// The first status call starts the trial; nothing else ever moves it.
     func status() throws -> LicenseStatus {
-        try catalog.withTransaction {
-            let current = now()
-            let started: Date
-            // The stored start is authoritative even if the clock now reads earlier:
-            // winding the clock back must not hand out a fresh trial.
-            if let stored = try catalog.metaValue(Self.trialKey), let date = UTC.parse(stored) {
-                started = date
-            } else {
-                started = current
-                try catalog.setMeta(Self.trialKey, UTC.iso(current))
-            }
-            let ends = started.addingTimeInterval(Double(LicenseConfiguration.trialDays) * 86_400)
-            let daysLeft = max(0, Int((ends.timeIntervalSince(current) / 86_400).rounded(.up)))
-            if let stored = try catalog.metaValue(Self.licenseKey),
-               let payload = try? LicenseKey.verify(stored, publicKeyBase64: publicKeyBase64, now: current) {
-                return LicenseStatus(state: .licensed, trialStartedAt: started, trialEndsAt: ends, daysLeft: daysLeft, license: payload)
-            }
-            let state: LicenseStatus.State = current < ends ? .trial : .expired
-            return LicenseStatus(state: state, trialStartedAt: started, trialEndsAt: ends, daysLeft: daysLeft, license: nil)
+        let current = now()
+        let started = try trialStart(current)
+        let ends = started.addingTimeInterval(Double(LicenseConfiguration.trialDays) * 86_400)
+        let daysLeft = max(0, Int((ends.timeIntervalSince(current) / 86_400).rounded(.up)))
+        if let stored = try catalog.metaValue(Self.licenseKey),
+           let payload = try? LicenseKey.verify(stored, publicKeyBase64: publicKeyBase64, now: current) {
+            return LicenseStatus(state: .licensed, trialStartedAt: started, trialEndsAt: ends, daysLeft: daysLeft, license: payload)
+        }
+        let state: LicenseStatus.State = current < ends ? .trial : .expired
+        return LicenseStatus(state: state, trialStartedAt: started, trialEndsAt: ends, daysLeft: daysLeft, license: nil)
+    }
+
+    /// The stored start is authoritative even if the clock now reads earlier:
+    /// winding the clock back must not hand out a fresh trial. Status is read on
+    /// every menu bar refresh and ingest, so only the one-time write takes the
+    /// catalog's write lock; the transaction re-reads so two processes agree.
+    private func trialStart(_ current: Date) throws -> Date {
+        if let stored = try catalog.metaValue(Self.trialKey), let date = UTC.parse(stored) { return date }
+        return try catalog.withTransaction {
+            if let stored = try catalog.metaValue(Self.trialKey), let date = UTC.parse(stored) { return date }
+            try catalog.setMeta(Self.trialKey, UTC.iso(current))
+            return current
         }
     }
 

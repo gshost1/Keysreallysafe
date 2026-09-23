@@ -56,12 +56,16 @@ async function issueKey(env, { id, email, iat }) {
 
 // --- Stripe ----------------------------------------------------------------
 
+// null means "no such session"; a Stripe or configuration failure throws, so the
+// webhook answers 500 and Stripe retries instead of the email being lost.
 async function checkoutSession(env, id) {
-  if (!/^cs_(live|test)_[A-Za-z0-9]+$/.test(id)) return null;
+  if (typeof id !== "string" || !/^cs_(live|test)_[A-Za-z0-9]+$/.test(id)) return null;
+  if (!env.STRIPE_SECRET_KEY) throw new Error("STRIPE_SECRET_KEY is not set");
   const res = await fetch(`https://api.stripe.com/v1/checkout/sessions/${id}`, {
     headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
   });
-  if (!res.ok) return null;
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Stripe checkout session lookup failed: ${res.status}`);
   return res.json();
 }
 
@@ -79,7 +83,11 @@ async function stripeWebhook(request, env) {
     return new Response("bad signature", { status: 400 });
   }
   const event = JSON.parse(body);
-  if (event.type !== "checkout.session.completed") return new Response("ignored", { status: 200 });
+  // Card payments are paid at "completed"; delayed methods (bank debits) arrive
+  // unpaid there and paid later in "async_payment_succeeded". Either one mails the key.
+  if (event.type !== "checkout.session.completed" && event.type !== "checkout.session.async_payment_succeeded") {
+    return new Response("ignored", { status: 200 });
+  }
   // Trust the webhook only as a trigger: re-read the session from Stripe.
   const session = await checkoutSession(env, event.data.object.id);
   const license = paidLicenseFrom(session);
@@ -91,16 +99,27 @@ async function stripeWebhook(request, env) {
 
 async function verifyStripeSignature(body, header, secret) {
   if (!header || !secret) return false;
-  const parts = Object.fromEntries(header.split(",").map((p) => p.split("=")));
-  const t = parts.t, v1 = parts.v1;
-  if (!t || !v1 || Math.abs(Date.now() / 1000 - Number(t)) > 300) return false;
+  // Stripe sends one v1 per active secret (several while a secret is being rolled).
+  let t = null;
+  const signatures = [];
+  for (const part of header.split(",")) {
+    const eq = part.indexOf("=");
+    const name = part.slice(0, eq).trim(), value = part.slice(eq + 1).trim();
+    if (name === "t") t = value;
+    else if (name === "v1") signatures.push(value);
+  }
+  if (!t || signatures.length === 0 || !(Math.abs(Date.now() / 1000 - Number(t)) <= 300)) return false;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${t}.${body}`));
   const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  if (hex.length !== v1.length) return false;
-  let diff = 0;
-  for (let i = 0; i < hex.length; i++) diff |= hex.charCodeAt(i) ^ v1.charCodeAt(i);
-  return diff === 0;
+  let match = false;
+  for (const v1 of signatures) {
+    if (v1.length !== hex.length) continue;
+    let diff = 0;
+    for (let i = 0; i < hex.length; i++) diff |= hex.charCodeAt(i) ^ v1.charCodeAt(i);
+    match = match || diff === 0;
+  }
+  return match;
 }
 
 // --- email -----------------------------------------------------------------
@@ -113,7 +132,7 @@ Your license key (one line, paste it whole):
 
 ${key}
 
-Enter it in Keysrs: open the dashboard from the menu bar item and paste the key into the licence box, or run:
+Enter it in Keysrs: open the dashboard from the menu bar item and paste the key into the license box, or run:
 
   keys license set '${key}'
 
@@ -127,15 +146,26 @@ Refund within 14 days, no questions: reply to this email.
     replyTo: FROM.email,
     subject: "Your Keysrs license key",
     text,
-    html: `<p>Thanks for buying Keysrs.</p><p>Your license key (one line, paste it whole):</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f5f7;padding:12px;border-radius:8px">${escapeHTML(key)}</pre><p>Enter it in Keysrs: open the dashboard from the menu bar item and paste the key into the licence box, or run <code>keys license set '${escapeHTML(key)}'</code>.</p><p>It covers Keysrs ${MAJOR}.x on every Mac you use. Keep this email; the key can also be fetched again at <a href="https://keysrs.com/license?session_id=${escapeHTML(license.id)}">keysrs.com/license</a>.</p><p>Refund within 14 days, no questions: reply to this email.</p>`,
+    html: `<p>Thanks for buying Keysrs.</p><p>Your license key (one line, paste it whole):</p><pre style="white-space:pre-wrap;word-break:break-all;background:#f4f5f7;padding:12px;border-radius:8px">${escapeHTML(key)}</pre><p>Enter it in Keysrs: open the dashboard from the menu bar item and paste the key into the license box, or run <code>keys license set '${escapeHTML(key)}'</code>.</p><p>It covers Keysrs ${MAJOR}.x on every Mac you use. Keep this email; the key can also be fetched again at <a href="https://keysrs.com/license?session_id=${escapeHTML(license.id)}">keysrs.com/license</a>.</p><p>Refund within 14 days, no questions: reply to this email.</p>`,
   });
 }
 
 // --- the page after checkout ----------------------------------------------
 
 async function licensePage(request, env, url) {
+  // Each view is a Stripe API call, so a client gets a few a minute; a buyer reloading
+  // after checkout never gets near it.
+  if (env.LICENSE_LIMIT) {
+    const { success } = await env.LICENSE_LIMIT.limit({ key: request.headers.get("cf-connecting-ip") || "unknown" });
+    if (!success) return new Response("Too many requests. Wait a minute and reload.", { status: 429, headers: { "retry-after": "60", "cache-control": "no-store" } });
+  }
   const id = url.searchParams.get("session_id") || "";
-  const session = await checkoutSession(env, id);
+  let session = null;
+  try {
+    session = await checkoutSession(env, id);
+  } catch {
+    return new Response("The license service is briefly unavailable. Reload in a minute; your key is also on its way by email.", { status: 503, headers: { "retry-after": "60", "cache-control": "no-store" } });
+  }
   const license = paidLicenseFrom(session);
   const key = license ? await issueKey(env, license) : null;
   const body = key
@@ -146,7 +176,7 @@ async function licensePage(request, env, url) {
 <h2>Enter it</h2>
 <ol>
 <li>Open Keysrs from the menu bar (or <a href="http://127.0.0.1:12766/">127.0.0.1:12766</a>).</li>
-<li>Paste the key into the licence box at the top and press <strong>Activate</strong>.</li>
+<li>Paste the key into the license box at the top and press <strong>Activate</strong>.</li>
 </ol>
 <p class="sub">Or in a terminal: <code>keys license set '${escapeHTML(key)}'</code></p>
 <p class="sub">Covers Keysrs ${MAJOR}.x on every Mac you use. Bookmark this page; it shows the same key again. Refund within 14 days: <a href="mailto:support@keysrs.com">support@keysrs.com</a>.</p>`

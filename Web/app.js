@@ -2913,5 +2913,7 @@
     });
   }
   loadLicense();
+  // A tab left open across the end of the trial still learns about it.
+  setInterval(loadLicense, 15 * 60 * 1000);
 
 })();

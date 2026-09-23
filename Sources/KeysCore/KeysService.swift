@@ -876,7 +876,6 @@ final class KeysService: @unchecked Sendable {
     }
 
     func ingest(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
-        try license.requireActive()
         ingestLock.lock()
         defer { ingestLock.unlock() }
         return try ingestLocked(source)
@@ -893,6 +892,8 @@ final class KeysService: @unchecked Sendable {
     }
 
     private func ingestLocked(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
+        // Every ingest path (explicit, scheduled, the dashboard's stale refresh) comes through here.
+        try license.requireActive()
         var succeeded = false
         defer { analytics?.record(succeeded ? .ingestSuccess : .ingestFailure) }
         try ensureClaudeDedupLocked()

@@ -117,4 +117,42 @@ final class LicenseTests: XCTestCase {
         XCTAssertEqual(try service.list().map(\.name), ["openai-main"], "the vault still lists")
         XCTAssertEqual(try service.reveal(name: "openai-main"), "sk-test-value", "and still reveals")
     }
+
+    func testLapsedTrialAlsoStopsTheDashboardsStaleRefresh() throws {
+        let (db, _) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        try db.setMeta(LicenseManager.trialKey, UTC.iso(Date(timeIntervalSinceNow: -20 * 86_400)))
+        // /api/spend calls this on every load; it must hit the same gate as `keys ingest`.
+        XCTAssertThrowsError(try service.ingestIfStale(olderThan: 0)) { error in
+            XCTAssertTrue("\(error)".contains("trial ended"), "\(error)")
+        }
+        XCTAssertNil(try db.lastIngestAt(), "nothing was ingested")
+    }
+
+    func testLicenseEndpointReportsStateAndRejectsBadKeys() throws {
+        let (db, dir) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+        try "<html></html>".write(to: web.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let handler = APIHandler(service: service, webRoot: web)
+        func call(_ method: String, _ body: String = "", token: Bool = true) throws -> (Int, [String: Any]) {
+            var headers = ["host": "127.0.0.1:12765"]
+            if token { headers["x-ksf-token"] = handler.originToken }
+            let response = handler.handle(HTTPRequest(method: method, path: "/api/license", query: [:], headers: headers,
+                                                      body: Data(body.utf8), serverPort: 12765))
+            return (response.status, (try JSONSerialization.jsonObject(with: response.body) as? [String: Any]) ?? [:])
+        }
+        let (getStatus, state) = try call("GET")
+        XCTAssertEqual(getStatus, 200)
+        XCTAssertEqual(state["state"] as? String, "trial")
+        XCTAssertEqual(state["days_left"] as? Int, 14)
+        XCTAssertEqual(try call("POST", #"{"key":"keysrs1.a.b"}"#, token: false).0, 403, "activation needs the page token")
+        let (badStatus, bad) = try call("POST", #"{"key":"keysrs1.a.b"}"#)
+        XCTAssertEqual(badStatus, 400)
+        XCTAssertEqual(bad["error"] as? String, "invalid_license")
+        XCTAssertNotNil(bad["reason"] as? String)
+        XCTAssertEqual(try call("POST", #"{"key":"x","extra":1}"#).1["error"] as? String, "invalid_license_request")
+        XCTAssertEqual(try call("DELETE").1["state"] as? String, "trial")
+    }
 }

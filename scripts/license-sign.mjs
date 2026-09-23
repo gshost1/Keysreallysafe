@@ -7,7 +7,15 @@
 import { createPrivateKey, sign as edSign } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
-const args = Object.fromEntries(process.argv.slice(2).map((a, i, all) => a.startsWith("--") ? [a.slice(2), all[i + 1]] : []).filter(Boolean));
+const args = {};
+for (let i = 2; i < process.argv.length; i += 2) {
+  const flag = process.argv[i], value = process.argv[i + 1];
+  if (!/^--(email|id|iat|seed)$/.test(flag) || value === undefined || value.startsWith("--")) {
+    console.error(`bad or valueless flag: ${flag}`); process.exit(2);
+  }
+  args[flag.slice(2)] = value;
+}
+if (args.iat !== undefined && !/^\d+$/.test(args.iat)) { console.error("--iat must be unix seconds"); process.exit(2); }
 if (!args.email || !args.email.includes("@")) { console.error("usage: --email <address> [--id <id>] [--iat <unix seconds>] [--seed <base64>]"); process.exit(2); }
 const seedB64 = args.seed || execFileSync("security", ["find-generic-password", "-s", "keysrs.license-signing", "-a", "ed25519", "-w"]).toString().trim();
 const seed = Buffer.from(seedB64, "base64");
