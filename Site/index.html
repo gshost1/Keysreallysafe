@@ -3,14 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Keysrs — usage meter and API-key vault for Mac</title>
-<meta name="description" content="A Mac menu bar app that shows your Claude Code, Codex and Grok usage from the files they already write, and keeps your API keys in the macOS Keychain behind Touch ID. Nothing leaves your Mac.">
+<title>Keysrs — know your AI limits, lock up your API keys</title>
+<meta name="description" content="A free, open-source Mac menu bar app that shows your Claude Code, Codex and Grok plan limits from the files they already write, and keeps your API keys in the macOS Keychain behind Touch ID. Nothing leaves your Mac.">
+<link rel="canonical" href="https://keysrs.com/">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&display=swap">
-<link rel="canonical" href="https://keysrs.com/">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap">
 <link rel="stylesheet" href="styles.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23b8781e'/%3E%3Ccircle cx='12' cy='16' r='5.5' fill='none' stroke='%23fff' stroke-width='3'/%3E%3Cpath d='M17 16h9m-3 0v4m-3-4v3' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <script>
   // PostHog, cookieless: no cookie or localStorage identity, so a visitor is
   // counted per page load and never followed across visits. Key set at deploy.
@@ -34,214 +36,349 @@
 </head>
 <body>
 
-<header class="top">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="check" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="currentColor" opacity=".14"/><path d="M6 10.3l2.6 2.6L14 7.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<header class="nav">
   <div class="wrap">
-    <a class="brand" href="/">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#b8781e"/><circle cx="12" cy="16" r="5.5" fill="none" stroke="#fff" stroke-width="3"/><path d="M17 16h9m-3 0v4m-3-4v3" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>
-      Keysrs
-    </a>
+    <a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a>
     <nav>
-      <a href="#meter">Meter</a>
-      <a href="#vault">Vault</a>
+      <a href="#features">Features</a>
+      <a href="#agents">Key vault</a>
       <a href="#privacy">Privacy</a>
-      <a href="https://github.com/gshost1/Keysreallysafe">Source</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/gshost1/Keysreallysafe">GitHub</a>
       <a class="btn primary" href="#pricing">Download</a>
     </nav>
   </div>
 </header>
 
 <main>
-  <section class="hero wrap">
-    <h1>Your AI tools' usage, <span class="accent">in the menu bar.</span> Your API keys, in the Keychain.</h1>
-    <p class="lead">Keysrs reads the usage files Claude Code, Codex and Grok already write on your Mac, shows plan windows and spend at a glance, and keeps every API key behind Touch ID. Your usage and your keys never leave your Mac.</p>
-    <div class="actions">
-      <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download for Mac</a>
-      <a class="btn" href="#meter">See how it works</a>
+<div class="hero">
+  <div class="wrap">
+    <div class="badge"><b>New</b>Keysrs is now free and open source</div>
+    <h1>Stop hitting AI limits <span class="g">by surprise.</span></h1>
+    <p class="lead">Your Claude Code, Codex and Grok plan windows in the menu bar. Your API keys in the Keychain, behind Touch ID. Nothing leaves your Mac.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8m-3.5-3.5L8 10l3.5-3.5M2.5 13.5h11"/></svg>
+        Download for Mac
+      </a>
+      <a class="btn" href="https://github.com/gshost1/Keysreallysafe">View on GitHub</a>
     </div>
-    <p class="guarantee"><strong>Free and open source.</strong> MIT licensed. No subscription, no account. macOS 14+, Apple Silicon.</p>
-  </section>
-
-  <div class="desk" aria-label="The Keysrs menu bar item with its dropdown open">
-    <div class="menubar">
-      <span class="apple"></span><span class="app">Finder</span><span class="hide-s">File</span><span class="hide-s">Edit</span><span class="hide-s">View</span><span class="hide-s">Go</span><span class="hide-s">Window</span><span class="hide-s">Help</span>
-      <span class="spacer"></span>
-      <span class="item us">C 14%</span><span class="item hide-s">Wed 22 Sep</span><span class="item">11:13 PM</span>
-    </div>
-    <div class="dropdown">
-      <div class="tabs"><span>Overview</span><span class="on">Claude</span><span>Codex</span><span>Grok</span></div>
-      <div class="title">Claude</div>
-      <div class="when">Updated 11:13 PM</div>
-      <div class="row"><div class="l"><b>Claude 5-hour</b><span>3% used · resets today, 23:29</span></div><div class="bar"><i class="w3"></i></div></div>
-      <div class="row"><div class="l"><b>Claude Fable</b><span>14% used · resets 27 Sep at 00:59</span></div><div class="bar"><i class="w14"></i></div></div>
-      <div class="row"><div class="l"><b>Claude weekly</b><span>13% used · resets 27 Sep at 00:59</span></div><div class="bar"><i class="w13"></i></div></div>
-      <div class="menu">
-        <div><span>Plan Usage</span></div>
-        <div><span>Open Keysrs</span><kbd>⌘R</kbd></div>
-        <div><span>About Keysrs</span></div>
-      </div>
-    </div>
-    <div class="window">
-      <div class="bar-top"><i></i><i></i><i></i><span>127.0.0.1:12766 — Keysrs</span></div>
-      <img src="img/usage.png" width="1200" height="700" alt="The Usage pane of the local dashboard: Claude weekly 12% used, Codex weekly 87% used, this month's tokens from local logs." loading="eager">
-    </div>
+    <p class="sub-cta"><b>Free and MIT licensed.</b> No account, no license key. macOS 14+ on Apple Silicon.</p>
   </div>
 
-  <div class="rows wrap">
-    <div class="row-f" id="meter">
-      <div class="text">
-        <p class="eyebrow">Usage meter</p>
-        <h2>Every plan window, without opening a single dashboard.</h2>
-        <p>Claude's five-hour, Fable and weekly windows. Codex's five-hour and weekly. Grok's weekly. As <em>% used · resets in</em>, read from the files each tool keeps on your Mac.</p>
-        <ul>
-          <li>Tokens are what your Mac measured. Dollars appear only when you ask, priced from a published list-price table.</li>
-          <li>A provider whose quota isn't in a local file says <em>not tracked</em>, with a link to its own page. Never a guess.</li>
-          <li>Today by hour, this week or month by day, split by tool and model. CSV export with the raw columns.</li>
-        </ul>
+  <div class="wrap">
+    <div class="mac" role="img" aria-label="A Mac screen: the Keysrs dropdown shows Claude at 94% of its 5-hour window while Claude Code asks for a key by name and macOS shows a Touch ID prompt.">
+      <div class="screen">
+        <div class="mbar">
+          <span class="b">Terminal</span><span class="hs">Shell</span><span class="hs">Edit</span><span class="hs">View</span><span class="hs">Window</span><span class="hs">Help</span>
+          <span class="gap"></span>
+          <span class="it us"><svg viewBox="0 0 16 16"><path d="M2 12a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 12l4-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>94%</span><span class="it hs">Wed 23 Sep</span><span class="it">11:13 PM</span>
+        </div>
+
+        <div class="win term">
+          <div class="tb"><i></i><i></i><i></i><span>claude — ~/evals</span></div>
+<pre><span class="cu">&gt; run the eval suite with codex-astra from Keysrs</span>
+
+<span class="cd">⏺</span> I'll ask Keysrs for a grant on codex-astra.
+<span class="cd">⏺</span> <b>Bash</b>(keys grant codex-astra --task "run evals")
+  <span class="ct">⎿  Waiting for Touch ID on your Mac…</span>
+  <span class="ct">⎿  </span><span class="ok">✓ Granted for 30 min. I never see the key.</span>
+<span class="cd">⏺</span> Running 48 evals through the grant… <span class="cur"></span></pre>
+        </div>
+
+        <div class="touch">
+          <svg class="fp" viewBox="0 0 24 24" fill="none" stroke="#ff375f" stroke-width="1.3" stroke-linecap="round"><path d="M12 11v3.5a6 6 0 0 1-1.2 3.6M8.5 9.8A3.5 3.5 0 0 1 15.5 11v2.5a9 9 0 0 1-.8 3.7M6.2 8.2A6 6 0 0 1 18 11v1.6M6 11v1.8a8.4 8.4 0 0 1-1 4M17.7 15.4a13 13 0 0 1-.9 3.1M8.8 3.6A8.5 8.5 0 0 1 20.4 9.6M3.9 7.6a8.5 8.5 0 0 1 2.3-2.9"/></svg>
+          <b>Keys wants to let “run evals” use codex-astra for 30 minutes</b>
+          Touch ID or enter your password to allow this.
+          <div class="bts"><span>Cancel</span><span>Use Password…</span></div>
+        </div>
+
+        <div class="dd">
+          <div class="seg"><span class="on">Overview</span><span>Claude</span><span>Codex</span><span>Grok</span></div>
+          <div class="hd"><b>Plan usage</b><span>Updated 11:13 PM</span></div>
+          <div class="grp">Claude</div>
+          <div class="m"><div class="l"><b>5-hour</b><span class="warn">94% · resets 23:35</span></div><div class="track"><i class="hot" style="--w:94%"></i></div></div>
+          <div class="m"><div class="l"><b>Weekly</b><span>71% · resets Sun 00:59</span></div><div class="track"><i style="--w:71%"></i></div></div>
+          <div class="grp">Codex</div>
+          <div class="m"><div class="l"><b>Weekly</b><span>67% · resets Thu 09:00</span></div><div class="track"><i style="--w:67%"></i></div></div>
+          <div class="grp">Grok</div>
+          <div class="m"><div class="l"><b>Weekly</b><span>58% · resets Mon 06:00</span></div><div class="track"><i style="--w:58%"></i></div></div>
+          <div class="menu">
+            <div><span>Open Keysrs</span><kbd>⌘R</kbd></div>
+            <div><span>Plan Usage</span></div>
+            <div><span>About Keysrs</span></div>
+          </div>
+        </div>
       </div>
-      <div class="frame"><div class="bar-top"><i></i><i></i><i></i><span>Chart</span></div><img src="img/chart.png" width="1200" height="700" alt="The Chart pane: tokens per day for the week, stacked by model, with model filters below." loading="lazy"></div>
+      <div class="base"></div>
     </div>
 
-    <div class="row-f flip" id="vault">
-      <div class="text">
-        <p class="eyebrow">Key vault</p>
-        <h2>Keys live in the Keychain. You see names, never values.</h2>
-        <p>Paste a key once. From then on it sits in the macOS Keychain under your login, and every copy, reveal, export or rotate asks for Touch ID first.</p>
-        <ul>
-          <li>Clipboard copies wipe themselves after 20 seconds.</li>
-          <li>Values never enter the local database, a log, the page or the API.</li>
-          <li>Remove it all with one command, after Touch ID.</li>
-        </ul>
-      </div>
-      <div class="frame"><div class="bar-top"><i></i><i></i><i></i><span>Keys</span></div><img src="img/keys.png" width="1200" height="700" alt="The Keys pane: a table of key names with provider, kind, created and last-used dates, and copy, reveal, grant and rotate actions." loading="lazy"></div>
-    </div>
-
-    <div class="row-f" id="gateway">
-      <div class="text">
-        <p class="eyebrow">Scoped gateway</p>
-        <h2>Give a script one task, not your key.</h2>
-        <p>One Touch ID mints a grant: one key, one host, a method and path scope, an expiry. The script calls <code>127.0.0.1</code> with the grant as its API key and the gateway adds the real one.</p>
-        <ul>
-          <li>Lock the screen, revoke, or restart, and the grant is dead.</li>
-          <li>Every routed call lands in the usage chart. Request bodies never do.</li>
-          <li>No grant, no key lookup: a bare request gets 401.</li>
-        </ul>
-      </div>
-      <div class="term" aria-label="Terminal example"><span class="p">$</span> <span class="c">keys grant router --task "list models" --minutes 30 --methods GET --paths /models</span>
-<span class="o">Touch ID: Keys wants to let “list models” use router for 30 minutes</span>
-<span class="ok">✓ grant issued</span>  <span class="k">ksf_…</span>  base <span class="o">http://127.0.0.1:12767/router/v1</span>
-
-<span class="p">$</span> <span class="c">curl -H "Authorization: Bearer ksf_…" http://127.0.0.1:12767/router/v1/models</span>
-<span class="ok">200</span>  <span class="o">counted under router · API keys · 1 request</span>
-
-<span class="p">$</span> <span class="c">keys revoke ksf_…</span>
-<span class="p">$</span> <span class="c">curl -H "Authorization: Bearer ksf_…" http://127.0.0.1:12767/router/v1/models</span>
-<span class="no">403 grant_revoked</span></div>
+    <div class="trust">
+      <span><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 2l6 2.5v5c0 4-2.7 6.8-6 8.5-3.3-1.7-6-4.5-6-8.5v-5L10 2z"/><path d="M7.2 10l2 2 3.8-4" stroke-linecap="round" stroke-linejoin="round"/></svg>Signed &amp; notarized by Apple</span>
+      <span><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="9" width="12" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg>Runs only on 127.0.0.1</span>
+      <span><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 6L3 10l4 4m6-8l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>Source on GitHub</span>
+      <span><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 3l2.1 4.3 4.7.7-3.4 3.3.8 4.7L10 13.8 5.8 16l.8-4.7L3.2 8l4.7-.7L10 3z" stroke-linejoin="round"/></svg>Free, MIT licensed</span>
     </div>
   </div>
+</div>
 
-  <section class="band" id="privacy">
-    <div class="wrap">
-      <h2>Built so there's nothing to trust us with.</h2>
-      <p class="sub">These aren't policy promises; they're how the app is wired, and the source is public so you can check.</p>
-      <div class="cols">
-        <div>
-          <h3>Your data stays on your Mac</h3>
-          <ul>
-            <li>Dashboard and API bind to <code>127.0.0.1</code> only.</li>
-            <li>No account, no sign-up, no license check. Unless you opt in below, the app never calls us.</li>
-            <li>Optional "share to compare" is off by default. If you turn it on, one report a day sends usage totals per tool and public model name, and never prompts, keys, key or project names, paths, dollar amounts or device IDs.</li>
-          </ul>
-        </div>
-        <div>
-          <h3>No scraping, no borrowed logins</h3>
-          <ul>
-            <li>Never opens provider websites, cookies or browser sessions.</li>
-            <li>Never reads other tools' auth files.</li>
-            <li>Claude limits come from Claude Code's own <code>/usage</code>, through its existing login, with no model request. Running it in the background is off until you turn it on.</li>
-          </ul>
-        </div>
-        <div>
-          <h3>Secrets stay secret</h3>
-          <ul>
-            <li>Key values never touch the database, a log, the page or the key-list API.</li>
-            <li>Gateway request bodies never reach the usage catalog.</li>
-            <li>Every read of a secret asks for your presence. Every time.</li>
-          </ul>
+<section id="features" class="gray" style="margin-top:100px">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Usage meter</p>
+      <h2 class="sh">Every plan limit,<br>before it bites.</h2>
+      <p class="sp">Reads the files Claude Code, Codex and Grok already write. No logins, no scraping, no provider websites.</p>
+    </div>
+
+    <div class="bento">
+      <div class="card s4">
+        <h3>Every plan window at a glance.</h3>
+        <p>Five-hour, weekly and model windows as “% used · resets in”, straight from the files each tool keeps on your Mac.</p>
+        <div class="viz meters">
+          <div class="prov">Claude</div>
+          <div class="m"><div class="l"><b>5-hour</b><span class="warn">94% · 22m left</span></div><div class="track"><i class="hot" style="--w:94%"></i></div></div>
+          <div class="m"><div class="l"><b>Weekly</b><span>71% · resets Sun</span></div><div class="track"><i style="--w:71%"></i></div></div>
+          <div class="prov">Codex</div>
+          <div class="m"><div class="l"><b>5-hour</b><span>48% · 3h 02m left</span></div><div class="track"><i style="--w:48%"></i></div></div>
+          <div class="m"><div class="l"><b>Weekly</b><span>67% · resets Thu</span></div><div class="track"><i style="--w:67%"></i></div></div>
+          <div class="prov">Grok</div>
+          <div class="m"><div class="l"><b>Weekly</b><span>58% · resets Mon</span></div><div class="track"><i style="--w:58%"></i></div></div>
         </div>
       </div>
-      <p class="fine">Full detail, including exactly what the optional analytics schema may contain, is in the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/product-analytics.md">source repository</a> and on the <a href="privacy.html">privacy page</a>.</p>
-    </div>
-  </section>
 
-  <section class="pricing wrap" id="pricing">
-    <h2>Free. Yours for good.</h2>
-    <p class="sub">MIT licensed: use it, read it, change it, share it.</p>
-    <div class="pcard">
-      <div class="buy">
+      <div class="card s2">
+        <h3>Tokens measured. Dollars on request.</h3>
+        <p>USD comes from a published list-price table, only when you ask.</p>
+        <div class="viz">
+          <div class="toggle"><span class="on">Tokens</span><span>USD</span></div>
+          <div class="big">1.84M<small>today</small></div>
+          <div class="split"><i style="--c:#0071e3;--f:58"></i><i style="--c:#6e56f8;--f:27"></i><i style="--c:#5ac8fa;--f:15"></i></div>
+          <div class="legend"><span style="--c:#0071e3">Claude</span><span style="--c:#6e56f8">Codex</span><span style="--c:#5ac8fa">Grok</span></div>
+        </div>
+      </div>
+
+      <div class="card s2">
+        <h3>Not tracked. Never guessed.</h3>
+        <p>A plan Keysrs can't read from your Mac shows as <em>not tracked</em>, with a link to that provider's own dashboard. No estimates dressed up as measurements.</p>
+        <div class="viz nt">
+          <div class="r">Claude Code, Codex, Grok<span class="tag">measured from local files</span></div>
+          <div class="r">Anything else<span class="tag">not tracked · <a href="#faq">open dashboard</a></span></div>
+        </div>
+      </div>
+
+      <div class="card s4">
+        <h3>This week, by day and model.</h3>
+        <p>Today by hour, the week or month by day. Filter by tool or model and export CSV with the raw columns.</p>
+        <div class="viz chart">
+          <div class="col" data-d="Thu" style="--h:46%"><i style="--c:#0071e3;--f:6"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col" data-d="Fri" style="--h:72%"><i style="--c:#0071e3;--f:5"></i><i style="--c:#6e56f8;--f:4"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col" data-d="Sat" style="--h:22%"><i style="--c:#0071e3;--f:4"></i><i style="--c:#6e56f8;--f:1"></i><i style="--c:#5ac8fa;--f:1"></i></div>
+          <div class="col" data-d="Sun" style="--h:28%"><i style="--c:#0071e3;--f:5"></i><i style="--c:#6e56f8;--f:2"></i></div>
+          <div class="col" data-d="Mon" style="--h:88%"><i style="--c:#0071e3;--f:6"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col" data-d="Tue" style="--h:58%"><i style="--c:#0071e3;--f:7"></i><i style="--c:#6e56f8;--f:2"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col today" data-d="Today" style="--h:94%"><i style="--c:#0071e3;--f:7"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="agents">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Key vault</p>
+      <h2 class="sh">Tell Claude the key's name.<br>Touch ID does the rest.</h2>
+      <p class="sp">No copying, no pasting, no <code>.env</code> files. Your agent asks Keysrs by name, you touch the sensor, and it gets a short grant for that one task. It never sees the key.</p>
+    </div>
+
+    <div class="ask">
+      <ol class="steps">
+        <li><b>Say the name.</b><span>“Run the evals with codex-astra from Keysrs.” That's the whole instruction.</span></li>
+        <li><b>Touch ID.</b><span>macOS shows which key, which task and for how long. One touch.</span></li>
+        <li><b>That's it.</b><span>Claude gets a 30-minute grant scoped to one key and one host. Lock your Mac and it ends.</span></li>
+      </ol>
+      <div class="askvis">
+        <div class="win chat">
+          <div class="tb"><i></i><i></i><i></i><span>claude — ~/evals</span></div>
+<pre><span class="cu">&gt; run the eval suite with codex-astra from Keysrs</span>
+
+<span class="cd">⏺</span> I'll ask Keysrs for a grant on codex-astra.
+<span class="cd">⏺</span> <b>Bash</b>(keys grant codex-astra --task "run evals")
+  <span class="ct">⎿  Waiting for Touch ID on your Mac…</span>
+  <span class="ct">⎿  </span><span class="ok">✓ Granted for 30 min. I never see the key.</span>
+<span class="cd">⏺</span> Running 48 evals through the grant… <span class="cur"></span></pre>
+        </div>
+        <div class="touch t2">
+          <svg class="fp" viewBox="0 0 24 24" fill="none" stroke="#ff375f" stroke-width="1.3" stroke-linecap="round"><path d="M12 11v3.5a6 6 0 0 1-1.2 3.6M8.5 9.8A3.5 3.5 0 0 1 15.5 11v2.5a9 9 0 0 1-.8 3.7M6.2 8.2A6 6 0 0 1 18 11v1.6M6 11v1.8a8.4 8.4 0 0 1-1 4M17.7 15.4a13 13 0 0 1-.9 3.1M8.8 3.6A8.5 8.5 0 0 1 20.4 9.6M3.9 7.6a8.5 8.5 0 0 1 2.3-2.9"/></svg>
+          <b>Keys wants to let “run evals” use codex-astra for 30 minutes</b>
+          Touch ID or enter your password to allow this.
+          <div class="bts"><span>Cancel</span><span>Use Password…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bento">
+      <div class="card s3">
+        <h3>Keys in the Keychain. Only names on screen.</h3>
+        <p>Paste a key once. Every copy, reveal or grant asks for Touch ID, and clipboard copies wipe after 20 seconds.</p>
+        <div class="viz">
+          <table class="keys">
+            <tr><th>Name</th><th>Value</th><th>Last used</th></tr>
+            <tr><td>codex-astra</td><td class="dots">••••••••</td><td><span class="lock"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="6" width="9" height="6" rx="1.5"/><path d="M4.5 6V4.5a2.5 2.5 0 0 1 5 0V6"/></svg>In use by Claude</span></td></tr>
+            <tr><td>anthropic-prod</td><td class="dots">••••••••</td><td>Yesterday</td></tr>
+            <tr><td>openrouter</td><td class="dots">••••••••</td><td>3 days ago</td></tr>
+          </table>
+        </div>
+      </div>
+      <div class="card s3">
+        <h3>A grant is one task, not your key.</h3>
+        <p>Every grant is short-lived and fenced in. When it ends, the agent's access ends with it.</p>
+        <ul class="fence">
+          <li><b>One key, one host</b><span>Change either and the grant is void.</span></li>
+          <li><b>Expires on its own</b><span>You pick how long it lasts.</span></li>
+          <li><b>Lock screen revokes</b><span>So does revoking it or a restart.</span></li>
+          <li><b>Counted in your usage</b><span>Every call lands in the chart. Request bodies never do.</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="privacy">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Privacy</p>
+      <h2 class="sh">Built so there's nothing to trust us with.</h2>
+      <p class="sp">Not a policy promise. It's how the app is wired, and the source is public so you can check.</p>
+    </div>
+
+    <div class="diagram">
+      <div class="box">
+        <span class="lbl">Your Mac</span>
+        <div class="nodes">
+          <div class="node"><b>Usage files</b><span>~/.claude, ~/.codex, ~/.grok</span></div>
+          <div class="node"><b>macOS Keychain</b><span>Key values, behind Touch ID</span></div>
+          <div class="node"><b>Local catalog</b><span>Token counts, never prompts</span></div>
+          <div class="node core"><b><img src="icon.svg" alt="" width="28" height="28">Keysrs</b><span>Dashboard and gateway on 127.0.0.1 only</span></div>
+        </div>
+      </div>
+      <div class="out">
+        <div class="node">
+          <b>analytics.keysrs.com</b>
+          <span>Share to compare, only if you turn it on</span>
+          <p>One report a day of usage totals per tool and public model. Off by default. Leave it off and the app never calls us.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="never">Never touches:
+      <s>provider websites</s><s>browser cookies</s><s>other tools' auth files</s><s>your prompts</s>
+    </div>
+
+    <div class="pcols">
+      <div class="pcol">
+        <div class="ic"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2.5" y="4" width="15" height="10" rx="2"/><path d="M7 17h6" stroke-linecap="round"/></svg></div>
+        <h3>Your data stays on your Mac</h3>
+        <ul>
+          <li>Dashboard and API bind to <code>127.0.0.1</code> only.</li>
+          <li>No account, no sign-up, no license check.</li>
+          <li>Optional “share to compare” is off by default. Turned on, it sends daily usage totals per tool and public model, never prompts, keys, key or project names, paths or device IDs.</li>
+        </ul>
+      </div>
+      <div class="pcol">
+        <div class="ic"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="10" cy="10" r="7.5"/><path d="M4.7 4.7l10.6 10.6"/></svg></div>
+        <h3>No scraping, no borrowed logins</h3>
+        <ul>
+          <li>Never opens provider websites, cookies or browser sessions.</li>
+          <li>Never reads other tools' auth files.</li>
+          <li>Claude limits come from Claude Code's own <code>/usage</code>, with no model request.</li>
+        </ul>
+      </div>
+      <div class="pcol">
+        <div class="ic"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="9" width="12" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg></div>
+        <h3>Secrets stay secret</h3>
+        <ul>
+          <li>Key values never touch the database, a log, the page or the key-list API.</li>
+          <li>Gateway request bodies never reach the usage catalog.</li>
+          <li>Every read of a secret asks for you. Every time.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="fineprint">Every detail, including the exact analytics schema, is in the <a class="link" href="https://github.com/gshost1/Keysreallysafe">source</a> and the <a class="link" href="privacy.html">privacy page</a>.</p>
+  </div>
+</section>
+
+<section id="pricing" class="gray">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Download</p>
+      <h2 class="sh">Free. Yours for good.</h2>
+      <p class="sp">MIT licensed: use it, read it, change it, share it. No trial, no account, no license key.</p>
+    </div>
+
+    <div class="price">
+      <div class="l">
+        <img class="appicon" src="icon.svg" alt="" width="72" height="72">
         <h3>Keysrs for Mac</h3>
-        <div class="amount">Free<small>open source</small></div>
-        <p class="per">No trial, no license key, no account.</p>
-        <ul class="checks">
-          <li>Usage meter, key vault, scoped gateway, chart and export</li>
-          <li>Signed and notarized by Apple Developer ID</li>
-          <li>Every update, free</li>
-        </ul>
-        <div class="actions">
+        <div class="amt">Free</div>
+        <p class="note">Open source · every update included</p>
+        <div class="cta">
           <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download for Mac</a>
           <a class="btn" href="https://github.com/gshost1/Keysreallysafe">View the source</a>
         </div>
+        <p class="sub-cta">macOS 14+ on Apple Silicon. Signed and notarized by Apple.</p>
       </div>
-      <div class="what">
-        <h3>Good to know</h3>
-        <p>Keysrs is not an AI subscription and includes no API credits. You use your own Claude, OpenAI, xAI or other accounts and keys; the app measures and protects them.</p>
-        <p>The optional Optimizer is experimental and makes no savings promise.</p>
-        <p>Running 0.6 to 0.8 and it says the trial ended? Download the latest version; it has no trial. Your keys and history carry over.</p>
+      <div class="r">
+        <ul class="checks">
+          <li><svg><use href="#check"/></svg><span><b>Usage meter</b> for Claude Code, Codex and Grok</span></li>
+          <li><svg><use href="#check"/></svg><span><b>Key vault</b> in the Keychain, behind Touch ID</span></li>
+          <li><svg><use href="#check"/></svg><span><b>Scoped gateway</b> grants for scripts and agents</span></li>
+          <li><svg><use href="#check"/></svg><span><b>Chart and CSV export</b> of what your Mac measured</span></li>
+          <li><svg><use href="#check"/></svg><span><b>MIT licensed</b>, source on GitHub</span></li>
+        </ul>
+        <p class="notbuy">Not an AI subscription and no API credits: you use your own provider accounts. The optional Optimizer is experimental and promises no savings. On 0.6 to 0.8 and it says the trial ended? Download this version; your keys and history carry over.</p>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section class="faq wrap" id="faq">
-    <h2>Questions</h2>
-    <div class="list">
-      <details>
-        <summary>Which tools does it read?</summary>
-        <p>Claude Code, OpenAI Codex CLI and Grok CLI, from the session logs and usage caches they already keep in your home folder. Anything else appears under <em>not tracked</em> with a link to that provider's own dashboard. Chat-app message caps are not in those files, so they aren't shown.</p>
-      </details>
-      <details>
-        <summary>Does it need my provider passwords?</summary>
-        <p>No. It reads files your tools already wrote and never touches their login or auth files. For the vault you paste an API key once; from then on it lives in the Keychain and comes out only after Touch ID.</p>
-      </details>
-      <details>
-        <summary>Is the dollar figure real?</summary>
-        <p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table applied afterwards, hidden until you choose USD, and anything unpriced reads as unknown rather than $0.</p>
-      </details>
-      <details>
-        <summary>Is it really free?</summary>
-        <p>Yes. Keysrs is MIT-licensed open source with no trial, license key or paid tier. Earlier versions (0.6 to 0.8) had a 14-day trial; the latest version removes it. If you bought a license, email <a href="mailto:support@keysrs.com">support@keysrs.com</a> for a full refund.</p>
-      </details>
-      <details>
-        <summary>What Macs does it run on?</summary>
-        <p>macOS 14 Sonoma or newer on Apple Silicon. The download is a Developer ID signed and Apple-notarized disk image, so it opens without any Gatekeeper workaround. An Intel build is not currently offered.</p>
-      </details>
-      <details>
-        <summary>How do I uninstall?</summary>
-        <p><code>keys autostart --remove</code> unloads and deletes the login item and its snapshot; <code>keys purge</code> removes the local catalog and every Keychain item the app created, after Touch ID. Nothing is left behind.</p>
-      </details>
+<section id="faq">
+  <div class="wrap">
+    <div class="head"><h2 class="sh">Questions</h2></div>
+    <div class="faq">
+      <details><summary>Which tools does it read?</summary><p>Claude Code, OpenAI Codex CLI and Grok CLI, from the session logs and usage caches they already keep in your home folder. Anything else shows as <em>not tracked</em> with a link to that provider's dashboard.</p></details>
+      <details><summary>Does it need my provider passwords?</summary><p>No. It reads files your tools already wrote and never touches their login or auth files. For the vault you paste an API key once; it comes out only after Touch ID.</p></details>
+      <details><summary>Is the dollar figure real?</summary><p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table, hidden until you choose USD. Anything unpriced reads as unknown, not $0.</p></details>
+      <details><summary>Is it really free?</summary><p>Yes. Keysrs is MIT-licensed open source with no trial, license key or paid tier. Versions 0.6 to 0.8 had a 14-day trial; the current version removes it, so updating clears a "trial ended" message. If you bought a license, email <a class="link" href="mailto:support@keysrs.com">support@keysrs.com</a> for a full refund.</p></details>
+      <details><summary>What Macs does it run on?</summary><p>macOS 14 Sonoma or newer on Apple Silicon. The download is Developer ID signed and notarized by Apple. No Intel build yet.</p></details>
+      <details><summary>How do I uninstall?</summary><p><code>keys autostart --remove</code> removes the login item and its snapshot; <code>keys purge</code> deletes the local catalog and every Keychain item the app created, after Touch ID. Nothing is left behind.</p></details>
     </div>
-  </section>
+  </div>
+</section>
+
+<div class="closer">
+  <div class="wrap">
+    <img class="appicon" src="icon.svg" alt="" width="88" height="88">
+    <h2 class="sh">Know your limits.<br>Keep your keys.</h2>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download for Mac</a>
+      <a class="btn" href="https://github.com/gshost1/Keysreallysafe">View on GitHub</a>
+    </div>
+  </div>
+</div>
 </main>
 
 <footer>
   <div class="wrap">
-    <div>
-      <a href="privacy.html">Privacy</a>
-      <a href="terms.html">Terms</a>
-      <a href="mailto:support@keysrs.com">Support</a>
-      <a href="https://github.com/gshost1/Keysreallysafe">Source</a>
-    </div>
-    <div class="legalline">© 2026 Keysrs. Mac, macOS, Touch ID and Keychain are trademarks of Apple Inc. Claude, Codex and Grok belong to their respective owners; this product is not affiliated with them.</div>
+    <nav><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a><a href="mailto:support@keysrs.com">Support</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></nav>
+    <div class="legal">© 2026 Keysrs. Mac, macOS, Touch ID and Keychain are trademarks of Apple Inc. Claude, Codex and Grok belong to their respective owners; not affiliated.</div>
   </div>
 </footer>
-
 </body>
 </html>
