@@ -9,7 +9,7 @@ the login item, invoke native authorization, or inspect a live installation.
 The package has a strict runtime allowlist: `bin/keys`, the static Web files (including the Privacy dialog's `analytics.js`),
 the `models.json` fixture catalog, the Jev plugin runtime (`dist`, `src`, `hooks`, and
 selected plugin metadata), and `optimizer-mcp.py` plus `claude-with-jev.py`.
-An explicit documentation allowlist includes the proprietary rights notice, third-party notices, preserved
+An explicit documentation allowlist includes the root MIT license, third-party notices, preserved
 legacy MIT and Swift Argument Parser license texts, main README,
 signing guide, collector README, the MVP quickstart and acceptance checklist
 (`docs/mvp-quickstart.md`, `docs/mvp-acceptance.md`), and the

@@ -1,5 +1,9 @@
 # Licensing transition audit — 2026-09-22
 
+> **Superseded 2026-09-24.** The owner returned the whole repository to the
+> MIT License and dropped the paid release; see `LICENSE` and the 0.9.0
+> changelog entry. The audit below is kept as history.
+
 ## Decision and scope
 
 The owner requested a non-MIT default for future development. The root LICENSE

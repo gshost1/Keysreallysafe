@@ -150,6 +150,5 @@ The gated `runLiveModelJudgeFixtures` harness accepts the Keys launcher's
 grant/endpoint. It requires `KEYS_JEV_LIVE_EVAL=1`; it uses the matching reviewed
 request adapter and rejects mismatched routes before dispatch. Automated tests
 inject a synthetic fetch transport and make no live evaluation calls.
-New first-party additions are proprietary. Earlier MIT-licensed material and
-imported compactor code retain their permissions; the full original attribution
-and MIT notice are preserved in `LICENSE`. See that file for the licensing scope.
+MIT-licensed. The imported compactor code's original attribution and MIT
+notice are preserved in `LICENSE`.

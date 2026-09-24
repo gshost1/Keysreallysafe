@@ -1,7 +1,7 @@
 import Foundation
 
 /// Choices the person makes on first launch and can change later from the menu.
-/// Stored in the private catalog's `meta` table beside the license and analytics
+/// Stored in the private catalog's `meta` table beside the analytics
 /// state, so every Keysrs process (menu bar, dashboard, CLI) reads the same answer.
 final class AppPreferences: @unchecked Sendable {
     static let claudeRefreshKey = "pref_claude_usage_refresh"

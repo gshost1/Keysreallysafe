@@ -1,7 +1,7 @@
 # Third-party and prior-license notices
 
-The proprietary default in `LICENSE` applies only within its stated scope.
-It does not override the permissions or notices below.
+Keysrs is MIT-licensed (`LICENSE`). The components below keep their own
+licenses and notices.
 
 ## Jev optimizer / fast-jev-compaction
 
@@ -11,7 +11,7 @@ via [gshost1/vercel-compaction](https://github.com/gshost1/vercel-compaction/tre
 Its original notice, including `Copyright (c) 2025` and
 `Copyright (c) 2026 gshost1`, is preserved verbatim in
 `Plugins/jev-optimizer/LICENSE`. That file must accompany standalone plugin
-packages and installed copies. Prior MIT permissions survive the transition.
+packages and installed copies.
 
 ## Swift Argument Parser
 
@@ -27,8 +27,8 @@ library; include its license with releases regardless of exception eligibility.
 ## Earlier Keysreallysafe material
 
 The previous root MIT notice is preserved in
-`licenses/Keysreallysafe-legacy-MIT.txt`. It applies to material already
-licensed under it, not automatically to new proprietary additions.
+`licenses/Keysreallysafe-legacy-MIT.txt`. It covers material released before the
+2026-09-22 notice; `LICENSE` now covers the whole repository.
 
 ## Development and system components
 

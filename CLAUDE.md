@@ -27,10 +27,9 @@ Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
 custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
 deploy` after `wrangler login`. Support mail is support@keysrs.com via
 Cloudflare Email Routing. PostHog (US cloud, project key in the pages, a
-public client token) counts page views and buy/download clicks, cookieless,
-no session replay; privacy.html describes exactly that and must stay true. The Buy button is the Stripe Payment Link
-https://buy.stripe.com/8x2aEYcrmgbh9xu7HUbbG00 (product "Keysrs for Mac",
-$29 one-time, automatic tax).
+public client token) counts page views and download clicks, cookieless,
+no session replay; privacy.html describes exactly that and must stay true.
+Download links point at the latest GitHub release's `Keysrs-arm64.dmg`.
 
 ## Build and test
 
@@ -94,28 +93,20 @@ The README's "Privacy boundaries" section is the contract. In short:
 
 ## Licensing
 
-New first-party work is proprietary (root `LICENSE`). Earlier MIT grants
-cannot be withdrawn: `licenses/Keysreallysafe-legacy-MIT.txt`,
+MIT (root `LICENSE`, since 2026-09-24; the 2026-09-22 proprietary notice
+is withdrawn). `licenses/Keysreallysafe-legacy-MIT.txt`,
 `Plugins/jev-optimizer/LICENSE` and `THIRD_PARTY_NOTICES.md` must stay intact
 and ship in every package (`scripts/prepare-optimizer-release.py` and its
-test enforce this). Never claim historic or third-party code is proprietary.
-The customer EULA and rights-holder identity are still open; see
-`docs/licensing-transition.md`. The plugin package is `private: true`; never
-publish it to npm.
+test enforce this). The plugin package is `private: true`; never publish it
+to npm.
 
-## Commercial state
+## Distribution
 
-The repo is public. Decided 2026-09-22: $29 one-time, 14-day free trial,
-updates within the current major version, US Stripe account, email support
-with a 14-day no-questions refund. Domain keysrs.com and support@keysrs.com
-exist (2026-09-23); the product name stays Keysreallysafe. Still undecided:
-the legal entity for the EULA. Stripe account is active and verified (2026-09-23);
-trial/license gating ships in the next release (`License.swift`; 14-day
-trial, Ed25519 keys `keysrs1.…`, gates ingestion and grants only). Keys are
-issued by `worker/index.js` on keysrs.com/license after Stripe checkout and
-emailed via Cloudflare Email Sending; the private seed is the login Keychain
-item `keysrs.license-signing` and the Worker secret LICENSE_SIGNING_SEED;
-`scripts/license-sign.mjs` issues a key by hand.
+Free, decided 2026-09-24: no trial, license key, payments or legal entity.
+0.9.0 removed the license gate that 0.6–0.8 shipped; don't reintroduce
+anything that phones home. keysrs.com is static (no Worker code, no D1).
+The Stripe account and Payment Link are the owner's to deactivate in the
+Stripe dashboard; the repo no longer references them.
 
 ## Conventions
 

@@ -20,8 +20,6 @@ final class KeysService: @unchecked Sendable {
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     var optimizer: OptimizerController?
     var analytics: ProductAnalytics?
-    /// Trial/license state; gates ingestion and new grants only, never the vault.
-    let license: LicenseManager
     /// First-launch answers: background Claude limit refresh, analytics question asked.
     let preferences: AppPreferences
     private var screenLockObserver: NSObjectProtocol?
@@ -44,7 +42,6 @@ final class KeysService: @unchecked Sendable {
         self.codexHome = codexHome
         self.runner = runner
         self.openRouter = openRouter
-        self.license = LicenseManager(catalog: catalog)
         self.preferences = AppPreferences(catalog: catalog)
         ModelPrices.loadAtStartup()
         Providers.loadAtStartup()
@@ -264,7 +261,6 @@ final class KeysService: @unchecked Sendable {
         caller: String = "dashboard"
     ) throws -> (grant: Grant, token: String) {
         try requireGatewayOwner()
-        try license.requireActive()
         try KeyName.validate(name)
         let request = try raw.validated()
         guard let row = try catalog.catalogRow(name: name) else { throw AppError.notFound(name) }
@@ -504,7 +500,6 @@ final class KeysService: @unchecked Sendable {
         caller: String = "dashboard",
         now: Date = Date()
     ) throws -> (token: String, client: GatewayClient) {
-        try license.requireActive()
         try KeyName.validate(name)
         guard try catalog.catalogExists(name: name) else { throw AppError.notFound(name) }
         let ttlDays = try GatewayClientToken.validateDays(days)
@@ -896,7 +891,6 @@ final class KeysService: @unchecked Sendable {
 
     private func ingestLocked(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
         // Every ingest path (explicit, scheduled, the dashboard's stale refresh) comes through here.
-        try license.requireActive()
         var succeeded = false
         defer { analytics?.record(succeeded ? .ingestSuccess : .ingestFailure) }
         try ensureClaudeDedupLocked()

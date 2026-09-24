@@ -25,8 +25,7 @@
   document.addEventListener("click", function (e) {
     var a = e.target.closest("a[href]"); if (!a) return;
     var h = a.getAttribute("href") || "";
-    if (h.indexOf("buy.stripe.com") === 0 || h.indexOf("https://buy.stripe.com") === 0) posthog.capture("buy_click");
-    else if (h.indexOf("/releases/") !== -1) posthog.capture("download_click");
+    if (h.indexOf("/releases/") !== -1) posthog.capture("download_click");
   });
 </script>
 </head>
@@ -38,10 +37,7 @@
 <p class="meta">Effective 2026-09-24. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
 
 <h2>The short version</h2>
-<p>Keysrs runs on your Mac. There is no account. We do not receive your prompts, your keys, or your identity, and we receive usage data only if you turn on "share to compare" (off by default; see below). What we hold about you is what Stripe gives us when you buy a license (your email address, the amount, and the date) and, once you enter a license, which Macs it is active on.</p>
-
-<h2>License activation</h2>
-<p>A license works on up to two Macs. When you enter a key, and then once every 30 days, the app sends keysrs.com three things: the license key, a random install ID created on that Mac, and the Mac's model identifier (for example <code>Mac15,6</code>) so you can tell your Macs apart on your license page. We store those with the date of each check-in, and nothing else: no usage, no names, no serial numbers. The install ID is kept in your login Keychain next to a hash of the Mac's hardware ID; the hash never leaves the Mac. If a check-in can't reach us, the app keeps working for 14 more days. You can free a Mac's place by removing the key on it, or from the link in your purchase email.</p>
+<p>Keysrs runs on your Mac. There is no account. We do not receive your prompts, your keys, or your identity, and we receive usage data only if you turn on "share to compare" (off by default; see below). There is no license check: unless you turn that on, the app never contacts us.</p>
 
 <h2>What the app reads on your Mac</h2>
 <ul>
@@ -71,16 +67,13 @@
 <p>It never contains prompts, responses, key values or key names, project, session or agent names, file paths, account IDs, dollar amounts, exact times or any persistent device or user identifier. A provider outside the app's published list is sent as "other", and a model name that is not a public one (for example a fine-tune or deployment name) is sent as "unknown".</p>
 <p>In return the dashboard shows a Compare line: how your typical day compares with the days others have shared. For that, the app downloads a table of shared totals from the same server at most once a day; that request carries nothing about you. The server keeps reports for 30 days and does not store IP addresses or request logs. Cloudflare, which carries the connection, necessarily sees the connecting IP address. Reports are not anonymous in a strict sense and are not end-to-end encrypted. The full schema is in the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/product-analytics.md">source repository</a>.</p>
 
-<h2>Purchases</h2>
-<p>Payments are processed by Stripe, Inc. We do not see or store card numbers. Stripe's handling of your payment details is governed by <a href="https://stripe.com/privacy">Stripe's privacy policy</a>. We keep the email address, amount and date of your purchase to issue your license, honor refunds and answer support requests, and for tax and accounting records as the law requires.</p>
-
 <h2>This website</h2>
-<p>This site uses PostHog for page-view counts and two click events (the buy button and the download button). It runs without cookies or browser storage, so it cannot recognise you on a return visit, and it records no session replays, no form input and no identity. IP addresses are used by PostHog to derive a coarse location and are not stored with the event. Fonts load from Google Fonts. There are no other third-party scripts. It is served by Cloudflare Pages, which logs requests for security and operational purposes under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.</p>
+<p>This site uses PostHog for page-view counts and one click event (the download button). It runs without cookies or browser storage, so it cannot recognise you on a return visit, and it records no session replays, no form input and no identity. IP addresses are used by PostHog to derive a coarse location and are not stored with the event. Fonts load from Google Fonts. There are no other third-party scripts. It is served by Cloudflare, which logs requests for security and operational purposes under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.</p>
 
 <h2>Contact</h2>
 <p>Questions about privacy: <a href="mailto:support@keysrs.com">support@keysrs.com</a>.</p>
 </article>
 
-<footer><div class="wrap"><div><a href="/">Home</a><a href="terms.html">Terms &amp; refunds</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></div><div>© 2026 Keysrs</div></div></footer>
+<footer><div class="wrap"><div><a href="/">Home</a><a href="terms.html">Terms</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></div><div>© 2026 Keysrs</div></div></footer>
 </body>
 </html>

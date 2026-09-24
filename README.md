@@ -12,17 +12,12 @@ Keychain, and the app asks for Touch ID before it reads one out. The dashboard
 stays local; Claude's built-in `/usage` command refreshes subscription limits
 through its existing login.
 
-## Trial and license
+## Install
 
-Everything works for 14 days from first launch. After that the usage meter
-stops ingesting and new gateway grants are refused until a license is
-entered; keys stay fully available. Buy at https://keysrs.com ($29, one
-major version), then paste the key into the dashboard banner or run
-`keys license set <key>`. `keys license` shows the state. The key is verified
-against a public key in `Sources/KeysCore/License.swift` and activated at
-keysrs.com on at most two Macs; the app checks in every 30 days (key, a
-random install ID and the Mac model only) and keeps working for 14 days
-without a check-in. `keys license remove` frees the Mac's place.
+Free and MIT-licensed. Download the signed, notarized disk image from
+https://keysrs.com or the [latest release](https://github.com/gshost1/Keysreallysafe/releases/latest).
+There is no trial, license key or account. Versions 0.6 to 0.8 had a 14-day
+trial; 0.9.0 removed it, so a lapsed trial clears by updating.
 
 ## Privacy boundaries
 
@@ -432,8 +427,4 @@ provider responses. See the [research and source notes](docs/jev-research.md).
 
 ## License
 
-Future first-party additions are proprietary unless explicitly stated otherwise.
-See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
-Previously granted MIT permissions and third-party licenses remain in effect.
-See [the licensing transition audit](docs/licensing-transition.md) for scope and
-remaining commercial-release work.
+MIT. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).

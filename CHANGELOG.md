@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 — 2026-09-24
+
+- **Free and MIT-licensed.** Keysrs no longer has a trial, license key or paid tier, and the root `LICENSE` is MIT again, covering the whole repository. An install whose 0.6–0.8 trial ended, or whose license could not be confirmed, starts measuring and issuing grants again on update; the catalog, keys and history carry over.
+- Removed: the `keys license` command, `/api/license`, the dashboard's license banner and the menu bar's "trial ended" / "confirm license" titles. The app no longer contacts keysrs.com at all; the only outbound call to us is opt-in "share to compare".
+- `keys purge` also deletes the `keysrs.install` Keychain item that 0.6–0.8 created for license activation.
+- keysrs.com is a static site again: the `/license` page, the Stripe webhook, activation endpoints and their D1 database are gone. The site offers the download directly.
+
 ## 0.8.0 — 2026-09-23
 
 - **Share to compare** (opt-in). The first launch of this version asks once, with the box unticked, whether to share daily usage totals. People who share get a **Compare** line on the Usage page: their typical day's tokens per tool against everyone who shares, and how often sharers hit each plan limit. A figure appears only once at least 50 reports contribute to it, so the line stays hidden until then rather than showing a guess.

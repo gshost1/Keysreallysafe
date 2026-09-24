@@ -6,7 +6,7 @@ import Foundation
 /// requires fresh consent. `appVersion` follows the release version.
 enum ProductAnalyticsConfiguration {
     static let endpoint: URL? = URL(string: "https://analytics.keysrs.com/v1/reports")
-    static let appVersion = "0.8.0"
+    static let appVersion = "0.9.0"
 }
 
 enum ProductAnalyticsEvent: String, Codable, CaseIterable, Sendable {

@@ -1,23 +1,21 @@
-Keysreallysafe — Proprietary Notice
+MIT License
 
-Copyright (c) 2026 Keysreallysafe contributors. All rights reserved, except
-for rights under prior licenses and third-party licenses described below.
+Copyright (c) 2026 Keysrs contributors
 
-First-party material newly added after this licensing change is proprietary
-unless explicitly marked otherwise. No permission to use, reproduce, modify,
-distribute, sublicense, or sell that material is granted by this notice.
-Such permission requires a separate written license from its rights holder,
-except as permitted by applicable law.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-This notice does not revoke, replace, or restrict permissions previously
-granted for material distributed under the MIT License. Earlier MIT copies
-and the material covered by those grants retain their original permissions.
-It does not claim exclusive rights in third-party or non-copyrightable material.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-Third-party components retain their own licenses. Those licenses control for
-the components they cover. Preserve their copyright and license notices.
-See THIRD_PARTY_NOTICES.md and licenses/Keysreallysafe-legacy-MIT.txt.
-
-This is a repository rights notice, not a customer purchase agreement or a
-license granting paid-app use. Customer license terms must be supplied
-separately before distributing a proprietary commercial release.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

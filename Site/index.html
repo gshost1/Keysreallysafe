@@ -28,8 +28,7 @@
   document.addEventListener("click", function (e) {
     var a = e.target.closest("a[href]"); if (!a) return;
     var h = a.getAttribute("href") || "";
-    if (h.indexOf("buy.stripe.com") === 0 || h.indexOf("https://buy.stripe.com") === 0) posthog.capture("buy_click");
-    else if (h.indexOf("/releases/") !== -1) posthog.capture("download_click");
+    if (h.indexOf("/releases/") !== -1) posthog.capture("download_click");
   });
 </script>
 </head>
@@ -45,8 +44,8 @@
       <a href="#meter">Meter</a>
       <a href="#vault">Vault</a>
       <a href="#privacy">Privacy</a>
-      <a href="#pricing">Pricing</a>
-      <a class="btn primary" href="#pricing">Try it free</a>
+      <a href="https://github.com/gshost1/Keysreallysafe">Source</a>
+      <a class="btn primary" href="#pricing">Download</a>
     </nav>
   </div>
 </header>
@@ -56,10 +55,10 @@
     <h1>Your AI tools' usage, <span class="accent">in the menu bar.</span> Your API keys, in the Keychain.</h1>
     <p class="lead">Keysrs reads the usage files Claude Code, Codex and Grok already write on your Mac, shows plan windows and spend at a glance, and keeps every API key behind Touch ID. Your usage and your keys never leave your Mac.</p>
     <div class="actions">
-      <a class="btn primary" href="#pricing">Try free for 14 days</a>
+      <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download for Mac</a>
       <a class="btn" href="#meter">See how it works</a>
     </div>
-    <p class="guarantee"><strong>$29 once.</strong> No subscription, no account. 14-day refund, no questions. macOS 14+, Apple Silicon.</p>
+    <p class="guarantee"><strong>Free and open source.</strong> MIT licensed. No subscription, no account. macOS 14+, Apple Silicon.</p>
   </section>
 
   <div class="desk" aria-label="The Keysrs menu bar item with its dropdown open">
@@ -149,7 +148,7 @@
           <h3>Your data stays on your Mac</h3>
           <ul>
             <li>Dashboard and API bind to <code>127.0.0.1</code> only.</li>
-            <li>No account, no sign-up. Unless you opt in below, the only call to us confirms your license: once when you enter it, then every 30 days, carrying the key, a random install ID and the Mac model.</li>
+            <li>No account, no sign-up, no license check. Unless you opt in below, the app never calls us.</li>
             <li>Optional "share to compare" is off by default. If you turn it on, one report a day sends usage totals per tool and public model name, and never prompts, keys, key or project names, paths, dollar amounts or device IDs.</li>
           </ul>
         </div>
@@ -175,30 +174,28 @@
   </section>
 
   <section class="pricing wrap" id="pricing">
-    <h2>One price. Yours for good.</h2>
-    <p class="sub">Pay once, use it on up to two Macs, keep every update in this major version.</p>
+    <h2>Free. Yours for good.</h2>
+    <p class="sub">MIT licensed: use it, read it, change it, share it.</p>
     <div class="pcard">
       <div class="buy">
         <h3>Keysrs for Mac</h3>
-        <div class="amount">$29<small>one-time</small></div>
-        <p class="per">Per person. Updates within 1.x included.</p>
+        <div class="amount">Free<small>open source</small></div>
+        <p class="per">No trial, no license key, no account.</p>
         <ul class="checks">
-          <li>14-day free trial, full app, no card needed</li>
           <li>Usage meter, key vault, scoped gateway, chart and export</li>
           <li>Signed and notarized by Apple Developer ID</li>
-          <li>14-day refund, no questions asked</li>
+          <li>Every update, free</li>
         </ul>
         <div class="actions">
-          <a class="btn primary" href="https://buy.stripe.com/8x2aEYcrmgbh9xu7HUbbG00">Buy for $29</a>
-          <a class="btn" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download the trial</a>
+          <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download for Mac</a>
+          <a class="btn" href="https://github.com/gshost1/Keysreallysafe">View the source</a>
         </div>
       </div>
       <div class="what">
-        <h3>What you're not buying</h3>
+        <h3>Good to know</h3>
         <p>Keysrs is not an AI subscription and includes no API credits. You use your own Claude, OpenAI, xAI or other accounts and keys; the app measures and protects them.</p>
         <p>The optional Optimizer is experimental and makes no savings promise.</p>
-        <p>Payments are handled by Stripe. We never see your card. Prices in US dollars; tax may be added at checkout where required.</p>
-        <p>Source is public. New first-party work is proprietary; earlier MIT-licensed material and third-party components keep their licenses.</p>
+        <p>Running 0.6 to 0.8 and it says the trial ended? Download the latest version; it has no trial. Your keys and history carry over.</p>
       </div>
     </div>
   </section>
@@ -219,12 +216,8 @@
         <p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table applied afterwards, hidden until you choose USD, and anything unpriced reads as unknown rather than $0.</p>
       </details>
       <details>
-        <summary>How does the trial work?</summary>
-        <p>Download, run, use everything for 14 days. When it ends, the app asks for a license to keep measuring; nothing in the vault is ever locked away from you. Buy when you're ready and paste the license once.</p>
-      </details>
-      <details>
-        <summary>Can I get a refund?</summary>
-        <p>Yes, within 14 days of purchase, for any reason. Email support from the address you used at checkout. See the <a href="terms.html">terms</a>.</p>
+        <summary>Is it really free?</summary>
+        <p>Yes. Keysrs is MIT-licensed open source with no trial, license key or paid tier. Earlier versions (0.6 to 0.8) had a 14-day trial; the latest version removes it. If you bought a license, email <a href="mailto:support@keysrs.com">support@keysrs.com</a> for a full refund.</p>
       </details>
       <details>
         <summary>What Macs does it run on?</summary>
@@ -242,7 +235,7 @@
   <div class="wrap">
     <div>
       <a href="privacy.html">Privacy</a>
-      <a href="terms.html">Terms &amp; refunds</a>
+      <a href="terms.html">Terms</a>
       <a href="mailto:support@keysrs.com">Support</a>
       <a href="https://github.com/gshost1/Keysreallysafe">Source</a>
     </div>

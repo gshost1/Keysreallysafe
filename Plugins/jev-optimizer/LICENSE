@@ -1,17 +1,13 @@
 Keys Jev Optimizer — Licensing Scope
 
-New first-party additions after the Keysreallysafe licensing transition are
-proprietary: copyright (c) 2026 Keysreallysafe contributors, all rights reserved.
-No permission for those additions is granted without a separate written license,
-except as permitted by applicable law. This does not restrict rights granted
-for earlier MIT material or the imported code described below.
+First-party work in this optimizer is MIT-licensed, copyright (c) 2026 Keysrs
+contributors, under the same terms as the MIT notice below.
 
 This optimizer includes code derived from tamaratran/fast-jev-compaction via
 https://github.com/gshost1/vercel-compaction at
  a23e181fbd3a0195788bc729d80238d10f5d1b9a.
 The following pre-existing license and attribution are preserved verbatim for
-that material and earlier MIT-licensed portions. They do not license new
-proprietary additions. This notice is self-contained for standalone packages.
+that material and earlier MIT-licensed portions. This notice is self-contained for standalone packages.
 
 --- Preserved MIT notice ---
 

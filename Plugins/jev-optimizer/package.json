@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Bounded Jev context optimization for KeysReallySafe and Claude Code.",
   "type": "module",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   },
