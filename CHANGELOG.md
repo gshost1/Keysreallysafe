@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 — 2026-09-23
+
+- **Share to compare** (opt-in). The first launch of this version asks once, with the box unticked, whether to share daily usage totals. People who share get a **Compare** line on the Usage page: their typical day's tokens per tool against everyone who shares, and how often sharers hit each plan limit. A figure appears only once at least 50 reports contribute to it, so the line stays hidden until then rather than showing a guess.
+- Analytics report v2 (new consent, so everyone is asked again): besides the feature counters, a day's report now carries token totals per tool (Claude Code, Codex, Grok), provider and public model name, gateway request and token totals per provider, and each plan window's peak percentage. It still never includes prompts, keys or key names, projects, sessions, paths, dollar amounts or exact times; a model or provider name that is not public (fine-tunes, Azure deployments, custom providers) is sent as `unknown`/`other`. Nothing from before opting in is summarized. Privacy in the dashboard shows exactly what today's report would contain.
+- Reports go to `https://analytics.keysrs.com`, a self-hosted collector (`Analytics/collector.py`) behind a Cloudflare Tunnel. With sharing on, the app also downloads the public comparison table from the same host once a day; the request carries nothing about the Mac. Turning sharing off stops both.
+
 ## 0.7.0 — 2026-09-23
 
 - License activation: a key now works on **up to two Macs**. Entering it activates this Mac at keysrs.com; the app checks in every 30 days and keeps working for 14 days without a check-in, so a leaked, refunded or disputed key stops at the next check-in. Each call carries only the key, a random install ID and the Mac's model identifier. The install ID lives in the login Keychain beside a local hash of the hardware UUID (never sent), so a Mac cloned with Migration Assistant needs its own place, and a catalog copied to another Mac does not carry the activation. `keys license remove` (or removing the key in the dashboard) frees the place; the license page lists the Macs and can remove one. New state **unconfirmed** (key stored, no current activation, trial over) behaves like an ended trial and says why; the menu bar reads "Keysrs · confirm license".
