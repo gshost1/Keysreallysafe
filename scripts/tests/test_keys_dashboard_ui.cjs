@@ -1581,13 +1581,20 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   keys[0].last_check = { ok: false, checked_at: "2026-09-22T05:00:00Z", summary: "Provider rejected the synthetic key. " + "LongDiagnosticWithoutSpaces".repeat(12) };
   await openKeys(page, origin, { expectEmpty: true });
   await page.locator("#keys-body tr[data-name]").first().waitFor();
+  // The key list is drawn again once optimizer metadata and grants arrive. Resolving the row
+  // inside the same evaluate measures the table as it is now, not a row that redraw detached
+  // (which reads as a zero-width button; seen only when the warm suite ran fast enough).
+  await page.waitForLoadState("networkidle");
   for (const width of [390, 520, 521, 600, 720, 768, 1024, 1280, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 });
-    const geometry = await page.locator('#keys-body tr[data-name]').first().evaluate(row => ({
-      viewport: innerWidth,
-      tableRight: document.querySelector('#keys-table').getBoundingClientRect().right,
-      actions: [...row.querySelectorAll('.row-actions button')].map(b => ({name:b.dataset.act,left:b.getBoundingClientRect().left,right:b.getBoundingClientRect().right,width:b.getBoundingClientRect().width}))
-    }));
+    const geometry = await page.evaluate(() => {
+      const row = document.querySelector('#keys-body tr[data-name]');
+      return {
+        viewport: innerWidth,
+        tableRight: document.querySelector('#keys-table').getBoundingClientRect().right,
+        actions: [...row.querySelectorAll('.row-actions button')].map(b => ({name:b.dataset.act,left:b.getBoundingClientRect().left,right:b.getBoundingClientRect().right,width:b.getBoundingClientRect().width}))
+      };
+    });
     assert.ok(geometry.tableRight <= width + 1, `table overflows at ${width}: ${geometry.tableRight}`);
     for (const action of geometry.actions) assert.ok(action.left >= 0 && action.right <= width + 1 && action.width > 0, `${action.name} outside viewport at ${width}: ${JSON.stringify(action)}`);
     await page.screenshot({path:path.join(screenshotDir, `keys-long-metadata-${width}.png`),fullPage:true});
