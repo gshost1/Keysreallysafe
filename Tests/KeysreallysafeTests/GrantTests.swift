@@ -66,6 +66,36 @@ final class GrantTests: XCTestCase {
         XCTAssertTrue(GrantPath.matches(rest: "anything", prefix: "/v1", allowed: []))
     }
 
+    // Seen live: a provider with an empty catalog prefix serves /v1/models, the agent
+    // scoped the grant to /models, and the denial gave it nothing to correct.
+    func testPathDenialSuggestsTheScopeTheCallerMeant() {
+        XCTAssertEqual(GrantPath.suggestion(rest: "v1/models", prefix: "", allowed: ["/models"]), "/v1/models")
+        XCTAssertEqual(GrantPath.suggestion(rest: "v1/models/jev-latest", prefix: "", allowed: ["/models"]), "/v1/models")
+        XCTAssertEqual(GrantPath.suggestion(rest: "api/v2/models", prefix: "", allowed: ["/models"]), "/api/v2/models")
+        // Unrelated paths and already-allowed shapes get no suggestion.
+        XCTAssertNil(GrantPath.suggestion(rest: "v1/chat/completions", prefix: "/v1", allowed: ["/models"]))
+        XCTAssertNil(GrantPath.suggestion(rest: "modelsx", prefix: "", allowed: ["/models"]))
+        XCTAssertNil(GrantPath.suggestion(rest: "v1/models", prefix: "", allowed: []))
+
+        let denial = GrantDenial.path("/v1/models", allowed: ["/models"], suggestion: "/v1/models")
+        XCTAssertEqual(denial.code, "grant_path_not_allowed")
+        XCTAssertTrue(denial.message.contains("allows /models"), denial.message)
+        XCTAssertTrue(denial.message.contains("--paths /v1/models"), denial.message)
+        XCTAssertEqual(denial.details["allowed_paths"] as? [String], ["/models"])
+        XCTAssertEqual(denial.details["suggested_paths"] as? String, "/v1/models")
+        XCTAssertTrue(GrantDenial.expired.details.isEmpty)
+
+        let store = GrantStore()
+        let issued = store.issue(
+            key: "k", provider: "typesafe", host: "h",
+            request: try! GrantRequest(task: "x", methods: ["GET"], paths: ["/models"]).validated()
+        )
+        XCTAssertEqual(
+            store.authorize(token: issued.token, key: "k", host: "h", method: "GET", rest: "v1/models", providerPrefix: ""),
+            .failure(.path("/v1/models", allowed: ["/models"], suggestion: "/v1/models"))
+        )
+    }
+
     func testStoreAuthorizeExpiryRevokeLimitsAndConstantTimeHash() throws {
         let store = GrantStore()
         let t0 = Date()
@@ -81,7 +111,7 @@ final class GrantTests: XCTestCase {
         XCTAssertEqual(store.authorize(token: issued.token, key: "other", host: "h", method: "GET", rest: "v1/models", providerPrefix: "/v1", now: t0), .failure(.keyMismatch))
         XCTAssertEqual(store.authorize(token: issued.token, key: "k", host: "elsewhere", method: "GET", rest: "v1/models", providerPrefix: "/v1", now: t0), .failure(.targetChanged))
         XCTAssertEqual(store.authorize(token: issued.token, key: "k", host: "h", method: "POST", rest: "v1/models", providerPrefix: "/v1", now: t0), .failure(.method("POST")))
-        XCTAssertEqual(store.authorize(token: issued.token, key: "k", host: "h", method: "GET", rest: "v1/chat/completions", providerPrefix: "/v1", now: t0), .failure(.path("/v1/chat/completions")))
+        XCTAssertEqual(store.authorize(token: issued.token, key: "k", host: "h", method: "GET", rest: "v1/chat/completions", providerPrefix: "/v1", now: t0), .failure(.path("/v1/chat/completions", allowed: ["/models"])))
         // second allowed request, then the cap
         XCTAssertNoThrow(try store.authorize(token: issued.token, key: "k", host: "h", method: "GET", rest: "models", providerPrefix: "/v1", now: t0).get())
         XCTAssertEqual(store.authorize(token: issued.token, key: "k", host: "h", method: "GET", rest: "models", providerPrefix: "/v1", now: t0), .failure(.requestLimit))
@@ -158,6 +188,7 @@ final class GrantTests: XCTestCase {
         let (path, pathBody) = try await call(gateway, "/demo/v1/chat/completions", token: issued.token)
         XCTAssertEqual(path, 403)
         XCTAssertEqual(pathBody["error"] as? String, "grant_path_not_allowed")
+        XCTAssertEqual(pathBody["allowed_paths"] as? [String], ["/models"], "\(pathBody)")
         let (bad, badBody) = try await call(gateway, "/demo/v1/models", token: "ksf_00000000_nope")
         XCTAssertEqual(bad, 401)
         XCTAssertEqual(badBody["error"] as? String, "grant_invalid")

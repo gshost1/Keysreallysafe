@@ -437,6 +437,9 @@ struct GrantCommand: ParsableCommand {
         if let n = JSONValue.int(obj["max_requests"]) { print("  limit    \(n) requests") }
         if let u = JSONValue.double(obj["max_usd"]) { print("  limit    $\(String(format: "%.2f", u)) estimated, enforced after each call") }
         print("  base url \(base)")
+        // Paths are scoped under the base URL; spelling out one full URL catches a
+        // missing version segment before the first call is refused.
+        if let first = pathsOut.first { print("  allows   \(base)\(first)") }
         print("  token    \(token)")
         print("  use the token as the API key (\(header)); the gateway swaps in the real secret")
         print("  revoke   keys revoke \(id)")
