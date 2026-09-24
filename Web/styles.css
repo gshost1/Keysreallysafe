@@ -321,6 +321,7 @@ main { flex: 1; min-height: 0; overflow: auto; }
 }
 .usage-totals b { font-weight: 500; color: var(--fg); }
 .usage-totals .totals-sep { margin: 0 6px; }
+.usage-compare { margin-top: 4px; }
 
 .interval {
   padding: 0;

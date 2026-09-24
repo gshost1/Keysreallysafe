@@ -1,7 +1,7 @@
 {
   "app_version": "1.2.3",
   "architecture": "arm64",
-  "consent_version": 1,
+  "consent_version": 2,
   "counts": {
     "client_create": 1,
     "context_empty": 2,
@@ -34,7 +34,92 @@
     "view_usage": 29
   },
   "day": "2026-05-19",
+  "gateway": [
+    {
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "failed": 1,
+      "input_tokens": 52000,
+      "model": "unknown",
+      "ok": 13,
+      "output_tokens": 7100,
+      "provider": "openrouter",
+      "requests": 14
+    },
+    {
+      "cache_read_tokens": 4000,
+      "cache_write_tokens": 250,
+      "failed": 0,
+      "input_tokens": 1200,
+      "model": "claude-fable-5-1",
+      "ok": 3,
+      "output_tokens": 900,
+      "provider": "anthropic",
+      "requests": 3
+    }
+  ],
   "os_major": 15,
   "report_id": "3f0c2a54-9b1e-4d6a-8c57-0a1b2c3d4e5f",
-  "schema_version": 1
+  "schema_version": 2,
+  "usage": [
+    {
+      "cache_creation_tokens": 1830000,
+      "cached_read_tokens": 41250000,
+      "input_tokens": 18400,
+      "model": "claude-fable-5-1",
+      "model_calls": 212,
+      "output_tokens": 96200,
+      "prompts": 41,
+      "provider": "anthropic",
+      "reasoning_tokens": 0,
+      "source": "claude_code"
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cached_read_tokens": 1930000,
+      "input_tokens": 2210000,
+      "model": "gpt-6-astra",
+      "model_calls": 37,
+      "output_tokens": 41800,
+      "prompts": 9,
+      "provider": "openai",
+      "reasoning_tokens": 12600,
+      "source": "codex"
+    },
+    {
+      "cache_creation_tokens": 0,
+      "cached_read_tokens": 0,
+      "input_tokens": 5100,
+      "model": "unknown",
+      "model_calls": 2,
+      "output_tokens": 800,
+      "prompts": 2,
+      "provider": "xai",
+      "reasoning_tokens": 300,
+      "source": "grok"
+    }
+  ],
+  "windows": [
+    {
+      "hit_cap": false,
+      "peak_percent": 85,
+      "readings": 9,
+      "source": "claude_code",
+      "window": "5h"
+    },
+    {
+      "hit_cap": true,
+      "peak_percent": 100,
+      "readings": 9,
+      "source": "claude_code",
+      "window": "weekly"
+    },
+    {
+      "hit_cap": false,
+      "peak_percent": 20,
+      "readings": 3,
+      "source": "codex",
+      "window": "weekly"
+    }
+  ]
 }

@@ -54,7 +54,7 @@ def validate(bundle=HERE, check_docker=False):
     logs = re.findall(r"(?m)^\s*log(?:\s+([^\s{]+))?\s*\{?\s*$", directives)
     protected_logger = re.search(r"log\s+default\s*\{\s*exclude\s+http\.log\.access\s+http\.log\.error\s*\}", directives)
     add("proxy_request_logs", "pass" if logs == ["default"] and protected_logger else "blocker", "HTTP access and proxy-error request details excluded from the default logger")
-    add("proxy_body_limit", "pass" if "max_size 16KB" in caddy else "blocker", "edge request-body cap")
+    add("proxy_body_limit", "pass" if "max_size 32KB" in caddy else "blocker", "edge request-body cap")
     deadlines = ("max_header_size 16KB", "read_header 5s", "read_body 15s", "write 30s", "idle 30s")
     add("proxy_deadlines", "pass" if all(value in directives for value in deadlines) else "blocker", "bounded headers, body reads, writes and idle connections")
     collector_section, proxy_marker, proxy_section = compose.partition("  proxy:")

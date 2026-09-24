@@ -394,7 +394,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.messageText = plan.firstRun ? "Welcome to Keysrs" : "A quick question from Keysrs"
         alert.informativeText = plan.firstRun
             ? "Keysrs lives in your menu bar. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain. Nothing is ticked below; choose what you are comfortable with. You can change it later."
-            : "This version can share anonymous usage counts to help improve Keysrs. It is off unless you tick the box."
+            : "This version can compare your usage with other Keysrs users who share theirs. It is off unless you tick the box."
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -417,10 +417,10 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         var analyticsBox: NSButton?
         if plan.askAnalytics {
             if plan.firstRun { stack.setCustomSpacing(14, after: stack.arrangedSubviews.last!) }
-            let box = NSButton(checkboxWithTitle: "Share anonymous usage counts", target: nil, action: nil)
+            let box = NSButton(checkboxWithTitle: "Share daily usage totals and compare", target: nil, action: nil)
             box.state = .off
             stack.addArrangedSubview(box)
-            stack.addArrangedSubview(note("A daily count of which features you used, plus the app and macOS version. Never your keys, prompts, projects, file names or spend. See exactly what would be sent, or turn it off, under Privacy in the dashboard."))
+            stack.addArrangedSubview(note("Once a day: token totals per tool and public model name, how high your plan limits got, and which features you used. In return, the dashboard shows how your usage compares. Never your keys, prompts, projects, file names, spend or anything from before you tick this. See exactly what would be sent, or turn it off, under Privacy in the dashboard."))
             analyticsBox = box
         }
         stack.layoutSubtreeIfNeeded()

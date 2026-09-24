@@ -2,7 +2,7 @@
 (() => {
   "use strict";
 
-  const CONSENT_VERSION = 1;
+  const CONSENT_VERSION = 2;
   const EVENTS = new Set(["view_usage", "view_chart", "view_keys", "view_optimizer"]);
   const TOKEN = (document.querySelector('meta[name="ksf-token"]') || {}).content || "";
   const $ = (id) => document.getElementById(id);
@@ -57,7 +57,50 @@
       && value.consent_version === CONSENT_VERSION
       && Number.isInteger(value.pending_events) && value.pending_events >= 0
       && ["never", "sent", "failed", "disabled"].includes(value.last_result)
-      && (value.preview === null || (typeof value.preview === "object" && !Array.isArray(value.preview)));
+      && (value.preview === null || (typeof value.preview === "object" && !Array.isArray(value.preview)))
+      && (value.compare === undefined || value.compare === null || (typeof value.compare === "object" && !Array.isArray(value.compare)));
+  }
+
+  const TOOLS = { claude_code: "Claude Code", codex: "Codex", grok: "Grok" };
+  const WINDOWS = { "5h": "5-hour limit", weekly: "weekly limit", fable: "Fable limit" };
+  function tokens(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
+    return String(n);
+  }
+  function standing(percent) {
+    if (percent >= 95) return "in the top 5% of shared days";
+    if (percent <= 0) return "in the lowest 5% of shared days";
+    return `more than ${percent}% of shared days`;
+  }
+  // Text only (textContent): nothing from the server is ever parsed as HTML.
+  function renderCompare(compare) {
+    const node = $("usage-compare");
+    if (!node) return;
+    const rows = compare && Array.isArray(compare.sources) ? compare.sources.filter((row) =>
+      row && TOOLS[row.source] && Number.isInteger(row.typical_day_tokens) && Number.isInteger(row.higher_than_percent)) : [];
+    if (!rows.length) { node.hidden = true; node.textContent = ""; return; }
+    const parts = rows.map((row) => {
+      let line = `${TOOLS[row.source]}: your typical day ${tokens(row.typical_day_tokens)} tokens, ${standing(row.higher_than_percent)}`;
+      for (const cap of Array.isArray(row.cap_hits) ? row.cap_hits : []) {
+        if (WINDOWS[cap.window] && typeof cap.hit_rate === "number" && cap.hit_rate >= 0 && cap.hit_rate <= 1) {
+          line += `; sharers hit the ${WINDOWS[cap.window]} on ${Math.round(cap.hit_rate * 100)}% of days`;
+        }
+      }
+      return line;
+    });
+    const days = Number.isInteger(compare.window_days) ? compare.window_days : 28;
+    node.textContent = `Compared with people who share usage (last ${days} days) · ${parts.join(" · ")}`;
+    node.title = "Your typical day is the median of your active days in the last week, measured on this Mac. The shared figures come from anonymous daily reports; a figure appears only when at least 50 reports contribute to it.";
+    node.hidden = false;
+  }
+  async function loadCompare() {
+    try {
+      const response = await request("/api/analytics");
+      const next = await response.json();
+      renderCompare(validStatus(next) && next.enabled === true ? next.compare : null);
+    } catch (_) { renderCompare(null); }
   }
 
   function render(next) {
@@ -76,6 +119,7 @@
     text("analytics-state", next.enabled === true
       ? (configured ? "Enabled. Reports send automatically when ready." : "Enabled, waiting for an analytics destination.")
       : "Off. No new product analytics reports will be sent.");
+    renderCompare(next.enabled === true ? next.compare : null);
   }
 
   async function request(path, options = {}) {
@@ -147,10 +191,13 @@
     if (preview === null) return;
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([JSON.stringify(preview, null, 2) + "\n"], { type: "application/json" }));
-    link.download = "keys-pending-analytics-report.json";
+    link.download = "keysrs-pending-analytics-report.json";
     link.click();
     URL.revokeObjectURL(link.href);
   });
+
+  document.addEventListener("DOMContentLoaded", () => void loadCompare(), { once: true });
+  setInterval(() => void loadCompare(), 30 * 60 * 1000);
 
   window.KeysAnalytics = {
     refresh,

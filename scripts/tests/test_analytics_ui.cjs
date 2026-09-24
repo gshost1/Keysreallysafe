@@ -13,7 +13,7 @@ const analytics = fs.readFileSync(path.join(root, "Web/analytics.js"));
 
 let status = {
   enabled: false, configured: true, endpoint: null,
-  consent_version: 1, pending_events: 2, last_result: "never",
+  consent_version: 2, pending_events: 2, last_result: "never",
   preview: { reports: [{ date: "2026-09-19", report_id: "fixture" }] },
 };
 const requests = [];
@@ -107,7 +107,7 @@ async function open(page) {
     await page.getByRole("button", { name: "Save preference" }).click();
     await page.waitForFunction(() => document.getElementById("analytics-state").textContent.includes("Enabled"));
     const enable = requests.find((item) => item.path === "/api/analytics" && item.body.enabled === true);
-    assert.deepEqual(enable.body, { enabled: true, consent_version: 1 });
+    assert.deepEqual(enable.body, { enabled: true, consent_version: 2 });
     assert.equal(enable.headers["x-ksf-token"], "test-csrf-token");
     assert.equal(collectorRequests, 0, "the browser must not contact the analytics collector");
 
@@ -165,6 +165,26 @@ async function open(page) {
     await page.waitForTimeout(250);
     assert.match(await page.locator("#analytics-state").textContent(), /^Off\./);
     assert.equal(await page.locator("#analytics-pending").textContent(), "0");
+
+    // Compare line: absent without sharing or without a benchmark; plain text when present.
+    assert.equal(await page.locator("#usage-compare").isHidden(), true);
+    status = { ...status, enabled: true, configured: true, compare: {
+      generated_day: "2026-09-19", window_days: 28,
+      sources: [{ source: "claude_code", typical_day_tokens: 42_000_000, active_days: 5, higher_than_percent: 80,
+        reports: 120, cap_hits: [{ window: "5h", hit_rate: 0.18, reports: 90 }, { window: "<img src=x onerror=alert(1)>", hit_rate: 0.5 }] },
+        { source: "<b>injected</b>", typical_day_tokens: 1, higher_than_percent: 5 }],
+    } };
+    await page.reload();
+    await page.waitForFunction(() => !document.getElementById("usage-compare").hidden);
+    const line = await page.locator("#usage-compare").textContent();
+    assert.match(line, /Claude Code: your typical day 42M tokens, more than 80% of shared days; sharers hit the 5-hour limit on 18% of days/);
+    assert.doesNotMatch(line, /injected|img|onerror/);
+    assert.equal(await page.locator("#usage-compare img, #usage-compare b").count(), 0);
+    status = { ...status, enabled: false };
+    await page.reload();
+    await page.waitForLoadState("networkidle");
+    assert.equal(await page.locator("#usage-compare").isHidden(), true, "no line for people who do not share");
+    assert.equal(collectorRequests, 0, "the browser must not contact the analytics collector");
   } finally {
     await browser.close();
     server.closeAllConnections();

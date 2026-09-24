@@ -27,11 +27,17 @@ without a check-in. `keys license remove` frees the Mac's place.
 ## Privacy boundaries
 
 - The dashboard and its API bind to `127.0.0.1` only. Optional product analytics
-  sends only aggregate counters after explicit opt-in to a configured collector;
-  the current build has no collector URL and cannot enable uploads.
-- Product analytics excludes prompt content, credentials, key/project names,
-  paths, and persistent device/user identifiers. The Privacy dialog shows the
-  destination and unsent reports and can stop collection and discard them.
+  ("share to compare") is off until the user opts in. Then, once a day, it
+  sends one aggregate report to `analytics.keysrs.com`: feature counters, token
+  totals per tool, provider and public model name, gateway totals per provider,
+  and plan-window peaks, never from before opting in.
+- Product analytics excludes prompt content, credentials, key/project/session
+  names, paths, dollar amounts, exact times, and persistent device/user
+  identifiers. The Privacy dialog shows the destination and unsent reports and
+  can stop collection and discard them.
+- With sharing on, the app also downloads the public comparison table from the
+  same host once a day. These two requests are the only analytics network
+  traffic, and neither happens without opting in.
   See [product analytics](docs/product-analytics.md) and the
   [self-hosted collector](Analytics/README.md).
 - No scraping. It does not open provider websites, cookies or browser sessions.
@@ -200,7 +206,7 @@ client explicitly integrates it. These are not global interception hooks.
 
 Run `python3 scripts/optimizer-preflight.py --strict` for local prerequisites
 without live authorization. [Analytics deployment assets](docs/optimizer-deployment.md)
-are prepared separately; this build still has no configured analytics destination.
+are prepared separately; the analytics collector runs at `analytics.keysrs.com`.
 
 Every request the page makes is same-origin. Mutating calls carry a token the
 server generates per launch. That token is a browser CSRF defense: it stops a

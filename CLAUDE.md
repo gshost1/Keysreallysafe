@@ -81,10 +81,14 @@ The README's "Privacy boundaries" section is the contract. In short:
   reveal, env and rotate require user presence every time.
 - Gateway requests need a grant: one Touch ID, one key, one host, method/path
   scope, expiry. Request bodies never reach the usage catalog.
-- Product analytics is opt-in, aggregate counters only, and currently has no
-  upload destination. Prompt content, credentials, provider/key/project
-  names, paths and persistent identifiers must never enter it. Schema and
-  exclusions: `docs/product-analytics.md`, `Analytics/README.md`.
+- Product analytics (v2, "share to compare") is opt-in and aggregate: daily
+  counters, token totals per tool/provider/public model, gateway totals and
+  plan-window peaks, sent to https://analytics.keysrs.com (the collector on
+  the home Ubuntu server behind a Cloudflare Tunnel). Prompt content,
+  credentials, key/project/session names, paths, dollar amounts, exact times
+  and persistent identifiers must never enter it; non-public model and
+  provider ids become "unknown"/"other". Schema and exclusions:
+  `docs/product-analytics.md`, `Analytics/README.md`.
 - No fake numbers: untracked quota is shown as "not tracked", never estimated
   as if measured. Don't promise optimizer savings; it is experimental.
 

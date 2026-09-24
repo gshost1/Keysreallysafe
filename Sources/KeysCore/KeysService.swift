@@ -993,6 +993,8 @@ final class KeysService: @unchecked Sendable {
         status.lastIngestAt = try catalog.lastIngestAt()
         status.catalogVersion = try catalog.catalogVersion()
         applyOpenRouter(&status)
+        // Plan-window peaks for the day's report; a no-op unless sharing is on.
+        analytics?.observe(status)
         return status
     }
 

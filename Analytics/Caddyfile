@@ -24,14 +24,14 @@
   }
   handle @reports {
     request_body {
-      max_size 16KB
+      max_size 32KB
     }
     reverse_proxy collector:8787
   }
 
   @health {
     method GET
-    path /healthz
+    path /healthz /v1/benchmarks
   }
   handle @health {
     reverse_proxy collector:8787

@@ -1,9 +1,12 @@
 # Product analytics v2: aggregate usage, and "compare" as the reason to opt in
 
-Status: design, 2026-09-22. Nothing here is implemented. The v1 schema in
-[product-analytics.md](product-analytics.md) stays as documented until this
-ships; changing the schema or consent version already invalidates v1 consent
-and discards unsent data, so v2 is a fresh opt-in by construction.
+Status: implemented in 0.8.0 (2026-09-23); [product-analytics.md](product-analytics.md)
+describes what shipped. Differences from this design: model names are limited
+to public model families (anything else is `unknown`) and unknown providers
+become `other`; window `readings` counts UTC hours with a live reading (1–24);
+benchmark percentiles are rounded to two significant figures; Compare compares
+days, not people, because reports carry no persistent ID; the collector runs
+behind a Cloudflare Tunnel instead of Caddy.
 
 ## Why
 
