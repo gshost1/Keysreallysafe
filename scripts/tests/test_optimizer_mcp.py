@@ -425,6 +425,25 @@ class FakeBackend(http.server.BaseHTTPRequestHandler):
         return
 
 
+class NestingLimitTests(unittest.TestCase):
+    # Python 3.12+ parses thousands of nested arrays without RecursionError, so the
+    # depth bound has to be explicit rather than left to the interpreter.
+    def test_depth_is_bounded_independently_of_the_interpreter(self):
+        at_limit = b"[" * mcp.MAX_DEPTH + b"]" * mcp.MAX_DEPTH
+        self.assertFalse(mcp.too_deep(at_limit))
+        self.assertTrue(mcp.too_deep(b"[" + at_limit + b"]"))
+        self.assertTrue(mcp.too_deep(b"[" * 2_000 + b"0" + b"]" * 2_000))
+
+    def test_brackets_inside_strings_do_not_count(self):
+        text = json.dumps({"prompt": "[" * 5_000 + '\\"{' * 100}).encode()
+        self.assertFalse(mcp.too_deep(text))
+
+    def test_ordinary_mcp_messages_pass(self):
+        message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": "keys_usage_record", "arguments": {"tags": [["a"], {"b": [1, 2]}]}}}
+        self.assertFalse(mcp.too_deep(json.dumps(message).encode()))
+
+
 class SubprocessSmokeTests(unittest.TestCase):
     def test_bad_numeric_and_deep_json_do_not_terminate_session(self):
         config = {"port": 1, "token": SESSION, "origin_token": ORIGIN, "project_id": PROJECT, "writable": True}

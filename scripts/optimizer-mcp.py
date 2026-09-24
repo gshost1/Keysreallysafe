@@ -15,11 +15,39 @@ import uuid
 
 MAX_MESSAGE = 128_000
 MAX_RESPONSE = 256_000
+MAX_DEPTH = 64
 SUPPORTED_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 
 
 class SafeError(Exception):
     pass
+
+
+def too_deep(data, limit=MAX_DEPTH):
+    """True when arrays/objects nest deeper than `limit`, ignoring brackets in strings.
+
+    Python 3.12+ decodes thousands of nested levels without RecursionError, so the
+    parser alone no longer bounds depth; checked on the raw line before decoding.
+    """
+    depth = 0
+    in_string = escaped = False
+    for byte in data:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+        elif byte == 0x22:
+            in_string = True
+        elif byte in (0x5B, 0x7B):
+            depth += 1
+            if depth > limit:
+                return True
+        elif byte in (0x5D, 0x7D):
+            depth -= 1
+    return False
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -361,6 +389,8 @@ def main():
             if len(line) > MAX_MESSAGE:
                 return 1
             try:
+                if too_deep(line):
+                    raise ValueError("nesting too deep")
                 message = json.loads(line, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
                 response = server.handle(message)
             except (ValueError, UnicodeError, RecursionError, OverflowError):
