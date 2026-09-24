@@ -35,10 +35,10 @@
 
 <article class="legal">
 <h1>Privacy</h1>
-<p class="meta">Effective 2026-09-23. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
+<p class="meta">Effective 2026-09-24. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
 
 <h2>The short version</h2>
-<p>Keysrs runs on your Mac. There is no account. We do not receive your usage data, your prompts, your keys, or your identity. What we hold about you is what Stripe gives us when you buy a license (your email address, the amount, and the date) and, once you enter a license, which Macs it is active on.</p>
+<p>Keysrs runs on your Mac. There is no account. We do not receive your prompts, your keys, or your identity, and we receive usage data only if you turn on "share to compare" (off by default; see below). What we hold about you is what Stripe gives us when you buy a license (your email address, the amount, and the date) and, once you enter a license, which Macs it is active on.</p>
 
 <h2>License activation</h2>
 <p>A license works on up to two Macs. When you enter a key, and then once every 30 days, the app sends keysrs.com three things: the license key, a random install ID created on that Mac, and the Mac's model identifier (for example <code>Mac15,6</code>) so you can tell your Macs apart on your license page. We store those with the date of each check-in, and nothing else: no usage, no names, no serial numbers. The install ID is kept in your login Keychain next to a hash of the Mac's hardware ID; the hash never leaves the Mac. If a check-in can't reach us, the app keeps working for 14 more days. You can free a Mac's place by removing the key on it, or from the link in your purchase email.</p>
@@ -58,8 +58,18 @@
   <li>The optional Optimizer keeps explicitly saved project notes in a separate encrypted local archive.</li>
 </ul>
 
-<h2>Optional product analytics</h2>
-<p>The app can send aggregate counters (for example, how many times a pane was opened per day) to a collector, but only after you turn it on in the Privacy dialog, and only to a destination shown to you there. It is off by default. The schema is fixed and excludes prompt content, credentials, key names, project names, file paths, and any persistent device or user identifier. The Privacy dialog shows unsent reports and lets you stop collection and discard them at any time. The current build has no collector configured and cannot upload.</p>
+<h2>Optional "share to compare"</h2>
+<p>It is off by default. The welcome window asks once, with the box unticked, and the dashboard's Privacy dialog shows the destination, what is waiting to be sent (with a preview you can download) and lets you turn it off at any time. Turning it off stops collection and discards unsent reports. Nothing from before you opted in is ever summarized.</p>
+<p>While it is on, the app sends one report per day to <code>https://analytics.keysrs.com</code>, a server we run ourselves. A report contains only:</p>
+<ul>
+  <li>the app version, macOS major version, CPU architecture, the UTC day it covers and a random report ID;</li>
+  <li>how many times fixed app features were used that day (for example a dashboard pane opened, or a key added or copied);</li>
+  <li>per tool (Claude Code, Codex, Grok), provider and public model name: prompt, model-call and token totals for the day;</li>
+  <li>for calls through the app's local gateway: request and token totals per provider and model, never per key;</li>
+  <li>the highest plan-limit percentage seen that day for each plan window, rounded to 5, and whether it reached 100%.</li>
+</ul>
+<p>It never contains prompts, responses, key values or key names, project, session or agent names, file paths, account IDs, dollar amounts, exact times or any persistent device or user identifier. A provider outside the app's published list is sent as "other", and a model name that is not a public one (for example a fine-tune or deployment name) is sent as "unknown".</p>
+<p>In return the dashboard shows a Compare line: how your typical day compares with the days others have shared. For that, the app downloads a table of shared totals from the same server at most once a day; that request carries nothing about you. The server keeps reports for 30 days and does not store IP addresses or request logs. Cloudflare, which carries the connection, necessarily sees the connecting IP address. Reports are not anonymous in a strict sense and are not end-to-end encrypted. The full schema is in the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/product-analytics.md">source repository</a>.</p>
 
 <h2>Purchases</h2>
 <p>Payments are processed by Stripe, Inc. We do not see or store card numbers. Stripe's handling of your payment details is governed by <a href="https://stripe.com/privacy">Stripe's privacy policy</a>. We keep the email address, amount and date of your purchase to issue your license, honor refunds and answer support requests, and for tax and accounting records as the law requires.</p>
