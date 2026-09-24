@@ -185,7 +185,7 @@ final class GatewayListener: @unchecked Sendable {
                     "key": keyName,
                     "provider": target.provider.id,
                     "host": target.host,
-                ])
+                ].merging(denial.details) { current, _ in current })
                 return
             }
         }

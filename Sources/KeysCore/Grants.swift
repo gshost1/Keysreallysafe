@@ -115,6 +115,29 @@ enum GrantPath {
     /// `rest` is the client's path after `/<key>`; may or may not repeat the provider prefix.
     static func matches(rest: String, prefix providerPrefix: String, allowed: [String]) -> Bool {
         if allowed.isEmpty { return true }
+        let path = relative(rest: rest, prefix: providerPrefix)
+        for a in allowed {
+            if path == a || path.hasPrefix(a + "/") { return true }
+        }
+        return false
+    }
+
+    /// When a denied path holds an allowed scope further in (`/v1/models` against
+    /// `/models`), the caller almost always meant that longer scope: the provider serves
+    /// under a segment the catalog prefix doesn't cover. Only suggested, never widened.
+    static func suggestion(rest: String, prefix providerPrefix: String, allowed: [String]) -> String? {
+        let segments = relative(rest: rest, prefix: providerPrefix).split(separator: "/").map(String.init)
+        for a in allowed {
+            let scope = a.split(separator: "/").map(String.init)
+            guard !scope.isEmpty, scope.count < segments.count else { continue }
+            for start in 1...(segments.count - scope.count) where Array(segments[start..<start + scope.count]) == scope {
+                return "/" + segments[0..<start + scope.count].joined(separator: "/")
+            }
+        }
+        return nil
+    }
+
+    private static func relative(rest: String, prefix providerPrefix: String) -> String {
         var r = rest
         while r.hasPrefix("/") { r.removeFirst() }
         var path = "/" + r
@@ -123,10 +146,7 @@ enum GrantPath {
             path = String(path.dropFirst(pp.count))
             if path.isEmpty { path = "/" }
         }
-        for a in allowed {
-            if path == a || path.hasPrefix(a + "/") { return true }
-        }
-        return false
+        return path
     }
 }
 
@@ -137,7 +157,7 @@ enum GrantDenial: Error, Equatable {
     case revoked
     case keyMismatch
     case method(String)
-    case path(String)
+    case path(String, allowed: [String] = [], suggestion: String? = nil)
     case requestLimit
     case usdLimit
     case targetChanged
@@ -174,11 +194,25 @@ enum GrantDenial: Error, Equatable {
         case .revoked: return "grant was revoked"
         case .keyMismatch: return "grant is for a different key"
         case .method(let m): return "method \(m) is outside this grant"
-        case .path(let p): return "path \(p) is outside this grant"
+        case .path(let p, let allowed, let suggestion):
+            var text = "path \(p) is outside this grant"
+            if !allowed.isEmpty { text += " (allows \(allowed.joined(separator: ", ")))" }
+            if let suggestion {
+                text += "; grant paths are relative to the base URL, so for this call issue a grant with --paths \(suggestion)"
+            }
+            return text
         case .requestLimit: return "grant request limit reached"
         case .usdLimit: return "grant spend limit reached (estimate, checked after each call)"
         case .targetChanged: return "key provider or host changed since the grant; issue a new one"
         }
+    }
+
+    /// Extra fields for the gateway's JSON error, so an agent can retry without guessing.
+    var details: [String: Any] {
+        guard case .path(_, let allowed, let suggestion) = self else { return [:] }
+        var out: [String: Any] = ["allowed_paths": allowed]
+        if let suggestion { out["suggested_paths"] = suggestion }
+        return out
     }
 }
 
@@ -343,7 +377,10 @@ final class GrantStore: @unchecked Sendable {
             pathAllowed = GrantPath.matches(rest: rest, prefix: providerPrefix, allowed: g.paths)
         }
         if !pathAllowed {
-            return .failure(.path("/" + rest))
+            let suggestion = g.jevProvider == nil
+                ? GrantPath.suggestion(rest: rest, prefix: providerPrefix, allowed: g.paths)
+                : nil
+            return .failure(.path("/" + rest, allowed: g.paths, suggestion: suggestion))
         }
         if let cap = g.maxRequests, g.requests >= cap { return .failure(.requestLimit) }
         if let cap = g.maxUsd, g.usd >= cap { return .failure(.usdLimit) }
