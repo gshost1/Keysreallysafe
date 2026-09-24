@@ -19,7 +19,7 @@ import tempfile
 
 
 WEB_FILES = (
-    "app.js", "analytics.js", "index.html", "optimizer.css", "optimizer.js", "providers.json", "styles.css",
+    "app.js", "analytics.js", "icon.png", "icon.svg", "index.html", "optimizer.css", "optimizer.js", "providers.json", "styles.css",
 )
 FIXTURE_FILES = ("models.json",)
 PLUGIN_FILES = (".claude-plugin/plugin.json", "LICENSE", "README.md", "package.json")

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1 — 2026-09-24
+
+- The new Keysrs icon (graphite tile, blue usage ring, house key) replaces the brass placeholder: in the dashboard's browser tab, the About window and on the disk image.
+
 ## 0.9.0 — 2026-09-24
 
 - **Free and MIT-licensed.** Keysrs no longer has a trial, license key or paid tier, and the root `LICENSE` is MIT again, covering the whole repository. An install whose 0.6–0.8 trial ended, or whose license could not be confirmed, starts measuring and issuing grants again on update; the catalog, keys and history carry over.

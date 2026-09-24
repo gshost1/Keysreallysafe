@@ -252,6 +252,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // There is no app bundle to carry an icon, so the About panel
+        // would show the generic executable one; borrow the dashboard's copy.
+        if let web = try? WebRoot.find(), let icon = NSImage(contentsOf: web.appendingPathComponent("icon.png")) {
+            NSApp.applicationIconImage = icon
+        }
         // After the run loop starts, so the status item is already in the menu bar.
         DispatchQueue.main.async { [weak self] in self?.showWelcomeIfNeeded() }
     }
@@ -352,7 +357,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Keysrs",
-            .applicationVersion: "0.9.0",
+            .applicationVersion: "0.9.1",
             .version: "local vault + usage · loopback only",
             .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. MIT licensed."),
         ])

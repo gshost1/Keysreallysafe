@@ -974,6 +974,7 @@ final class APIHandler: @unchecked Sendable {
         case "js": return "text/javascript; charset=utf-8"
         case "json": return "application/json"
         case "svg": return "image/svg+xml"
+        case "png": return "image/png"
         case "txt": return "text/plain; charset=utf-8"
         default: return "application/octet-stream"
         }
