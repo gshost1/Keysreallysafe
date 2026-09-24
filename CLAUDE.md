@@ -105,8 +105,9 @@ to npm.
 Free, decided 2026-09-24: no trial, license key, payments or legal entity.
 0.9.0 removed the license gate that 0.6–0.8 shipped; don't reintroduce
 anything that phones home. keysrs.com is static (no Worker code, no D1).
-The Stripe account and Payment Link are the owner's to deactivate in the
-Stripe dashboard; the repo no longer references them.
+The Stripe account stays open but idle (kept on purpose, 2026-09-24): the
+Payment Link is deactivated, the webhook deleted and the restricted key
+expired. The license D1 database is deleted and Workers Paid ends 2026-10-23.
 
 ## Conventions
 
