@@ -203,6 +203,8 @@ function handle(method, pathname, body, params) {
   if (pathname === "/api/optimizer/status") return [200, { locked: true }];
   if (pathname === "/api/models") return [200, []];
   if (pathname === "/api/status") return [200, { plans }];
+  // The license banner boots with the page; licensed keeps it hidden.
+  if (pathname === "/api/license" && method === "GET") return [200, { state: "licensed", major: 0 }];
   if (pathname.startsWith("/api/spend")) return spend(params);
 
   unexpected.push(rule(method, pathname));
