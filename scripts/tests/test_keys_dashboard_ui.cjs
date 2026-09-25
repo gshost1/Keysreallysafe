@@ -516,6 +516,158 @@ test("rotate replaces the secret, reports failure in its own dialog and clears t
   await page.waitForFunction(() => document.getElementById("rotate-form").elements.secret.value === "");
 });
 
+// ---------- keyboard and dialog focus ----------
+
+const focused = (page) => page.evaluate(() => {
+  const a = document.activeElement;
+  const tr = a && a.closest("#keys-body tr");
+  return tr ? `${tr.dataset.name}${a.dataset.act ? ":" + a.dataset.act : ""}` : (a && a.id) || "";
+});
+const focusRow = (page, name) => page.locator(`#keys-body tr[data-name="${name}"]`).first().focus();
+// A dialog's close event, and the focus hand-back it queues, land after `open` turns false.
+const waitFocused = (page, want) => page.waitForFunction((want) => {
+  const a = document.activeElement;
+  const tr = a && a.closest("#keys-body tr");
+  return (tr ? `${tr.dataset.name}${a.dataset.act ? ":" + a.dataset.act : ""}` : (a && a.id) || "") === want;
+}, want, { timeout: 5000 });
+// The startup key load and the Keys tab's own load each redraw the rows (as does the provider
+// catalog arriving), and a redraw drops focus. networkidle has already fired by then, so wait for
+// both loads to reach their grant lookups and for the catalog names before focusing a row.
+async function settleKeys(page) {
+  for (let i = 0; i < 100 && requests.filter((r) => r.pathname.endsWith("/clients")).length < 2 * keys.length; i++) {
+    await page.waitForTimeout(50);
+  }
+  await page.waitForFunction(() => document.querySelector('#keys-body tr[data-name="alpha"] .td-provider').textContent.startsWith("OpenAI"));
+}
+const waitEmpty = (page, selector) =>
+  page.waitForFunction((sel) => document.querySelector(sel).value === "", selector, { timeout: 5000 });
+
+test("row keys move the selection and open each dialog on the focused row", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await focusRow(page, "alpha");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await focused(page), "bravo");
+  await page.keyboard.press("End");
+  assert.equal(await focused(page), "charlie");
+  await page.keyboard.press("j");
+  assert.equal(await focused(page), "charlie", "the list clamps at the end");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("k");
+  assert.equal(await focused(page), "alpha", "and at the start");
+  await page.keyboard.press("ArrowDown");
+
+  // Each dialog opens on the row's key; closing it returns focus to the row that opened it.
+  await page.keyboard.press("e");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "bravo");
+  assert.equal(await page.locator("#edit-form [name=provider]").inputValue(), "anthropic");
+  assert.equal(await page.locator("#edit-form [name=kind]").inputValue(), "billing");
+  // Escape in the provider field closes its suggestion list first, so Cancel closes this one.
+  await page.locator("#dlg-edit [data-close]").click();
+  await waitDialog(page, "dlg-edit", false);
+  await waitFocused(page, "bravo");
+
+  await page.keyboard.press("r");
+  await waitDialog(page, "dlg-rotate", true);
+  assert.equal(await page.locator("#rotate-name").textContent(), "bravo");
+  await page.keyboard.type("sk-typed-then-abandoned");
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-rotate", false);
+  await waitEmpty(page, "#rotate-form [name=secret]");
+  await waitFocused(page, "bravo");
+
+  await page.keyboard.press("Backspace");
+  await waitDialog(page, "dlg-delete", true);
+  assert.equal(await page.locator("#delete-name").textContent(), "bravo");
+  assert.equal(await focused(page), "delete-confirm");
+  await page.locator("#dlg-delete [data-close]").click();
+  await waitDialog(page, "dlg-delete", false);
+
+  // Delete on a button other than Delete is left to the button.
+  await rowButton(page, "bravo", "edit").focus();
+  await page.keyboard.press("Delete");
+  assert.equal(await dialogOpen(page, "dlg-delete"), false);
+
+  await focusRow(page, "bravo");
+  await page.keyboard.press("c");
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
+  assert.equal(await status(page), "Copied bravo. Clipboard wipes in 20 s.");
+});
+
+test("pane keys act on the selected key from outside the list, but copy stays list-only", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await page.locator('#keys-body tr[data-name="alpha"] td').first().click();
+  await page.evaluate(() => document.activeElement.blur());
+  await page.keyboard.press("c");
+  assert.equal(requests.some((r) => r.pathname === "/api/keys/alpha/copy"), false, "c outside the list copies nothing");
+  await page.keyboard.press("e");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "alpha");
+  await page.locator("#dlg-edit [data-close]").click();
+  await waitDialog(page, "dlg-edit", false);
+  // Opened from outside the pane, the dialog has no row to return to, so the row's button takes focus.
+  await waitFocused(page, "alpha:edit");
+
+  await page.keyboard.press("n");
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=secret]").fill("sk-typed-then-abandoned");
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-add", false);
+  await waitEmpty(page, "#add-form [name=secret]");
+});
+
+test("the grant dialog issues a grant, and a client needs a method", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await focusRow(page, "alpha");
+  await page.keyboard.press("a");
+  await waitDialog(page, "dlg-grant", true);
+  await page.locator("#grant-form [name=task]").fill("fixture task");
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, body: {
+    id: "g1", key: "alpha", provider: "openai", host: "api.openai.com", methods: ["GET", "POST"], paths: [],
+    expires_at: "2026-09-20T13:00:00Z", base_url: "http://127.0.0.1:12767/g/g1", token: "ksf-grant-fixture", auth_header: "Authorization",
+  } });
+  await page.locator("#grant-submit").click();
+  await page.locator("#grant-result").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#gr-id").textContent(), "g1");
+  assert.equal(await page.locator("#gr-scope").textContent(), "GET, POST · any path");
+  assert.equal(await status(page), "Grant g1 issued for alpha.");
+  assert.equal(await page.locator("#grant-submit").isDisabled(), false);
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-grant", false);
+
+  await rowButton(page, "alpha", "grant").click();
+  await waitDialog(page, "dlg-grant", true);
+  await page.locator('.kind-switch [data-kind="client"]').click();
+  for (const box of await page.locator("#grant-form [name=cm]").all()) await box.uncheck();
+  await page.locator("#grant-submit").click();
+  await page.waitForFunction(() => document.getElementById("grant-err").textContent !== "");
+  assert.equal(await page.locator("#grant-err").textContent(), "Pick at least one method.");
+  assert.equal(await page.locator("#grant-submit").textContent(), "Issue client");
+  assert.equal(await page.locator("#grant-submit").isDisabled(), false);
+  assert.equal(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/clients"), false);
+});
+
+test("chips and pickers wrap on the arrow keys", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator('[data-range="today"]').focus();
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(await page.locator('[data-range="month"]').getAttribute("aria-checked"), "true", "Left from the first chip wraps to the last");
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.range), "month");
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await page.locator('[data-range="today"]').getAttribute("aria-checked"), "true");
+  await page.getByRole("tab", { name: "Chart" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => !document.getElementById("pane-keys").hidden);
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
+});
+
 // ---------- filtering ----------
 
 test("range and source chips drive the query, the URL and the group chips", async (page, origin) => {

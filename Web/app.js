@@ -163,6 +163,17 @@
   const isTyping = (t) =>
     t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable);
   const openDialog = () => document.querySelector("dialog[open]");
+  // The index an arrow key moves to, or -1 for any other key. Radio groups (tabs, chips, pickers)
+  // wrap; lists (key rows, the mix) clamp and also take j/k, Home and End.
+  function ringStep(key, i, n) {
+    const dir = key === "ArrowRight" || key === "ArrowDown" ? 1 : key === "ArrowLeft" || key === "ArrowUp" ? -1 : 0;
+    return dir ? (i + dir + n) % n : -1;
+  }
+  function listStep(key, i, n) {
+    const j = key === "ArrowDown" || key === "j" ? i + 1 : key === "ArrowUp" || key === "k" ? i - 1
+      : key === "Home" ? 0 : key === "End" ? n - 1 : null;
+    return j === null ? -1 : Math.max(0, Math.min(n - 1, j));
+  }
 
   let statusTimer = 0;
   function say(msg, sticky) {
@@ -272,50 +283,41 @@
     tab.addEventListener("click", () => showPane(name));
   }
   document.querySelector(".seg").addEventListener("keydown", (e) => {
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+    const j = ringStep(e.key, PANE_ORDER.indexOf(state.pane), PANE_ORDER.length);
+    if (j < 0) return;
     e.preventDefault();
-    const i = PANE_ORDER.indexOf(state.pane);
-    const dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
-    showPane(PANE_ORDER[(i + dir + PANE_ORDER.length) % PANE_ORDER.length], { keyboard: true, focusTab: true });
+    showPane(PANE_ORDER[j], { keyboard: true, focusTab: true });
   });
 
   // ---------- chips (radiogroups) ----------
 
   function wireChips(attr, onChange) {
     const buttons = [...document.querySelectorAll(`.chips [${attr}]`)];
-    const set = (btn, keyboard) => {
+    const sync = (value) => {
+      const btn = buttons.find((b) => b.getAttribute(attr) === value) || buttons[0];
       for (const b of buttons) {
         const on = b === btn;
         b.setAttribute("aria-checked", on ? "true" : "false");
         b.tabIndex = on ? 0 : -1;
       }
-      onChange(btn.getAttribute(attr), keyboard);
+    };
+    const set = (btn) => {
+      sync(btn.getAttribute(attr));
+      onChange(btn.getAttribute(attr));
     };
     for (const b of buttons) {
-      b.addEventListener("click", () => set(b, false));
+      b.addEventListener("click", () => set(b));
       b.addEventListener("keydown", (e) => {
         // A chip that does not apply to the current source is hidden; arrow keys skip it.
         const live = buttons.filter((x) => !x.hidden);
-        const i = live.indexOf(b);
-        let next = null;
-        if (e.key === "ArrowRight" || e.key === "ArrowDown") next = live[(i + 1) % live.length];
-        if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = live[(i - 1 + live.length) % live.length];
+        const next = live[ringStep(e.key, live.indexOf(b), live.length)];
         if (!next || next === b) return;
         e.preventDefault();
-        set(next, true);
+        set(next);
         next.focus();
       });
     }
-    return {
-      sync(value) {
-        const btn = buttons.find((b) => b.getAttribute(attr) === value) || buttons[0];
-        for (const b of buttons) {
-          const on = b === btn;
-          b.setAttribute("aria-checked", on ? "true" : "false");
-          b.tabIndex = on ? 0 : -1;
-        }
-      },
-    };
+    return { sync };
   }
 
   // Two things this Mac pays for, and they are not the same kind of record. Subscriptions are the
@@ -452,13 +454,12 @@
   }
   function wirePickerKeys(boxId, attr) {
     $(boxId).addEventListener("keydown", (e) => {
-      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
       const chips = [...$(boxId).querySelectorAll(`[${attr}]`)];
       const i = chips.indexOf(e.target);
-      if (i < 0) return;
+      const j = i < 0 ? -1 : ringStep(e.key, i, chips.length);
+      if (j < 0) return;
       e.preventDefault();
-      const dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 1;
-      chips[(i + dir + chips.length) % chips.length].click();
+      chips[j].click();
     });
   }
 
@@ -1110,23 +1111,13 @@
     const li = e.target.closest(".mix-row");
     if (!li) return;
     const items = [...$("mix").querySelectorAll(".mix-row")];
-    const i = items.indexOf(li);
-    const go = (j) => { const t = items[Math.max(0, Math.min(items.length - 1, j))]; if (t) t.focus(); };
+    const j = listStep(e.key, items.indexOf(li), items.length);
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       toggleMix(li.dataset.model, true);
-    } else if (e.key === "ArrowDown" || e.key === "j") {
+    } else if (j >= 0) {
       e.preventDefault();
-      go(i + 1);
-    } else if (e.key === "ArrowUp" || e.key === "k") {
-      e.preventDefault();
-      go(i - 1);
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      go(0);
-    } else if (e.key === "End") {
-      e.preventDefault();
-      go(items.length - 1);
+      items[j].focus();
     }
   });
 
@@ -1491,56 +1482,41 @@
     if (tr) tr.focus();
   }
 
+  // One table for a row's buttons and its letter keys. Copy and reveal are list-only: from
+  // elsewhere in the pane c and v stay free, so only PANE_KEYS reach the selected row there.
+  const ROW_ACT = { copy: copyKey, reveal: revealKey, edit: openEdit, gateway: toggleGateway, grant: openGrant, check: runCheck, history: toggleEvents, rotate: openRotate, delete: askDelete };
+  const PANE_KEYS = { e: "edit", g: "gateway", a: "grant", t: "check", h: "history", r: "rotate" };
+  const LIST_KEYS = { ...PANE_KEYS, c: "copy", v: "reveal" };
+
   $("keys-body").addEventListener("click", (e) => {
     const tr = e.target.closest("tr");
     if (!tr) return;
     selectRow(tr.dataset.name, false);
     const btn = e.target.closest("[data-act]");
-    if (!btn) return;
-    const name = tr.dataset.name;
-    if (btn.dataset.act === "copy") copyKey(name);
-    else if (btn.dataset.act === "reveal") revealKey(name);
-    else if (btn.dataset.act === "edit") openEdit(name);
-    else if (btn.dataset.act === "gateway") toggleGateway(name);
-    else if (btn.dataset.act === "grant") openGrant(name);
-    else if (btn.dataset.act === "check") runCheck(name);
-    else if (btn.dataset.act === "history") toggleEvents(name);
-    else if (btn.dataset.act === "rotate") openRotate(name);
-    else if (btn.dataset.act === "delete") askDelete(name);
+    if (btn) ROW_ACT[btn.dataset.act]?.(tr.dataset.name);
   });
 
+  // Kept apart from the document listener on purpose: its modifier, dialog and typing guards do
+  // not apply here, so a focused row still answers Cmd+C as c.
   $("keys-body").addEventListener("keydown", (e) => {
     const tr = e.target.closest("tr");
     if (!tr) return;
     const onButton = e.target.closest("[data-act]");
     if (tr.classList.contains("key-events-row")) return;
     const rows = [...$("keys-body").rows].filter((r) => !r.classList.contains("key-events-row"));
-    const i = rows.indexOf(tr);
-    const go = (j) => { const t = rows[Math.max(0, Math.min(rows.length - 1, j))]; if (t) selectRow(t.dataset.name, true); };
-    switch (e.key) {
-      case "ArrowDown": case "j": e.preventDefault(); go(i + 1); break;
-      case "ArrowUp": case "k": e.preventDefault(); go(i - 1); break;
-      case "Home": e.preventDefault(); go(0); break;
-      case "End": e.preventDefault(); go(rows.length - 1); break;
-      case "Enter": case "c":
-        if (onButton && e.key === "Enter") return;
-        e.preventDefault();
-        copyKey(tr.dataset.name);
-        break;
-      case "v": e.preventDefault(); revealKey(tr.dataset.name); break;
-      case "e": e.preventDefault(); openEdit(tr.dataset.name); break;
-      case "g": e.preventDefault(); toggleGateway(tr.dataset.name); break;
-      case "a": e.preventDefault(); openGrant(tr.dataset.name); break;
-      case "t": e.preventDefault(); runCheck(tr.dataset.name); break;
-      case "h": e.preventDefault(); toggleEvents(tr.dataset.name); break;
-      case "r": e.preventDefault(); openRotate(tr.dataset.name); break;
-      case "Backspace": case "Delete":
-        if (onButton && onButton.dataset.act !== "delete" && e.key === "Delete") return;
-        e.preventDefault();
-        askDelete(tr.dataset.name);
-        break;
-      default: return;
+    const j = listStep(e.key, rows.indexOf(tr), rows.length);
+    if (j >= 0) { e.preventDefault(); selectRow(rows[j].dataset.name, true); return; }
+    let act = LIST_KEYS[e.key];
+    if (e.key === "Enter") {
+      if (onButton) return;
+      act = "copy";
+    } else if (e.key === "Backspace" || e.key === "Delete") {
+      if (onButton && onButton.dataset.act !== "delete" && e.key === "Delete") return;
+      act = "delete";
     }
+    if (!act) return;
+    e.preventDefault();
+    ROW_ACT[act](tr.dataset.name);
   });
 
   function setBtn(btn, text, disabled) {
@@ -1614,13 +1590,34 @@
     loadKeys().then(() => restoreKeysFocus(state.selected, "reveal"));
   });
 
-  function askDelete(name) {
-    $("delete-name").textContent = name;
-    $("delete-err").textContent = "";
-    $("dlg-delete").dataset.name = name;
-    $("dlg-delete").showModal();
-    $("delete-confirm").focus();
+  // The add, edit, rotate, host and delete dialogs open the same way: a fresh form, no stale
+  // error, the key named in the title. `fill` runs before showModal because the provider picker
+  // redraws its list when it takes focus.
+  function openKeyDialog(id, name, field, fill) {
+    const dlg = $("dlg-" + id), form = $(id + "-form");
+    form.reset();
+    $(id + "-err").textContent = "";
+    if (name != null) { $(id + "-name").textContent = name; dlg.dataset.name = name; }
+    if (fill) fill(form);
+    dlg.showModal();
+    form.elements[field].focus();
   }
+  // Closing wipes any secret field, then hands focus back to the row button that opened the
+  // dialog unless the close itself moved focus somewhere in the pane (or to `keep`).
+  function restoreOnClose(id, act, keep) {
+    const form = $(id + "-form");
+    $("dlg-" + id).addEventListener("close", () => {
+      if (form.elements.secret) form.elements.secret.value = "";
+      queueMicrotask(() => {
+        if (state.pane !== "keys") return;
+        const active = document.activeElement;
+        if (active && (active === keep || $("pane-keys").contains(active))) return;
+        restoreKeysFocus(state.selected, act);
+      });
+    });
+  }
+
+  function askDelete(name) { openKeyDialog("delete", name, "delete-confirm"); }
   $("delete-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const dlg = $("dlg-delete");
@@ -1745,13 +1742,7 @@
 
   // ---------- add / edit ----------
 
-  function openAdd() {
-    const form = $("add-form");
-    form.reset();
-    $("add-err").textContent = "";
-    $("dlg-add").showModal();
-    form.elements.name.focus();
-  }
+  function openAdd() { openKeyDialog("add", null, "name"); }
   $("btn-add").addEventListener("click", openAdd);
   $("add-form").elements.secret.addEventListener("input", (e) => {
     const form = $("add-form");
@@ -1799,29 +1790,16 @@
       setBtn(submit, "Add key", false);
     }
   });
-  $("dlg-add").addEventListener("close", () => {
-    $("add-form").elements.secret.value = "";
-    queueMicrotask(() => {
-      if (state.pane !== "keys") return;
-      const active = document.activeElement;
-      if (active && (active === $("btn-add") || $("pane-keys").contains(active))) return;
-      restoreKeysFocus(state.selected);
-    });
-  });
+  restoreOnClose("add", undefined, $("btn-add"));
 
   function openEdit(name) {
     const k = state.keys.find((x) => x.name === name);
     if (!k) return;
-    const form = $("edit-form");
-    form.reset();
-    $("edit-err").textContent = "";
-    $("edit-name").textContent = name;
-    $("dlg-edit").dataset.name = name;
-    form.elements.provider.value = k.provider || "";
-    form.elements.kind.value = k.kind === "billing" ? "billing" : "runtime";
-    form.elements.notes.value = k.notes || "";
-    $("dlg-edit").showModal();
-    form.elements.provider.focus();
+    openKeyDialog("edit", name, "provider", (form) => {
+      form.elements.provider.value = k.provider || "";
+      form.elements.kind.value = k.kind === "billing" ? "billing" : "runtime";
+      form.elements.notes.value = k.notes || "";
+    });
   }
   $("edit-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1852,22 +1830,8 @@
       setBtn(submit, "Save", false);
     }
   });
-  $("dlg-host").addEventListener("close", () => {
-    queueMicrotask(() => {
-      if (state.pane !== "keys") return;
-      const active = document.activeElement;
-      if (active && $("pane-keys").contains(active) && active !== $("dlg-host")) return;
-      restoreKeysFocus(state.selected, "gateway");
-    });
-  });
-  $("dlg-edit").addEventListener("close", () => {
-    queueMicrotask(() => {
-      if (state.pane !== "keys") return;
-      const active = document.activeElement;
-      if (active && $("pane-keys").contains(active) && active !== $("dlg-edit")) return;
-      restoreKeysFocus(state.selected, "edit");
-    });
-  });
+  restoreOnClose("host", "gateway");
+  restoreOnClose("edit", "edit");
 
   // ---------- key history (audit log the engine keeps; never the secret) ----------
 
@@ -1914,15 +1878,7 @@
 
   // ---------- rotate (new secret, same name; Touch ID on the server) ----------
 
-  function openRotate(name) {
-    const form = $("rotate-form");
-    form.reset();
-    $("rotate-err").textContent = "";
-    $("rotate-name").textContent = name;
-    $("dlg-rotate").dataset.name = name;
-    $("dlg-rotate").showModal();
-    form.elements.secret.focus();
-  }
+  function openRotate(name) { openKeyDialog("rotate", name, "secret"); }
   $("rotate-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -1947,15 +1903,7 @@
       setBtn(submit, "Rotate", false);
     }
   });
-  $("dlg-rotate").addEventListener("close", () => {
-    $("rotate-form").elements.secret.value = "";
-    queueMicrotask(() => {
-      if (state.pane !== "keys") return;
-      const active = document.activeElement;
-      if (active && $("pane-keys").contains(active) && active !== $("dlg-rotate")) return;
-      restoreKeysFocus(state.selected, "rotate");
-    });
-  });
+  restoreOnClose("rotate", "rotate");
 
   // ---------- gateway (per key, one Touch ID to turn on; the engine forgets on restart) ----------
 
@@ -1987,14 +1935,8 @@
   }
 
   function askHost(name, prov) {
-    const form = $("host-form");
-    form.reset();
-    $("host-err").textContent = "";
-    $("host-name").textContent = name;
     $("host-hint").textContent = (prov && prov.note) || "This provider has one host per account.";
-    $("dlg-host").dataset.name = name;
-    $("dlg-host").showModal();
-    form.elements.host.focus();
+    openKeyDialog("host", name, "host");
   }
   $("host-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -2109,61 +2051,43 @@
     say(`Client #${c.id} issued for ${name}.`);
   }
 
-  $("grant-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if (state.busy) return;
-    const f = e.target.elements;
-    const name = $("dlg-grant").dataset.name;
-    if (grantKind() === "client") {
-      state.busy = true;
-      $("grant-err").textContent = "";
-      $("grant-submit").textContent = "Touch ID…";
-      $("grant-submit").disabled = true;
-      try {
-        await issueClient(name, f);
-        $("grant-form").hidden = true;
-        $("grant-result").hidden = false;
-        await loadKeys();
-      } catch (err) {
-        $("grant-err").textContent = err.message;
-      } finally {
-        $("grant-submit").textContent = "Issue client";
-        $("grant-submit").disabled = false;
-        state.busy = false;
-      }
-      return;
-    }
+  async function issueGrant(name, f) {
     const body = { task: f.task.value.trim(), minutes: Number(f.minutes.value) };
     if (f.methods.value) body.methods = f.methods.value.split(",");
     const paths = f.paths.value.split(",").map((p) => p.trim()).filter(Boolean);
     if (paths.length) body.paths = paths;
     if (f.max_requests.value) body.max_requests = Number(f.max_requests.value);
     if (f.max_usd.value) body.max_usd = Number(f.max_usd.value);
+    const g = await api("/api/keys/" + encodeURIComponent(name) + "/grants", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("gr-kind").textContent = "Grant";
+    $("gr-id").textContent = g.id;
+    $("gr-target").textContent = `${g.key} → ${providerName(g.provider)} at ${g.host}`;
+    $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + " estimated" : ""}`;
+    $("gr-expires").textContent = `${fmtWhenShort(g.expires_at)} (${body.minutes} min), or earlier on screen lock, revoke or site restart`;
+    $("gr-base").textContent = g.base_url;
+    $("gr-token").textContent = g.token;
+    $("gr-hint").textContent = `Use the token as the API key (${g.auth_header} header) and the base URL as the SDK endpoint. Shown once; it is not stored anywhere. Select to copy.`;
+    $("dlg-grant").dataset.grantId = g.id;
+    $("dlg-grant").dataset.clientId = "";
+    say(`Grant ${g.id} issued for ${name}.`);
+  }
+
+  $("grant-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (state.busy) return;
+    const client = grantKind() === "client";
     state.busy = true;
     $("grant-err").textContent = "";
-    $("grant-submit").textContent = "Touch ID…";
-    $("grant-submit").disabled = true;
+    setBtn($("grant-submit"), "Touch ID…", true);
     try {
-      const g = await api("/api/keys/" + encodeURIComponent(name) + "/grants", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      $("gr-kind").textContent = "Grant";
-      $("gr-id").textContent = g.id;
-      $("gr-target").textContent = `${g.key} → ${providerName(g.provider)} at ${g.host}`;
-      $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + " estimated" : ""}`;
-      $("gr-expires").textContent = `${fmtWhenShort(g.expires_at)} (${body.minutes} min), or earlier on screen lock, revoke or site restart`;
-      $("gr-base").textContent = g.base_url;
-      $("gr-token").textContent = g.token;
-      $("gr-hint").textContent = `Use the token as the API key (${g.auth_header} header) and the base URL as the SDK endpoint. Shown once; it is not stored anywhere. Select to copy.`;
-      $("dlg-grant").dataset.grantId = g.id;
-      $("dlg-grant").dataset.clientId = "";
+      await (client ? issueClient : issueGrant)($("dlg-grant").dataset.name, e.target.elements);
       $("grant-form").hidden = true;
       $("grant-result").hidden = false;
-      say(`Grant ${g.id} issued for ${name}.`);
       await loadKeys();
     } catch (err) {
       $("grant-err").textContent = err.message;
     } finally {
-      $("grant-submit").textContent = "Grant";
-      $("grant-submit").disabled = false;
+      setBtn($("grant-submit"), client ? "Issue client" : "Grant", false);
       state.busy = false;
     }
   });
@@ -2460,12 +2384,8 @@
     }
     if (state.pane === "keys") {
       if (e.key === "n") { e.preventDefault(); openAdd(); return; }
-      if (e.key === "e" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); openEdit(state.selected); return; }
-      if (e.key === "g" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); toggleGateway(state.selected); return; }
-      if (e.key === "a" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); openGrant(state.selected); return; }
-      if (e.key === "t" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); runCheck(state.selected); return; }
-      if (e.key === "h" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); toggleEvents(state.selected); return; }
-      if (e.key === "r" && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); openRotate(state.selected); return; }
+      const act = PANE_KEYS[e.key];
+      if (act && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); ROW_ACT[act](state.selected); return; }
       const inList = e.target.closest && e.target.closest("#keys-body");
       if (!inList && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "j" || e.key === "k")) {
         const tr = rowFor(state.selected);
