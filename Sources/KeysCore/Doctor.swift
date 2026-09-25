@@ -289,7 +289,7 @@ enum Doctor {
         guard FileManager.default.isReadableFile(atPath: url.path),
               let data = try? Data(contentsOf: url)
         else { return nil }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return Hex.encode(SHA256.hash(data: data))
     }
 
     private static func fileSize(_ url: URL) -> Int64? {

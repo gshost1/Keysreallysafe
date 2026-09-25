@@ -1,7 +1,6 @@
 import Darwin
 import CoreFoundation
 import Foundation
-import Security
 
 struct HTTPRequest: Sendable {
     var method: String
@@ -105,23 +104,7 @@ final class LoopbackHTTPServer: @unchecked Sendable {
 
 enum OriginToken {
     static func generate() -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        if status != errSecSuccess {
-            var fallback = [UInt8](repeating: 0, count: 32)
-            arc4random_buf(&fallback, fallback.count)
-            bytes = fallback
-        }
-        return bytes.map { String(format: "%02x", $0) }.joined()
-    }
-
-    static func equal(_ a: String, _ b: String) -> Bool {
-        let aa = Array(a.utf8)
-        let bb = Array(b.utf8)
-        guard aa.count == bb.count else { return false }
-        var diff: UInt8 = 0
-        for i in aa.indices { diff |= aa[i] ^ bb[i] }
-        return diff == 0
+        Hex.encode(SecureRandom.bytes(32))
     }
 }
 
@@ -265,7 +248,7 @@ final class APIHandler: @unchecked Sendable {
 
     private func tokenOK(_ request: HTTPRequest) -> Bool {
         let header = request.headers["x-ksf-token"] ?? ""
-        return OriginToken.equal(header, originToken)
+        return ConstantTime.equal(header.utf8, originToken.utf8)
     }
 
     private func sameOriginOK(_ request: HTTPRequest) -> Bool {

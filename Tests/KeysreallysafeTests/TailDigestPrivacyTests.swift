@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import KeysCore
@@ -95,5 +96,19 @@ final class TailDigestPrivacyTests: XCTestCase {
             i += 2
         }
         return out
+    }
+
+    /// Stored client-token hashes, tail digests and synthetic prompt ids are lowercase hex;
+    /// a change in the encoder would orphan every one of them.
+    func testHexEncodingIsLowercaseTwoDigitsPerByte() {
+        XCTAssertEqual(Hex.encode([0x00, 0x0f, 0xab, 0xff]), "000fabff")
+        XCTAssertEqual(
+            Hex.encode(SHA256.hash(data: Data("abc".utf8))),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        )
+        XCTAssertEqual(GatewayClientToken.hash("ksfc_x"), Hex.encode(SHA256.hash(data: Data("ksfc_x".utf8))))
+        XCTAssertTrue(ConstantTime.equal(Data([1, 2, 3]), Data([1, 2, 3])))
+        XCTAssertFalse(ConstantTime.equal(Data([1, 2, 3]), Data([1, 2, 4])))
+        XCTAssertFalse(ConstantTime.equal("abc".utf8, "abcd".utf8))
     }
 }

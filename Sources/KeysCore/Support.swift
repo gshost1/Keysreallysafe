@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import Security
 
 enum AppError: Error, CustomStringConvertible {
     case usage(String)
@@ -343,6 +344,45 @@ enum Ticks {
     }
 }
 
+enum SecureRandom {
+    /// CSPRNG bytes for tokens and ids. arc4random_buf, also a CSPRNG on macOS, covers the
+    /// case where SecRandomCopyBytes reports a failure.
+    static func bytes(_ count: Int) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: count)
+        if SecRandomCopyBytes(kSecRandomDefault, count, &bytes) != errSecSuccess {
+            arc4random_buf(&bytes, count)
+        }
+        return bytes
+    }
+}
+
+enum Hex {
+    private static let digits = Array("0123456789abcdef".utf8)
+
+    /// Lowercase, two digits per byte. Stored client token hashes, tail digests, synthetic
+    /// prompt ids and grant ids are in this exact form, so it must never change.
+    static func encode<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.underestimatedCount * 2)
+        for byte in bytes {
+            out.append(digits[Int(byte >> 4)])
+            out.append(digits[Int(byte & 0x0f)])
+        }
+        return String(decoding: out, as: UTF8.self)
+    }
+}
+
+enum ConstantTime {
+    /// Compares every byte whatever the first difference, so timing reveals only the length.
+    static func equal<A: Collection, B: Collection>(_ a: A, _ b: B) -> Bool
+    where A.Element == UInt8, B.Element == UInt8 {
+        guard a.count == b.count else { return false }
+        var diff: UInt8 = 0
+        for (x, y) in zip(a, b) { diff |= x ^ y }
+        return diff == 0
+    }
+}
+
 enum PromptHash {
     static func syntheticPromptId(
         sessionId: String,
@@ -352,8 +392,7 @@ enum PromptHash {
         outputTokens: Int
     ) -> String {
         let material = sessionId + timestamp + model + String(inputTokens) + String(outputTokens)
-        let digest = SHA256.hash(data: Data(material.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        return Hex.encode(SHA256.hash(data: Data(material.utf8)))
     }
 }
 

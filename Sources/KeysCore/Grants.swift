@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import Security
 
 /// A grant is one presence-approved, time-boxed capability to use one key through the
 /// gateway. The client presents the grant token as its API key; the gateway swaps in the
@@ -209,19 +208,11 @@ enum GrantToken {
     static let prefix = "ksf_"
 
     static func generate(id: String) -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
-            arc4random_buf(&bytes, bytes.count)
-        }
-        return prefix + id + "_" + base64url(Data(bytes))
+        prefix + id + "_" + base64url(Data(SecureRandom.bytes(32)))
     }
 
     static func newID() -> String {
-        var bytes = [UInt8](repeating: 0, count: 4)
-        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
-            arc4random_buf(&bytes, bytes.count)
-        }
-        return bytes.map { String(format: "%02x", $0) }.joined()
+        Hex.encode(SecureRandom.bytes(4))
     }
 
     static func idOf(_ token: String) -> String? {
@@ -346,7 +337,7 @@ final class GrantStore: @unchecked Sendable {
         defer { lock.unlock() }
         guard var g = grants[id] else { return .failure(.invalid) }
         if g.isRevoked { return .failure(.revoked) }
-        guard let stored = hashes[id], Self.constantTimeEqual(stored, presented) else {
+        guard let stored = hashes[id], ConstantTime.equal(stored, presented) else {
             return .failure(.invalid)
         }
         if g.isExpired(at: now) { return .failure(.expired) }
@@ -388,12 +379,5 @@ final class GrantStore: @unchecked Sendable {
             }
         }
         lock.unlock()
-    }
-
-    private static func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
-        guard a.count == b.count else { return false }
-        var diff: UInt8 = 0
-        for i in 0..<a.count { diff |= a[a.startIndex + i] ^ b[b.startIndex + i] }
-        return diff == 0
     }
 }

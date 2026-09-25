@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import Security
 
 /// A revocable, expiring capability to route through the gateway with one key.
 /// The dashboard's per-launch token is a browser CSRF defense and is never accepted here.
@@ -59,11 +58,7 @@ enum GatewayClientToken {
     static let defaultMethods = ["POST"]
 
     static func generate() -> String {
-        var bytes = [UInt8](repeating: 0, count: 24)
-        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
-            arc4random_buf(&bytes, bytes.count)
-        }
-        return prefix + bytes.map { String(format: "%02x", $0) }.joined()
+        prefix + Hex.encode(SecureRandom.bytes(24))
     }
 
     static func looksLikeToken(_ value: String) -> Bool {
@@ -71,7 +66,7 @@ enum GatewayClientToken {
     }
 
     static func hash(_ token: String) -> String {
-        SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+        Hex.encode(SHA256.hash(data: Data(token.utf8)))
     }
 
     static func hint(_ token: String) -> String {
