@@ -1,13 +1,9 @@
 import AppKit
-import CoreGraphics
 import Foundation
 
 struct MenubarSnapshot: Equatable {
     var title: String
     var tooltip: String
-    var sparkline: [Double]
-    /// One line per plan window, for the dropdown. Empty when no tool has reported a window.
-    var lines: [String] = []
     /// One card per subscription with a plan window, in menubar order. Feeds the dropdown panel.
     var cards: [ToolCard] = []
     var spendLine: String = ""
@@ -33,36 +29,23 @@ struct MenubarSnapshot: Equatable {
     }
 
     /// Title: Claude's Fable percentage, other tools' weekly percentages.
-    /// Percentages are used quota, directly from local snapshots.
-    static func from(_ report: SpendReport, status: LiveStatus? = nil, now: Date = Date()) -> MenubarSnapshot {
-        let usd = formatUsd(report.totals.grokUsd)
+    /// Percentages are used quota, directly from local snapshots. Grok's dollars are the
+    /// week's local spend the Grok status row already carries.
+    static func from(_ status: LiveStatus?, now: Date = Date()) -> MenubarSnapshot {
+        let grok = status?.grok ?? status?.plans.first { $0.source == "grok" }
+        let spendLine = "Grok \(formatUsd(grok?.weeklyUsd ?? 0)) this week"
         var parts: [String] = []
-        var tooltip: [String] = ["Grok \(usd) this \(report.range == .week ? "week" : "month")"]
-        var lines: [String] = []
+        var tooltip: [String] = [spendLine]
         var cards: [ToolCard] = []
         if let status {
             let claude = status.claude ?? status.plans.first { $0.source == "claude" }
             let codex = status.plans.first { $0.source == "openai" }
-            let grok = status.grok ?? status.plans.first { $0.source == "grok" }
             for (letter, name, tool) in [("C", "Claude", claude), ("X", "Codex", codex), ("G", "Grok", grok)] {
                 guard let tool else { continue }
                 if tool.source == "claude" {
                     parts.append(tool.fablePct.map { "\(letter) \($0)%" } ?? "\(letter) —")
                 } else if let week = tool.weeklyPct {
                     parts.append("\(letter) \(week)%")
-                }
-                if let five = tool.fiveHourPct {
-                    tooltip.append("\(name) 5h \(five)% used")
-                    lines.append("\(name) · 5 hour \(five)% used" + resetsSuffix(tool.fiveHourResetsAt, now: now))
-                }
-                if let week = tool.weeklyPct {
-                    tooltip.append("\(name) weekly \(week)% used")
-                    lines.append("\(name) · weekly \(week)% used" + resetsSuffix(tool.weeklyResetsAt, now: now))
-                }
-                if tool.source == "claude" {
-                    let fable = tool.fablePct.map { "\($0)% used" } ?? "unavailable"
-                    tooltip.append("Claude Fable \(fable)")
-                    lines.append("Claude · Fable \(fable)" + resetsSuffix(tool.fableResetsAt, now: now))
                 }
                 var windows: [Window] = []
                 if let five = tool.fiveHourPct {
@@ -74,25 +57,24 @@ struct MenubarSnapshot: Equatable {
                 if let week = tool.weeklyPct {
                     windows.append(Window(label: "\(name) weekly", pctUsed: week, resetsAt: tool.weeklyResetsAt))
                 }
+                tooltip += windows.map { "\($0.label) \($0.pctUsed)% used" }
+                if tool.source == "claude", tool.fablePct == nil { tooltip.append("Claude Fable unavailable") }
                 cards.append(ToolCard(
                     id: tool.source,
                     name: name,
                     plan: tool.plan,
                     windows: windows,
                     note: tool.usageNote,
-                    usdLine: letter == "G" ? "Grok \(usd) this \(report.range == .week ? "week" : "month")" : nil
+                    usdLine: letter == "G" ? spendLine : nil
                 ))
             }
         }
         tooltip.append("plan windows · usage used · click for resets and spend")
-        let title = parts.isEmpty ? usd : parts.joined(separator: "  ")
         return MenubarSnapshot(
-            title: title,
+            title: parts.isEmpty ? "—" : parts.joined(separator: "  "),
             tooltip: tooltip.joined(separator: " · "),
-            sparkline: Sparkline.values(from: report.daily),
-            lines: lines,
             cards: cards,
-            spendLine: tooltip.first ?? ""
+            spendLine: spendLine
         )
     }
 
@@ -115,73 +97,10 @@ struct MenubarSnapshot: Equatable {
         return "Resets \(day.string(from: date)) at \(time.string(from: date))"
     }
 
-    static func resetsSuffix(_ iso: String?, now: Date) -> String {
-        guard let iso, let date = UTC.parse(iso) else { return "" }
-        let s = Int(date.timeIntervalSince(now))
-        if s <= 0 { return " · reset due" }
-        let m = s / 60
-        if m < 60 { return " · resets in \(m)m" }
-        let h = m / 60
-        if h < 48 { return " · resets in \(h)h \(m % 60)m" }
-        return " · resets in \(h / 24)d \(h % 24)h"
-    }
-
     static func formatUsd(_ usd: Double) -> String {
         if usd == 0 { return "$0" }
         if usd < 0.01 { return String(format: "$%.4f", usd) }
         return String(format: "$%.2f", usd)
-    }
-
-    static func formatTokens(_ n: Int) -> String {
-        let x = Double(n)
-        if x >= 1_000_000_000 { return String(format: "%.0fB", x / 1_000_000_000) }
-        if x >= 1_000_000 { return String(format: "%.0fM", x / 1_000_000) }
-        if x >= 1_000 { return String(format: "%.0fK", x / 1_000) }
-        return String(n)
-    }
-}
-
-enum Sparkline {
-    static func values(from daily: [DailyPoint]) -> [Double] {
-        var byDay: [String: Double] = [:]
-        for point in daily {
-            byDay[point.day, default: 0] += point.usd ?? 0
-        }
-        return byDay.keys.sorted().map { byDay[$0]! }
-    }
-
-    static func points(values: [Double], size: CGSize) -> [CGPoint] {
-        guard !values.isEmpty, size.width > 0, size.height > 0 else { return [] }
-        let pad: CGFloat = 1
-        let w = max(size.width - pad * 2, 1)
-        let h = max(size.height - pad * 2, 1)
-        let maxV = values.max() ?? 0
-        let span = max(maxV, 1e-12)
-        let last = CGFloat(max(values.count - 1, 1))
-        return values.enumerated().map { index, value in
-            let x = pad + w * CGFloat(index) / last
-            let y = pad + h * CGFloat(value / span)
-            return CGPoint(x: x, y: y)
-        }
-    }
-
-    static func image(values: [Double], size: CGSize) -> NSImage {
-        let image = NSImage(size: size, flipped: false) { _ in
-            NSColor.black.setStroke()
-            let path = NSBezierPath()
-            path.lineWidth = 1
-            path.lineJoinStyle = .round
-            path.lineCapStyle = .round
-            let pts = points(values: values.isEmpty ? [0, 0] : values, size: size)
-            if let first = pts.first {
-                path.move(to: first)
-                for p in pts.dropFirst() { path.line(to: p) }
-                path.stroke()
-            }
-            return true
-        }
-        image.isTemplate = true
-        return image
     }
 }
 
@@ -233,7 +152,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.url = url
         self.itemController = MenubarItemController()
         super.init()
-        item.button?.imagePosition = .noImage
         panel.selectedTab = UserDefaults.standard.string(forKey: Self.tabKey) ?? "overview"
         panel.onSelect = { [weak self] id in
             UserDefaults.standard.set(id, forKey: Self.tabKey)
@@ -309,20 +227,9 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.async { self?.refresh() }
             }
         }
-        let report = (try? service.spend(range: .week, by: .model, source: .all)) ?? SpendReport(
-            range: .week,
-            by: .model,
-            source: .all,
-            caption: SpendReport.captionText,
-            totals: SpendTotals(),
-            rows: [],
-            daily: []
-        )
-        let status = try? service.liveStatus()
-        let snap = MenubarSnapshot.from(report, status: status)
+        let snap = MenubarSnapshot.from(try? service.liveStatus())
         item.button?.title = snap.title
         item.button?.toolTip = snap.tooltip
-        item.button?.image = nil
         lastSnapshot = snap
         updatedAt = Date()
         renderPanel()
@@ -343,10 +250,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ("openai", "OpenAI / Codex", "https://status.openai.com"),
         ("grok", "Grok", "https://status.x.ai"),
     ]
-
-    @objc func openPlanUsage() {
-        NSWorkspace.shared.open(url)
-    }
 
     @objc func openStatusPage(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let target = URL(string: raw) else { return }
@@ -436,7 +339,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         host.view = panel
         menu.addItem(host)
         menu.addItem(.separator())
-        let plan = NSMenuItem(title: "Plan Usage", action: #selector(openPlanUsage), keyEquivalent: "")
+        let plan = NSMenuItem(title: "Plan Usage", action: #selector(openDashboard), keyEquivalent: "")
         plan.target = self
         plan.toolTip = "Open the Usage pane on the local site"
         menu.addItem(plan)

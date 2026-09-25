@@ -609,7 +609,7 @@ struct DashboardCommand: ParsableCommand {
 struct MenubarCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "menubar",
-        abstract: "Always-on spend sparkline in the macOS menu bar."
+        abstract: "Plan-window usage in the macOS menu bar."
     )
 
     func run() throws {

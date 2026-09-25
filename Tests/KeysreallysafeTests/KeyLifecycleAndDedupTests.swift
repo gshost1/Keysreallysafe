@@ -279,29 +279,17 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertEqual(month.startDay, "2026-09-01")
     }
 
-    func testMenubarShowsPlanPercentsAndKeepsGrokMonthUsd() {
-        var totals = SpendTotals()
-        totals.grokUsd = 2.81
-        totals.claudeTokens = 1000
-        let report = SpendReport(
-            range: .month,
-            by: .model,
-            source: .all,
-            caption: SpendReport.captionText,
-            totals: totals,
-            rows: [],
-            daily: []
-        )
+    func testMenubarShowsPlanPercentsAndGrokWeekUsd() {
         var status = LiveStatus()
         status.grok = ToolStatus(source: "grok", title: "Grok", weeklyPct: 3, weeklyUsd: 2.81)
         status.claude = ToolStatus(source: "claude", title: "Claude", fiveHourPct: 22)
         status.plans = [
             ToolStatus(source: "openai", title: "OpenAI · Codex", weeklyPct: 32)
         ]
-        let snap = MenubarSnapshot.from(report, status: status)
+        let snap = MenubarSnapshot.from(status)
         XCTAssertEqual(snap.title, "C —  X 32%  G 3%") // Never substitute weekly usage for missing Fable usage.
         XCTAssertTrue(snap.tooltip.hasPrefix("Grok $2.81"))
-        XCTAssertTrue(snap.tooltip.contains("Claude 5h 22%"))
+        XCTAssertTrue(snap.tooltip.contains("Claude 5-hour 22%"))
         XCTAssertTrue(snap.tooltip.contains("Codex weekly 32%"))
         XCTAssertTrue(snap.tooltip.contains("Grok weekly 3%"))
     }
