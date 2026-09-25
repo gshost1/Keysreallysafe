@@ -132,22 +132,9 @@ enum GatewayEstimate {
         cacheWrite: Int,
         api: String? = nil
     ) -> Double? {
-        if api == "typesafe-systemone" { return nil }
-        guard let model, let price = ModelPrices.lookup(model) else { return nil }
-        if api == "anthropic" {
-            return ClaudeEstimate.usd(
-                model: model,
-                input: input,
-                output: output,
-                cacheCreate: cacheWrite,
-                cacheRead: cacheRead
-            )
-        }
-        let m = 1_000_000.0
-        let billedInput = max(0, input - cacheRead)
-        return (Double(billedInput) / m) * price.inputPerMTok
-            + (Double(output) / m) * price.outputPerMTok
-            + (Double(cacheRead) / m) * price.cacheReadPerMTok
-            + (Double(cacheWrite) / m) * price.inputPerMTok * 1.25
+        // TypeSafe's System One reports neither tokens nor cost.
+        guard api != "typesafe-systemone", let model else { return nil }
+        return ModelPrices.usd(model: model, input: input, output: output, cacheRead: cacheRead, cacheWrite: cacheWrite,
+                               inputIncludesCacheRead: api != "anthropic")
     }
 }

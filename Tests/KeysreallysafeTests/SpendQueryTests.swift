@@ -201,18 +201,18 @@ final class SpendQueryTests: XCTestCase {
     }
 
     func testClaudePriceTableLongestPrefixAndCoverage() throws {
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-fable-5-1")?.inputPerMTok, 10)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-fable-5-1")?.cachedPerMTok, 0.25)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-fable-5")?.cachedPerMTok, 1.00)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-mythos-5")?.inputPerMTok, 10)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-opus-5")?.inputPerMTok, 5)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-opus-5")?.outputPerMTok, 25)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-opus-4-5")?.inputPerMTok, 5)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-opus-4")?.inputPerMTok, 15)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-sonnet-5")?.inputPerMTok, 2)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-sonnet-5")?.outputPerMTok, 10)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-sonnet-4-6")?.inputPerMTok, 3)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-haiku-4-5")?.inputPerMTok, 1)
+        XCTAssertEqual(ModelPrices.lookup("claude-fable-5-1")?.inputPerMTok, 10)
+        XCTAssertEqual(ModelPrices.lookup("claude-fable-5-1")?.cacheReadPerMTok, 0.25)
+        XCTAssertEqual(ModelPrices.lookup("claude-fable-5")?.cacheReadPerMTok, 1.00)
+        XCTAssertEqual(ModelPrices.lookup("claude-mythos-5")?.inputPerMTok, 10)
+        XCTAssertEqual(ModelPrices.lookup("claude-opus-5")?.inputPerMTok, 5)
+        XCTAssertEqual(ModelPrices.lookup("claude-opus-5")?.outputPerMTok, 25)
+        XCTAssertEqual(ModelPrices.lookup("claude-opus-4-5")?.inputPerMTok, 5)
+        XCTAssertEqual(ModelPrices.lookup("claude-opus-4")?.inputPerMTok, 15)
+        XCTAssertEqual(ModelPrices.lookup("claude-sonnet-5")?.inputPerMTok, 2)
+        XCTAssertEqual(ModelPrices.lookup("claude-sonnet-5")?.outputPerMTok, 10)
+        XCTAssertEqual(ModelPrices.lookup("claude-sonnet-4-6")?.inputPerMTok, 3)
+        XCTAssertEqual(ModelPrices.lookup("claude-haiku-4-5")?.inputPerMTok, 1)
 
         let million = 1_000_000
         let opus5 = try XCTUnwrap(ClaudeEstimate.usd(

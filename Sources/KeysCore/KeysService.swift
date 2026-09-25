@@ -672,14 +672,12 @@ final class KeysService: @unchecked Sendable {
                 "model": row.model,
                 "slot": row.slot,
                 "priced": false,
-                "source": NSNull(),
                 "input_per_mtok": NSNull(),
                 "output_per_mtok": NSNull(),
                 "cache_read_per_mtok": NSNull(),
             ]
             if let price = ModelPrices.lookup(row.model) {
                 obj["priced"] = true
-                obj["source"] = price.source.rawValue
                 obj["input_per_mtok"] = price.inputPerMTok
                 obj["output_per_mtok"] = price.outputPerMTok
                 obj["cache_read_per_mtok"] = price.cacheReadPerMTok

@@ -37,13 +37,11 @@ final class PriceTableTests: XCTestCase {
         XCTAssertEqual(only.inputPerMTok, 4, accuracy: 1e-12)
         XCTAssertEqual(only.outputPerMTok, 8, accuracy: 1e-12)
         XCTAssertEqual(only.cacheReadPerMTok, 0.5, accuracy: 1e-12)
-        XCTAssertEqual(only.source, .fixture)
         XCTAssertNotNil(ModelPrices.lookup("test/priced-only"))
 
         let hand = try XCTUnwrap(ModelPrices.lookup("claude-sonnet-5"))
         XCTAssertEqual(hand.inputPerMTok, 2, accuracy: 1e-12)
         XCTAssertEqual(hand.outputPerMTok, 10, accuracy: 1e-12)
-        XCTAssertEqual(hand.source, .hand)
 
         let (db, _) = try makeDB()
         _ = try db.insertUsage(
@@ -71,11 +69,16 @@ final class PriceTableTests: XCTestCase {
         XCTAssertTrue(report.totals.claudeUnpricedModels.isEmpty)
     }
 
+    func testPrefixMatchesOnlyAtTheStartOfTheId() {
+        // A fine-tune and an unrelated model that merely contain a hand-row id are not priced.
+        XCTAssertNil(ModelPrices.lookup("ft:gpt-4o:acme::1"))
+        XCTAssertNil(ModelPrices.lookup("solar-pro3"))
+        XCTAssertEqual(ModelPrices.lookup("gpt-4o-2024-08-06")?.inputPerMTok, 2.5)
+    }
+
     func testMissingFixtureFallsBackToHandRows() throws {
         ModelPrices.cache.testURL = URL(fileURLWithPath: "/no/such/models.json")
         let price = try XCTUnwrap(ModelPrices.lookup("claude-opus-5"))
         XCTAssertEqual(price.inputPerMTok, 5, accuracy: 1e-12)
-        XCTAssertEqual(price.source, .hand)
-        XCTAssertEqual(ClaudeEstimate.price(for: "claude-opus-5")?.inputPerMTok, 5)
     }
 }

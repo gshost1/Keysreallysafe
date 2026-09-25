@@ -467,7 +467,6 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(rows1.map { $0["slot"] as? Int }, [0, 1])
         XCTAssertNotNil(rows1[0]["priced"])
         XCTAssertTrue(rows1[0].keys.contains("input_per_mtok"))
-        XCTAssertTrue(rows1[0].keys.contains("source"))
 
         _ = try service.ingest(.all)
         let second = handle(handler, method: "GET", path: "/api/models")

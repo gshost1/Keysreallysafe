@@ -1,95 +1,18 @@
 import Foundation
 
 enum OpenAIEstimate {
-    struct Price {
-        var inputPerMTok: Double
-        var outputPerMTok: Double
-        var cachedPerMTok: Double
-    }
-
-    /// Frozen local list prices. Output is always labeled estimate, not invoice.
-    static let table: [(prefix: String, price: Price)] = [
-        ("gpt-5.4", Price(inputPerMTok: 1.25, outputPerMTok: 10, cachedPerMTok: 0.125)),
-        ("gpt-5.3", Price(inputPerMTok: 1.25, outputPerMTok: 10, cachedPerMTok: 0.125)),
-        ("gpt-5", Price(inputPerMTok: 1.25, outputPerMTok: 10, cachedPerMTok: 0.125)),
-        ("gpt-4.1", Price(inputPerMTok: 2, outputPerMTok: 8, cachedPerMTok: 0.5)),
-        ("gpt-4o-mini", Price(inputPerMTok: 0.15, outputPerMTok: 0.6, cachedPerMTok: 0.075)),
-        ("gpt-4o", Price(inputPerMTok: 2.5, outputPerMTok: 10, cachedPerMTok: 1.25)),
-        ("o4-mini", Price(inputPerMTok: 1.1, outputPerMTok: 4.4, cachedPerMTok: 0.275)),
-        ("o3-mini", Price(inputPerMTok: 1.1, outputPerMTok: 4.4, cachedPerMTok: 0.275)),
-        ("o3", Price(inputPerMTok: 2, outputPerMTok: 8, cachedPerMTok: 0.5)),
-        ("codex", Price(inputPerMTok: 1.25, outputPerMTok: 10, cachedPerMTok: 0.125)),
-    ]
-
-    static func price(for model: String) -> Price? {
-        guard let found = ModelPrices.lookup(model) else { return nil }
-        return Price(
-            inputPerMTok: found.inputPerMTok,
-            outputPerMTok: found.outputPerMTok,
-            cachedPerMTok: found.cacheReadPerMTok
-        )
-    }
-
+    /// Input already includes cached reads; reasoning is billed as output.
     static func usd(model: String, input: Int, output: Int, cacheRead: Int, reasoning: Int) -> Double? {
-        guard let price = price(for: model) else { return nil }
-        let m = 1_000_000.0
-        let billedInput = max(0, input - cacheRead)
-        return (Double(billedInput) / m) * price.inputPerMTok
-            + (Double(output + reasoning) / m) * price.outputPerMTok
-            + (Double(cacheRead) / m) * price.cachedPerMTok
+        ModelPrices.usd(model: model, input: input, output: output + reasoning, cacheRead: cacheRead, cacheWrite: 0,
+                        inputIncludesCacheRead: true)
     }
 }
 
 enum ClaudeEstimate {
-    struct Price {
-        var inputPerMTok: Double
-        var outputPerMTok: Double
-        var cachedPerMTok: Double
-    }
-
-    /// Frozen local list prices. Longest prefix first. Cache write is 1.25× input.
-    static let table: [(prefix: String, price: Price)] = [
-        ("claude-fable-5-1", Price(inputPerMTok: 10, outputPerMTok: 50, cachedPerMTok: 0.25)),
-        ("claude-fable-5", Price(inputPerMTok: 10, outputPerMTok: 50, cachedPerMTok: 1.00)),
-        ("claude-mythos-5", Price(inputPerMTok: 10, outputPerMTok: 50, cachedPerMTok: 0.25)),
-        ("claude-opus-5", Price(inputPerMTok: 5, outputPerMTok: 25, cachedPerMTok: 0.50)),
-        ("claude-opus-4-8", Price(inputPerMTok: 5, outputPerMTok: 25, cachedPerMTok: 0.50)),
-        ("claude-opus-4-7", Price(inputPerMTok: 5, outputPerMTok: 25, cachedPerMTok: 0.50)),
-        ("claude-opus-4-6", Price(inputPerMTok: 5, outputPerMTok: 25, cachedPerMTok: 0.50)),
-        ("claude-opus-4-5", Price(inputPerMTok: 5, outputPerMTok: 25, cachedPerMTok: 0.50)),
-        ("claude-sonnet-5", Price(inputPerMTok: 2, outputPerMTok: 10, cachedPerMTok: 0.20)),
-        ("claude-sonnet-4-6", Price(inputPerMTok: 3, outputPerMTok: 15, cachedPerMTok: 0.30)),
-        ("claude-haiku-4-5", Price(inputPerMTok: 1, outputPerMTok: 5, cachedPerMTok: 0.10)),
-        ("claude-opus-4", Price(inputPerMTok: 15, outputPerMTok: 75, cachedPerMTok: 1.50)),
-        ("claude-sonnet-4", Price(inputPerMTok: 3, outputPerMTok: 15, cachedPerMTok: 0.30)),
-        ("claude-3-7-sonnet", Price(inputPerMTok: 3, outputPerMTok: 15, cachedPerMTok: 0.30)),
-        ("claude-3-5-sonnet", Price(inputPerMTok: 3, outputPerMTok: 15, cachedPerMTok: 0.30)),
-        ("claude-3-5-haiku", Price(inputPerMTok: 0.80, outputPerMTok: 4, cachedPerMTok: 0.080)),
-        ("claude-haiku-3.5", Price(inputPerMTok: 0.80, outputPerMTok: 4, cachedPerMTok: 0.080)),
-        ("claude-3-opus", Price(inputPerMTok: 15, outputPerMTok: 75, cachedPerMTok: 1.50)),
-        ("claude-3-sonnet", Price(inputPerMTok: 3, outputPerMTok: 15, cachedPerMTok: 0.30)),
-        ("claude-3-haiku", Price(inputPerMTok: 0.25, outputPerMTok: 1.25, cachedPerMTok: 0.025)),
-        ("claude-haiku", Price(inputPerMTok: 0.80, outputPerMTok: 4, cachedPerMTok: 0.080)),
-        ("claude-opus", Price(inputPerMTok: 15, outputPerMTok: 75, cachedPerMTok: 1.50)),
-        ("claude-sonnet", Price(inputPerMTok: 3, outputPerMTok: 15, cachedPerMTok: 0.30)),
-    ]
-
-    static func price(for model: String) -> Price? {
-        guard let found = ModelPrices.lookup(model) else { return nil }
-        return Price(
-            inputPerMTok: found.inputPerMTok,
-            outputPerMTok: found.outputPerMTok,
-            cachedPerMTok: found.cacheReadPerMTok
-        )
-    }
-
+    /// Cache reads and writes are billed on top of input; writes at 1.25x input.
     static func usd(model: String, input: Int, output: Int, cacheCreate: Int, cacheRead: Int) -> Double? {
-        guard let price = price(for: model) else { return nil }
-        let m = 1_000_000.0
-        return (Double(input) / m) * price.inputPerMTok
-            + (Double(output) / m) * price.outputPerMTok
-            + (Double(cacheCreate) / m) * price.inputPerMTok * 1.25
-            + (Double(cacheRead) / m) * price.cachedPerMTok
+        ModelPrices.usd(model: model, input: input, output: output, cacheRead: cacheRead, cacheWrite: cacheCreate,
+                        inputIncludesCacheRead: false)
     }
 }
 
@@ -118,16 +41,10 @@ enum TokenTotals {
 }
 
 enum ModelPrices {
-    enum Source: String, Sendable {
-        case hand
-        case fixture
-    }
-
     struct ListPrice: Equatable, Sendable {
         var inputPerMTok: Double
         var outputPerMTok: Double
         var cacheReadPerMTok: Double
-        var source: Source
     }
 
     /// Rows from models.json keyed by lowercased id and provider-stripped id.
@@ -136,52 +53,71 @@ enum ModelPrices {
         missing: "models.json missing or empty; using hand price rows only", fallback: [:], parse: parseFixture
     )
 
-    private struct HandRows {
-        var exact: [String: ListPrice] = [:]
-        var prefix: [(prefix: String, price: ListPrice, contains: Bool)] = []
-    }
-
-    private static let hand: HandRows = {
-        var rows = HandRows()
-        for (prefix, price) in ClaudeEstimate.table {
-            let row = ListPrice(inputPerMTok: price.inputPerMTok, outputPerMTok: price.outputPerMTok,
-                                cacheReadPerMTok: price.cachedPerMTok, source: .hand)
-            rows.exact[prefix] = row
-            rows.prefix.append((prefix, row, false))
-        }
-        for (prefix, price) in OpenAIEstimate.table {
-            let row = ListPrice(inputPerMTok: price.inputPerMTok, outputPerMTok: price.outputPerMTok,
-                                cacheReadPerMTok: price.cachedPerMTok, source: .hand)
-            rows.exact[prefix] = row
-            rows.prefix.append((prefix, row, true))
-        }
-        return rows
-    }()
+    /// Frozen local list prices, checked before models.json on an exact id and alone by
+    /// prefix, longest prefix first within each family. Output is always an estimate.
+    static let hand: [(prefix: String, price: ListPrice)] = [
+        ("claude-fable-5-1", ListPrice(inputPerMTok: 10, outputPerMTok: 50, cacheReadPerMTok: 0.25)),
+        ("claude-fable-5", ListPrice(inputPerMTok: 10, outputPerMTok: 50, cacheReadPerMTok: 1.00)),
+        ("claude-mythos-5", ListPrice(inputPerMTok: 10, outputPerMTok: 50, cacheReadPerMTok: 0.25)),
+        ("claude-opus-5", ListPrice(inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.50)),
+        ("claude-opus-4-8", ListPrice(inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.50)),
+        ("claude-opus-4-7", ListPrice(inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.50)),
+        ("claude-opus-4-6", ListPrice(inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.50)),
+        ("claude-opus-4-5", ListPrice(inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.50)),
+        ("claude-sonnet-5", ListPrice(inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.20)),
+        ("claude-sonnet-4-6", ListPrice(inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.30)),
+        ("claude-haiku-4-5", ListPrice(inputPerMTok: 1, outputPerMTok: 5, cacheReadPerMTok: 0.10)),
+        ("claude-opus-4", ListPrice(inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.50)),
+        ("claude-sonnet-4", ListPrice(inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.30)),
+        ("claude-3-7-sonnet", ListPrice(inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.30)),
+        ("claude-3-5-sonnet", ListPrice(inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.30)),
+        ("claude-3-5-haiku", ListPrice(inputPerMTok: 0.80, outputPerMTok: 4, cacheReadPerMTok: 0.080)),
+        ("claude-haiku-3.5", ListPrice(inputPerMTok: 0.80, outputPerMTok: 4, cacheReadPerMTok: 0.080)),
+        ("claude-3-opus", ListPrice(inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.50)),
+        ("claude-3-sonnet", ListPrice(inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.30)),
+        ("claude-3-haiku", ListPrice(inputPerMTok: 0.25, outputPerMTok: 1.25, cacheReadPerMTok: 0.025)),
+        ("claude-haiku", ListPrice(inputPerMTok: 0.80, outputPerMTok: 4, cacheReadPerMTok: 0.080)),
+        ("claude-opus", ListPrice(inputPerMTok: 15, outputPerMTok: 75, cacheReadPerMTok: 1.50)),
+        ("claude-sonnet", ListPrice(inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.30)),
+        ("gpt-5.4", ListPrice(inputPerMTok: 1.25, outputPerMTok: 10, cacheReadPerMTok: 0.125)),
+        ("gpt-5.3", ListPrice(inputPerMTok: 1.25, outputPerMTok: 10, cacheReadPerMTok: 0.125)),
+        ("gpt-5", ListPrice(inputPerMTok: 1.25, outputPerMTok: 10, cacheReadPerMTok: 0.125)),
+        ("gpt-4.1", ListPrice(inputPerMTok: 2, outputPerMTok: 8, cacheReadPerMTok: 0.5)),
+        ("gpt-4o-mini", ListPrice(inputPerMTok: 0.15, outputPerMTok: 0.6, cacheReadPerMTok: 0.075)),
+        ("gpt-4o", ListPrice(inputPerMTok: 2.5, outputPerMTok: 10, cacheReadPerMTok: 1.25)),
+        ("o4-mini", ListPrice(inputPerMTok: 1.1, outputPerMTok: 4.4, cacheReadPerMTok: 0.275)),
+        ("o3-mini", ListPrice(inputPerMTok: 1.1, outputPerMTok: 4.4, cacheReadPerMTok: 0.275)),
+        ("o3", ListPrice(inputPerMTok: 2, outputPerMTok: 8, cacheReadPerMTok: 0.5)),
+        ("codex", ListPrice(inputPerMTok: 1.25, outputPerMTok: 10, cacheReadPerMTok: 0.125)),
+    ]
+    private static let handExact = Dictionary(hand.map { ($0.prefix, $0.price) }, uniquingKeysWith: { first, _ in first })
 
     static func loadAtStartup() {
         _ = cache.value
     }
 
     static func lookup(_ model: String) -> ListPrice? {
-        let fixture = cache.value
         let lower = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !lower.isEmpty else { return nil }
         let stripped = stripProvider(lower)
-        if let price = hand.exact[stripped] ?? hand.exact[lower] {
+        let fixture = cache.value
+        if let price = handExact[stripped] ?? handExact[lower] ?? fixture[stripped] ?? fixture[lower] {
             return price
         }
-        if let price = fixture[stripped] ?? fixture[lower] {
-            return price
-        }
-        for row in hand.prefix {
-            if stripped.hasPrefix(row.prefix) || lower.hasPrefix(row.prefix) {
-                return row.price
-            }
-            if row.contains, stripped.contains(row.prefix) || lower.contains(row.prefix) {
-                return row.price
-            }
-        }
-        return nil
+        return hand.first { stripped.hasPrefix($0.prefix) || lower.hasPrefix($0.prefix) }?.price
+    }
+
+    /// One list-price formula. When `inputIncludesCacheRead` (OpenAI-style usage), cached reads
+    /// are taken out of input before billing it; cache writes cost 1.25x input either way.
+    static func usd(model: String, input: Int, output: Int, cacheRead: Int, cacheWrite: Int,
+                    inputIncludesCacheRead: Bool) -> Double? {
+        guard let price = lookup(model) else { return nil }
+        let m = 1_000_000.0
+        let billedInput = inputIncludesCacheRead ? max(0, input - cacheRead) : input
+        return (Double(billedInput) / m) * price.inputPerMTok
+            + (Double(output) / m) * price.outputPerMTok
+            + (Double(cacheWrite) / m) * price.inputPerMTok * 1.25
+            + (Double(cacheRead) / m) * price.cacheReadPerMTok
     }
 
     static func stripProvider(_ model: String) -> String {
@@ -208,8 +144,7 @@ enum ModelPrices {
             let price = ListPrice(
                 inputPerMTok: input,
                 outputPerMTok: output,
-                cacheReadPerMTok: cacheRead,
-                source: .fixture
+                cacheReadPerMTok: cacheRead
             )
             let lowerId = id.lowercased()
             let stripped = stripProvider(lowerId)
