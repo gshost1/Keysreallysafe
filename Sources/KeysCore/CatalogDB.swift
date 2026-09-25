@@ -1122,23 +1122,29 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
+    /// Every table is emptied, meta included, so a table or meta key added later cannot be
+    /// forgotten here; only the catalog version is put back so open dashboards reload.
     func wipeData() throws {
         try withLock {
-            try exec("DELETE FROM catalog;")
-            try exec("DELETE FROM usage_events;")
-            try exec("DELETE FROM ingest_files;")
-            try exec("DELETE FROM gateway_usage;")
-            try exec("DELETE FROM gateway_clients;")
-            try exec("DELETE FROM key_events;")
-            try exec("DELETE FROM provider_snapshots;")
-            try exec("DELETE FROM model_colors;")
-            try exec("DELETE FROM provider_checks;")
-            try exec("UPDATE meta SET value = '0' WHERE key = 'catalog_version';")
-            try exec("DELETE FROM meta WHERE key = 'last_ingest_at';")
-            try exec("DELETE FROM meta WHERE key = 'gateway_owner_pid';")
-            try exec("DELETE FROM meta WHERE key = 'product_analytics_v1';")
-            // 0.6 to 0.8 stored the trial and license state here.
-            try exec("DELETE FROM meta WHERE key LIKE 'license%';")
+            let stmt = try prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\';"
+            )
+            var tables: [String] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let name = columnText(stmt, 0) { tables.append(name) }
+            }
+            sqlite3_finalize(stmt)
+            try exec("BEGIN IMMEDIATE")
+            do {
+                for table in tables {
+                    try exec("DELETE FROM \"\(table.replacingOccurrences(of: "\"", with: "\"\""))\";")
+                }
+                try exec("INSERT INTO meta (key, value) VALUES ('catalog_version', '0');")
+                try exec("COMMIT")
+            } catch {
+                try? exec("ROLLBACK")
+                throw error
+            }
         }
     }
 

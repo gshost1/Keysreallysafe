@@ -369,6 +369,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertThrowsError(try inner.get(name: "demo"))
         XCTAssertNil(try db.providerCheck(keyName: "demo"))
         XCTAssertNil(try db.metaValue("license_key"))
+        XCTAssertEqual(try db.catalogVersion(), 0)
     }
 
     func testCodexSkipsConsecutiveDuplicateTokenCount() throws {

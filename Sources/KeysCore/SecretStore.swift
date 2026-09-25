@@ -223,10 +223,6 @@ struct KeychainStore: SecretStore {
             kSecAttrService as String: service,
         ]
         let status = SecItemDelete(query as CFDictionary)
-        // 0.6 to 0.8 kept a license install id here; nothing reads it since 0.9,
-        // but purge still promises to leave no Keysrs item behind.
-        _ = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
-                           kSecAttrService as String: "keysrs.install"] as CFDictionary)
         // 0.9.0 and 0.9.1 kept the removed optimizer's encryption key under its own service.
         _ = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                            kSecAttrService as String: "keysreallysafe.optimizer"] as CFDictionary)
