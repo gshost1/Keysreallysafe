@@ -118,3 +118,19 @@ let fixtureSecret = "unit-test-secret-value-xyz"
 func grantFor(_ service: KeysService, _ key: String, task: String = "test", minutes: Int = 30) throws -> String {
     try service.issueGrant(name: key, request: GrantRequest(task: task, minutes: minutes), caller: "test").token
 }
+
+extension CatalogDB {
+    /// Every stored usage row, in the order the spend queries use.
+    func allUsageEvents() throws -> [UsageEvent] {
+        try usageEvents(from: "", to: "\u{10FFFF}", source: .all)
+    }
+}
+
+extension CodexIngest {
+    /// A whole rollout through one parser, without touching a catalog.
+    static func parseFile(_ url: URL) throws -> [UsageEvent] {
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var parser = LineParser(sessionId: sessionIdFromFilename(url.lastPathComponent))
+        return text.split(separator: "\n").compactMap { parser.consume(String($0)) }
+    }
+}

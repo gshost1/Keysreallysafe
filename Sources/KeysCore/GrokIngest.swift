@@ -24,41 +24,15 @@ enum GrokIngest {
             throw AppError.ingestIO("cannot enumerate \(sessions.path)")
         }
 
-        var summaryCache: [String: SessionSummary] = [:]
         for case let url as URL in enumerator {
             guard url.lastPathComponent == "updates.jsonl" else { continue }
             report.filesScanned += 1
-            let summary = loadSummary(dir: url.deletingLastPathComponent(), cache: &summaryCache)
-            let sessionFallback = url.deletingLastPathComponent().lastPathComponent
+            let dir = url.deletingLastPathComponent()
+            let summary = loadSummary(dir: dir)
             do {
-                var pending: [UsageEvent] = []
-                func flush(_ cursor: JsonlCursor) throws {
-                    try db.withTransaction {
-                        for event in pending {
-                            switch try db.insertUsage(event) {
-                            case .inserted: report.rowsInserted += 1
-                            case .updated: report.rowsUpdated += 1
-                            case .duplicate: report.skippedDupes += 1
-                            }
-                        }
-                        try IngestFiles.commit(cursor, url: url, db: db)
-                    }
-                    pending.removeAll(keepingCapacity: true)
-                }
-                guard let cursor = try IngestFiles.processNewBytes(
-                    url: url,
-                    db: db,
-                    keepLine: { $0.firstRange(of: turnCompleted) != nil },
-                    flush: flush,
-                    each: { line in
-                        do {
-                            pending.append(contentsOf: try parseLine(line, sessionDirName: sessionFallback, summary: summary))
-                        } catch {
-                            report.parseErrors += 1
-                        }
-                    }
-                ) else { continue }
-                try flush(cursor)
+                report.add(try IngestFiles.ingest(url, db: db, keepLine: { $0.firstRange(of: turnCompleted) != nil }) {
+                    try parseLine($0, sessionDirName: dir.lastPathComponent, summary: summary)
+                })
             } catch {
                 report.parseErrors += 1
             }
@@ -67,14 +41,7 @@ enum GrokIngest {
     }
 
     static func parseLine(_ line: String, sessionDirName: String, summary: SessionSummary?) throws -> [UsageEvent] {
-        guard let data = line.data(using: .utf8) else { throw AppError.ingestIO("utf8") }
-        let obj: Any
-        do {
-            obj = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            throw AppError.ingestIO("json")
-        }
-        guard let root = JSONValue.object(obj),
+        guard let root = try JSONValue.line(line),
               let params = JSONValue.object(root["params"]),
               let update = JSONValue.object(params["update"]),
               JSONValue.string(update["sessionUpdate"]) == "turn_completed"
@@ -83,7 +50,7 @@ enum GrokIngest {
         }
 
         let sessionId = JSONValue.string(params["sessionId"]) ?? sessionDirName
-        let occurredAt = parseTimestamp(root["timestamp"]) ?? UTC.iso(Date(timeIntervalSince1970: 0))
+        let occurredAt = UTC.normalize(root["timestamp"]) ?? UTC.iso(Date(timeIntervalSince1970: 0))
         let usage = JSONValue.object(update["usage"]) ?? [:]
         let promptFromUpdate = JSONValue.string(update["prompt_id"])
 
@@ -140,43 +107,16 @@ enum GrokIngest {
         }
     }
 
-    static func loadSummary(dir: URL) -> SessionSummary? {
-        var cache: [String: SessionSummary] = [:]
-        return loadSummary(dir: dir, cache: &cache)
-    }
-
-    private static func loadSummary(dir: URL, cache: inout [String: SessionSummary]) -> SessionSummary? {
-        let key = dir.path
-        if let cached = cache[key] { return cached }
-        let url = dir.appendingPathComponent("summary.json")
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let root = JSONValue.object(obj)
-        else {
-            cache[key] = SessionSummary()
-            return cache[key]
-        }
+    /// The session's summary.json, read once per updates.jsonl; an empty summary if absent.
+    private static func loadSummary(dir: URL) -> SessionSummary {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("summary.json")),
+              let root = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object)
+        else { return SessionSummary() }
         let info = JSONValue.object(root["info"])
-        let summary = SessionSummary(
+        return SessionSummary(
             cwd: JSONValue.string(info?["cwd"]),
             title: JSONValue.string(root["generated_title"]),
             currentModelId: JSONValue.string(root["current_model_id"])
         )
-        cache[key] = summary
-        return summary
-    }
-
-    private static func parseTimestamp(_ any: Any?) -> String? {
-        if let i = JSONValue.int64(any) {
-            return UTC.iso(Date(timeIntervalSince1970: TimeInterval(i)))
-        }
-        if let d = any as? Double {
-            return UTC.iso(Date(timeIntervalSince1970: d))
-        }
-        if let s = JSONValue.string(any) {
-            if let date = UTC.parse(s) { return UTC.iso(date) }
-            return s
-        }
-        return nil
     }
 }

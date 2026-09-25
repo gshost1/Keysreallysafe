@@ -799,7 +799,6 @@ final class APIHandler: @unchecked Sendable {
                 "files": report.filesScanned,
                 "inserted": report.rowsInserted,
                 "updated": report.rowsUpdated,
-                "skipped": report.skippedDupes,
                 "errors": report.parseErrors,
             ]
         }

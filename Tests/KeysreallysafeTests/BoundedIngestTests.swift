@@ -73,13 +73,12 @@ final class BoundedIngestTests: XCTestCase {
         // The file itself did not change. The next pass must still notice there is more to read
         // and resume from line 300 rather than replaying or, worse, calling the file unchanged.
         var resumed: [Int] = []
-        let cursor = try XCTUnwrap(IngestFiles.processNewBytes(url: file, db: db, chunkBytes: 333, batchLines: 100,
+        _ = try XCTUnwrap(IngestFiles.processNewBytes(url: file, db: db, chunkBytes: 333, batchLines: 100,
             flush: { try IngestFiles.commit($0, url: file, db: db) },
             each: { line in
                 let obj = try JSONSerialization.jsonObject(with: Data(line.utf8)) as! [String: Any]
                 resumed.append(obj["n"] as! Int)
             }))
-        XCTAssertFalse(cursor.replayed)
         XCTAssertEqual(resumed.first, 300)
         XCTAssertEqual(resumed.count, 700)
     }

@@ -46,9 +46,8 @@ final class TailDigestPrivacyTests: XCTestCase {
         try handle.close()
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(5)], ofItemAtPath: file.path)
         seen.removeAll()
-        let second = try XCTUnwrap(IngestFiles.processNewBytes(url: file, db: db, each: { seen.append($0) }))
+        _ = try XCTUnwrap(IngestFiles.processNewBytes(url: file, db: db, each: { seen.append($0) }))
         XCTAssertEqual(seen, ["{\"n\":3}"])
-        XCTAssertFalse(second.replayed)
     }
 
     func testLegacyRawSignatureIsClearedOnOpenAndForcesReplay() throws {
@@ -79,8 +78,7 @@ final class TailDigestPrivacyTests: XCTestCase {
         try handle.write(contentsOf: Data("{\"n\":2}\n".utf8))
         try handle.close()
         var count = 0
-        let cursor = try XCTUnwrap(IngestFiles.processNewBytes(url: file, db: reopened, each: { _ in count += 1 }))
-        XCTAssertTrue(cursor.replayed)
+        _ = try XCTUnwrap(IngestFiles.processNewBytes(url: file, db: reopened, each: { _ in count += 1 }))
         XCTAssertEqual(count, 2)
     }
 

@@ -69,7 +69,6 @@ final class GrokIngestTests: XCTestCase {
         XCTAssertGreaterThan(first.rowsInserted, 0)
         let second = try GrokIngest.run(home: Fixtures.grokHome, db: db)
         XCTAssertEqual(second.rowsInserted, 0)
-        XCTAssertEqual(second.skippedDupes, 0)
         let all = try db.allUsageEvents()
         XCTAssertEqual(all.count, first.rowsInserted)
         let blob = all.map { "\($0.sessionTitle ?? "") \($0.cwd ?? "") \($0.promptId)" }.joined()

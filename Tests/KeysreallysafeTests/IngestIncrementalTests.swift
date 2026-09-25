@@ -18,7 +18,6 @@ final class IngestIncrementalTests: XCTestCase {
         let second = try ClaudeIngest.run(home: home, db: db)
         XCTAssertEqual(second.filesScanned, 1)
         XCTAssertEqual(second.rowsInserted, 0)
-        XCTAssertEqual(second.skippedDupes, 0)
 
         let existing = try String(contentsOf: file, encoding: .utf8)
         let extra = assistantLine(uuid: "a2", model: "claude-opus-5", input: 20, output: 8)

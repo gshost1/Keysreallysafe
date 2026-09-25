@@ -233,6 +233,14 @@ enum UTC {
         return nil
     }
 
+    /// A log timestamp as canonical ISO: epoch seconds (a number or numeric string) or an ISO
+    /// string. A string that does not parse is kept as written.
+    static func normalize(_ any: Any?) -> String? {
+        if let seconds = JSONValue.int64(any) { return iso(Date(timeIntervalSince1970: TimeInterval(seconds))) }
+        guard let string = JSONValue.string(any) else { return nil }
+        return parse(string).map(iso) ?? string
+    }
+
     /// ISO8601DateFormatter rejects >3 fractional digits (`…26.160272+00:00`).
     private static func trimFractionalSeconds(_ string: String) -> String {
         guard let dot = string.firstIndex(of: ".") else { return string }
@@ -288,6 +296,16 @@ enum JSONValue {
         if let n = any as? NSNumber { return n.doubleValue }
         if let s = any as? String { return Double(s) }
         return nil
+    }
+
+    /// One jsonl line as an object. Throws on bad UTF-8 or JSON; nil when it is not an object.
+    static func line(_ text: String) throws -> [String: Any]? {
+        guard let data = text.data(using: .utf8) else { throw AppError.ingestIO("utf8") }
+        do {
+            return object(try JSONSerialization.jsonObject(with: data))
+        } catch {
+            throw AppError.ingestIO("json")
+        }
     }
 
     static func string(_ any: Any?) -> String? {

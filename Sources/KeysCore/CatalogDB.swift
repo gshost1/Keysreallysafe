@@ -650,12 +650,6 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
-    enum InsertResult {
-        case inserted
-        case updated
-        case duplicate
-    }
-
     @discardableResult
     func usageExists(source: String, sessionId: String, promptId: String, model: String) throws -> Bool {
         try withLock {
@@ -671,7 +665,9 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
-    func insertUsage(_ event: UsageEvent) throws -> InsertResult {
+    /// Upserts one event; true when it was new, false when it replaced an existing row.
+    @discardableResult
+    func insertUsage(_ event: UsageEvent) throws -> Bool {
         try withLock {
             let existedStmt = try prepare(
                 """
@@ -730,8 +726,7 @@ final class CatalogDB: @unchecked Sendable {
             }
             bindText(stmt, 16, event.keyName)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            if existed { return .updated }
-            return sqlite3_changes(db) == 1 ? .inserted : .duplicate
+            return !existed
         }
     }
 
@@ -781,26 +776,6 @@ final class CatalogDB: @unchecked Sendable {
             if let provider {
                 bindText(stmt, idx, provider)
             }
-            var events: [UsageEvent] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                events.append(event(from: stmt))
-            }
-            return events
-        }
-    }
-
-    func allUsageEvents() throws -> [UsageEvent] {
-        try withLock {
-            let sql = """
-                SELECT source, session_id, prompt_id, model, occurred_at, provider,
-                       cwd, session_title, model_calls,
-                       input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-                       reasoning_tokens, cost_usd_ticks, key_name
-                FROM usage_events
-                ORDER BY occurred_at, model;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
             var events: [UsageEvent] = []
             while sqlite3_step(stmt) == SQLITE_ROW {
                 events.append(event(from: stmt))

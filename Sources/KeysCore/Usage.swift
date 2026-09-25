@@ -38,11 +38,17 @@ struct IngestReport: Equatable {
     var filesScanned: Int = 0
     var rowsInserted: Int = 0
     var rowsUpdated: Int = 0
-    var skippedDupes: Int = 0
     var parseErrors: Int = 0
 
     var line: String {
-        "files=\(filesScanned) inserted=\(rowsInserted) updated=\(rowsUpdated) skipped=\(skippedDupes) errors=\(parseErrors)"
+        "files=\(filesScanned) inserted=\(rowsInserted) updated=\(rowsUpdated) errors=\(parseErrors)"
+    }
+
+    mutating func add(_ other: IngestReport) {
+        filesScanned += other.filesScanned
+        rowsInserted += other.rowsInserted
+        rowsUpdated += other.rowsUpdated
+        parseErrors += other.parseErrors
     }
 }
 

@@ -41,34 +41,9 @@ enum ClaudeIngest {
                 }
                 report.filesScanned += 1
                 do {
-                    var pending: [UsageEvent] = []
-                    func flush(_ cursor: JsonlCursor) throws {
-                        try db.withTransaction {
-                            for event in pending {
-                                switch try db.insertUsage(event) {
-                                case .inserted: report.rowsInserted += 1
-                                case .updated: report.rowsUpdated += 1
-                                case .duplicate: report.skippedDupes += 1
-                                }
-                            }
-                            try IngestFiles.commit(cursor, url: file, db: db)
-                        }
-                        pending.removeAll(keepingCapacity: true)
-                    }
-                    guard let cursor = try IngestFiles.processNewBytes(
-                        url: file,
-                        db: db,
-                        keepLine: { $0.firstRange(of: assistantType) != nil },
-                        flush: flush,
-                        each: { line in
-                            do {
-                                if let event = try parseLine(line) { pending.append(event) }
-                            } catch {
-                                report.parseErrors += 1
-                            }
-                        }
-                    ) else { continue }
-                    try flush(cursor)
+                    report.add(try IngestFiles.ingest(file, db: db, keepLine: { $0.firstRange(of: assistantType) != nil }) {
+                        try parseLine($0).map { [$0] } ?? []
+                    })
                 } catch {
                     report.parseErrors += 1
                 }
@@ -78,14 +53,7 @@ enum ClaudeIngest {
     }
 
     static func parseLine(_ line: String) throws -> UsageEvent? {
-        guard let data = line.data(using: .utf8) else { throw AppError.ingestIO("utf8") }
-        let obj: Any
-        do {
-            obj = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            throw AppError.ingestIO("json")
-        }
-        guard let root = JSONValue.object(obj),
+        guard let root = try JSONValue.line(line),
               JSONValue.string(root["type"]) == "assistant",
               let message = JSONValue.object(root["message"]),
               let usage = JSONValue.object(message["usage"])
@@ -115,12 +83,12 @@ enum ClaudeIngest {
             ?? JSONValue.string(message["id"])
             ?? PromptHash.syntheticPromptId(
                 sessionId: sessionId,
-                timestamp: parseTimestamp(root["timestamp"]) ?? "",
+                timestamp: UTC.normalize(root["timestamp"]) ?? "",
                 model: model,
                 inputTokens: input,
                 outputTokens: output
             )
-        let occurredAt = parseTimestamp(root["timestamp"]) ?? UTC.iso(Date(timeIntervalSince1970: 0))
+        let occurredAt = UTC.normalize(root["timestamp"]) ?? UTC.iso(Date(timeIntervalSince1970: 0))
 
         return UsageEvent(
             source: "claude-local",
@@ -137,14 +105,4 @@ enum ClaudeIngest {
         )
     }
 
-    private static func parseTimestamp(_ any: Any?) -> String? {
-        if let s = JSONValue.string(any) {
-            if let date = UTC.parse(s) { return UTC.iso(date) }
-            return s
-        }
-        if let i = JSONValue.int64(any) {
-            return UTC.iso(Date(timeIntervalSince1970: TimeInterval(i)))
-        }
-        return nil
-    }
 }

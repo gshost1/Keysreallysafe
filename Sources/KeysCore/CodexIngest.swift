@@ -19,43 +19,18 @@ enum CodexIngest {
                 continue
             }
             report.filesScanned += 1
-            var parser = LineParser(sessionId: sessionIdFromFilename(name))
+            let fresh = LineParser(sessionId: sessionIdFromFilename(name))
+            var parser = fresh
             do {
-                var pending: [UsageEvent] = []
-                let prev = try db.ingestFile(path: item.standardizedFileURL.path)
                 // The parser state is committed with every batch cursor, so a resume mid-file
                 // restores exactly the state that produced that offset.
-                func flush(_ partial: JsonlCursor) throws {
-                    var cursor = partial
-                    cursor.parserJSON = parser.serialize()
-                    try db.withTransaction {
-                        for event in pending {
-                            switch try db.insertUsage(event) {
-                            case .inserted: report.rowsInserted += 1
-                            case .updated: report.rowsUpdated += 1
-                            case .duplicate: report.skippedDupes += 1
-                            }
-                        }
-                        try IngestFiles.commit(cursor, url: item, db: db)
-                    }
-                    pending.removeAll(keepingCapacity: true)
-                }
-                guard let cursor = try IngestFiles.processNewBytes(
-                    url: item,
-                    db: db,
-                    prepare: { replayed in
-                        if replayed {
-                            parser = LineParser(sessionId: sessionIdFromFilename(name))
-                        } else if let json = prev?.parserJSON {
-                            parser.restore(json)
-                        }
+                report.add(try IngestFiles.ingest(
+                    item, db: db,
+                    restore: { json in
+                        parser = json.flatMap { try? JSONDecoder().decode(LineParser.self, from: Data($0.utf8)) } ?? fresh
                     },
-                    flush: flush,
-                    each: { line in
-                        if let event = parser.consume(line) { pending.append(event) }
-                    }
-                ) else { continue }
-                try flush(cursor)
+                    state: { (try? JSONEncoder().encode(parser)).map { String(decoding: $0, as: UTF8.self) } ?? "{}" }
+                ) { line in parser.consume(line).map { [$0] } ?? [] })
             } catch {
                 report.parseErrors += 1
             }
@@ -63,20 +38,7 @@ enum CodexIngest {
         return report
     }
 
-    static func parseFile(_ url: URL) throws -> [UsageEvent] {
-        let text = try String(contentsOf: url, encoding: .utf8)
-        var parser = LineParser(sessionId: sessionIdFromFilename(url.lastPathComponent))
-        var events: [UsageEvent] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.isEmpty { continue }
-            if let event = parser.consume(String(line)) {
-                events.append(event)
-            }
-        }
-        return events
-    }
-
-    struct LineParser {
+    struct LineParser: Codable {
         var sessionId: String
         var cwd: String?
         var model: String?
@@ -85,12 +47,7 @@ enum CodexIngest {
         var turnIndex: Int = 0
 
         mutating func consume(_ line: String) -> UsageEvent? {
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data),
-                  let root = JSONValue.object(obj)
-            else {
-                return nil
-            }
+            guard let root = try? JSONValue.line(line) else { return nil }
             let type = JSONValue.string(root["type"]) ?? ""
             let payload = JSONValue.object(root["payload"]) ?? [:]
             if type == "session_meta" {
@@ -123,33 +80,6 @@ enum CodexIngest {
                 return event
             }
             return nil
-        }
-
-        func serialize() -> String {
-            let obj: [String: Any] = [
-                "sessionId": sessionId,
-                "cwd": cwd as Any? ?? NSNull(),
-                "model": model as Any? ?? NSNull(),
-                "lastUsageFingerprint": lastUsageFingerprint as Any? ?? NSNull(),
-                "lastTurnId": lastTurnId as Any? ?? NSNull(),
-                "turnIndex": turnIndex,
-            ]
-            guard let data = try? JSONSerialization.data(withJSONObject: obj),
-                  let text = String(data: data, encoding: .utf8)
-            else { return "{}" }
-            return text
-        }
-
-        mutating func restore(_ json: String) {
-            guard let data = json.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object)
-            else { return }
-            if let id = JSONValue.string(obj["sessionId"]), !id.isEmpty { sessionId = id }
-            cwd = JSONValue.string(obj["cwd"])
-            model = JSONValue.string(obj["model"])
-            lastUsageFingerprint = JSONValue.string(obj["lastUsageFingerprint"])
-            lastTurnId = JSONValue.string(obj["lastTurnId"])
-            turnIndex = JSONValue.int(obj["turnIndex"]) ?? turnIndex
         }
     }
 
@@ -192,7 +122,7 @@ enum CodexIngest {
         let cached = JSONValue.int(last["cached_input_tokens"]) ?? 0
         let reasoning = JSONValue.int(last["reasoning_output_tokens"]) ?? 0
         if input == 0 && output == 0 && cached == 0 && reasoning == 0 { return nil }
-        let occurredAt = parseTimestamp(root["timestamp"]) ?? UTC.iso(Date(timeIntervalSince1970: 0))
+        let occurredAt = UTC.normalize(root["timestamp"]) ?? UTC.iso(Date(timeIntervalSince1970: 0))
         let resolvedModel: String? = {
             if let m = JSONValue.string(info["model"]), isRealModel(m) { return m }
             if let m = JSONValue.string(payload["model"]), isRealModel(m) { return m }
@@ -200,17 +130,11 @@ enum CodexIngest {
             return nil
         }()
         guard let resolvedModel else { return nil }
-        let promptId = PromptHash.syntheticPromptId(
-            sessionId: sessionId,
-            timestamp: occurredAt,
-            model: resolvedModel,
-            inputTokens: input,
-            outputTokens: output
-        )
+        // LineParser.consume sets the prompt id from the turn.
         return UsageEvent(
             source: "codex-local",
             sessionId: sessionId,
-            promptId: promptId,
+            promptId: "",
             model: resolvedModel,
             occurredAt: occurredAt,
             provider: "openai",
@@ -223,22 +147,11 @@ enum CodexIngest {
         )
     }
 
-    private static func sessionIdFromFilename(_ name: String) -> String {
+    static func sessionIdFromFilename(_ name: String) -> String {
         let stem = name.replacingOccurrences(of: ".jsonl", with: "")
         if let range = stem.range(of: #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#, options: .regularExpression) {
             return String(stem[range])
         }
         return stem
-    }
-
-    private static func parseTimestamp(_ any: Any?) -> String? {
-        if let s = JSONValue.string(any) {
-            if let date = UTC.parse(s) { return UTC.iso(date) }
-            return s
-        }
-        if let i = JSONValue.int64(any) {
-            return UTC.iso(Date(timeIntervalSince1970: TimeInterval(i)))
-        }
-        return nil
     }
 }

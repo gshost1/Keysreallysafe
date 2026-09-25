@@ -73,7 +73,6 @@ final class CodexIngestTests: XCTestCase {
         XCTAssertEqual(first.rowsInserted, 2)
         let second = try CodexIngest.run(home: Fixtures.codexHome, db: db)
         XCTAssertEqual(second.rowsInserted, 0)
-        XCTAssertEqual(second.skippedDupes, 0)
     }
 
     func testQuotaFixtureTokenCountWithoutModelUsesSessionMeta() throws {

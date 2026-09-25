@@ -76,7 +76,6 @@ struct JsonlCursor {
     var byteOffset: Int64
     var tailSig: String? = nil
     var parserJSON: String? = nil
-    var replayed: Bool = false
 }
 
 enum IngestFiles {
@@ -84,6 +83,41 @@ enum IngestFiles {
     static let defaultChunkBytes = 1 << 20
     /// Kept lines delivered between `flush` calls. Each flush is one transaction with its cursor.
     static let defaultBatchLines = 2_000
+
+    /// One file's new lines through `parse` into the catalog. Every batch of events is inserted
+    /// in the same transaction as the cursor (and, for Codex, the parser `state`) that produced
+    /// it. `restore` gets the saved parser state on a resume and nil on a replay from zero.
+    /// Throws only for a file that cannot be read; a line that fails to parse is counted.
+    static func ingest(
+        _ url: URL,
+        db: CatalogDB,
+        keepLine: ((UnsafeBufferPointer<UInt8>) -> Bool)? = nil,
+        restore: ((String?) -> Void)? = nil,
+        state: (() -> String)? = nil,
+        parse: (String) throws -> [UsageEvent]
+    ) throws -> IngestReport {
+        var report = IngestReport()
+        var pending: [UsageEvent] = []
+        func flush(_ partial: JsonlCursor) throws {
+            var cursor = partial
+            cursor.parserJSON = state?()
+            try db.withTransaction {
+                for event in pending {
+                    if try db.insertUsage(event) { report.rowsInserted += 1 } else { report.rowsUpdated += 1 }
+                }
+                try commit(cursor, url: url, db: db)
+            }
+            pending.removeAll(keepingCapacity: true)
+        }
+        guard let cursor = try processNewBytes(
+            url: url, db: db, keepLine: keepLine, restore: restore, flush: flush,
+            each: { line in
+                do { pending.append(contentsOf: try parse(line)) } catch { report.parseErrors += 1 }
+            }
+        ) else { return report }
+        try flush(cursor)
+        return report
+    }
 
     /// Streams complete new jsonl lines. `nil` means size and mtime are unchanged.
     /// Does not write `ingest_files`; commit the returned cursor after the rows are inserted.
@@ -95,7 +129,7 @@ enum IngestFiles {
         url: URL,
         db: CatalogDB,
         keepLine: ((UnsafeBufferPointer<UInt8>) -> Bool)? = nil,
-        prepare: ((Bool) -> Void)? = nil,
+        restore: ((String?) -> Void)? = nil,
         chunkBytes: Int = defaultChunkBytes,
         batchLines: Int = defaultBatchLines,
         flush: ((JsonlCursor) throws -> Void)? = nil,
@@ -110,7 +144,6 @@ enum IngestFiles {
             return nil
         }
         var from: Int64 = 0
-        var replayed = true
         if let prev {
             let shrank = attrs.size < prev.size || prev.byteOffset > attrs.size
             let rewritten = attrs.size == prev.size && prev.mtimeMs != attrs.mtimeMs
@@ -121,12 +154,11 @@ enum IngestFiles {
                       try isLineBoundary(handle: handle, offset: prev.byteOffset, fileSize: attrs.size)
             {
                 from = prev.byteOffset
-                replayed = false
             } else {
                 from = 0
             }
         }
-        prepare?(replayed)
+        restore?(from > 0 ? prev?.parserJSON : nil)
         let snapshotBytes = max(0, attrs.size - from)
         // A batch cursor records only the bytes consumed as its size. Recording the snapshot's
         // full size mid-file would make the next pass call the file unchanged and skip the rest.
@@ -135,8 +167,7 @@ enum IngestFiles {
                 size: final ? attrs.size : offset,
                 mtimeMs: attrs.mtimeMs,
                 byteOffset: offset,
-                tailSig: try readTailSig(handle: handle, offset: offset),
-                replayed: replayed
+                tailSig: try readTailSig(handle: handle, offset: offset)
             )
         }
         let newOffset = try forEachCompleteLine(
