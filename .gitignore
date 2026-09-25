@@ -25,8 +25,8 @@ xcuserdata/
 Web/.cache/
 .github/.DS_Store
 
-# Project-local client examples from scripts/optimizer-client-setup.py (UUID and key name, no secrets).
-.keys/
+# Playwright for the browser suites, installed by `npm ci` in scripts/tests.
+scripts/tests/node_modules/
 
 # wrangler files
 .wrangler

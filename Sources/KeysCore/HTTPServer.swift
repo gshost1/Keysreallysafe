@@ -328,13 +328,6 @@ final class APIHandler: @unchecked Sendable {
                 return try analyticsStatus()
             case ("POST", "/api/analytics"), ("POST", "/api/analytics/clear"), ("POST", "/api/analytics/event"):
                 return try analyticsRequest(request, path: path)
-            case ("GET", "/api/optimizer/status"):
-                return HTTPResponse.json(200, service.optimizer?.status() ?? ["unlocked": false, "available": false])
-            case ("GET", "/api/optimizer/keys"):
-                guard let optimizer = service.optimizer else { return HTTPResponse.json(503, ["error": "optimizer_unavailable"]) }
-                return HTTPResponse.json(200, try optimizer.compatibleKeys(service: service))
-            case ("POST", let p) where p.hasPrefix("/api/optimizer/"):
-                return try optimizerRequest(request, path: p)
             case ("GET", "/api/spend"):
                 return try spend(request)
             case ("GET", "/api/status"):
@@ -435,7 +428,7 @@ final class APIHandler: @unchecked Sendable {
             try analytics.clear()
         case "/api/analytics/event":
             guard Set(object.keys) == ["event"], let value = object["event"] as? String,
-                  ["view_usage", "view_chart", "view_keys", "view_optimizer"].contains(value),
+                  ["view_usage", "view_chart", "view_keys"].contains(value),
                   let event = ProductAnalyticsEvent(rawValue: value) else {
                 return HTTPResponse.json(400, ["error": "invalid_analytics_event"])
             }
@@ -445,61 +438,6 @@ final class APIHandler: @unchecked Sendable {
             return HTTPResponse.json(404, ["error": "not_found"])
         }
         return try analyticsStatus()
-    }
-
-    private func optimizerRequest(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
-        guard let optimizer = service.optimizer else {
-            return HTTPResponse.json(503, ["error": "optimizer_unavailable"])
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any] else {
-            return HTTPResponse.json(400, ["error": "invalid_json"])
-        }
-        let token = request.headers["x-ksf-optimizer"] ?? ""
-        do {
-            switch path {
-            case "/api/optimizer/unlock":
-                return HTTPResponse.json(200, try optimizer.unlock(service: service, payload: object))
-            case "/api/optimizer/lock":
-                let session = try optimizer.authorize(token)
-                guard session.project == nil else { throw OptimizerAccessError.denied }
-                optimizer.lock(service: service)
-                return HTTPResponse.json(200, ["unlocked": false])
-            case "/api/optimizer/close":
-                try optimizer.close(token: token, service: service)
-                return HTTPResponse.json(200, ["closed": true])
-            case "/api/optimizer/rpc":
-                guard let operation = object["operation"] as? String,
-                      let payload = object["payload"] as? [String: Any] else { throw OptimizerAccessError.invalid }
-                return HTTPResponse.json(200, try optimizer.perform(token: token, service: service, operation: operation, payload: payload))
-            default:
-                return HTTPResponse.json(404, ["error": "not_found"])
-            }
-        } catch OptimizerAccessError.locked {
-            return HTTPResponse.json(403, ["error": "optimizer_locked", "message": "Unlock or reconnect the optimizer session."])
-        } catch OptimizerAccessError.denied {
-            return HTTPResponse.json(403, ["error": "optimizer_access_denied"])
-        } catch OptimizerAccessError.invalid {
-            return HTTPResponse.json(400, ["error": "invalid_optimizer_request"])
-        } catch OptimizerAccessError.unavailable {
-            return HTTPResponse.json(503, ["error": "optimizer_unavailable"])
-        } catch let error as OptimizerStoreError {
-            switch error {
-            case .locked:
-                return HTTPResponse.json(403, ["error": "optimizer_locked", "message": "Unlock or reconnect the optimizer session."])
-            case .denied:
-                return HTTPResponse.json(403, ["error": "optimizer_access_denied"])
-            case .notFound:
-                return HTTPResponse.json(404, ["error": "optimizer_not_found"])
-            case .limit:
-                return HTTPResponse.json(429, ["error": "optimizer_limit"])
-            case .invalid:
-                return HTTPResponse.json(400, ["error": "invalid_optimizer_request"])
-            case .conflict:
-                return HTTPResponse.json(409, ["error": "optimizer_changed"])
-            default:
-                return HTTPResponse.json(503, ["error": "optimizer_storage_unavailable"])
-            }
-        }
     }
 
     private func tokenOK(_ request: HTTPRequest) -> Bool {
@@ -641,10 +579,6 @@ final class APIHandler: @unchecked Sendable {
             return HTTPResponse.json(400, ["error": "invalid json"])
         }
         var req = GrantRequest(task: JSONValue.string(obj["task"]) ?? "")
-        if let value = obj["jev_provider"] {
-            guard let provider = value as? String else { return HTTPResponse.json(400, ["error": "invalid jev_provider"]) }
-            req.jevProvider = provider
-        }
         if let m = JSONValue.int(obj["minutes"]) { req.minutes = m }
         if let methods = obj["methods"] as? [Any] {
             req.methods = Set(methods.compactMap { $0 as? String })

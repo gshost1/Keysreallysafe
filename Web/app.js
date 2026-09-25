@@ -46,7 +46,6 @@
     colors: new Map(),
     slots: new Map(),
     providers: null,
-    optimizerCompatibleKeys: new Set(),
     // The (provider, key name) pairs seen in the unfiltered API keys report, so the provider and
     // key pickers can offer every choice even while one of them is already applied. Names only:
     // a key's value never reaches this page.
@@ -261,9 +260,9 @@
 
   // ---------- panes ----------
 
-  const panes = { usage: $("pane-usage"), chart: $("pane-chart"), keys: $("pane-keys"), optimizer: $("pane-optimizer") };
-  const tabs = { usage: $("nav-usage"), chart: $("nav-chart"), keys: $("nav-keys"), optimizer: $("nav-optimizer") };
-  const PANE_ORDER = ["usage", "chart", "keys", "optimizer"];
+  const panes = { usage: $("pane-usage"), chart: $("pane-chart"), keys: $("pane-keys") };
+  const tabs = { usage: $("nav-usage"), chart: $("nav-chart"), keys: $("nav-keys") };
+  const PANE_ORDER = ["usage", "chart", "keys"];
 
   function leaveHiddenPaneFocus(next) {
     const active = document.activeElement;
@@ -298,7 +297,6 @@
     if (name === "usage") loadStatus();
     else if (name === "chart") loadSpend();
     else if (name === "keys") loadKeys({ focus: !!opts.keyboard && !opts.focusTab });
-    else if (name === "optimizer" && typeof window.optimizerLoad === "function") window.optimizerLoad();
   }
 
   for (const [name, tab] of Object.entries(tabs)) {
@@ -508,7 +506,7 @@
   }
 
   // One chip per provider with recorded gateway calls, plus "All providers". Both TypeSafe and
-  // the Vercel AI Gateway land here, and a workload like Jev appears as a model under whichever
+  // the Vercel AI Gateway land here, and a model served by both appears under whichever
   // provider carried it, not as a source of its own.
   function renderProviderFilter() {
     const ids = [...new Set([...state.keyIndex.map((e) => e.provider), state.provider].filter(Boolean))];
@@ -728,8 +726,8 @@
       if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
       if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
       m.key = m.key && r.key && m.key !== r.key ? m.key + ", " + r.key : m.key || r.key || null;
-      // A model can be served by more than one provider — Jev runs on both TypeSafe and the
-      // Vercel gateway — so the merged row names each one rather than picking a winner.
+      // A model can be served by more than one provider — TypeSafe's evaluation model runs on
+      // both TypeSafe and the Vercel gateway — so the merged row names each one rather than picking a winner.
       m.provider = m.provider && r.provider && m.provider !== r.provider
         ? m.provider + "," + r.provider : m.provider || r.provider || null;
     }
@@ -1459,29 +1457,11 @@
       state.keys = data.keys || [];
       clearError(OWNER_KEYS);
       renderKeys(opts);
-      loadOptimizerKeyMetadata();
       loadGrants();
     } catch (e) {
       if (seq !== keysSeq) return;
       if (!opts.quiet) sayError(OWNER_KEYS, e.message);
     }
-  }
-
-  async function loadOptimizerKeyMetadata() {
-    try {
-      const data = await api("/api/optimizer/keys");
-      const keys = Array.isArray(data.keys) ? data.keys : [];
-      const unavailable = new Set((Array.isArray(data.providers) ? data.providers : []).filter((provider) => provider && typeof provider === "object" && (provider.available === false || provider.enabled === false)).map((provider) => provider.id));
-      state.optimizerCompatibleKeys = new Set(keys.filter((key) => {
-        if (!key || typeof key !== "object" || typeof key.name !== "string" || !/^[a-z0-9][a-z0-9._-]*$/.test(key.name)) return false;
-        const features = Array.isArray(key.features) ? key.features.map((value) => String(value).toLowerCase()) : [];
-        return features.some((value) => ["optimizer", "jev", "evaluation", "model_evaluation"].includes(value))
-          || ["typesafe", "vercel-ai-gateway"].includes(String(key.provider || "").toLowerCase());
-      }).filter((key) => !unavailable.has(key.provider)).map((key) => key.name).filter(Boolean));
-    } catch {
-      state.optimizerCompatibleKeys = new Set();
-    }
-    renderKeys();
   }
 
   const gatewayOn = (k) => !!(k.gateway_enabled || k.gateway_on);
@@ -1547,11 +1527,6 @@
               disabled: k.checkable ? null : "",
               title: k.checkable ? "Read-only: authentication status and model list from " + (k.host || "the provider") : "No read-only check endpoint for this provider; nothing is sent",
             }),
-            state.optimizerCompatibleKeys.has(k.name) ? el("button", {
-              type: "button", class: "btn btn-row", tabindex: tab, "data-act": "optimizer",
-              "aria-label": "Use " + k.name + " with Optimizer", text: "Optimizer",
-              title: "Preselect this stored key in Optimizer. Authorization still requires an explicit unlock.",
-            }) : null,
             el("span", { class: "act-div", "aria-hidden": "true" }),
             el("button", { type: "button", class: "btn btn-row btn-danger", tabindex: tab, "data-act": "delete", "aria-label": "Delete " + k.name, text: "Delete" }),
           ),
@@ -1607,10 +1582,6 @@
     else if (btn.dataset.act === "check") runCheck(name);
     else if (btn.dataset.act === "history") toggleEvents(name);
     else if (btn.dataset.act === "rotate") openRotate(name);
-    else if (btn.dataset.act === "optimizer") {
-      showPane("optimizer");
-      if (typeof window.optimizerPreselectKey === "function") window.optimizerPreselectKey(name);
-    }
     else if (btn.dataset.act === "delete") askDelete(name);
   });
 
@@ -2539,7 +2510,6 @@
       if (e.key === "1") { e.preventDefault(); showPane("usage", { keyboard: true }); }
       else if (e.key === "2") { e.preventDefault(); showPane("chart", { keyboard: true }); }
       else if (e.key === "3") { e.preventDefault(); showPane("keys", { keyboard: true }); }
-      else if (e.key === "4") { e.preventDefault(); showPane("optimizer", { keyboard: true }); }
       else if (e.key === "r" || e.key === "R") { e.preventDefault(); ingest(); }
       return;
     }

@@ -66,19 +66,19 @@ final class GatewayEvaluationTests: XCTestCase {
     func testMissingReportedCostIsUnpricedAndExplicitZeroIsPriced() throws {
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
-        try service.add(name: "optimizer", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic")
+        try service.add(name: "evaluation", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic")
         var row = GatewayUsageRow(
-            ts: UTC.iso(Date()), key: "optimizer", provider: "vercel-ai-gateway", model: "typesafe-ai/jev",
+            ts: UTC.iso(Date()), key: "evaluation", provider: "vercel-ai-gateway", model: "typesafe-ai/jev",
             inputTokens: 100, outputTokens: 0, status: 200, durationMs: 1
         )
         try service.recordGatewayUsage(row)
-        var month = try XCTUnwrap(try service.monthGatewayByKey()["optimizer"])
+        var month = try XCTUnwrap(try service.monthGatewayByKey()["evaluation"])
         XCTAssertNil(month.usd)
         XCTAssertEqual(month.kind, "unknown")
 
         row.reportedCostUsdTicks = 0
         try service.recordGatewayUsage(row)
-        month = try XCTUnwrap(try service.monthGatewayByKey()["optimizer"])
+        month = try XCTUnwrap(try service.monthGatewayByKey()["evaluation"])
         XCTAssertEqual(month.usd, 0)
         XCTAssertEqual(month.kind, "partial")
         XCTAssertEqual(month.pricedCalls, 1)
@@ -91,7 +91,7 @@ final class GatewayEvaluationTests: XCTestCase {
 
     func testReportedCostOverridesListPrice() {
         let row = GatewayUsageRow(
-            ts: UTC.iso(Date()), key: "optimizer", provider: "vercel-ai-gateway", model: "gpt-4.1",
+            ts: UTC.iso(Date()), key: "evaluation", provider: "vercel-ai-gateway", model: "gpt-4.1",
             inputTokens: 1_000_000, outputTokens: 0, status: 200, durationMs: 1,
             reportedCostUsdTicks: 0
         )
@@ -107,13 +107,13 @@ final class GatewayEvaluationTests: XCTestCase {
         defer { stub.stop() }
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
-        try service.add(name: "optimizer", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic")
-        _ = try service.setGateway(name: "optimizer", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
-        let token = try grantFor(service, "optimizer")
+        try service.add(name: "evaluation", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic")
+        _ = try service.setGateway(name: "evaluation", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+        let token = try grantFor(service, "evaluation")
         let gateway = try GatewayListener(service: service, port: 0)
         gateway.start()
         defer { gateway.stop() }
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/optimizer/v4/ai/evaluation-model")!)
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/evaluation/v4/ai/evaluation-model")!)
         request.httpMethod = "POST"
         request.httpBody = Data("{}".utf8)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -132,7 +132,7 @@ final class GatewayEvaluationTests: XCTestCase {
     }
 
     func testEvaluationRoundTripRemainsScopedAndStoresOnlyUsage() async throws {
-        let sentinel = "PRIVATE-JEV-CONTEXT-bc7683"
+        let sentinel = "PRIVATE-EVAL-CONTEXT-bc7683"
         let capture = EvaluationCapture()
         let responseBody = Data("""
             {"answers":{"keep":{"type":"boolean","probability":0.8}},
@@ -152,10 +152,10 @@ final class GatewayEvaluationTests: XCTestCase {
 
         let (db, dir) = try makeDB()
         let (service, _, _) = makeService(db: db)
-        try service.add(name: "optimizer", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic-upstream-key")
-        _ = try service.setGateway(name: "optimizer", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+        try service.add(name: "evaluation", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic-upstream-key")
+        _ = try service.setGateway(name: "evaluation", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
         let token = try service.issueGrant(
-            name: "optimizer",
+            name: "evaluation",
             request: GrantRequest(task: "compact context", methods: ["POST"], paths: ["/v4/ai/evaluation-model"], maxRequests: 1)
         ).token
         let gateway = try GatewayListener(service: service, port: 0)
@@ -163,7 +163,7 @@ final class GatewayEvaluationTests: XCTestCase {
         defer { gateway.stop() }
 
         func request(_ path: String, method: String = "POST", credential: String? = nil) -> URLRequest {
-            var r = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/optimizer/\(path)")!)
+            var r = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/evaluation/\(path)")!)
             r.httpMethod = method
             r.setValue("Bearer \(credential ?? token)", forHTTPHeaderField: "Authorization")
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -185,7 +185,7 @@ final class GatewayEvaluationTests: XCTestCase {
 
         // Long-lived client capabilities retain their own method/path constraints too.
         let client = try service.issueGatewayClient(
-            name: "optimizer", label: "evaluation only", methods: ["POST"], pathPrefix: "/v4/ai/evaluation-model"
+            name: "evaluation", label: "evaluation only", methods: ["POST"], pathPrefix: "/v4/ai/evaluation-model"
         ).token
         let (_, deniedClient) = try await URLSession.shared.data(for: request("v1/chat/completions", credential: client))
         XCTAssertEqual((deniedClient as? HTTPURLResponse)?.statusCode, 401)
@@ -227,12 +227,12 @@ final class GatewayEvaluationTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(service.listGrants().first?.usd), 0.000051828, accuracy: 1e-12)
 
         // Provider-reported cost does not depend on a current/historical price fixture.
-        let month = try XCTUnwrap(try service.monthGatewayByKey()["optimizer"])
+        let month = try XCTUnwrap(try service.monthGatewayByKey()["evaluation"])
         XCTAssertEqual(try XCTUnwrap(month.usd), 0.000051828, accuracy: 1e-12)
         XCTAssertEqual(month.kind, "estimate")
         XCTAssertEqual(month.unpricedTokens, 0)
         let report = try SpendQueries(db: db).report(
-            range: .month, by: .model, source: .all, now: Date(), timeZone: .current, key: "optimizer"
+            range: .month, by: .model, source: .all, now: Date(), timeZone: .current, key: "evaluation"
         )
         XCTAssertEqual(report.totals.gatewayCalls, 1)
         XCTAssertEqual(report.totals.gatewayTokens, 1234)
@@ -247,6 +247,84 @@ final class GatewayEvaluationTests: XCTestCase {
             if let contents = try? Data(contentsOf: url) {
                 XCTAssertNil(contents.range(of: needle), "evaluation content persisted in \(url.path)")
             }
+        }
+    }
+}
+
+// Direct TypeSafe SystemOne traffic through an ordinary scoped grant: the gateway
+// forwards only the granted route and stores usage, never the request context.
+extension GatewayEvaluationTests {
+    func testDirectGatewayRoundTripKeepsGrantScopedAndStoresOnlyUsage() async throws {
+        let capture = EvaluationCapture()
+        let sentinel = "synthetic-private-context-4e8a"
+        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { request in
+            capture.record(request)
+            return HTTPResponse.json(200, ["model": "jev-1.13.0", "answers": ["keep": ["type": "noul", "noul": 0.9]],
+                "usage": ["input_tokens": 55, "output_tokens": 0], "private": sentinel])
+        }
+        stub.start()
+        defer { stub.stop() }
+        let (db, directory) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        try service.add(name: "direct", provider: "typesafe", kind: "runtime", notes: "", secret: "synthetic-upstream-secret")
+        _ = try service.setGateway(name: "direct", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+        let grant = try service.issueGrant(name: "direct", request: GrantRequest(task: "fixture", methods: ["POST"], paths: ["/v1/systemone"], maxRequests: 1))
+        let gateway = try GatewayListener(service: service, port: 0)
+        gateway.start()
+        defer { gateway.stop() }
+        func request(_ path: String, method: String = "POST") -> URLRequest {
+            var value = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/direct\(path)")!)
+            value.httpMethod = method
+            value.setValue("Bearer \(grant.token)", forHTTPHeaderField: "Authorization")
+            if method == "POST" { value.httpBody = try? JSONValue.data(["model": "jev-latest", "state": sentinel, "questions": [:]]) }
+            return value
+        }
+        for denied in [request("/v1/models", method: "GET"), request("/v4/ai/evaluation-model"), request("/v1/systemone", method: "GET")] {
+            let (_, response) = try await URLSession.shared.data(for: denied)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 403)
+        }
+        XCTAssertEqual(capture.count, 0)
+        let (_, response) = try await URLSession.shared.data(for: request("/v1/systemone"))
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let upstream = try XCTUnwrap(capture.last)
+        XCTAssertEqual(upstream.path, "/v1/systemone")
+        XCTAssertEqual(upstream.headers["authorization"], "Bearer synthetic-upstream-secret")
+        XCTAssertFalse(upstream.headers.values.contains { $0.contains(grant.token) })
+        let (_, exhausted) = try await URLSession.shared.data(for: request("/v1/systemone"))
+        XCTAssertEqual((exhausted as? HTTPURLResponse)?.statusCode, 429)
+        var rows: [GatewayUsageRow] = []
+        for _ in 0..<200 where rows.isEmpty {
+            rows = try db.gatewayUsage(from: "1970-01-01T00:00:00Z", to: "2099-01-01T00:00:00Z")
+            if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
+        }
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.model, "jev-1.13.0")
+        XCTAssertEqual(row.inputTokens, 55)
+        XCTAssertEqual(row.outputTokens, 0)
+        XCTAssertNil(row.usd)
+        XCTAssertEqual(try service.monthGatewayByKey()["direct"]?.kind, "unknown")
+        let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
+        while let url = files?.nextObject() as? URL {
+            if let bytes = try? Data(contentsOf: url) { XCTAssertNil(bytes.range(of: Data(sentinel.utf8))) }
+        }
+    }
+
+    func testDirectUsageUsesSnakeCaseAndNeverAssumesVercelCost() throws {
+        let result = GatewayUsageParser.parse(api: "typesafe-systemone",
+            requestBody: Data(#"{"model":"jev-latest"}"#.utf8),
+            responseBody: Data(#"{"model":"jev-1.13.0","answers":{},"usage":{"input_tokens":123,"output_tokens":0,"inputTokens":999},"providerMetadata":{"gateway":{"cost":"1.00"}}}"#.utf8),
+            contentType: "application/json", requestModel: "forged-header")
+        XCTAssertEqual(result.model, "jev-1.13.0")
+        XCTAssertEqual(result.inputTokens, 123)
+        XCTAssertEqual(result.outputTokens, 0)
+        XCTAssertNil(result.reportedCostUsdTicks)
+        XCTAssertNil(GatewayEstimate.usd(model: "gpt-4.1", input: 1_000_000, output: 1, cacheRead: 0, cacheWrite: 0, api: "typesafe-systemone"))
+        for value in ["true", "-1", "1.5", "1e100", "null", #""3""#] {
+            let invalid = GatewayUsageParser.parse(api: "typesafe-systemone", requestBody: Data(#"{"model":"jev-latest"}"#.utf8),
+                responseBody: Data("{\"usage\":{\"input_tokens\":\(value),\"output_tokens\":\(value)}}".utf8), contentType: "application/json")
+            XCTAssertNil(invalid.inputTokens)
+            XCTAssertNil(invalid.outputTokens)
+            XCTAssertEqual(invalid.model, "jev-latest")
         }
     }
 }

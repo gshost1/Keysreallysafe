@@ -1,32 +1,31 @@
-# Offline optimizer release preparation
+# Offline release preparation
 
-`scripts/prepare-optimizer-release.py` creates a new, self-contained release
+`scripts/prepare-release.py` creates a new, self-contained release
 candidate directory from an already-built `keys` executable. Its default mode
 is offline: it only reads the checkout and writes the requested new directory.
 It does not sign, enumerate Keychain identities, start Keys, install or replace
 the login item, invoke native authorization, or inspect a live installation.
 
-The package has a strict runtime allowlist: `bin/keys`, the static Web files (including the Privacy dialog's `analytics.js`),
-the `models.json` fixture catalog, the Jev plugin runtime (`dist`, `src`, `hooks`, and
-selected plugin metadata), and `optimizer-mcp.py` plus `claude-with-jev.py`.
-An explicit documentation allowlist includes the root MIT license, third-party notices, preserved
-legacy MIT and Swift Argument Parser license texts, main README,
-signing guide, collector README, the MVP quickstart and acceptance checklist
-(`docs/mvp-quickstart.md`, `docs/mvp-acceptance.md`), and the
-optimizer/provider/client/analytics guides under `docs/`. Other local notes are excluded. Collector deployment
-source is delivered separately; the application package does not deploy it.
-It refuses symlinks in every packaged input. It does not package
-`node_modules`, tests, development fixtures, `.env` files, or unlisted plugin
-configuration, so local credentials and private configuration remain outside
+The package has a strict runtime allowlist: `bin/keys`, the static Web files
+(including the Privacy dialog's `analytics.js`) and the `models.json` fixture
+catalog. An explicit documentation allowlist includes the root MIT license,
+third-party notices, preserved legacy MIT and Swift Argument Parser license
+texts, main README, signing guide, collector README, the MVP quickstart and
+acceptance checklist (`docs/mvp-quickstart.md`, `docs/mvp-acceptance.md`),
+this guide and the product analytics guide. Other local notes are excluded.
+Collector deployment source is delivered separately; the application package
+does not deploy it. It refuses symlinks in every packaged input. It does not
+package tests, development fixtures, environment files or anything else outside
+the allowlist, so local credentials and private configuration remain outside
 the artifact.
 
 Create a user-facing candidate in a new directory. Pick the built binary
 explicitly; this script deliberately does not build one.
 
 ```sh
-python3 scripts/prepare-optimizer-release.py \
+python3 scripts/prepare-release.py \
   --binary .build/arm64-apple-macosx/release/keys \
-  --output /Users/Shost2/Documents/Codex/2026-09-19/can-x20/outputs/keys-jev-release-candidate
+  --output ~/Documents/Codex/<date>/<release>/Keysrs-arm64
 ```
 
 The output path must not exist. The artifact contains `release-manifest.json`

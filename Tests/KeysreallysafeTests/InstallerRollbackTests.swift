@@ -55,7 +55,7 @@ final class InstallerRollbackTests: XCTestCase {
         }
     }
 
-    private func makeWorld(binaryText: String = "v1", withOptimizer: Bool = false) throws -> World {
+    private func makeWorld(binaryText: String = "v1") throws -> World {
         let dir = try TempDir.make()
         let checkout = dir.appendingPathComponent("checkout", isDirectory: true)
         let web = checkout.appendingPathComponent("Web", isDirectory: true)
@@ -68,14 +68,6 @@ final class InstallerRollbackTests: XCTestCase {
         let source = checkout.appendingPathComponent("keys")
         try Data(binaryText.utf8).write(to: source)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: source.path)
-        if withOptimizer {
-            let dist = checkout.appendingPathComponent("Plugins/jev-optimizer/dist", isDirectory: true)
-            let scripts = checkout.appendingPathComponent("scripts", isDirectory: true)
-            try FileManager.default.createDirectory(at: dist, withIntermediateDirectories: true)
-            try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
-            try Data("// cli".utf8).write(to: dist.appendingPathComponent("optimizer-cli.js"))
-            try Data("# mcp".utf8).write(to: scripts.appendingPathComponent("optimizer-mcp.py"))
-        }
         return World(
             root: dir.appendingPathComponent("AppSupport", isDirectory: true),
             plist: dir.appendingPathComponent("LaunchAgents/com.keysreallysafe.test.plist"),
@@ -192,15 +184,22 @@ final class InstallerRollbackTests: XCTestCase {
     /// A move that fails partway through setting the live parts aside must not delete the parts
     /// that were never moved and have therefore no backup copy.
     func testPartialMoveOfLivePartsKeepsUntouchedOriginals() throws {
-        let w = try makeWorld(withOptimizer: true)
+        let w = try makeWorld()
         try w.installer.install(fromBinary: w.source, webRoot: w.webRoot)
+        // Parts 0.9.0 and 0.9.1 installed and nothing stages any more.
+        let legacy = [
+            w.root.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js"),
+            w.root.appendingPathComponent("scripts/optimizer-mcp.py"),
+        ]
+        for url in legacy {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("0.9.1".utf8).write(to: url)
+        }
         let plistBefore = try Data(contentsOf: w.plist)
         let untouched = [
             w.installer.web.appendingPathComponent("index.html"),
             w.installer.fixtures.appendingPathComponent("models.json"),
-            w.root.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js"),
-            w.root.appendingPathComponent("scripts/optimizer-mcp.py"),
-        ]
+        ] + legacy
         for url in untouched {
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "precondition: \(url.lastPathComponent)")
         }

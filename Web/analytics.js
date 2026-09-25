@@ -3,7 +3,7 @@
   "use strict";
 
   const CONSENT_VERSION = 2;
-  const EVENTS = new Set(["view_usage", "view_chart", "view_keys", "view_optimizer"]);
+  const EVENTS = new Set(["view_usage", "view_chart", "view_keys"]);
   const TOKEN = (document.querySelector('meta[name="ksf-token"]') || {}).content || "";
   const $ = (id) => document.getElementById(id);
   const dialog = $("dlg-privacy");

@@ -355,9 +355,15 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
             outcome: .ok, httpStatus: 200, models: [], requestId: nil, message: nil, endpoint: nil
         ))
         try db.setMeta("license_key", "left over from 0.8")
+        // The removed optimizer's encrypted archive, as 0.9.0 and 0.9.1 left it beside the catalog.
+        let optimizer = db.path.deletingLastPathComponent().appendingPathComponent("optimizer", isDirectory: true)
+        try FileManager.default.createDirectory(at: optimizer, withIntermediateDirectories: true)
+        try Data("synthetic".utf8).write(to: optimizer.appendingPathComponent("optimizer-content.gcm"))
         XCTAssertThrowsError(try service.purge(confirmation: "nope"))
         XCTAssertEqual(try service.list().map(\.name), ["demo"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: optimizer.path), "a refused purge deletes nothing")
         try service.purge(confirmation: "purge")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: optimizer.path))
         XCTAssertEqual(gate.reasons.last, "Purge Keysrs")
         XCTAssertTrue(try service.list().isEmpty)
         XCTAssertThrowsError(try inner.get(name: "demo"))

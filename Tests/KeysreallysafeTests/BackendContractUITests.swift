@@ -14,8 +14,6 @@ import XCTest
 /// | Secret storage | `MemorySecretStore` in a temp dir | never the login keychain |
 /// | Touch ID | `RecordingPresenceGate` | no GUI presence prompt in CI |
 /// | Clipboard | `FakeClipboard` | no real pasteboard write |
-/// | Optimizer key material | fixed 32 bytes via `loadKey` | never the keychain |
-/// | Optimizer provider call | `runEngine` that fails the test | no network, no JEV |
 /// | Analytics upload | endpoint `nil` + refusing transport | nothing leaves the machine |
 ///
 /// The browser half lives in `scripts/tests/test_backend_contract_ui.cjs`, which
@@ -59,7 +57,7 @@ final class BackendContractUITests: XCTestCase {
     static let alphaSecret = "sk-contract-alpha-NEVER-REAL-000001"
     static let deltaSecret = "sk-contract-delta-NEVER-REAL-000002"
 
-    func testRealDashboardDrivesTheRealKeysAndOptimizerAPIs() throws {
+    func testRealDashboardDrivesTheRealKeysAPIs() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["KEYS_BACKEND_CONTRACT_UI"] == "1",
             "browser contract harness: set KEYS_BACKEND_CONTRACT_UI=1 with the pinned Playwright Chromium installed"
@@ -87,22 +85,8 @@ final class BackendContractUITests: XCTestCase {
         // report can be uploaded even if something tried.
         service.analytics = ProductAnalytics(catalog: db, endpoint: nil, transport: analyticsTransport)
 
-        let optimizerDirectory = directory.appendingPathComponent("optimizer")
-        let optimizer = try OptimizerController(
-            directory: optimizerDirectory,
-            loadKey: { Data(repeating: 7, count: 32) },
-            deleteKey: {},
-            runEngine: { _, _ in
-                XCTFail("no provider call may leave this harness")
-                throw OptimizerAccessError.unavailable
-            }
-        )
-        service.configureOptimizer(optimizer)
-        addTeardownBlock { optimizer.lock(service: service) }
-
-        // A synthetic vault: three keys the browser will list, and one of them a
-        // real optimizer-compatible provider so the Optimizer affordance is
-        // decided by the real `/api/optimizer/keys` answer.
+        // A synthetic vault: four keys the browser will list, two of them on the
+        // providers that bill by key so the API keys view has a real ledger.
         try service.add(name: "contract-alpha", provider: "openai", kind: "runtime",
                         notes: "first harness key", secret: Self.alphaSecret, caller: "harness")
         try service.add(name: "contract-bravo", provider: "anthropic", kind: "billing",
@@ -158,12 +142,11 @@ final class BackendContractUITests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["KEYS_CONTRACT_BASE_URL"] = base
         environment["KEYS_CONTRACT_TOKEN"] = handler.originToken
-        environment["KEYS_CONTRACT_PROJECT_ROOT"] = directory.path
         environment["KEYS_CONTRACT_ALPHA_SECRET"] = Self.alphaSecret
         environment["KEYS_CONTRACT_DELTA_SECRET"] = Self.deltaSecret
         environment["KEYS_CONTRACT_SCREENSHOT_DIR"] = screenshots
         if environment["NODE_PATH"] == nil {
-            environment["NODE_PATH"] = Self.repoRoot.appendingPathComponent("Plugins/jev-optimizer/node_modules").path
+            environment["NODE_PATH"] = Self.repoRoot.appendingPathComponent("scripts/tests/node_modules").path
         }
         // The driver names the browser it launched here before it does anything
         // else. Playwright launches Chromium detached, in a group of its own, so

@@ -37,12 +37,12 @@ final class InstallerPackagingTests: XCTestCase {
             )
         }
 
-        var installedPlugin: URL {
-            installer.root.appendingPathComponent("Plugins/jev-optimizer")
+        var legacyPlugin: URL {
+            installer.root.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js")
         }
 
-        var installedScripts: URL {
-            installer.root.appendingPathComponent("scripts")
+        var legacyScript: URL {
+            installer.root.appendingPathComponent("scripts/optimizer-mcp.py")
         }
     }
 
@@ -52,7 +52,7 @@ final class InstallerPackagingTests: XCTestCase {
         if executable { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path) }
     }
 
-    private func makeWorld(binary: String = "binary-v1", pluginVersion: String = "plugin-v1") throws -> World {
+    private func makeWorld(binary: String = "binary-v1") throws -> World {
         let workspace = try TempDir.make()
         let sourceRoot = workspace.appendingPathComponent("checkout", isDirectory: true)
         let web = sourceRoot.appendingPathComponent("Web", isDirectory: true)
@@ -62,19 +62,9 @@ final class InstallerPackagingTests: XCTestCase {
         try write("{}", to: sourceRoot.appendingPathComponent("Fixtures/models.json"))
         try write("{}", to: sourceRoot.appendingPathComponent("Fixtures/providers.json"))
         try write(binary, to: binaryURL, executable: true)
-
-        try write(pluginVersion, to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js"))
-        try write("source", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/src/index.js"))
-        try write("hook", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/hooks/after.js"))
-        try write("{}", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/.claude-plugin/plugin.json"))
-        try write("package", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/package.json"))
-        try write("readme", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/README.md"))
-        try write("license", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/LICENSE"))
-        try write("provider-secret", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/.env"))
-        try write("node-secret", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/node_modules/private.txt"))
-        try write("optimizer-mcp-v1", to: sourceRoot.appendingPathComponent("scripts/optimizer-mcp.py"))
-        try write("launcher-v1", to: sourceRoot.appendingPathComponent("scripts/claude-with-jev.py"))
-        try write("do-not-copy", to: sourceRoot.appendingPathComponent("scripts/private.secret"))
+        // A checkout that still has optimizer build output or scripts must not ship them.
+        try write("plugin", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js"))
+        try write("script", to: sourceRoot.appendingPathComponent("scripts/optimizer-mcp.py"))
 
         return World(
             root: workspace.appendingPathComponent("AppSupport", isDirectory: true),
@@ -86,31 +76,50 @@ final class InstallerPackagingTests: XCTestCase {
         )
     }
 
-    func testStageCopiesPluginDistAndScriptsButExcludesSecretsAndDependencies() throws {
-        let world = try makeWorld()
-        try world.installer.install(fromBinary: world.sourceBinary, webRoot: world.webRoot)
-
-        XCTAssertEqual(
-            try String(contentsOf: world.installedPlugin.appendingPathComponent("dist/optimizer-cli.js")),
-            "plugin-v1"
-        )
-        XCTAssertTrue(FileManager.default.fileExists(atPath: world.installedPlugin.appendingPathComponent("src/index.js").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: world.installedPlugin.appendingPathComponent("hooks/after.js").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: world.installedPlugin.appendingPathComponent(".claude-plugin/plugin.json").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: world.installedScripts.appendingPathComponent("optimizer-mcp.py").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: world.installedScripts.appendingPathComponent("claude-with-jev.py").path))
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: world.installedPlugin.appendingPathComponent("node_modules").path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: world.installedPlugin.appendingPathComponent(".env").path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: world.installedScripts.appendingPathComponent("private.secret").path))
+    /// What 0.9.0 and 0.9.1 left in the live root next to bin, Web and Fixtures.
+    private func seedLegacyOptimizer(_ world: World, version: String) throws {
+        try write(version, to: world.legacyPlugin)
+        try write(version, to: world.legacyScript)
     }
 
-    func testPackagingRollbackRestoresPreviousPluginAndScripts() throws {
+    func testStageInstallsOnlyBinaryWebAndFixtures() throws {
         let world = try makeWorld()
         try world.installer.install(fromBinary: world.sourceBinary, webRoot: world.webRoot)
+
+        let fm = FileManager.default
+        XCTAssertEqual(try String(contentsOf: world.installer.binary), "binary-v1")
+        XCTAssertTrue(fm.fileExists(atPath: world.installer.web.appendingPathComponent("index.html").path))
+        XCTAssertTrue(fm.fileExists(atPath: world.installer.fixtures.appendingPathComponent("models.json").path))
+        XCTAssertFalse(fm.fileExists(atPath: world.root.appendingPathComponent("Plugins").path))
+        XCTAssertFalse(fm.fileExists(atPath: world.root.appendingPathComponent("scripts").path))
+    }
+
+    func testUpgradeMovesLegacyOptimizerAsideAndUninstallDeletesIt() throws {
+        let world = try makeWorld()
+        try world.installer.install(fromBinary: world.sourceBinary, webRoot: world.webRoot)
+        try seedLegacyOptimizer(world, version: "0.9.1")
         try write("binary-v2", to: world.sourceBinary, executable: true)
-        try write("plugin-v2", to: world.sourceRoot.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js"))
-        try write("optimizer-mcp-v2", to: world.sourceRoot.appendingPathComponent("scripts/optimizer-mcp.py"))
+        try world.installer.install(fromBinary: world.sourceBinary, webRoot: world.webRoot)
+
+        let fm = FileManager.default
+        XCTAssertEqual(try String(contentsOf: world.installer.binary), "binary-v2")
+        XCTAssertFalse(fm.fileExists(atPath: world.root.appendingPathComponent("Plugins").path))
+        XCTAssertFalse(fm.fileExists(atPath: world.root.appendingPathComponent("scripts").path))
+        XCTAssertTrue(fm.fileExists(atPath: world.installer.previous.appendingPathComponent("Plugins").path),
+                      "the one kept prior version includes what it had installed")
+
+        try seedLegacyOptimizer(world, version: "0.9.1")
+        try world.installer.uninstall()
+        XCTAssertFalse(fm.fileExists(atPath: world.root.appendingPathComponent("Plugins").path))
+        XCTAssertFalse(fm.fileExists(atPath: world.root.appendingPathComponent("scripts").path))
+        XCTAssertFalse(fm.fileExists(atPath: world.installer.previous.path))
+    }
+
+    func testFailedUpgradeRestoresLegacyOptimizerParts() throws {
+        let world = try makeWorld()
+        try world.installer.install(fromBinary: world.sourceBinary, webRoot: world.webRoot)
+        try seedLegacyOptimizer(world, version: "0.9.1")
+        try write("binary-v2", to: world.sourceBinary, executable: true)
         world.launch.failBootstrapOnce = true
 
         XCTAssertThrowsError(try world.installer.install(fromBinary: world.sourceBinary, webRoot: world.webRoot)) { error in
@@ -119,8 +128,8 @@ final class InstallerPackagingTests: XCTestCase {
             XCTAssertEqual(failure?.rolledBack, true)
         }
         XCTAssertEqual(try String(contentsOf: world.installer.binary), "binary-v1")
-        XCTAssertEqual(try String(contentsOf: world.installedPlugin.appendingPathComponent("dist/optimizer-cli.js")), "plugin-v1")
-        XCTAssertEqual(try String(contentsOf: world.installedScripts.appendingPathComponent("optimizer-mcp.py")), "optimizer-mcp-v1")
+        XCTAssertEqual(try String(contentsOf: world.legacyPlugin), "0.9.1")
+        XCTAssertEqual(try String(contentsOf: world.legacyScript), "0.9.1")
         XCTAssertFalse(FileManager.default.fileExists(atPath: world.installer.previous.path))
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: world.root.path)
             .filter { $0.hasPrefix(".staging-") || $0.hasPrefix(".previous-") }

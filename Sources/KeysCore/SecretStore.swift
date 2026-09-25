@@ -227,6 +227,9 @@ struct KeychainStore: SecretStore {
         // but purge still promises to leave no Keysrs item behind.
         _ = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                            kSecAttrService as String: "keysrs.install"] as CFDictionary)
+        // 0.9.0 and 0.9.1 kept the removed optimizer's encryption key under its own service.
+        _ = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                           kSecAttrService as String: "keysreallysafe.optimizer"] as CFDictionary)
         if status == errSecItemNotFound { return }
         try Self.finish(status, op: "delete", name: service)
     }

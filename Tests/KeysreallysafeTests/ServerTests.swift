@@ -318,7 +318,7 @@ final class ServerTests: XCTestCase {
     func testSpendKeysSourceServesTheGatewayLedgerByKey() throws {
         let (handler, service, _) = try makeHandler()
         try service.add(name: "alpha", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
-        try service.add(name: "jev", provider: "typesafe", kind: "runtime", notes: "", secret: fixtureSecret)
+        try service.add(name: "systemone", provider: "typesafe", kind: "runtime", notes: "", secret: fixtureSecret)
         let day = UTC.iso(Date())
         try service.recordGatewayUsage(GatewayUsageRow(
             ts: day, key: "alpha", provider: "anthropic", model: "claude-sonnet-5",
@@ -327,9 +327,9 @@ final class ServerTests: XCTestCase {
         ))
         // No tokens and no receipt: the request is still countable and must still be served.
         try service.recordGatewayUsage(GatewayUsageRow(
-            ts: day, key: "jev", provider: "typesafe", model: "system-one",
+            ts: day, key: "systemone", provider: "typesafe", model: "system-one",
             inputTokens: nil, outputTokens: nil, cacheReadTokens: nil, cacheWriteTokens: nil,
-            status: 200, durationMs: 9, requestId: "jev-1"
+            status: 200, durationMs: 9, requestId: "systemone-1"
         ))
         _ = try service.catalog.insertUsage(grokEvent(at: day, usd: 3, prompt: "local-only"))
 
@@ -338,7 +338,7 @@ final class ServerTests: XCTestCase {
         let obj = try JSONSerialization.jsonObject(with: all.body) as! [String: Any]
         XCTAssertEqual(obj["source"] as? String, "keys")
         let rows = obj["rows"] as! [[String: Any]]
-        XCTAssertEqual(Set(rows.compactMap { $0["key"] as? String }), ["alpha", "jev"])
+        XCTAssertEqual(Set(rows.compactMap { $0["key"] as? String }), ["alpha", "systemone"])
         XCTAssertFalse(rows.contains { ($0["model"] as? String) == "grok-4.6-build" }, "local rows stay out")
         let unpriced = try XCTUnwrap(rows.first { ($0["model"] as? String) == "system-one" })
         XCTAssertTrue(unpriced["usd_estimate"] is NSNull, "unknown cost, not zero")
@@ -350,12 +350,12 @@ final class ServerTests: XCTestCase {
 
         let keyed = handle(
             handler, method: "GET", path: "/api/spend",
-            query: ["range": "month", "source": "keys", "key": "jev"]
+            query: ["range": "month", "source": "keys", "key": "systemone"]
         )
         XCTAssertEqual(keyed.status, 200)
         let keyedObj = try JSONSerialization.jsonObject(with: keyed.body) as! [String: Any]
         XCTAssertEqual((keyedObj["totals"] as! [String: Any])["gateway_calls"] as? Int, 1)
-        XCTAssertEqual(Set((keyedObj["rows"] as! [[String: Any]]).compactMap { $0["key"] as? String }), ["jev"])
+        XCTAssertEqual(Set((keyedObj["rows"] as! [[String: Any]]).compactMap { $0["key"] as? String }), ["systemone"])
 
         // Projects come from a Claude session path; the gateway has none.
         let byProject = handle(
@@ -382,7 +382,7 @@ final class ServerTests: XCTestCase {
 
         let mismatched = handle(
             handler, method: "GET", path: "/api/spend",
-            query: ["range": "month", "source": "keys", "provider": "anthropic", "key": "jev"]
+            query: ["range": "month", "source": "keys", "provider": "anthropic", "key": "systemone"]
         )
         XCTAssertEqual(mismatched.status, 200)
         XCTAssertEqual(

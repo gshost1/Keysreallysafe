@@ -37,8 +37,7 @@ trial; 0.9.0 removed it, so a lapsed trial clears by updating.
   [self-hosted collector](Analytics/README.md).
 - No scraping. It does not open provider websites, cookies or browser sessions.
 - The usage catalog stores only counters and metadata. Gateway request bodies
-  never reach that catalog. The optional Optimizer library stores explicitly
-  saved project memories and plans in a separate encrypted local archive.
+  never reach that catalog.
 - No credentials from other tools. `~/.codex/auth.json` and
   `~/.grok/auth.json` are never read.
 - No fake numbers. A provider whose remaining quota is not in a local file is
@@ -76,17 +75,6 @@ shows `C —`. All plan windows are in the dropdown. Re-run it
 after every build; the login item serves a snapshot. Put `.build/debug/keys`
 on your `PATH` as `keys` for the commands below.
 
-The repository also includes an optional, experimental
-[Jev context optimizer](docs/jev-optimizer.md)
-for Claude Code. Everything above works without it, and no proven net saving is
-claimed for it. It prunes eligible old tool content, reuses identical decisions,
-and bounds the work spent deciding what to remove. Keys supplies a scoped grant
-and records Jev usage and available provider-reported cost. The optimizer is
-enabled explicitly per launch; unlike the local usage meter, it sends selected
-conversation state to the selected provider for evaluation. It supports Vercel
-AI Gateway and direct TypeSafe Jev through stored Keys credentials; see
-[provider support](docs/optimizer-providers.md).
-
 When migrating from an older ad-hoc build, each existing key may need one native
 Keychain password approval using **Always Allow** for the newly signed app.
 Touch ID remains required by the app when reading secrets. Subsequent builds
@@ -121,7 +109,7 @@ verified as the quickstart describes before it is trusted.
 
 ## The site
 
-Four panes, switched with the segmented control or `⌘1` through `⌘4`.
+Three panes, switched with the segmented control or `⌘1` through `⌘3`.
 
 **Usage** is the first thing you see: the plan windows each tool reports
 locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
@@ -157,9 +145,9 @@ Under **API keys** the chart is a different ledger: the calls this Mac routed
 through the local gateway with a key from the vault. Two pickers narrow it, in
 the order the billing works — first the provider (TypeSafe, the Vercel AI
 Gateway, or any other provider a vault key reached), then the key, both
-defaulting to all and both naming keys only, never values. A workload that runs
-on more than one provider, such as Jev, is a model under each of them rather
-than a source of its own. Requests lead the totals because every routed call is
+defaulting to all and both naming keys only, never values. A model served by
+more than one provider is a model under each of them rather than a source of
+its own. Requests lead the totals because every routed call is
 countable, and `T` adds a requests unit here alongside tokens and USD — a provider like TypeSafe's
 System One reports no tokens and no cost, so those calls are shown as requests
 with the cost left unknown rather than counted as zero. A partly priced range
@@ -184,26 +172,8 @@ above the table with a Revoke button each. `N` adds a key; the provider
 picker is grouped into Labs, Routers, Hosts, Clouds and Non-chat, and a pasted
 secret with a recognisable prefix pre-fills it. `?` lists every shortcut.
 
-**Optimizer** is an optional encrypted project library and task ledger. Unlocking
-it requires user presence and creates an expiring capability kept in memory.
-Projects start off; local storage and external Jev evaluation are separate
-settings. Save and inspect memories and verified plans, archive obsolete entries,
-set request/input budgets, and inspect known versus unknown usage. Jev plan,
-tool, and model decisions are suggestions pending workload evaluation. See the
-[optimizer guide](docs/optimizer-library.md) for MCP/CLI access and exact limits.
-
-Compatible stored keys have an **Optimizer** action that preselects the key
-without unlocking it. The Optimizer selector also offers local-only memory.
-Optional [candidate capture](docs/optimizer-candidates.md) stages curated
-successful-task outcomes for review; pending candidates cannot enter retrieval.
-[Task preparation](docs/optimizer-task-workflow.md) combines local context and
-optional Jev suggestions in one MCP call. A [supported-host TypeScript adapter](docs/optimizer-client-adapter.md)
-provides selective tool loading and permission-aware read-result reuse where a
-client explicitly integrates it. These are not global interception hooks.
-
-Run `python3 scripts/optimizer-preflight.py --strict` for local prerequisites
-without live authorization. [Analytics deployment assets](docs/optimizer-deployment.md)
-are prepared separately; the analytics collector runs at `analytics.keysrs.com`.
+The [analytics collector](Analytics/README.md) runs at `analytics.keysrs.com`
+and is deployed separately from the app.
 
 Every request the page makes is same-origin. Mutating calls carry a token the
 server generates per launch. That token is a browser CSRF defense: it stops a
@@ -416,16 +386,15 @@ and puts the old one back if signing or launch fails.
 
 ```sh
 swift test                      # synthetic fixtures only, no network
-python3 -m unittest discover -s scripts/tests -p 'test_jev_launcher.py'
+python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```
 
 `Web/` is plain HTML, CSS and JavaScript with no build step and no external
 resources. `Fixtures/` holds synthetic session logs for the tests, the price
-table, and the provider catalog. CI runs `swift test` on macOS.
-The bundled optimizer has its own `npm ci`, `npm test`, `npm run typecheck` and
-`npm run build` checks in `Plugins/jev-optimizer`; CI runs those with mocked
-provider responses. See the [research and source notes](docs/jev-research.md).
+table, and the provider catalog. CI runs `swift test` on macOS, the Python
+tests in `scripts/tests` and the dashboard browser suites, with Playwright pinned
+in `scripts/tests/package.json`.
 
 ## License
 

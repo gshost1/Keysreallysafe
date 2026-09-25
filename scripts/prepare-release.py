@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a reproducible, offline Keys + Jev optimizer release directory.
+"""Prepare a reproducible, offline Keysrs release directory.
 
 This tool only reads a built checkout and writes a new output directory.  It
 never signs, queries Keychain identities, installs an app, launches a native
@@ -19,26 +19,17 @@ import tempfile
 
 
 WEB_FILES = (
-    "app.js", "analytics.js", "icon.png", "icon.svg", "index.html", "optimizer.css", "optimizer.js", "providers.json", "styles.css",
+    "app.js", "analytics.js", "icon.png", "icon.svg", "index.html", "providers.json", "styles.css",
 )
 FIXTURE_FILES = ("models.json",)
-PLUGIN_FILES = (".claude-plugin/plugin.json", "LICENSE", "README.md", "package.json")
-PLUGIN_TREES = ("dist", "src", "hooks")
-SCRIPTS = ("optimizer-mcp.py", "claude-with-jev.py")
 DOC_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md",
     "licenses/Keysreallysafe-legacy-MIT.txt", "licenses/swift-argument-parser.txt",
     "README.md", "SIGNING.md", "Analytics/README.md",
     # The recipient of a package needs the install and acceptance instructions inside it, not in
     # a checkout they do not have.
-    "docs/mvp-quickstart.md", "docs/mvp-acceptance.md",
-    "docs/jev-optimizer.md", "docs/jev-research.md", "docs/optimizer-benchmarks.md",
-    "docs/optimizer-candidates.md", "docs/optimizer-client-adapter.md",
-    "docs/optimizer-deployment.md", "docs/optimizer-library.md", "docs/optimizer-providers.md",
-    "docs/optimizer-release.md", "docs/optimizer-task-workflow.md", "docs/product-analytics.md",
+    "docs/mvp-quickstart.md", "docs/mvp-acceptance.md", "docs/release.md", "docs/product-analytics.md",
 )
-ALLOWED_PLUGIN_SUFFIXES = (".d.ts", ".d.ts.map", ".js", ".js.map", ".ts", ".json", ".md")
-SENSITIVE_JSON_TERMS = ("credential", "secret", "token")
 
 
 class ReleaseError(Exception):
@@ -85,42 +76,10 @@ def require_regular(path: Path, label: str, root: Path, executable: bool = False
         raise ReleaseError(f"{label} is not executable: {path}")
 
 
-def checked_tree(root: Path, label: str, repo: Path) -> list[Path]:
-    reject_symlink_ancestors(root, repo, label)
-    if not root.is_dir():
-        raise ReleaseError(f"missing required {label} directory: {root}")
-    files: list[Path] = []
-    for path in sorted(root.rglob("*")):
-        reject_symlink_ancestors(path, repo, label)
-        relative = path.relative_to(root)
-        if any(part.startswith(".") for part in relative.parts):
-            raise ReleaseError(f"{label} contains a hidden path: {path}")
-        if "node_modules" in relative.parts:
-            raise ReleaseError(f"{label} contains nested node_modules: {path}")
-        if path.is_dir():
-            continue
-        if not path.is_file():
-            raise ReleaseError(f"{label} contains a non-regular file: {path}")
-        if not path.name.endswith(ALLOWED_PLUGIN_SUFFIXES):
-            raise ReleaseError(f"{label} contains a non-runtime file: {path}")
-        if path.suffix == ".json" and any(term in path.stem.lower() for term in SENSITIVE_JSON_TERMS):
-            raise ReleaseError(f"{label} contains credential-shaped JSON: {path}")
-        files.append(path)
-    if not files:
-        raise ReleaseError(f"{label} is empty: {root}")
-    return files
-
-
 def copy_file(source: Path, destination: Path, executable: bool = False) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
     os.chmod(destination, 0o755 if executable else 0o644)
-
-
-def copy_tree(source: Path, destination: Path, files: list[Path]) -> None:
-    for file in files:
-        relative = file.relative_to(source)
-        copy_file(file, destination / relative)
 
 
 def verify_codesign(binary: Path) -> dict[str, str]:
@@ -155,7 +114,7 @@ def build_manifest(root: Path, codesign: dict[str, str]) -> dict[str, object]:
         })
     return {
         "format": 1,
-        "purpose": "offline Keys + Jev optimizer release candidate",
+        "purpose": "offline Keysrs release candidate",
         "reproducibility": "ordered allowlisted files with SHA-256 checksums; no timestamps or source contents",
         "release_status": {
             "signing": "unvalidated; this tool performed no signing",
@@ -231,13 +190,6 @@ def prepare(repo: Path, binary: Path, output: Path, check_codesign: bool, dry_ru
         require_regular(repo / "Web" / name, f"Web runtime file {name}", repo)
     for name in FIXTURE_FILES:
         require_regular(repo / "Fixtures" / name, f"fixture {name}", repo)
-    plugin = repo / "Plugins" / "jev-optimizer"
-    for name in PLUGIN_FILES:
-        require_regular(plugin / name, f"plugin runtime file {name}", repo)
-    plugin_trees = {name: checked_tree(plugin / name, f"plugin {name}", repo) for name in PLUGIN_TREES}
-    require_regular(plugin / "dist" / "optimizer-cli.js", "plugin dist entrypoint", repo)
-    for name in SCRIPTS:
-        require_regular(repo / "scripts" / name, f"release script {name}", repo)
     for name in DOC_FILES:
         require_regular(repo / name, f"release documentation {name}", repo)
 
@@ -253,12 +205,6 @@ def prepare(repo: Path, binary: Path, output: Path, check_codesign: bool, dry_ru
             copy_file(repo / "Web" / name, temporary / "Web" / name)
         for name in FIXTURE_FILES:
             copy_file(repo / "Fixtures" / name, temporary / "Fixtures" / name)
-        for name in PLUGIN_FILES:
-            copy_file(plugin / name, temporary / "Plugins" / "jev-optimizer" / name)
-        for name, files in plugin_trees.items():
-            copy_tree(plugin / name, temporary / "Plugins" / "jev-optimizer" / name, files)
-        for name in SCRIPTS:
-            copy_file(repo / "scripts" / name, temporary / "scripts" / name, executable=True)
         for name in DOC_FILES:
             copy_file(repo / name, temporary / name)
         (temporary / "ROLLBACK.md").write_text(rollback_text(), encoding="utf-8")

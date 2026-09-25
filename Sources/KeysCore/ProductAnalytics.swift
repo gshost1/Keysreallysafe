@@ -9,6 +9,9 @@ enum ProductAnalyticsConfiguration {
     static let appVersion = "0.9.1"
 }
 
+// The view_optimizer, optimizer_* and context_* cases have no producer since the
+// optimizer was removed. They stay so reports, consent and the collector's
+// vocabulary from 0.9.0 and 0.9.1 keep decoding.
 enum ProductAnalyticsEvent: String, Codable, CaseIterable, Sendable {
     case viewUsage = "view_usage", viewChart = "view_chart", viewKeys = "view_keys", viewOptimizer = "view_optimizer"
     case keyAdd = "key_add", keyCopy = "key_copy", keyDelete = "key_delete"
@@ -242,8 +245,6 @@ final class ProductAnalytics: @unchecked Sendable {
                 let bucket = ms < 100 ? 0 : ms < 1_000 ? 1 : ms < 10_000 ? 2 : 3
                 if event == .gatewaySuccess || event == .gatewayFailure {
                     events.append([.gatewayLT100, .gatewayLT1000, .gatewayLT10000, .gatewayGTE10000][bucket])
-                } else if event == .optimizerSuccess || event == .optimizerFailure || event == .optimizerCacheHit || event == .optimizerAbstained {
-                    events.append([.optimizerLT100, .optimizerLT1000, .optimizerLT10000, .optimizerGTE10000][bucket])
                 }
             }
             for entry in events {

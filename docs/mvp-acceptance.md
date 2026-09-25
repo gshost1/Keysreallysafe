@@ -14,14 +14,13 @@ items are not claimed as passed. No secret values are recorded here.
 - macOS 14 or newer on the target Mac.
 - The architecture from `uname -m` is included in `file bin/keys` and matches
   the owner's supplied architecture metadata.
-- The owner ran `prepare-optimizer-release.py --verify-package` against the
+- The owner ran `prepare-release.py --verify-package` against the
   prepared directory on the build Mac and sent the archive, its SHA-256 and the
   signing and architecture metadata.
 - On the target: `shasum -a 256 -c` matches the sent digest and
   `codesign --verify --strict bin/keys` passes. Neither needs a checkout.
 - No Swift toolchain and no Python are needed on the target for the core app;
   the delivered `bin/keys` runs.
-- Node 18+ and `python3` only if the optional, experimental Optimizer is tried.
 - Verify the supplied package signing and notarization evidence. If macOS refuses to
   run the package, record that as the result and stop. Do not disable or work
   around Gatekeeper, and do not write such a workaround into this file.
@@ -48,7 +47,6 @@ items are not claimed as passed. No secret values are recorded here.
 | 10 | Lock the screen with a grant active | The grant dies; it is not usable after unlock | 2026-09-21 partial: system audit recorded screen_lock revocation; post-lock request not exercised |
 | 11 | Upgrade: prepare a second package from a newer build, verify it, re-run `./bin/keys autostart` | The new binary serves the dashboard; existing keys still read after at most one **Always Allow** Keychain approval; the signing team and designated requirement are unchanged | 2026-09-21 pass: new signed binary installed; metadata/settings/usage preserved; existing TypeSafe key accessible after Touch ID; signing requirement unchanged |
 | 12 | Uninstall: `./bin/keys autostart --remove` | Login item unloaded and deleted, loopback site gone, menu bar item gone | 2026-09-21 pass: login item/runtime removed, both ports stopped; reinstalled with catalog metadata preserved |
-| 13 | Optional, experimental only: Optimizer pane with Node 18+ and `python3` present | The pane is labelled optional and experimental; every check above still passed without it | PENDING: optional Optimizer not tested on target |
 
 ## Recording a result
 

@@ -1,7 +1,7 @@
 # MVP quickstart (private preview)
 
 How to run a prepared Keys package on a second Mac. It covers only the
-supported path: a package produced by `scripts/prepare-optimizer-release.py`,
+supported path: a package produced by `scripts/prepare-release.py`,
 verified, then started from its own directory. Nothing here asks you to disable
 or work around a macOS security control.
 
@@ -27,12 +27,8 @@ or work around a macOS security control.
 | Matching CPU architecture | core app | the package carries one built binary; see the check below |
 | Swift toolchain | **not** required | the recipient runs the delivered `bin/keys`; no build step |
 | A checkout of this repository | **not** required on the target | the strict package verifier runs on the build Mac; the target uses `shasum`, `codesign`, `uname` and `file`, supplied with macOS |
-| Node.js 18 or newer | optional Optimizer only | `Plugins/jev-optimizer/package.json` sets `engines.node >= 18` |
-| `python3` | optional Optimizer only | `scripts/optimizer-mcp.py` and `scripts/claude-with-jev.py` |
 
-The vault, the local gateway, the usage meter and the dashboard need none of the
-optional rows. The Optimizer and Jev context compaction are **optional and
-experimental**; see [the Jev optimizer](jev-optimizer.md).
+Node.js and Python are not needed on the target.
 
 ## Who verifies what
 
@@ -44,7 +40,7 @@ against the prepared directory, then archive it and record the digest and the
 signing and architecture metadata beside the archive:
 
 ```sh
-python3 scripts/prepare-optimizer-release.py --verify-package /path/to/keys-package
+python3 scripts/prepare-release.py --verify-package /path/to/keys-package
 /usr/bin/codesign --display --verbose=4 /path/to/keys-package/bin/keys
 /usr/bin/lipo -archs /path/to/keys-package/bin/keys
 ditto -c -k --sequesterRsrc --keepParent /path/to/keys-package keys-package.zip
@@ -105,7 +101,7 @@ That unloads and deletes the login item and its snapshot. It also deletes the
 retained previous version at
 `~/Library/Application Support/keysreallysafe/.previous/`; copy that directory
 somewhere safe first if you may want to go back (see
-[optimizer release](optimizer-release.md)).
+[release preparation](release.md)).
 
 ## First run on the new Mac
 

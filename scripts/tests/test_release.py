@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline fixtures for scripts/prepare-optimizer-release.py."""
+"""Offline fixtures for scripts/prepare-release.py."""
 import importlib.util
 import json
 import os
@@ -8,14 +8,14 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "prepare-optimizer-release.py"
-SPEC = importlib.util.spec_from_file_location("prepare_optimizer_release", SCRIPT)
+SCRIPT = Path(__file__).resolve().parents[1] / "prepare-release.py"
+SPEC = importlib.util.spec_from_file_location("prepare_release", SCRIPT)
 release = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(release)
 
 
-class OptimizerReleaseTests(unittest.TestCase):
+class ReleaseTests(unittest.TestCase):
     def make_repo(self, directory: Path) -> Path:
         repo = directory / "repo"
         for relative in release.WEB_FILES:
@@ -26,19 +26,6 @@ class OptimizerReleaseTests(unittest.TestCase):
             target = repo / "Fixtures" / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(relative, encoding="utf-8")
-        plugin = repo / "Plugins" / "jev-optimizer"
-        for relative in release.PLUGIN_FILES:
-            target = plugin / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(relative, encoding="utf-8")
-        for tree, filename in (("dist", "optimizer-cli.js"), ("src", "compact.ts"), ("hooks", "hooks.json")):
-            target = plugin / tree / filename
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(filename, encoding="utf-8")
-        for name in release.SCRIPTS:
-            target = repo / "scripts" / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
         for name in release.DOC_FILES:
             target = repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -53,15 +40,20 @@ class OptimizerReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = self.make_repo(root)
-            (repo / "Plugins" / "jev-optimizer" / "node_modules" / "secret.js").parent.mkdir(parents=True)
-            (repo / "Plugins" / "jev-optimizer" / "node_modules" / "secret.js").write_text("private", encoding="utf-8")
-            (repo / "Plugins" / "jev-optimizer" / ".env").write_text("credential", encoding="utf-8")
+            # Files outside the allowlist never travel: a private local file, or optimizer
+            # build output and scripts left over in an older checkout.
+            (repo / "local-config.json").write_text("credential", encoding="utf-8")
+            (repo / "Plugins" / "jev-optimizer" / "dist").mkdir(parents=True)
+            (repo / "Plugins" / "jev-optimizer" / "dist" / "optimizer-cli.js").write_text("stale", encoding="utf-8")
+            (repo / "scripts").mkdir(exist_ok=True)
+            (repo / "scripts" / "optimizer-mcp.py").write_text("stale", encoding="utf-8")
             (repo / "docs" / "private-notes.md").write_text("private", encoding="utf-8")
             output = root / "release"
             release.prepare(repo, repo / "build" / "keys", output, check_codesign=False)
             self.assertTrue((output / "bin" / "keys").is_file())
-            self.assertFalse((output / "Plugins" / "jev-optimizer" / "node_modules").exists())
-            self.assertFalse((output / "Plugins" / "jev-optimizer" / ".env").exists())
+            self.assertFalse((output / "Plugins").exists())
+            self.assertFalse((output / "scripts").exists())
+            self.assertFalse((output / "local-config.json").exists())
             self.assertTrue((output / "ROLLBACK.md").is_file())
             manifest = json.loads((output / "release-manifest.json").read_text(encoding="utf-8"))
             manifest_text = (output / "release-manifest.json").read_text(encoding="utf-8")
@@ -73,8 +65,7 @@ class OptimizerReleaseTests(unittest.TestCase):
             # Legal notices must survive packaging independently of the allowlist definition.
             for notice in ("LICENSE", "THIRD_PARTY_NOTICES.md",
                            "licenses/Keysreallysafe-legacy-MIT.txt",
-                           "licenses/swift-argument-parser.txt",
-                           "Plugins/jev-optimizer/LICENSE"):
+                           "licenses/swift-argument-parser.txt"):
                 self.assertIn(notice, paths)
                 self.assertEqual((output / notice).read_bytes(), (repo / notice).read_bytes())
             self.assertIn("docs/mvp-quickstart.md", paths)
@@ -82,38 +73,16 @@ class OptimizerReleaseTests(unittest.TestCase):
             self.assertTrue((output / "docs" / "mvp-quickstart.md").is_file())
             self.assertTrue((output / "docs" / "mvp-acceptance.md").is_file())
             self.assertFalse((output / "docs" / "private-notes.md").exists())
-            self.assertTrue((output / "Plugins" / "jev-optimizer" / "../../README.md").is_file())
+            self.assertTrue((output / "README.md").is_file())
+            self.assertEqual({p.split("/", 1)[0] for p in paths},
+                             {"bin", "Web", "Fixtures", "docs", "licenses", "Analytics", "LICENSE",
+                              "THIRD_PARTY_NOTICES.md", "README.md", "SIGNING.md", "ROLLBACK.md"})
             self.assertNotIn("release-manifest.json", paths)
             self.assertNotIn("fixture executable", manifest_text)
             self.assertNotIn("credential", manifest_text)
             self.assertEqual(manifest["release_status"]["live_installation"],
                              "unvalidated; this tool did not inspect or modify a live installation")
             self.assertEqual(manifest["codesign_verification"]["requested"], "false")
-
-    def test_rejects_symlink_in_packaged_plugin_tree(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = self.make_repo(root)
-            target = repo / "Plugins" / "jev-optimizer" / "src" / "escape.ts"
-            target.symlink_to(root / "outside.ts")
-            with self.assertRaisesRegex(release.ReleaseError, "symlink"):
-                release.prepare(repo, repo / "build" / "keys", root / "release", check_codesign=False)
-
-    def test_rejects_hidden_dependencies_and_credential_shaped_plugin_files(self):
-        forbidden = (
-            ("src/.private.ts", "hidden path"),
-            ("hooks/node_modules/runtime.js", "nested node_modules"),
-            ("dist/session-token.json", "credential-shaped JSON"),
-        )
-        for index, (relative, message) in enumerate(forbidden):
-            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                repo = self.make_repo(root)
-                path = repo / "Plugins" / "jev-optimizer" / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("fixture", encoding="utf-8")
-                with self.assertRaisesRegex(release.ReleaseError, message):
-                    release.prepare(repo, repo / "build" / "keys", root / f"release-{index}", check_codesign=False)
 
     def test_rejects_binary_and_runtime_symlink_ancestors(self):
         with tempfile.TemporaryDirectory() as tmp:

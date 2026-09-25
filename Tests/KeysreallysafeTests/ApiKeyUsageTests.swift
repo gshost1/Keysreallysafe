@@ -116,12 +116,12 @@ final class ApiKeyUsageTests: XCTestCase {
     /// up an unrelated catalog price. The requests are still countable, so they are still charted.
     func testTypeSafeCostStaysUnknownWhileRequestsStillChart() throws {
         let (db, _) = try makeDB()
-        let service = try service(db, keys: [("jev", "typesafe")])
+        let service = try service(db, keys: [("systemone", "typesafe")])
         try service.recordGatewayUsage(gatewayRow(
-            key: "jev", provider: "typesafe", model: "system-one", requestId: "t1", input: nil, output: nil
+            key: "systemone", provider: "typesafe", model: "system-one", requestId: "t1", input: nil, output: nil
         ))
         try service.recordGatewayUsage(gatewayRow(
-            key: "jev", provider: "typesafe", model: "system-one",
+            key: "systemone", provider: "typesafe", model: "system-one",
             at: "2026-09-05T13:00:00Z", requestId: "t2", input: nil, output: nil
         ))
 
@@ -247,16 +247,16 @@ final class ApiKeyUsageTests: XCTestCase {
     /// the all-providers report the way filtering by key partitions it, and the two combine.
     func testProviderFilterPartitionsTheLedgerAndCombinesWithAKeyFilter() throws {
         let (db, _) = try makeDB()
-        let service = try service(db, keys: [("jev-typesafe", "typesafe"), ("jev-vercel", "vercel-ai-gateway")])
+        let service = try service(db, keys: [("direct-typesafe", "typesafe"), ("direct-vercel", "vercel-ai-gateway")])
         try service.recordGatewayUsage(gatewayRow(
-            key: "jev-typesafe", provider: "typesafe", model: "system-one", requestId: "t1", input: nil, output: nil
+            key: "direct-typesafe", provider: "typesafe", model: "system-one", requestId: "t1", input: nil, output: nil
         ))
         try service.recordGatewayUsage(gatewayRow(
-            key: "jev-typesafe", provider: "typesafe", model: "system-one",
+            key: "direct-typesafe", provider: "typesafe", model: "system-one",
             at: "2026-09-05T13:00:00Z", requestId: "t2", input: nil, output: nil
         ))
         try service.recordGatewayUsage(gatewayRow(
-            key: "jev-vercel", provider: "vercel-ai-gateway", model: "openai/gpt-4.1", requestId: "v1"
+            key: "direct-vercel", provider: "vercel-ai-gateway", model: "openai/gpt-4.1", requestId: "v1"
         ))
 
         let all = try report(db)
@@ -282,8 +282,8 @@ final class ApiKeyUsageTests: XCTestCase {
 
         // Provider and key are the same path: a key of another provider yields nothing, its own
         // key yields that provider's calls.
-        XCTAssertEqual(try report(db, key: "jev-vercel", provider: "typesafe").totals.gatewayCalls, 0)
-        XCTAssertEqual(try report(db, key: "jev-typesafe", provider: "typesafe").totals.gatewayCalls, 2)
+        XCTAssertEqual(try report(db, key: "direct-vercel", provider: "typesafe").totals.gatewayCalls, 0)
+        XCTAssertEqual(try report(db, key: "direct-typesafe", provider: "typesafe").totals.gatewayCalls, 2)
 
         // And the filter is applied before aggregation, so buckets agree with the totals.
         XCTAssertEqual(typesafe.daily.reduce(0) { $0 + $1.modelCalls }, 2)
@@ -296,12 +296,12 @@ final class ApiKeyUsageTests: XCTestCase {
     /// recorded on two providers stays one model, and each provider's view keeps its own share.
     func testOneWorkloadModelOnTwoProvidersStaysOneModel() throws {
         let (db, _) = try makeDB()
-        let service = try service(db, keys: [("jev-typesafe", "typesafe"), ("jev-vercel", "vercel-ai-gateway")])
+        let service = try service(db, keys: [("direct-typesafe", "typesafe"), ("direct-vercel", "vercel-ai-gateway")])
         try service.recordGatewayUsage(gatewayRow(
-            key: "jev-typesafe", provider: "typesafe", model: "system-one", requestId: "t1", input: nil, output: nil
+            key: "direct-typesafe", provider: "typesafe", model: "system-one", requestId: "t1", input: nil, output: nil
         ))
         try service.recordGatewayUsage(gatewayRow(
-            key: "jev-vercel", provider: "vercel-ai-gateway", model: "system-one", requestId: "v1"
+            key: "direct-vercel", provider: "vercel-ai-gateway", model: "system-one", requestId: "v1"
         ))
 
         let all = try report(db)

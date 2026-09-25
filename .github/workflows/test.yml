@@ -21,37 +21,28 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: Plugins/jev-optimizer/package-lock.json
-      - name: Check Jev optimizer (mocked provider only)
-        working-directory: Plugins/jev-optimizer
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-          npm run build
-      - name: Check optimizer clients (no credentials)
+          cache-dependency-path: scripts/tests/package-lock.json
+      - name: Install the browser test dependency (Playwright only)
+        working-directory: scripts/tests
+        run: npm ci
+      - name: Check release packaging scripts (no credentials)
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check analytics collector (synthetic loopback requests only)
         run: |
           python3 -m unittest Analytics/test_collector.py Analytics/test_deployment.py
           python3 Analytics/validate_deployment.py
-      - name: Check unattended release prerequisites (no live authorization)
-        run: python3 scripts/optimizer-preflight.py --root . --strict
       - name: Check dashboard scripts
         run: |
           node --check Web/app.js
-          node --check Web/optimizer.js
           node --check Web/analytics.js
-      - name: Install the pinned browser (plugin Playwright dependency)
-        working-directory: Plugins/jev-optimizer
+      - name: Install the pinned browser
+        working-directory: scripts/tests
         run: npx --no-install playwright install chromium
       - name: Check dashboard workflows in a real browser (synthetic local fixtures only)
         env:
-          NODE_PATH: ${{ github.workspace }}/Plugins/jev-optimizer/node_modules
+          NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
         run: |
           node scripts/tests/test_keys_dashboard_ui.cjs
-          node scripts/tests/test_optimizer_workflow_ui.cjs
-          node scripts/tests/test_optimizer_layout_ui.cjs
           node scripts/tests/test_analytics_ui.cjs
       # The same real assets against the real Swift backend on a temporary
       # synthetic vault: no keychain, Touch ID, clipboard or provider call.
@@ -63,6 +54,6 @@ jobs:
         env:
           CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
           GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
-          NODE_PATH: ${{ github.workspace }}/Plugins/jev-optimizer/node_modules
+          NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
           KEYS_BACKEND_CONTRACT_UI: "1"
         run: swift test --filter BackendContractUITests

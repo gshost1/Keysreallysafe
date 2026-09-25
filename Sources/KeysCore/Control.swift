@@ -64,14 +64,13 @@ struct ControlClient {
         return ControlClient(info: info)
     }
 
-    func call(method: String, path: String, body: [String: Any]? = nil, timeout: TimeInterval = 180, extraHeaders: [String: String] = [:]) throws -> (Int, [String: Any]) {
+    func call(method: String, path: String, body: [String: Any]? = nil, timeout: TimeInterval = 180) throws -> (Int, [String: Any]) {
         let url = URL(string: "http://127.0.0.1:\(info.port)\(path)")!
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.timeoutInterval = timeout
         req.setValue(info.token, forHTTPHeaderField: "X-KSF-Token")
         req.setValue("127.0.0.1:\(info.port)", forHTTPHeaderField: "Host")
-        for (name, value) in extraHeaders { req.setValue(value, forHTTPHeaderField: name) }
         if let body {
             req.httpBody = try JSONValue.data(body)
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -18,7 +18,6 @@ final class KeysService: @unchecked Sendable {
     var openRouter: any OpenRouterFetching
     let grants = GrantStore()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
-    var optimizer: OptimizerController?
     var analytics: ProductAnalytics?
     /// First-launch answers: background Claude limit refresh, analytics question asked.
     let preferences: AppPreferences
@@ -192,8 +191,7 @@ final class KeysService: @unchecked Sendable {
         enabled: Bool,
         host: String?,
         caller: String = "dashboard",
-        reason: String? = nil,
-        afterPresence: (() throws -> Void)? = nil
+        reason: String? = nil
     ) throws -> CatalogRow {
         try requireGatewayOwner()
         try KeyName.validate(name)
@@ -223,7 +221,6 @@ final class KeysService: @unchecked Sendable {
             let secret: String
             if let reason {
                 try secrets.confirmPresence(reason: reason)
-                try afterPresence?()
                 secret = try secrets.getAfterPresence(name: name)
             } else {
                 secret = try secrets.get(name: name)
@@ -267,14 +264,6 @@ final class KeysService: @unchecked Sendable {
         guard let provider = Providers.provider(id: row.provider), provider.gateway else {
             throw AppError.usage("gateway is not available for provider \(row.provider); a grant cannot be issued")
         }
-        let jevAdapter: OptimizerProvider?
-        if let requestedProvider = request.jevProvider {
-            guard requestedProvider == row.provider,
-                  let adapter = OptimizerProvider.compatible(provider: row.provider, host: row.gatewayHost) else {
-                throw AppError.usage("key is not compatible with the requested Jev provider")
-            }
-            jevAdapter = adapter
-        } else { jevAdapter = nil }
         let host: String
         if let existing = row.gatewayHost, !existing.isEmpty {
             host = existing
@@ -289,22 +278,7 @@ final class KeysService: @unchecked Sendable {
         if let cached = lookupGateway(name: name), cached.host == host {
             try secrets.confirmPresence(reason: reason)
         } else {
-            _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason, afterPresence: {
-                if let adapter = jevAdapter {
-                    guard let current = try self.catalog.catalogRow(name: name), current.version == row.version,
-                          OptimizerProvider.compatible(provider: current.provider, host: current.gatewayHost) == adapter else {
-                        throw AppError.usage("Jev provider configuration changed during approval")
-                    }
-                }
-            })
-        }
-        if let adapter = jevAdapter {
-            guard let current = try catalog.catalogRow(name: name),
-                  OptimizerProvider.compatible(provider: current.provider, host: current.gatewayHost) == adapter,
-                  let target = lookupGateway(name: name), target.host == adapter.host, adapter.accepts(target.provider) else {
-                disableGatewayMemory(name: name, reason: "target_changed")
-                throw AppError.usage("Jev provider configuration changed during approval")
-            }
+            _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
         }
         grants.prune()
         let issued = grants.issue(key: name, provider: provider.id, host: host, request: request)
@@ -354,15 +328,11 @@ final class KeysService: @unchecked Sendable {
     /// Screen lock, logout and process exit all fail closed.
     func handleScreenLock() {
         revokeGrants(reason: "screen_lock", caller: "system")
-        optimizer?.lock()
     }
 
-    func configureOptimizer(_ controller: OptimizerController) {
-        optimizer = controller
-        observeScreenLock()
-    }
-
-    private func observeScreenLock() {
+    /// Idempotent. The app registers at startup so grants die with screen lock
+    /// even before the gateway listener starts.
+    func observeScreenLock() {
         if screenLockObserver != nil { return }
         screenLockObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.screenIsLocked"),
@@ -379,12 +349,7 @@ final class KeysService: @unchecked Sendable {
         method: String,
         rest: String
     ) -> Result<Grant, GrantDenial> {
-        if let token, let id = GrantToken.idOf(token), let grant = grants.grant(id: id),
-           let providerID = grant.jevProvider {
-            guard let adapter = OptimizerProvider.compatible(provider: providerID, host: target.host),
-                  adapter.accepts(target.provider) else { return .failure(.targetChanged) }
-        }
-        return grants.authorize(
+        grants.authorize(
             token: token,
             key: target.name,
             host: target.host,
@@ -810,7 +775,7 @@ final class KeysService: @unchecked Sendable {
         guard confirmation == "purge" else {
             throw AppError.usage("type purge to confirm")
         }
-        try optimizer?.destroy(service: self)
+        try Self.removeRetiredOptimizerData(catalogDirectory: catalog.path.deletingLastPathComponent())
         gatewayLock.lock()
         gatewayCache.removeAll()
         gatewayLock.unlock()
@@ -818,6 +783,18 @@ final class KeysService: @unchecked Sendable {
         try secrets.deleteAll()
         try analytics?.setEnabled(false, consentVersion: ProductAnalytics.consentVersion)
         try catalog.wipeData()
+    }
+
+    /// 0.9.0 and 0.9.1 shipped an experimental optimizer that kept encrypted
+    /// payloads in `optimizer/` next to the catalog (its Keychain key lives under
+    /// the retired service `keysreallysafe.optimizer`, which `KeychainStore.deleteAll`
+    /// removes). Nothing reads either since the optimizer was removed, but purge
+    /// still promises to leave no Keysrs data behind on machines that ran them.
+    static func removeRetiredOptimizerData(catalogDirectory: URL) throws {
+        let directory = catalogDirectory.appendingPathComponent("optimizer", isDirectory: true)
+        let fm = FileManager.default
+        guard (try? fm.attributesOfItem(atPath: directory.path)) != nil else { return }
+        try fm.removeItem(at: directory)
     }
 
     func recordKeyEvent(
@@ -1037,7 +1014,7 @@ enum AppFactory {
             secrets: GatedSecretStore(inner: KeychainStore(), presence: LocalPresenceGate()),
             clipboard: AppKitClipboard()
         )
-        service.configureOptimizer(try OptimizerController(directory: db.path.deletingLastPathComponent().appendingPathComponent("optimizer")))
+        service.observeScreenLock()
         service.analytics = ProductAnalytics(catalog: db)
         return service
     }

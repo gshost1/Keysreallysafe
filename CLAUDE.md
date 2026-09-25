@@ -3,11 +3,19 @@
 The product is called Keysrs since 2026-09-23 and every user-facing string
 says so. Deliberately unchanged, because existing installs depend on them:
 the `keys` executable, the signing identifier `keysreallysafe` and its
-designated requirement, the Keychain services `keysreallysafe` and
-`keysreallysafe.optimizer`, the launchd label `com.keysreallysafe.menubar`,
+designated requirement, the Keychain service `keysreallysafe`, the launchd
+label `com.keysreallysafe.menubar`,
 `~/Library/Application Support/Keysreallysafe/`, the status item autosave
 name `Keysreallysafe.usage`, the Swift package/target names and the GitHub
 repo `gshost1/Keysreallysafe`. Don't rename those without a migration.
+
+The experimental optimizer (Jev plugin, Optimizer pane, `keys optimizer`) was
+removed after 0.9.1. Because 0.9.0 and 0.9.1 are public, purge still deletes
+the retired Keychain service `keysreallysafe.optimizer` and the `optimizer/`
+directory next to the catalog, the installer keeps `Plugins` and `scripts` in
+its parts list so upgrade and uninstall clear what those versions installed,
+and the analytics vocabulary keeps the `optimizer_*`, `context_*` and
+`view_optimizer` counters so stored reports still decode.
 
 Local Mac usage meter and API-key vault. Reads the usage files Claude Code,
 Codex and Grok already write, shows plan windows and estimated spend in a menu
@@ -18,8 +26,7 @@ never supplies provider credits; customers use their own provider accounts.
 Swift 6 package, macOS 14+. Executable `keys`, core in `Sources/KeysCore`,
 tests in `Tests/KeysreallysafeTests`. `Web/` is the local dashboard (plain
 HTML/CSS/JS, no build step, no external resources), not a marketing site.
-`Plugins/jev-optimizer` is the optional, experimental optimizer (TypeScript,
-imported MIT code). `Analytics/` is the self-hosted aggregate collector.
+`Analytics/` is the self-hosted aggregate collector.
 `Fixtures/` holds synthetic session logs, the price table and provider catalog.
 `Site/` is the public marketing site at https://keysrs.com (static, no
 scripts; Google Fonts is the only external resource). It is served by a
@@ -39,15 +46,13 @@ swift build -c release
 swift test                      # synthetic fixtures only, no network
 swift test --filter Menubar     # one area
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-python3 scripts/optimizer-preflight.py --root . --strict
 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```
 
-Dashboard browser tests need the plugin's Playwright:
-`cd Plugins/jev-optimizer && npm ci && npx --no-install playwright install chromium`,
-then `NODE_PATH=Plugins/jev-optimizer/node_modules node scripts/tests/test_keys_dashboard_ui.cjs`
-(`KEYS_UI_ONLY=<test name>` narrows it). Plugin checks: `npm run typecheck`,
-`npm test`, `npm run build` in `Plugins/jev-optimizer`. `.github/workflows/test.yml`
+Dashboard browser tests need Playwright, pinned in `scripts/tests/package.json`:
+`cd scripts/tests && npm ci && npx --no-install playwright install chromium`,
+then `NODE_PATH=scripts/tests/node_modules node scripts/tests/test_keys_dashboard_ui.cjs`
+(`KEYS_UI_ONLY=<test name>` narrows it). `.github/workflows/test.yml`
 is the full list CI runs; match it before claiming a change is verified.
 
 Tests must stay offline: no keychain, Touch ID, clipboard, provider calls or
@@ -89,16 +94,15 @@ The README's "Privacy boundaries" section is the contract. In short:
   provider ids become "unknown"/"other". Schema and exclusions:
   `docs/product-analytics.md`, `Analytics/README.md`.
 - No fake numbers: untracked quota is shown as "not tracked", never estimated
-  as if measured. Don't promise optimizer savings; it is experimental.
+  as if measured.
 
 ## Licensing
 
 MIT (root `LICENSE`, since 2026-09-24; the 2026-09-22 proprietary notice
-is withdrawn). `licenses/Keysreallysafe-legacy-MIT.txt`,
-`Plugins/jev-optimizer/LICENSE` and `THIRD_PARTY_NOTICES.md` must stay intact
-and ship in every package (`scripts/prepare-optimizer-release.py` and its
-test enforce this). The plugin package is `private: true`; never publish it
-to npm.
+is withdrawn). `licenses/Keysreallysafe-legacy-MIT.txt` and
+`THIRD_PARTY_NOTICES.md` must stay intact and ship in every package
+(`scripts/prepare-release.py` and its test enforce this; `docs/release.md`
+describes the packager).
 
 ## Distribution
 

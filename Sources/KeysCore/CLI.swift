@@ -30,7 +30,6 @@ public struct KeysCLI: ParsableCommand {
             MenubarCommand.self,
             AutostartCommand.self,
             ClientCommand.self,
-            OptimizerCommand.self,
             PurgeCommand.self,
         ]
     )
@@ -387,9 +386,6 @@ struct GrantCommand: ParsableCommand {
     @Option(help: "Comma-separated path prefixes under the provider prefix, e.g. /models. Default: any.")
     var paths: String = ""
 
-    @Option(name: .customLong("jev-provider"), help: "Reviewed Jev provider; requires its exact POST evaluation path and compatible vault metadata.")
-    var jevProvider: String?
-
     @Option(name: .customLong("max-requests"), help: "Refuse further calls after this many.")
     var maxRequests: Int?
 
@@ -407,7 +403,6 @@ struct GrantCommand: ParsableCommand {
         if !methodList.isEmpty { body["methods"] = methodList }
         let pathList = paths.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         if !pathList.isEmpty { body["paths"] = pathList }
-        if let jevProvider { body["jev_provider"] = jevProvider }
         if let maxRequests { body["max_requests"] = maxRequests }
         if let maxUsd { body["max_usd"] = maxUsd }
         fputs("Touch ID in the Keysrs site…\n", stderr)

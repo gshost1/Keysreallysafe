@@ -13,7 +13,7 @@
 // Real here: the page, the routing, the response shapes, the status codes, the
 // headers, the catalog rows, the key events and the X-KSF-Token, Origin/Host and
 // Sec-Fetch-Site gates. Mocked there: keychain storage, Touch ID, the clipboard,
-// the optimizer encryption key, any provider call and analytics upload. Every
+// any provider call and analytics upload. Every
 // secret below is invented for the harness; the suite never reaches a real
 // vault, credential or network endpoint, and it neither relaxes nor bypasses the
 // product's authentication: the cases that are refused are refused by the real
@@ -36,14 +36,13 @@ const { chromium } = require("playwright");
 
 const base = process.env.KEYS_CONTRACT_BASE_URL;
 const token = process.env.KEYS_CONTRACT_TOKEN;
-const projectRoot = process.env.KEYS_CONTRACT_PROJECT_ROOT;
 const ALPHA_SECRET = process.env.KEYS_CONTRACT_ALPHA_SECRET;
 const DELTA_SECRET = process.env.KEYS_CONTRACT_DELTA_SECRET;
 const guardFile = process.env.KEYS_CONTRACT_GUARD_FILE;
 const screenshotDir = process.env.KEYS_CONTRACT_SCREENSHOT_DIR
   || path.join(__dirname, "../../.build/keys-backend-contract-screenshots");
 
-for (const [name, value] of Object.entries({ base, token, projectRoot, ALPHA_SECRET, DELTA_SECRET })) {
+for (const [name, value] of Object.entries({ base, token, ALPHA_SECRET, DELTA_SECRET })) {
   if (!value) {
     console.error(`test_backend_contract_ui.cjs: missing ${name}; run it through swift test --filter BackendContractUITests`);
     process.exit(2);
@@ -91,8 +90,6 @@ function request(page, method, url, body, headers) {
   }, [method, url, body === undefined ? null : body, headers || {}]);
 }
 
-const post = (page, url, body, headers) =>
-  request(page, "POST", url, body, Object.assign({ "X-KSF-Token": token }, headers || {}));
 const get = (page, url) => request(page, "GET", url, undefined, {});
 
 // A client outside the browser, because a page may not forge Origin or Host:
@@ -237,22 +234,6 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
       assert.match(usdCell, /^\$/, `${key.name}: a priced key shows its dollars`);
     }
   }
-});
-
-test("the Optimizer affordance follows the real /api/optimizer/keys answer", async (page) => {
-  await openKeys(page);
-  const compatible = await get(page, "/api/optimizer/keys");
-  assert.equal(compatible.status, 200);
-  const names = compatible.data.keys.map((k) => k.name).sort();
-  // Both Jev-capable providers in the vault qualify and nothing else does; the list is the real
-  // adapter answer, not a fixture.
-  assert.deepEqual(names, ["contract-typesafe", "contract-vercel"],
-    "only the real optimizer-compatible providers qualify");
-  assert.ok(compatible.data.providers.some((p) => p.id === "typesafe"), "the real adapter list");
-  await rowButton(page, "contract-typesafe", "optimizer").waitFor();
-  await rowButton(page, "contract-vercel", "optimizer").waitFor();
-  assert.equal(await rowButton(page, "contract-alpha", "optimizer").count(), 0,
-    "an incompatible key must not offer Optimizer");
 });
 
 // ---------- the real gateway ledger in the API keys view ----------
@@ -594,17 +575,6 @@ test("the real same-origin gate refuses a disallowed Origin or Host even with th
   const eventsAfter = (await get(page, `/api/keys/contract-alpha/events?limit=50`)).data.events.length;
   assert.equal(eventsAfter, eventsBefore, "a refused reveal was recorded as a use");
 
-  // An unlock refused by the token gate hands out no session and opens none.
-  const unlocked = await raw("POST", "/api/optimizer/unlock", {
-    body: { minutes: 30, writable: true },
-    headers: { Host: ALLOWED_HOST, Origin: ALLOWED_ORIGIN },
-  });
-  assert.equal(unlocked.status, 403, `an untokened unlock was not refused: ${JSON.stringify(unlocked.data)}`);
-  assert.equal(unlocked.data.error, "missing or bad token");
-  assert.equal(unlocked.data.token, undefined, "a refused unlock handed out a session token");
-  assert.equal((await get(page, "/api/optimizer/status")).data.unlocked, false,
-    "a refused unlock opened an optimizer session");
-
   // The vault is byte-for-byte what it was, and the documented loopback alias
   // still works: the control key goes out the way it came in.
   const after = (await get(page, "/api/keys")).data.keys;
@@ -619,63 +589,6 @@ test("the real same-origin gate refuses a disallowed Origin or Host even with th
   assert.equal(removed.status, 200, `the documented localhost alias was refused: ${JSON.stringify(removed.data)}`);
   await openKeys(page);
   assert.deepEqual((await rowNames(page)).sort(), SEEDED, "the page must agree the vault is back to its seed");
-});
-
-// ---------- the optimizer usage ledger over the real HTTP stack ----------
-
-test("a reused event id across tasks is refused with 409 while a same-task retry stays idempotent", async (page) => {
-  await openKeys(page);
-  const unlocked = await post(page, "/api/optimizer/unlock", { minutes: 30, writable: true });
-  assert.equal(unlocked.status, 200, JSON.stringify(unlocked.data));
-  const session = unlocked.data.token;
-  const rpc = (operation, payload) =>
-    post(page, "/api/optimizer/rpc", { operation, payload }, { "X-KSF-Optimizer": session });
-
-  const project = await rpc("project_save", {
-    name: "Contract harness", root: projectRoot, mode: "suggest", storage_enabled: true,
-    provider_enabled: false, retention_days: 30, max_requests: 10, max_input_tokens: 60000,
-  });
-  assert.equal(project.status, 200, JSON.stringify(project.data));
-  const projectID = project.data.id;
-
-  const baseline = await rpc("task_start", { project_id: projectID, client: "contract-harness" });
-  const treatment = await rpc("task_start", { project_id: projectID, client: "contract-harness" });
-  assert.equal(baseline.status, 200, JSON.stringify(baseline.data));
-  assert.equal(treatment.status, 200, JSON.stringify(treatment.data));
-  assert.notEqual(baseline.data.id, treatment.data.id);
-
-  const event = {
-    project_id: projectID, event_id: "turn-1", source: "client", kind: "model_call",
-    model: "synthetic", input_tokens: 100, output_tokens: 10, reported_cost_usd: 0,
-    latency_ms: 1, status: "success",
-  };
-  const first = await rpc("event_record", Object.assign({}, event, { task_id: baseline.data.id }));
-  assert.equal(first.status, 200, JSON.stringify(first.data));
-  assert.equal(first.data.deduplicated, false);
-
-  const retry = await rpc("event_record", Object.assign({}, event, { task_id: baseline.data.id }));
-  assert.equal(retry.status, 200, "an ordinary same-task retry must still succeed");
-  assert.equal(retry.data.deduplicated, true);
-  assert.equal(retry.data.deduplication, "event_id");
-
-  const crossed = await rpc("event_record", Object.assign({}, event, { task_id: treatment.data.id, input_tokens: 40 }));
-  assert.equal(crossed.status, 409, `expected a conflict, got ${crossed.status} ${JSON.stringify(crossed.data)}`);
-  assert.equal(crossed.data.error, "optimizer_changed");
-  assert.equal(crossed.contentType, "application/json; charset=utf-8");
-  assert.equal(crossed.cacheControl, "no-store");
-  assert.equal(crossed.noSniff, "nosniff");
-
-  // The refusal wrote nothing: one event, still under the baseline task.
-  const listed = await rpc("event_list", { project_id: projectID });
-  assert.equal(listed.status, 200, JSON.stringify(listed.data));
-  assert.equal(listed.data.events.length, 1);
-  assert.equal(listed.data.events[0].task_id, baseline.data.id);
-  assert.equal(listed.data.events[0].input_tokens, 100);
-
-  const closed = await post(page, "/api/optimizer/close", {}, { "X-KSF-Optimizer": session });
-  assert.equal(closed.status, 200);
-  const afterClose = await rpc("event_list", { project_id: projectID });
-  assert.equal(afterClose.status, 403, "a closed session must lose content access");
 });
 
 // ---------- screenshots ----------

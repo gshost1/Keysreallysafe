@@ -1,0 +1,10 @@
+{
+  "name": "keys-browser-tests",
+  "version": "0.0.0",
+  "description": "Playwright for the dashboard browser suites in scripts/tests.",
+  "private": true,
+  "license": "MIT",
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

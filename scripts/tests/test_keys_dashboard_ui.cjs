@@ -17,10 +17,8 @@ const html = asset("index.html").toString("utf8").replace("<head>", '<head><meta
 const assets = new Map([
   ["/", ["text/html; charset=utf-8", html]],
   ["/app.js", ["application/javascript", asset("app.js")]],
-  ["/optimizer.js", ["application/javascript", asset("optimizer.js")]],
   ["/analytics.js", ["application/javascript", ""]],
   ["/styles.css", ["text/css", asset("styles.css")]],
-  ["/optimizer.css", ["text/css", asset("optimizer.css")]],
   ["/providers.json", ["application/json", asset("providers.json")]],
 ]);
 
@@ -197,10 +195,6 @@ function handle(method, pathname, body, params) {
   if (keyMatch && leaf === "/events") return [200, { events: [] }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
   if (pathname === "/api/grants") return [200, { grants: [] }];
-  // The Optimizer pane shares this page and boots itself; its own behaviour is
-  // covered by test_optimizer_workflow_ui.cjs, so here it only stays quiet.
-  if (pathname === "/api/optimizer/keys") return [200, { keys: [], providers: [] }];
-  if (pathname === "/api/optimizer/status") return [200, { locked: true }];
   if (pathname === "/api/models") return [200, []];
   if (pathname === "/api/status") return [200, { plans }];
   if (pathname.startsWith("/api/spend")) return spend(params);
@@ -1213,7 +1207,6 @@ test("an empty vault gets the first-use guide, dismisses it and keeps it in help
   assert.match(guide, /You do not need a/, "an .env file is not required");
   assert.match(guide, /expiry/, "a grant is scoped and expires");
   assert.match(guide, /only those/, "only routed calls are observable");
-  assert.match(guide, /optional and experimental/i, "the Optimizer is labelled where a new user reads");
   assert.doesNotMatch(guide, /\$/, "no invented usage or cost in the guide");
   // Cloning the help guide must not leave two elements answering to the same id.
   assert.equal(await page.locator("#guide").count(), 1);
@@ -1245,18 +1238,28 @@ test("a vault that already has keys is not interrupted by the first-use guide", 
   assert.equal(await page.locator("#onboard").isHidden(), true, "an existing user is not onboarded");
 });
 
-test("the Optimizer is labelled optional and experimental in the pane and in help", async (page, origin) => {
+test("three panes: the shortcuts and arrow keys reach Usage, Chart and Keys and nothing else", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Optimizer" }).click();
-  const head = await page.locator(".optimizer-head").textContent();
-  assert.match(head, /Experimental/);
-  assert.match(head, /Optional and experimental/);
-  assert.match(head, /work without it/, "the core features do not depend on it");
-  assert.match(head, /No net saving is claimed/);
+  const tabNames = await page.locator(".seg [role=tab]").allTextContents();
+  assert.deepEqual(tabNames.map((t) => t.trim()), ["Usage", "Chart", "Keys"]);
+  const shown = () => page.evaluate(() =>
+    [...document.querySelectorAll("main [role=tabpanel]")].filter((p) => !p.hidden).map((p) => p.id));
+  await page.locator("body").click({ position: { x: 1, y: 1 } });
+  for (const [key, pane] of [["2", "pane-chart"], ["3", "pane-keys"], ["1", "pane-usage"]]) {
+    await page.keyboard.press(`ControlOrMeta+${key}`);
+    await page.waitForFunction((id) => !document.getElementById(id).hidden, pane);
+    assert.deepEqual(await shown(), [pane], `shortcut ${key}`);
+  }
+  await page.keyboard.press("ControlOrMeta+4");
+  assert.deepEqual(await shown(), ["pane-usage"], "a fourth shortcut no longer switches panes");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
+  assert.deepEqual(await shown(), ["pane-usage"], "the arrow keys wrap from Keys back to Usage");
   await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
   await waitDialog(page, "dlg-help", true);
-  assert.match(await page.locator("#dlg-help").textContent(), /optional and experimental/i);
+  assert.doesNotMatch(await page.locator("#dlg-help .shortcuts").textContent(), /Optimizer/);
 });
 
 test("a chart request that fails leaves a sticky reason and no stale drawing", async (page, origin) => {
@@ -1579,7 +1582,7 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   keys[0].last_check = { ok: false, checked_at: "2026-09-22T05:00:00Z", summary: "Provider rejected the synthetic key. " + "LongDiagnosticWithoutSpaces".repeat(12) };
   await openKeys(page, origin, { expectEmpty: true });
   await page.locator("#keys-body tr[data-name]").first().waitFor();
-  // The key list is drawn again once optimizer metadata and grants arrive. Resolving the row
+  // The key list is drawn again once grants arrive. Resolving the row
   // inside the same evaluate measures the table as it is now, not a row that redraw detached
   // (which reads as a zero-width button; seen only when the warm suite ran fast enough).
   await page.waitForLoadState("networkidle");

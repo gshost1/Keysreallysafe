@@ -147,6 +147,8 @@ struct Installer {
     /// The version that was live before the last successful install. One back, kept on purpose.
     var previous: URL { root.appendingPathComponent(".previous", isDirectory: true) }
 
+    // Nothing stages "Plugins" or "scripts" any more; 0.9.0 and 0.9.1 installed the
+    // optimizer there, so upgrade still moves them aside and uninstall deletes them.
     private static let parts = ["bin", "Web", "Fixtures", "Plugins", "scripts"]
 
     struct Failure: Error, CustomStringConvertible {
@@ -242,7 +244,6 @@ struct Installer {
         try fm.copyItem(at: webRoot, to: staging.appendingPathComponent("Web", isDirectory: true))
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: staging.appendingPathComponent("Web").path)
         try stageFixtures(into: staging.appendingPathComponent("Fixtures", isDirectory: true), webRoot: webRoot)
-        try stageOptimizer(into: staging, webRoot: webRoot)
         if let hash = Doctor.fileSHA256(source) {
             try Data((hash + "\n").utf8).write(to: bin.appendingPathComponent("keys.sha256"), options: .atomic)
         }
@@ -270,30 +271,6 @@ struct Installer {
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         for (name, src) in sources {
             try fm.copyItem(at: src, to: dir.appendingPathComponent(name))
-        }
-    }
-
-    private func stageOptimizer(into staging: URL, webRoot: URL) throws {
-        let fm = FileManager.default
-        let sourceRoot = webRoot.deletingLastPathComponent()
-        let source = sourceRoot.appendingPathComponent("Plugins/jev-optimizer")
-        guard fm.fileExists(atPath: source.path) else { return }
-        guard fm.isReadableFile(atPath: source.appendingPathComponent("dist/optimizer-cli.js").path),
-              fm.isReadableFile(atPath: sourceRoot.appendingPathComponent("scripts/optimizer-mcp.py").path) else {
-            throw AppError.usage("build Plugins/jev-optimizer before installing Keys")
-        }
-        let target = staging.appendingPathComponent("Plugins/jev-optimizer")
-        try fm.createDirectory(at: target, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        // Deliberately exclude node_modules, development fixtures, and local configuration.
-        for part in ["dist", "src", "hooks", ".claude-plugin", "package.json", "LICENSE", "README.md"] {
-            let path = source.appendingPathComponent(part)
-            if fm.fileExists(atPath: path.path) { try fm.copyItem(at: path, to: target.appendingPathComponent(part)) }
-        }
-        let scripts = staging.appendingPathComponent("scripts")
-        try fm.createDirectory(at: scripts, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        for name in ["optimizer-mcp.py", "claude-with-jev.py"] {
-            let path = sourceRoot.appendingPathComponent("scripts/\(name)")
-            if fm.fileExists(atPath: path.path) { try fm.copyItem(at: path, to: scripts.appendingPathComponent(name)) }
         }
     }
 

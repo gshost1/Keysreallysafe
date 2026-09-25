@@ -37,7 +37,7 @@ const server = http.createServer((request, response) => {
     response.writeHead(200, { "Content-Type": "application/javascript" });
     return response.end(analytics);
   }
-  if (url.pathname === "/app.js" || url.pathname === "/optimizer.js") {
+  if (url.pathname === "/app.js") {
     response.writeHead(200, { "Content-Type": "application/javascript" });
     return response.end("");
   }

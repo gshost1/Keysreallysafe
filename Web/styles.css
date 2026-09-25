@@ -730,8 +730,6 @@ main { flex: 1; min-height: 0; overflow: auto; }
   color: var(--fg-3);
   font-size: 12px;
 }
-.badge-experimental { color: var(--live-claude); user-select: auto; -webkit-user-select: auto; word-break: normal; }
-.optimizer-experimental-note { color: var(--fg-2); }
 
 .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; margin-bottom: 14px; }
 .shortcuts dt { display: flex; gap: 3px; }

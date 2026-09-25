@@ -103,43 +103,6 @@ enum Providers {
     }
 }
 
-/// Reviewed Jev protocols. A provider catalog entry alone never enables an
-/// optimizer transport: its identity, route and authentication must match here.
-struct OptimizerProvider: Equatable, Sendable {
-    let id: String
-    let label: String
-    let host: String
-    let path: String
-    let modelID: String
-    let api: String
-    let pathPrefix: String
-
-    static let supported = [
-        OptimizerProvider(id: "vercel-ai-gateway", label: "Vercel AI Gateway", host: "ai-gateway.vercel.sh",
-                          path: "/v4/ai/evaluation-model", modelID: "typesafe-ai/jev", api: "openai", pathPrefix: "/v1"),
-        OptimizerProvider(id: "typesafe", label: "TypeSafe", host: "api.typesafe.ai",
-                          path: "/v1/systemone", modelID: "jev-latest", api: "typesafe-systemone", pathPrefix: ""),
-    ]
-
-    var metadata: [String: Any] {
-        ["id": id, "label": label, "model_id": modelID,
-         "features": ["claude_compaction", "plan_reuse", "tool_selection", "model_routing", "memory_assessment"]]
-    }
-
-    func accepts(_ provider: Providers.Record) -> Bool {
-        provider.id == id && provider.host == host && provider.gateway && provider.api == api &&
-        provider.authHeader == "Authorization" && provider.authPrefix == "Bearer " &&
-        provider.pathPrefix == pathPrefix
-    }
-
-    static func compatible(provider id: String, host: String?) -> OptimizerProvider? {
-        guard let adapter = supported.first(where: { $0.id == id }),
-              let provider = Providers.provider(id: id), adapter.accepts(provider),
-              (host ?? provider.host) == adapter.host else { return nil }
-        return adapter
-    }
-}
-
 enum GatewayHost {
     /// Hostname or IPv4 with optional port. No scheme, path, or userinfo.
     static func validate(_ raw: String) throws -> String {

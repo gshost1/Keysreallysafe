@@ -71,13 +71,13 @@ final class ProductAnalyticsTests: XCTestCase {
         let (_, _, transport, analytics) = try harness()
         analytics.record(.keyCopy)
         try analytics.setEnabled(true, consentVersion: 2)
-        analytics.record(.viewOptimizer)
+        analytics.record(.viewKeys)
         analytics.record(.gatewaySuccess, durationMS: 25)
-        analytics.record(.optimizerCacheHit, durationMS: 12_000)
+        analytics.record(.gatewayFailure, durationMS: 12_000)
         let report = try XCTUnwrap(reports(analytics).first)
         XCTAssertEqual(Set(report.keys), ["schema_version", "consent_version", "report_id", "day", "app_version", "os_major", "architecture", "counts", "usage", "windows", "gateway"])
-        XCTAssertEqual(report["counts"] as? [String: Int], ["view_optimizer": 1, "gateway_success": 1,
-            "gateway_lt_100ms": 1, "optimizer_cache_hit": 1, "optimizer_gte_10s": 1])
+        XCTAssertEqual(report["counts"] as? [String: Int], ["view_keys": 1, "gateway_success": 1,
+            "gateway_lt_100ms": 1, "gateway_failure": 1, "gateway_gte_10s": 1])
         XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(report["report_id"] as? String)))
         analytics.flushCompletedReports()
         XCTAssertTrue(transport.calls.isEmpty, "Current UTC day must stay local and mutable")
