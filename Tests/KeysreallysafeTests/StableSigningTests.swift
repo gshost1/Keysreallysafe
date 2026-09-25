@@ -24,7 +24,7 @@ final class StableSigningTests: XCTestCase {
         try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: adHoc)
         let result = try LoginItem.run("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "keysreallysafe", adHoc.path])
         XCTAssertEqual(result.status, 0, result.stderr)
-        XCTAssertNoThrow(try StableSigning.validate(first, replacing: adHoc))
+        XCTAssertThrowsError(try StableSigning.validate(first, replacing: adHoc))
         XCTAssertThrowsError(try StableSigning.validate(adHoc, replacing: first))
     }
 

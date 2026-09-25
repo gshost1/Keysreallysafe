@@ -46,7 +46,7 @@ enum StableSigning {
         let candidateCode = try code(candidate)
         let accepted = try compile("identifier \"keysreallysafe\" and " + appleSigner)
         guard SecStaticCodeCheckValidity(candidateCode, SecCSFlags(rawValue: kSecCSStrictValidate), accepted) == errSecSuccess else {
-            throw AppError.http("install requires Apple Development or Developer ID signing; run scripts/codesign.sh with your persistent signing identity. Ad-hoc/self-signed builds break Keychain permissions after updates")
+            throw AppError.http("install requires Apple Development or Developer ID signing; run make build or scripts/sign-local.py with your persistent signing identity. Ad-hoc/self-signed builds break Keychain permissions after updates")
         }
         var rawInfo: CFDictionary?
         guard SecCodeCopySigningInformation(candidateCode, SecCSFlags(rawValue: kSecCSSigningInformation), &rawInfo) == errSecSuccess,
@@ -58,12 +58,10 @@ enum StableSigning {
         var actual: SecRequirement?
         guard SecCodeCopyDesignatedRequirement(candidateCode, [], &actual) == errSecSuccess, let actual,
               try canonical(actual) == canonical(expected) else {
-            throw AppError.http("build does not use the stable Keysrs signing requirement; run scripts/codesign.sh")
+            throw AppError.http("build does not use the stable Keysrs signing requirement; run make build or scripts/sign-local.py")
         }
         if let previous {
             let oldCode = try code(previous)
-            // The initial migration from our legacy ad-hoc binary is allowed. Once an
-            // Apple identity is installed, changing teams or requirements is rejected.
             var oldInfo: CFDictionary?
             guard SecCodeCopySigningInformation(oldCode, SecCSFlags(rawValue: kSecCSSigningInformation), &oldInfo) == errSecSuccess,
                   let old = oldInfo as? [String: Any],
@@ -71,15 +69,12 @@ enum StableSigning {
                   SecStaticCodeCheckValidity(oldCode, SecCSFlags(rawValue: kSecCSStrictValidate), nil) == errSecSuccess else {
                 throw AppError.http("cannot establish the installed app's signing identity; installed version preserved")
             }
-            let flags = (old[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
-            if flags & 0x2 == 0 { // kSecCodeSignatureAdhoc
-                var oldRequirement: SecRequirement?
-                guard SecCodeCopyDesignatedRequirement(oldCode, [], &oldRequirement) == errSecSuccess,
-                      let oldRequirement,
-                      try canonical(oldRequirement) == canonical(expected),
-                      SecStaticCodeCheckValidity(candidateCode, SecCSFlags(rawValue: kSecCSStrictValidate), oldRequirement) == errSecSuccess else {
-                    throw AppError.http("signing identity changed; refusing to replace the app and invalidate Keychain access")
-                }
+            var oldRequirement: SecRequirement?
+            guard SecCodeCopyDesignatedRequirement(oldCode, [], &oldRequirement) == errSecSuccess,
+                  let oldRequirement,
+                  try canonical(oldRequirement) == canonical(expected),
+                  SecStaticCodeCheckValidity(candidateCode, SecCSFlags(rawValue: kSecCSStrictValidate), oldRequirement) == errSecSuccess else {
+                throw AppError.http("signing identity changed; refusing to replace the app and invalidate Keychain access")
             }
         }
     }

@@ -1,15 +1,9 @@
-.PHONY: build release test codesign
+.PHONY: build release
 
 build:
 	swift build
-	./scripts/codesign.sh .build/debug/keys
+	python3 scripts/sign-local.py .build/debug/keys
 
 release:
 	swift build -c release
-	./scripts/codesign.sh .build/release/keys
-
-test:
-	swift test
-
-codesign:
-	./scripts/codesign.sh
+	python3 scripts/sign-local.py .build/release/keys

@@ -1,9 +1,7 @@
 # Stable signing and Keychain access
 
-The old installer re-signed every build ad hoc. The affected key's read ACL and
-Keychain partition both stored a previous executable's code hash. The current
-executable failed validation against that saved ACL. This is separate from the
-app's LocalAuthentication prompt.
+A Keychain item's read ACL and partition record the signer of the app that
+created it, so every build must keep the same stable signing identity.
 
 An ordinary self-signed certificate is insufficient: macOS securityd assigns
 non-Apple-issued signers a `cdhash:` partition even when their designated
@@ -22,7 +20,7 @@ No private key belongs in the repository; Xcode stores it in the login Keychain.
 Run `make build`, then `.build/debug/keys autostart`. The installer copies the
 signed binary unchanged and validates it before stopping the app. It refuses
 ad-hoc builds, self-signed builds, and changes to an established signing team or
-designated requirement. Migration from the old ad-hoc install is allowed once.
+designated requirement.
 Keep the same team when renewing the certificate and update the fingerprint
 configuration; the requirement deliberately does not pin an expiring leaf.
 
@@ -41,18 +39,6 @@ before installing a new signing configuration, and don't claim upgrade
 continuity until it passes on the target Mac.
 
 Run `KEYS_SIGNING_IDENTITY=<fingerprint> swift test --filter StableSigningTests`
-outside a sandbox for the certificate-backed fresh install, upgrade, legacy
-migration, and rejected ad-hoc downgrade checks. The ordinary suite skips this
+outside a sandbox for the certificate-backed fresh install, upgrade and
+rejected ad-hoc upgrade and downgrade checks. The ordinary suite skips this
 positive signing test if the environment variable is absent.
-
-2026-09-10 validation: 206 tests, zero failures (two skipped: legacy manual
-Keychain test and certificate-dependent test). Then the four StableSigningTests
-passed with the actual Developer ID certificate, including the previously
-skipped positive test. The live two-build disposable-Keychain test passed;
-both signed reads returned status 0 and the unrelated signer returned -25293.
-
-The installed binary matched the signed build byte-for-byte. After one-time
-Always Allow approval, the existing item’s saved ACL validated the installed
-app and its partition list included the signing team. One-time Allow reads
-did not persist either rule. Other existing items may need the same one-time
-approval on their next read.
