@@ -18,16 +18,12 @@ final class PriceTableTests: XCTestCase {
             "models": [
                 [
                     "id": "test/priced-only",
-                    "name": "Priced Only",
-                    "provider": "test",
                     "input_per_mtok": 4,
                     "output_per_mtok": 8,
                     "cache_read_per_mtok": 0.5,
                 ],
                 [
                     "id": "anthropic/claude-sonnet-5",
-                    "name": "Claude Sonnet 5",
-                    "provider": "anthropic",
                     "input_per_mtok": 999,
                     "output_per_mtok": 999,
                     "cache_read_per_mtok": 999,
@@ -43,7 +39,6 @@ final class PriceTableTests: XCTestCase {
         XCTAssertEqual(only.cacheReadPerMTok, 0.5, accuracy: 1e-12)
         XCTAssertEqual(only.source, .fixture)
         XCTAssertNotNil(ModelPrices.lookup("test/priced-only"))
-        XCTAssertNotNil(ModelPrices.lookup("Priced Only"))
 
         let hand = try XCTUnwrap(ModelPrices.lookup("claude-sonnet-5"))
         XCTAssertEqual(hand.inputPerMTok, 2, accuracy: 1e-12)

@@ -38,12 +38,9 @@ curl -sSf "${source_url}" | jq -e \
           .models[:100][]
           | {
               id: .id,
-              name: .name,
-              provider: (.id | split("/")[0]),
               input_per_mtok: per_mtok(.pricing.prompt),
               output_per_mtok: per_mtok(.pricing.completion),
-              cache_read_per_mtok: per_mtok(.pricing.input_cache_read),
-              context: .context_length
+              cache_read_per_mtok: per_mtok(.pricing.input_cache_read)
             }
         ]
       }

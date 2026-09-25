@@ -130,7 +130,7 @@ enum ModelPrices {
         var source: Source
     }
 
-    /// Rows from models.json keyed by lowercased id, provider-stripped id and name.
+    /// Rows from models.json keyed by lowercased id and provider-stripped id.
     static let cache = FixtureCache<[String: ListPrice]>(
         fileName: "models.json", envKey: "KEYS_MODELS_JSON",
         missing: "models.json missing or empty; using hand price rows only", fallback: [:], parse: parseFixture
@@ -215,9 +215,6 @@ enum ModelPrices {
             let stripped = stripProvider(lowerId)
             fixture[lowerId] = price
             fixture[stripped] = price
-            if let name = JSONValue.string(obj["name"]) {
-                fixture[name.lowercased()] = price
-            }
         }
         return fixture
     }
