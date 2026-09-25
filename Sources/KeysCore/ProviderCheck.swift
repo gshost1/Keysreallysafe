@@ -252,52 +252,8 @@ protocol ProviderCheckFetching: Sendable {
     func fetch(_ request: URLRequest) throws -> (Data, HTTPURLResponse)
 }
 
-/// Ephemeral session, no cookies, no redirects (a redirect would carry the auth header elsewhere).
 struct ProviderCheckHTTP: ProviderCheckFetching {
     func fetch(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = ProviderCheck.timeout
-        config.timeoutIntervalForResource = ProviderCheck.timeout
-        config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        let delegate = NoRedirectDelegate()
-        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        let box = FetchBox()
-        session.dataTask(with: request) { data, response, error in
-            box.finish(data: data, response: response, error: error)
-        }.resume()
-        box.wait()
-        if let error = box.error { throw error }
-        guard let http = box.response as? HTTPURLResponse else {
-            throw AppError.http("no HTTP response")
-        }
-        return (box.data ?? Data(), http)
+        try BlockingHTTP.send(request, timeout: ProviderCheck.timeout)
     }
-}
-
-private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
-    }
-}
-
-private final class FetchBox: @unchecked Sendable {
-    private let sema = DispatchSemaphore(value: 0)
-    var data: Data?
-    var response: URLResponse?
-    var error: Error?
-    func finish(data: Data?, response: URLResponse?, error: Error?) {
-        self.data = data
-        self.response = response
-        self.error = error
-        sema.signal()
-    }
-    func wait() { sema.wait() }
 }

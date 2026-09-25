@@ -511,18 +511,6 @@ private final class HeaderBox: @unchecked Sendable {
     var path: String = ""
 }
 
-private final class DenyRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        willPerformHTTPRedirection response: HTTPURLResponse,
-        newRequest request: URLRequest,
-        completionHandler: @escaping (URLRequest?) -> Void
-    ) {
-        completionHandler(nil)
-    }
-}
-
 private let noRedirectSession: URLSession = {
     let config = URLSessionConfiguration.ephemeral
     return URLSession(configuration: config, delegate: DenyRedirects(), delegateQueue: nil)

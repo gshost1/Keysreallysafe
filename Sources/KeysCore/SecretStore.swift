@@ -100,18 +100,18 @@ struct LocalPresenceGate: PresenceGate {
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &evalError) else {
             throw AppError.authUnavailable(Self.unavailableReason(evalError))
         }
-        let box = WaitBox()
+        let done = MainSafeWait<(Bool, Error?)>()
         context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
-            box.finish(success: success, error: error)
+            done.finish((success, error))
         }
-        box.wait()
-        if let error = box.error as? LAError {
+        let (success, error) = done.wait()
+        if let error = error as? LAError {
             throw Self.map(error)
         }
-        if let error = box.error {
+        if let error {
             throw AppError.authUnavailable(error.localizedDescription)
         }
-        guard box.success else { throw AppError.authFailed }
+        guard success else { throw AppError.authFailed }
     }
 
     static func map(_ error: LAError) -> AppError {
@@ -244,38 +244,6 @@ struct KeychainStore: SecretStore {
             throw AppError.keychain("\(op) needs a login session (restart keys dashboard from Terminal)")
         default:
             throw AppError.keychain("\(op) failed (\(status))")
-        }
-    }
-}
-
-/// Wait for an LA callback without deadlocking the main run loop.
-private final class WaitBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private let sema = DispatchSemaphore(value: 0)
-    private var done = false
-    var success = false
-    var error: Error?
-
-    func finish(success: Bool, error: Error?) {
-        lock.lock()
-        self.success = success
-        self.error = error
-        done = true
-        lock.unlock()
-        sema.signal()
-    }
-
-    func wait() {
-        if Thread.isMainThread {
-            while true {
-                lock.lock()
-                let done = self.done
-                lock.unlock()
-                if done { return }
-                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
-            }
-        } else {
-            sema.wait()
         }
     }
 }

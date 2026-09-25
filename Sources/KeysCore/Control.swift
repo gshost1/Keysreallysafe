@@ -70,25 +70,15 @@ struct ControlClient {
             req.httpBody = try JSONValue.data(body)
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: config, delegate: ControlNoRedirect(), delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        let sema = DispatchSemaphore(value: 0)
-        let box = ControlBox()
-        session.dataTask(with: req) { data, response, error in
-            box.data = data
-            box.status = (response as? HTTPURLResponse)?.statusCode
-            box.error = error
-            sema.signal()
-        }.resume()
-        sema.wait()
-        if let error = box.error {
-            throw AppError.http("could not reach the local site on 127.0.0.1:\(info.port): \(error.localizedDescription)")
+        let data: Data, http: HTTPURLResponse
+        do {
+            (data, http) = try BlockingHTTP.send(req, timeout: timeout)
+        } catch {
+            let reason = (error as? AppError)?.description ?? error.localizedDescription
+            throw AppError.http("could not reach the local site on 127.0.0.1:\(info.port): \(reason)")
         }
-        let obj = box.data.flatMap { (try? JSONSerialization.jsonObject(with: $0)).flatMap(JSONValue.object) } ?? [:]
-        return (box.status ?? 0, obj)
+        let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object) ?? [:]
+        return (http.statusCode, obj)
     }
 
     /// Turn an API error body into the same errors the CLI raises locally.
@@ -106,17 +96,4 @@ struct ControlClient {
             return .usage(status == 403 ? "site refused the request (\(message)); restart the site and retry" : message)
         }
     }
-}
-
-private final class ControlNoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
-}
-
-private final class ControlBox: @unchecked Sendable {
-    var data: Data?
-    var status: Int?
-    var error: Error?
 }

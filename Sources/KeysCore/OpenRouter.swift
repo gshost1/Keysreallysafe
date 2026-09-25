@@ -24,28 +24,15 @@ struct OpenRouterHTTP: OpenRouterFetching {
         request.timeoutInterval = 30
         request.httpShouldHandleCookies = false
 
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 30
-        config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        config.waitsForConnectivity = false
-        let session = RedirectDenyingDelegate.makeSession(configuration: config)
-        defer { session.finishTasksAndInvalidate() }
-
-        let box = SyncBox()
-        let task = session.dataTask(with: request) { data, response, error in
-            box.finish(data: data, response: response, error: error)
-        }
-        task.resume()
-        box.wait()
-        if let error = box.error {
+        let data: Data, http: HTTPURLResponse
+        do {
+            (data, http) = try BlockingHTTP.send(request, timeout: 30)
+        } catch is AppError {
+            throw AppError.http("openrouter: no response")
+        } catch {
             throw AppError.http(error.localizedDescription)
         }
-        guard let http = box.response as? HTTPURLResponse else {
-            throw AppError.http("openrouter: no response")
-        }
-        guard (200..<300).contains(http.statusCode), let data = box.data else {
+        guard (200..<300).contains(http.statusCode) else {
             throw AppError.http("openrouter: HTTP \(http.statusCode)")
         }
         guard let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object) else {
@@ -74,39 +61,5 @@ enum OpenRouterScheduler {
             try? service.pollOpenRouter()
         }
         RunLoop.current.add(timer, forMode: .common)
-    }
-}
-
-/// Wait for a URLSession callback without deadlocking the main run loop.
-private final class SyncBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private let sema = DispatchSemaphore(value: 0)
-    private var done = false
-    var data: Data?
-    var response: URLResponse?
-    var error: Error?
-
-    func finish(data: Data?, response: URLResponse?, error: Error?) {
-        lock.lock()
-        self.data = data
-        self.response = response
-        self.error = error
-        done = true
-        lock.unlock()
-        sema.signal()
-    }
-
-    func wait() {
-        if Thread.isMainThread {
-            while true {
-                lock.lock()
-                let done = self.done
-                lock.unlock()
-                if done { return }
-                RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
-            }
-        } else {
-            sema.wait()
-        }
     }
 }

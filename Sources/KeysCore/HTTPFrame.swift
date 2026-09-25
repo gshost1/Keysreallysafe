@@ -372,12 +372,6 @@ final class LoopbackListener: @unchecked Sendable {
     }
 }
 
-enum RedirectDenyingDelegate {
-    static func makeSession(configuration: URLSessionConfiguration) -> URLSession {
-        URLSession(configuration: configuration, delegate: DenyRedirects(), delegateQueue: nil)
-    }
-}
-
 final class DenyRedirects: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate, @unchecked Sendable {
     func urlSession(
         _ session: URLSession,
@@ -387,5 +381,56 @@ final class DenyRedirects: NSObject, URLSessionTaskDelegate, URLSessionDataDeleg
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
         completionHandler(nil)
+    }
+}
+
+/// Waits for one callback. On the main thread it spins the run loop, because the OpenRouter
+/// timer and presence prompts run there and a plain semaphore would freeze the menu bar for
+/// up to the whole timeout; elsewhere it blocks on a semaphore.
+final class MainSafeWait<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private let sema = DispatchSemaphore(value: 0)
+    private var value: T?
+
+    func finish(_ result: T) {
+        lock.lock()
+        value = result
+        lock.unlock()
+        sema.signal()
+    }
+
+    func wait() -> T {
+        if !Thread.isMainThread { sema.wait() }
+        while true {
+            lock.lock()
+            let result = value
+            lock.unlock()
+            if let result { return result }
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
+        }
+    }
+}
+
+enum BlockingHTTP {
+    /// One request on an ephemeral session with no cookies and no redirects (a redirect would
+    /// carry an auth header elsewhere). The transport error is rethrown as is: each caller
+    /// words it differently, and ProviderCheck scrubs the secret from it.
+    static func send(_ request: URLRequest, timeout: TimeInterval) throws -> (Data, HTTPURLResponse) {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = timeout
+        config.timeoutIntervalForResource = timeout
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config, delegate: DenyRedirects(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let done = MainSafeWait<(Data?, URLResponse?, Error?)>()
+        session.dataTask(with: request) { data, response, error in
+            done.finish((data, response, error))
+        }.resume()
+        let (data, response, error) = done.wait()
+        if let error { throw error }
+        guard let http = response as? HTTPURLResponse else { throw AppError.http("no HTTP response") }
+        return (data ?? Data(), http)
     }
 }
