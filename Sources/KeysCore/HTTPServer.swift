@@ -309,8 +309,6 @@ final class APIHandler: @unchecked Sendable {
         self.service = service
         self.webRoot = webRoot
         self.originToken = originToken
-        ModelPrices.loadAtStartup()
-        Providers.loadAtStartup()
         service.analytics?.start()
     }
 

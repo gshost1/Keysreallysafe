@@ -20,22 +20,6 @@ enum LoginItem {
         Paths.appSupport.appendingPathComponent("bin/keys.sha256")
     }
 
-    static var installedWeb: URL {
-        Paths.appSupport.appendingPathComponent("Web", isDirectory: true)
-    }
-
-    static var installedModelsJSON: URL {
-        Paths.appSupport.appendingPathComponent("Fixtures/models.json")
-    }
-
-    static var installedProvidersJSON: URL {
-        Paths.appSupport.appendingPathComponent("Fixtures/providers.json")
-    }
-
-    static var logFile: URL {
-        Paths.appSupport.appendingPathComponent("menubar.log")
-    }
-
     static var bookmarkURL: URL {
         URL(string: "http://127.0.0.1:\(menubarPort)/")!
     }
@@ -60,10 +44,6 @@ enum LoginItem {
           <dict>
             <key>KEYS_WEB_ROOT</key>
             <string>\(web)</string>
-            <key>KEYS_MODELS_JSON</key>
-            <string>\(xml(installedModelsJSON.path))</string>
-            <key>KEYS_PROVIDERS_JSON</key>
-            <string>\(xml(installedProvidersJSON.path))</string>
           </dict>
           <key>RunAtLoad</key>
           <true/>
@@ -254,24 +234,13 @@ struct Installer {
         }
     }
 
+    /// providers.json ships inside Web/; only the price table lives beside it.
     private func stageFixtures(into dir: URL, webRoot: URL) throws {
         let fm = FileManager.default
-        let fixturesRoot = webRoot.deletingLastPathComponent().appendingPathComponent("Fixtures")
-        var sources: [(String, URL)] = []
-        let models = fixturesRoot.appendingPathComponent("models.json")
-        if fm.isReadableFile(atPath: models.path) { sources.append(("models.json", models)) }
-        let fromWeb = webRoot.appendingPathComponent("providers.json")
-        let fromFixtures = fixturesRoot.appendingPathComponent("providers.json")
-        if fm.isReadableFile(atPath: fromWeb.path) {
-            sources.append(("providers.json", fromWeb))
-        } else if fm.isReadableFile(atPath: fromFixtures.path) {
-            sources.append(("providers.json", fromFixtures))
-        }
-        guard !sources.isEmpty else { return }
+        let models = webRoot.deletingLastPathComponent().appendingPathComponent("Fixtures/models.json")
+        guard fm.isReadableFile(atPath: models.path) else { return }
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        for (name, src) in sources {
-            try fm.copyItem(at: src, to: dir.appendingPathComponent(name))
-        }
+        try fm.copyItem(at: models, to: dir.appendingPathComponent("models.json"))
     }
 
     /// Moves every live part into `backup`, recording in `moved` exactly which ones got there.

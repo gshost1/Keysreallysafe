@@ -12,92 +12,56 @@ enum Providers {
         var gateway: Bool
     }
 
-    /// Tests replace this to load a temp fixture. Nil uses the usual search.
-    nonisolated(unsafe) static var testFixtureURL: URL?
-
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var cached: Cache?
-    nonisolated(unsafe) private static var loggedMissing = false
-
-    private struct Cache {
+    struct Catalog: Sendable {
         var raw: Data
         var byID: [String: Record]
     }
 
-    static func resetCache() {
-        lock.lock()
-        cached = nil
-        loggedMissing = false
-        lock.unlock()
-    }
+    static let cache = FixtureCache<Catalog>(
+        fileName: "providers.json", envKey: "KEYS_PROVIDERS_JSON", missing: "providers.json missing or empty",
+        fallback: Catalog(raw: Data("{}".utf8), byID: [:]), parse: parse
+    )
 
     static func loadAtStartup() {
-        _ = current()
+        _ = cache.value
     }
 
     static func provider(id: String) -> Record? {
-        current().byID[id]
+        cache.value.byID[id]
     }
 
     /// Bytes of `providers.json` as loaded. GET /api/providers returns this verbatim.
     static func rawJSON() -> Data {
-        current().raw
+        cache.value.raw
     }
 
-    private static func current() -> Cache {
-        lock.lock()
-        defer { lock.unlock() }
-        if let cached { return cached }
-        let loaded = load()
-        cached = loaded
-        return loaded
-    }
-
-    private static func load() -> Cache {
-        let url = resolveFixtureURL()
-        if let url, FileManager.default.isReadableFile(atPath: url.path),
-           let data = try? Data(contentsOf: url),
-           let root = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
-           let list = root["providers"] as? [Any]
-        {
-            var byID: [String: Record] = [:]
-            for item in list {
-                guard let obj = JSONValue.object(item),
-                      let id = JSONValue.string(obj["id"])
-                else { continue }
-                byID[id] = Record(
-                    id: id,
-                    name: JSONValue.string(obj["name"]) ?? id,
-                    host: JSONValue.string(obj["host"]),
-                    api: JSONValue.string(obj["api"]) ?? "other",
-                    authHeader: JSONValue.string(obj["auth_header"]) ?? "Authorization",
-                    authPrefix: stringAllowEmpty(obj["auth_prefix"]) ?? "Bearer ",
-                    pathPrefix: stringAllowEmpty(obj["path_prefix"]) ?? "",
-                    gateway: JSONValue.bool(obj["gateway"]) ?? true
-                )
-            }
-            return Cache(raw: data, byID: byID)
+    private static func parse(_ data: Data) -> Catalog? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
+              let list = root["providers"] as? [Any]
+        else { return nil }
+        var byID: [String: Record] = [:]
+        for item in list {
+            guard let obj = JSONValue.object(item),
+                  let id = JSONValue.string(obj["id"])
+            else { continue }
+            byID[id] = Record(
+                id: id,
+                name: JSONValue.string(obj["name"]) ?? id,
+                host: JSONValue.string(obj["host"]),
+                api: JSONValue.string(obj["api"]) ?? "other",
+                authHeader: JSONValue.string(obj["auth_header"]) ?? "Authorization",
+                authPrefix: stringAllowEmpty(obj["auth_prefix"]) ?? "Bearer ",
+                pathPrefix: stringAllowEmpty(obj["path_prefix"]) ?? "",
+                gateway: JSONValue.bool(obj["gateway"]) ?? true
+            )
         }
-        if !loggedMissing {
-            loggedMissing = true
-            let line = "providers.json missing or empty\n"
-            FileHandle.standardError.write(Data(line.utf8))
-        }
-        return Cache(raw: Data("{}".utf8), byID: [:])
+        return Catalog(raw: data, byID: byID)
     }
 
     private static func stringAllowEmpty(_ any: Any?) -> String? {
         if any is NSNull { return nil }
         if let s = any as? String { return s }
         return nil
-    }
-
-    private static func resolveFixtureURL() -> URL? {
-        FixturePath.resolve(
-            fileName: "providers.json",
-            envKey: "KEYS_PROVIDERS_JSON",
-            testURL: testFixtureURL
-        )
     }
 }
 

@@ -53,7 +53,7 @@ ROW_TABLES = {
 SOURCES = ("claude_code", "codex", "grok")
 WINDOWS = frozenset({("claude_code", "5h"), ("claude_code", "weekly"), ("claude_code", "fable"),
                      ("codex", "5h"), ("codex", "weekly"), ("grok", "weekly")})
-# The ids in Fixtures/providers.json, plus "other" for anything outside it
+# The ids in Web/providers.json, plus "other" for anything outside it
 # (a custom provider id is user-chosen text). test_collector pins the match.
 PROVIDERS = frozenset(
     "openai typesafe anthropic google xai mistral cohere deepseek moonshot zhipu dashscope minimax meta "

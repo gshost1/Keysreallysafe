@@ -5,7 +5,6 @@ final class GatewayTests: XCTestCase {
     private let pelican = "PELICAN-7f3a"
 
     func testProviderRegistryLoadsFixture() throws {
-        Providers.loadAtStartup()
         XCTAssertEqual(Providers.provider(id: "openai")?.host, "api.openai.com")
         XCTAssertEqual(Providers.provider(id: "anthropic")?.authHeader, "x-api-key")
         XCTAssertEqual(Providers.provider(id: "google")?.api, "gemini")

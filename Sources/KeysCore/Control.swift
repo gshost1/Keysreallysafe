@@ -11,12 +11,7 @@ enum ControlFile {
         var token: String
     }
 
-    static var url: URL {
-        if let override = ProcessInfo.processInfo.environment["KEYS_CONTROL"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return Paths.appSupport.appendingPathComponent("control.json")
-    }
+    static var url: URL { Paths.env("KEYS_CONTROL") ?? Paths.appSupport.appendingPathComponent("control.json") }
 
     static func write(port: UInt16, token: String, pid: pid_t = ProcessInfo.processInfo.processIdentifier) throws {
         let dir = url.deletingLastPathComponent()

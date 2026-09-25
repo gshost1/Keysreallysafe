@@ -118,54 +118,62 @@ enum TokenTotals {
 }
 
 enum ModelPrices {
-    enum Source: String {
+    enum Source: String, Sendable {
         case hand
         case fixture
     }
 
-    struct ListPrice: Equatable {
+    struct ListPrice: Equatable, Sendable {
         var inputPerMTok: Double
         var outputPerMTok: Double
         var cacheReadPerMTok: Double
         var source: Source
     }
 
-    /// Tests replace this to load a temp fixture or a missing path. Nil uses the usual search.
-    nonisolated(unsafe) static var testFixtureURL: URL?
+    /// Rows from models.json keyed by lowercased id, provider-stripped id and name.
+    static let cache = FixtureCache<[String: ListPrice]>(
+        fileName: "models.json", envKey: "KEYS_MODELS_JSON",
+        missing: "models.json missing or empty; using hand price rows only", fallback: [:], parse: parseFixture
+    )
 
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var cached: Table?
-    nonisolated(unsafe) private static var loggedMissing = false
-
-    private struct Table {
-        var handExact: [String: ListPrice]
-        var handPrefix: [(prefix: String, price: ListPrice, contains: Bool)]
-        var fixture: [String: ListPrice]
+    private struct HandRows {
+        var exact: [String: ListPrice] = [:]
+        var prefix: [(prefix: String, price: ListPrice, contains: Bool)] = []
     }
 
-    static func resetCache() {
-        lock.lock()
-        cached = nil
-        loggedMissing = false
-        lock.unlock()
-    }
+    private static let hand: HandRows = {
+        var rows = HandRows()
+        for (prefix, price) in ClaudeEstimate.table {
+            let row = ListPrice(inputPerMTok: price.inputPerMTok, outputPerMTok: price.outputPerMTok,
+                                cacheReadPerMTok: price.cachedPerMTok, source: .hand)
+            rows.exact[prefix] = row
+            rows.prefix.append((prefix, row, false))
+        }
+        for (prefix, price) in OpenAIEstimate.table {
+            let row = ListPrice(inputPerMTok: price.inputPerMTok, outputPerMTok: price.outputPerMTok,
+                                cacheReadPerMTok: price.cachedPerMTok, source: .hand)
+            rows.exact[prefix] = row
+            rows.prefix.append((prefix, row, true))
+        }
+        return rows
+    }()
 
     static func loadAtStartup() {
-        _ = current()
+        _ = cache.value
     }
 
     static func lookup(_ model: String) -> ListPrice? {
-        let table = current()
+        let fixture = cache.value
         let lower = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !lower.isEmpty else { return nil }
         let stripped = stripProvider(lower)
-        if let price = table.handExact[stripped] ?? table.handExact[lower] {
+        if let price = hand.exact[stripped] ?? hand.exact[lower] {
             return price
         }
-        if let price = table.fixture[stripped] ?? table.fixture[lower] {
+        if let price = fixture[stripped] ?? fixture[lower] {
             return price
         }
-        for row in table.handPrefix {
+        for row in hand.prefix {
             if stripped.hasPrefix(row.prefix) || lower.hasPrefix(row.prefix) {
                 return row.price
             }
@@ -183,80 +191,35 @@ enum ModelPrices {
         return model
     }
 
-    private static func current() -> Table {
-        lock.lock()
-        defer { lock.unlock() }
-        if let cached { return cached }
-        let loaded = load()
-        cached = loaded
-        return loaded
-    }
-
-    private static func load() -> Table {
-        var handExact: [String: ListPrice] = [:]
-        var handPrefix: [(prefix: String, price: ListPrice, contains: Bool)] = []
-        for (prefix, price) in ClaudeEstimate.table {
-            let row = ListPrice(
-                inputPerMTok: price.inputPerMTok,
-                outputPerMTok: price.outputPerMTok,
-                cacheReadPerMTok: price.cachedPerMTok,
-                source: .hand
-            )
-            handExact[prefix] = row
-            handPrefix.append((prefix, row, false))
-        }
-        for (prefix, price) in OpenAIEstimate.table {
-            let row = ListPrice(
-                inputPerMTok: price.inputPerMTok,
-                outputPerMTok: price.outputPerMTok,
-                cacheReadPerMTok: price.cachedPerMTok,
-                source: .hand
-            )
-            handExact[prefix] = row
-            handPrefix.append((prefix, row, true))
-        }
-
+    /// An empty models array counts as missing, so the hand rows alone are used.
+    private static func parseFixture(_ data: Data) -> [String: ListPrice]? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
+              let models = root["models"] as? [Any], !models.isEmpty
+        else { return nil }
         var fixture: [String: ListPrice] = [:]
-        let url = resolveFixtureURL()
-        if let url, FileManager.default.isReadableFile(atPath: url.path),
-           let data = try? Data(contentsOf: url),
-           let root = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
-           let models = root["models"] as? [Any], !models.isEmpty
-        {
-            for item in models {
-                guard let obj = JSONValue.object(item),
-                      let id = JSONValue.string(obj["id"])
-                else { continue }
-                guard let input = JSONValue.double(obj["input_per_mtok"]),
-                      let output = JSONValue.double(obj["output_per_mtok"])
-                else { continue }
-                let cacheRead = JSONValue.double(obj["cache_read_per_mtok"]) ?? 0
-                let price = ListPrice(
-                    inputPerMTok: input,
-                    outputPerMTok: output,
-                    cacheReadPerMTok: cacheRead,
-                    source: .fixture
-                )
-                let lowerId = id.lowercased()
-                let stripped = stripProvider(lowerId)
-                fixture[lowerId] = price
-                fixture[stripped] = price
-                if let name = JSONValue.string(obj["name"]) {
-                    fixture[name.lowercased()] = price
-                }
-            }
-        } else {
-            if !loggedMissing {
-                loggedMissing = true
-                let line = "models.json missing or empty; using hand price rows only\n"
-                FileHandle.standardError.write(Data(line.utf8))
+        for item in models {
+            guard let obj = JSONValue.object(item),
+                  let id = JSONValue.string(obj["id"])
+            else { continue }
+            guard let input = JSONValue.double(obj["input_per_mtok"]),
+                  let output = JSONValue.double(obj["output_per_mtok"])
+            else { continue }
+            let cacheRead = JSONValue.double(obj["cache_read_per_mtok"]) ?? 0
+            let price = ListPrice(
+                inputPerMTok: input,
+                outputPerMTok: output,
+                cacheReadPerMTok: cacheRead,
+                source: .fixture
+            )
+            let lowerId = id.lowercased()
+            let stripped = stripProvider(lowerId)
+            fixture[lowerId] = price
+            fixture[stripped] = price
+            if let name = JSONValue.string(obj["name"]) {
+                fixture[name.lowercased()] = price
             }
         }
-        return Table(handExact: handExact, handPrefix: handPrefix, fixture: fixture)
-    }
-
-    private static func resolveFixtureURL() -> URL? {
-        FixturePath.resolve(fileName: "models.json", envKey: "KEYS_MODELS_JSON", testURL: testFixtureURL)
+        return fixture
     }
 }
 

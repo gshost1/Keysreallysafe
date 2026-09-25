@@ -254,7 +254,7 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(self.server.store.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
 
     def test_provider_allowlist_matches_the_shipped_catalog(self):
-        catalog = json.loads((Path(__file__).resolve().parents[1] / "Fixtures" / "providers.json").read_text())
+        catalog = json.loads((Path(__file__).resolve().parents[1] / "Web" / "providers.json").read_text())
         self.assertEqual(collector.PROVIDERS, {entry["id"] for entry in catalog["providers"]} | {"other"})
 
     def get(self, path):

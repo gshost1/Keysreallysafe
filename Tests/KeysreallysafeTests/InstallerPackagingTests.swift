@@ -60,7 +60,6 @@ final class InstallerPackagingTests: XCTestCase {
         try write("<html>", to: web.appendingPathComponent("index.html"))
         try write("{}", to: web.appendingPathComponent("providers.json"))
         try write("{}", to: sourceRoot.appendingPathComponent("Fixtures/models.json"))
-        try write("{}", to: sourceRoot.appendingPathComponent("Fixtures/providers.json"))
         try write(binary, to: binaryURL, executable: true)
         // A checkout that still has optimizer build output or scripts must not ship them.
         try write("plugin", to: sourceRoot.appendingPathComponent("Plugins/jev-optimizer/dist/optimizer-cli.js"))

@@ -3,13 +3,11 @@ import XCTest
 
 final class PriceTableTests: XCTestCase {
     override func setUp() {
-        ModelPrices.testFixtureURL = nil
-        ModelPrices.resetCache()
+        ModelPrices.cache.testURL = nil
     }
 
     override func tearDown() {
-        ModelPrices.testFixtureURL = nil
-        ModelPrices.resetCache()
+        ModelPrices.cache.testURL = nil
     }
 
     func testFixturePricesAModelAndHandRowWinsOnExactId() throws {
@@ -37,8 +35,7 @@ final class PriceTableTests: XCTestCase {
             ],
         ]
         try JSONValue.data(fixture).write(to: url)
-        ModelPrices.testFixtureURL = url
-        ModelPrices.resetCache()
+        ModelPrices.cache.testURL = url
 
         let only = try XCTUnwrap(ModelPrices.lookup("priced-only"))
         XCTAssertEqual(only.inputPerMTok, 4, accuracy: 1e-12)
@@ -80,8 +77,7 @@ final class PriceTableTests: XCTestCase {
     }
 
     func testMissingFixtureFallsBackToHandRows() throws {
-        ModelPrices.testFixtureURL = URL(fileURLWithPath: "/no/such/models.json")
-        ModelPrices.resetCache()
+        ModelPrices.cache.testURL = URL(fileURLWithPath: "/no/such/models.json")
         let price = try XCTUnwrap(ModelPrices.lookup("claude-opus-5"))
         XCTAssertEqual(price.inputPerMTok, 5, accuracy: 1e-12)
         XCTAssertEqual(price.source, .hand)

@@ -95,72 +95,93 @@ enum KeyKind {
 }
 
 enum Paths {
+    /// A non-empty path from the environment, or nil.
+    static func env(_ key: String) -> URL? {
+        guard let value = ProcessInfo.processInfo.environment[key], !value.isEmpty else { return nil }
+        return URL(fileURLWithPath: value)
+    }
+
     static var appSupport: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("Keysreallysafe", isDirectory: true)
     }
 
-    static var catalogDB: URL {
-        if let override = ProcessInfo.processInfo.environment["KEYS_CATALOG"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return appSupport.appendingPathComponent("catalog.db")
-    }
+    static var catalogDB: URL { env("KEYS_CATALOG") ?? appSupport.appendingPathComponent("catalog.db") }
 
     static var grokHome: URL {
-        if let override = ProcessInfo.processInfo.environment["GROK_HOME"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
+        env("GROK_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
     }
 
     static var claudeHome: URL {
-        if let override = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
+        env("CLAUDE_CONFIG_DIR") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
     }
 
     static var codexHome: URL {
-        if let override = ProcessInfo.processInfo.environment["CODEX_HOME"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+        env("CODEX_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     }
 }
 
 enum FixturePath {
+    /// The checkout's or install's Web/ and the Fixtures/ beside it, then the installed copy
+    /// under Application Support, so a `keys` found on PATH still finds its catalogs.
     static func resolve(fileName: String, envKey: String, testURL: URL?) -> URL? {
         if let testURL { return testURL }
-        if let override = ProcessInfo.processInfo.environment[envKey], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
+        if let override = Paths.env(envKey) { return override }
+        var roots: [URL] = []
         if let web = try? WebRoot.find() {
-            let sibling = web.deletingLastPathComponent().appendingPathComponent("Fixtures/\(fileName)")
-            if FileManager.default.isReadableFile(atPath: sibling.path) { return sibling }
-            let fromWeb = web.appendingPathComponent(fileName)
-            if FileManager.default.isReadableFile(atPath: fromWeb.path) { return fromWeb }
+            roots += [web, web.deletingLastPathComponent().appendingPathComponent("Fixtures")]
         }
-        let installed = Paths.appSupport.appendingPathComponent("Fixtures/\(fileName)")
-        if FileManager.default.isReadableFile(atPath: installed.path) { return installed }
-        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("Fixtures/\(fileName)")
-        if FileManager.default.isReadableFile(atPath: cwd.path) { return cwd }
-        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent()
-        for _ in 0..<12 {
-            let candidate = dir.appendingPathComponent("Fixtures/\(fileName)")
-            if FileManager.default.isReadableFile(atPath: candidate.path) { return candidate }
-            dir.deleteLastPathComponent()
+        roots += [Paths.appSupport.appendingPathComponent("Web"), Paths.appSupport.appendingPathComponent("Fixtures")]
+        return roots.map { $0.appendingPathComponent(fileName) }
+            .first { FileManager.default.isReadableFile(atPath: $0.path) }
+    }
+}
+
+/// A catalog file parsed once per process. Tests point `testURL` at a temp file, which
+/// drops the cached value; a missing or unusable file is logged once and gives `fallback`.
+final class FixtureCache<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private let fileName: String
+    private let envKey: String
+    private let missing: String
+    private let fallback: Value
+    private let parse: @Sendable (Data) -> Value?
+    private var cached: Value?
+    private var loggedMissing = false
+    private var overrideURL: URL?
+
+    init(fileName: String, envKey: String, missing: String, fallback: Value, parse: @escaping @Sendable (Data) -> Value?) {
+        self.fileName = fileName
+        self.envKey = envKey
+        self.missing = missing
+        self.fallback = fallback
+        self.parse = parse
+    }
+
+    var testURL: URL? {
+        get { lock.lock(); defer { lock.unlock() }; return overrideURL }
+        set { lock.lock(); overrideURL = newValue; cached = nil; loggedMissing = false; lock.unlock() }
+    }
+
+    var value: Value {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached { return cached }
+        let url = FixturePath.resolve(fileName: fileName, envKey: envKey, testURL: overrideURL)
+        let loaded = url.flatMap { try? Data(contentsOf: $0) }.flatMap(parse)
+        if loaded == nil, !loggedMissing {
+            loggedMissing = true
+            FileHandle.standardError.write(Data((missing + "\n").utf8))
         }
-        return nil
+        let result = loaded ?? fallback
+        cached = result
+        return result
     }
 }
 
 enum WebRoot {
     static func find() throws -> URL {
-        if let override = ProcessInfo.processInfo.environment["KEYS_WEB_ROOT"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
+        if let override = Paths.env("KEYS_WEB_ROOT") { return override }
         let fm = FileManager.default
         var candidates: [URL] = []
         candidates.append(URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("Web"))

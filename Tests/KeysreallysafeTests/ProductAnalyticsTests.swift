@@ -409,7 +409,7 @@ final class ProductAnalyticsTests: XCTestCase {
     }
 
     func testProviderAllowlistMatchesShippedCatalog() throws {
-        let data = try Data(contentsOf: Fixtures.root.appendingPathComponent("providers.json"))
+        let data = try Data(contentsOf: Fixtures.root.deletingLastPathComponent().appendingPathComponent("Web/providers.json"))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let ids = Set(try XCTUnwrap(object["providers"] as? [[String: Any]]).compactMap { $0["id"] as? String })
         XCTAssertEqual(ProductAnalytics.providers, ids)

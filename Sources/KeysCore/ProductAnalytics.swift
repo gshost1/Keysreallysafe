@@ -440,7 +440,7 @@ final class ProductAnalytics: @unchecked Sendable {
     static let sources = ["claude-local": "claude_code", "codex-local": "codex", "grok-local": "grok"]
     static let windows: Set<String> = ["claude_code|5h", "claude_code|weekly", "claude_code|fable",
                                        "codex|5h", "codex|weekly", "grok|weekly"]
-    /// The ids in Fixtures/providers.json. A custom provider id is text the user
+    /// The ids in Web/providers.json. A custom provider id is text the user
     /// chose, so anything else is sent as "other". Analytics/collector.py keeps
     /// the same list and a test on each side pins it to the fixture.
     static let providers: Set<String> = Set((

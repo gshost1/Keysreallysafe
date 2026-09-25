@@ -5,7 +5,7 @@ import Foundation
 enum ClaudeUsageCache {
     static let maxAge: TimeInterval = 60 * 60
 
-    static func configURL(home: URL, hasConfigOverride: Bool = !(ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"] ?? "").isEmpty) -> URL {
+    static func configURL(home: URL, hasConfigOverride: Bool = Paths.env("CLAUDE_CONFIG_DIR") != nil) -> URL {
         let user = FileManager.default.homeDirectoryForCurrentUser
         if !hasConfigOverride && home.standardizedFileURL == user.appendingPathComponent(".claude").standardizedFileURL {
             return user.appendingPathComponent(".claude.json")

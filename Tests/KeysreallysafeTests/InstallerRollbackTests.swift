@@ -64,7 +64,6 @@ final class InstallerRollbackTests: XCTestCase {
         try FileManager.default.createDirectory(at: fixtures, withIntermediateDirectories: true)
         try Data("<html>".utf8).write(to: web.appendingPathComponent("index.html"))
         try Data("{}".utf8).write(to: fixtures.appendingPathComponent("models.json"))
-        try Data("{}".utf8).write(to: fixtures.appendingPathComponent("providers.json"))
         let source = checkout.appendingPathComponent("keys")
         try Data(binaryText.utf8).write(to: source)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: source.path)
