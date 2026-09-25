@@ -73,10 +73,9 @@ Upgrade: build with `swift build`, then run `.build/debug/keys autostart` to upd
 
 ## 0.3.0 — 2026-09-06
 
-Agent key access, from `notes/2026-09-06-agent-key-access.md`. Verified live
-on 2026-09-06: grant from a Terminal and from a Codex sandbox (the prompt
-comes from the menubar site), cancel gives exit 3, screen lock revokes, and
-`keys test` lists 68 Ramp Router models.
+Agent key access. Verified live on 2026-09-06: grant from a Terminal and
+from a Codex sandbox (the prompt comes from the menubar site), cancel gives
+exit 3, screen lock revokes, and `keys test` lists 68 Ramp Router models.
 
 - Grants: `keys grant`, `keys grants`, `keys revoke` and a Grant action in the
   dashboard. One Touch ID per task; the token is used as the API key; bound to

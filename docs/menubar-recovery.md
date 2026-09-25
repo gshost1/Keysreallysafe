@@ -38,12 +38,3 @@ displaysleepnow`, then a user wake. `menubar.log` gained exactly one line,
 process, and the user confirmed the item was still visible afterwards. This
 exercises the trigger from the 22:19 incident but not full system sleep, unlock,
 or a display reconfiguration, and it does not reproduce the original loss.
-
-Independent read-only review found no blocking issues. The release build passed,
-was signed with the existing stable Apple identity, and was installed through
-`keys autostart` using the existing installed web assets. The installed binary
-hash matched the release binary and the dashboard returned HTTP 200 afterward.
-This local update has not been newly notarized or published.
-
-Existing licensing, stylesheet, acceptance-document, and UI-test changes were
-preserved in separate commits.
