@@ -684,6 +684,8 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .hint { font-size: 12px; color: var(--fg-3); margin-bottom: 12px; }
 .err { font-size: 12px; color: var(--danger); margin-bottom: 10px; }
 .err:empty { display: none; }
+/* A pane's last load failure and the engine-down banner, aligned with the pane content. */
+.pane-error, .engine-down { margin: 0; padding: 10px 16px 0; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .secret {
   display: block;
@@ -773,7 +775,7 @@ main { flex: 1; min-height: 0; overflow: auto; }
     max-width: 100%;
   }
   .status { max-width: 140px; }
-  .filters, .chart-top, .live-status, .caption, .chart, .usage-totals { padding-left: 12px; padding-right: 12px; }
+  .filters, .chart-top, .live-status, .caption, .chart, .usage-totals, .pane-error, .engine-down { padding-left: 12px; padding-right: 12px; }
   .chart svg { height: 170px; }
   .filters { gap: 8px 12px; }
   .chips[aria-label="Unit"] { margin-left: 0; }

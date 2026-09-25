@@ -32,6 +32,7 @@
   </header>
 
   <main>
+    <p id="engine-down" class="err engine-down" role="alert" hidden>Engine is not answering. Run keys dashboard or keys menubar, then reload.</p>
     <section id="pane-usage" role="tabpanel" aria-labelledby="nav-usage">
       <div id="live-status" class="live-status" hidden></div>
       <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac. <button type="button" class="link" id="usage-empty-help">See how Keys works</button></p>
@@ -51,6 +52,7 @@
     </section>
 
     <section id="pane-chart" role="tabpanel" aria-labelledby="nav-chart" hidden>
+      <p id="chart-error" class="err pane-error" role="alert"></p>
       <div class="filters">
         <div class="chips" role="radiogroup" aria-label="Range">
           <button type="button" role="radio" data-range="today" aria-checked="true">Today</button>
@@ -95,6 +97,7 @@
     </section>
 
     <section id="pane-keys" role="tabpanel" aria-labelledby="nav-keys" hidden>
+      <p id="keys-error" class="err pane-error" role="alert"></p>
       <div id="grants" class="grants" hidden>
         <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind.</span></div>
         <ul id="grants-list" class="grants-list"></ul>

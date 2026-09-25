@@ -1259,140 +1259,71 @@ test("three panes: the shortcuts and arrow keys reach Usage, Chart and Keys and 
   assert.doesNotMatch(await page.locator("#dlg-help .shortcuts").textContent(), /Optimizer/);
 });
 
+// ---------- per-pane load failures ----------
+
+// Each loader reports its own last result in its own pane. The two overlap
+// routinely (the startup key load is still in flight when the Chart pane asks
+// for spend), so neither pane's recovery may touch the other's failure.
+const keysDown = { status: 500, raw: "vault is locked" };
+const chartDown = { status: 503, body: { error: "engine_busy" } };
+const slot = (page, id) => page.locator("#" + id).textContent();
+const waitSlot = (page, id, want) =>
+  page.waitForFunction(([id, want]) => document.getElementById(id).textContent === want, [id, want],
+    { polling: 100, timeout: 5000 });
+
 test("a chart request that fails leaves a sticky reason and no stale drawing", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  failures.set(rule("GET", "/api/spend"), { status: 503, body: { error: "engine_busy" } });
+  failures.set(rule("GET", "/api/spend"), chartDown);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("radio", { name: "This month" }).click();
-  await page.waitForFunction(() => document.getElementById("status").textContent === "engine_busy", null, { polling: 100 });
+  await waitSlot(page, "chart-error", "engine_busy");
   await page.waitForTimeout(4500);
-  assert.equal(await status(page), "engine_busy", "a failed load must stay reported");
+  assert.equal(await slot(page, "chart-error"), "engine_busy", "a failed load must stay reported");
+  assert.equal(await page.locator("#chart-error").isVisible(), true);
 
   failures.delete(rule("GET", "/api/spend"));
   await page.getByRole("radio", { name: "This week" }).click();
-  await page.waitForFunction(() => document.getElementById("status").textContent !== "engine_busy");
+  await waitSlot(page, "chart-error", "");
+  assert.equal(await page.locator("#chart-error").isVisible(), false, "an empty slot takes no space");
 });
 
-// ---------- overlapping loaders ----------
-
-// The key list and the spend series share one status line, and they overlap
-// routinely: the startup key load is still in flight when the user opens the
-// Chart pane. Either can finish first, so each direction is exercised, and a
-// success may only take down the failure it is actually the answer to.
-const keysDown = { status: 500, raw: "vault is locked" };
-const chartDown = { status: 503, body: { error: "engine_busy" } };
-const waitStatus = (page, text) =>
-  page.waitForFunction((want) => document.getElementById("status").textContent === want, text,
-    { polling: 100, timeout: 5000 });
-
-test("a key list arriving late does not clear a chart that is still failing", async (page, origin) => {
-  // The real startup order: a slow quiet key load is outstanding from page
-  // load, and the chart fails underneath it.
-  delays.set(rule("GET", "/api/keys"), 1200);
-  failures.set(rule("GET", "/api/spend"), chartDown);
+test("a key list that fails reports in the Keys pane and clears on reload", async (page, origin) => {
   await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  failures.set(rule("GET", "/api/keys"), keysDown);
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await waitSlot(page, "keys-error", "vault is locked");
+
+  failures.delete(rule("GET", "/api/keys"));
   await page.getByRole("tab", { name: "Chart" }).click();
-  await waitStatus(page, "engine_busy");
-
-  // Rendered rows are how the key load announces it succeeded; the pane is
-  // hidden, so the rows are only attached.
-  await page.locator('#keys-body tr[data-name="alpha"]').waitFor({ state: "attached", timeout: 5000 });
-  await page.waitForTimeout(300);
-  assert.equal(await status(page), "engine_busy", "a key list must not report the chart recovered");
-
-  failures.delete(rule("GET", "/api/spend"));
-  await page.getByRole("radio", { name: "This week" }).click();
-  await waitStatus(page, "");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await waitSlot(page, "keys-error", "");
 });
 
-test("a chart recovering does not clear a key list that is still failing", async (page, origin) => {
+test("one pane recovering leaves the other pane's failure alone", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   failures.set(rule("GET", "/api/spend"), chartDown);
   await page.getByRole("tab", { name: "Chart" }).click();
-  await waitStatus(page, "engine_busy");
+  await waitSlot(page, "chart-error", "engine_busy");
 
   failures.set(rule("GET", "/api/keys"), keysDown);
   await page.getByRole("tab", { name: "Keys" }).click();
-  await waitStatus(page, "vault is locked");
-
-  // The chart is the one that comes back. Its own message is no longer on the
-  // line, so its recovery has nothing to take down.
-  failures.delete(rule("GET", "/api/spend"));
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.waitForTimeout(400);
-  assert.equal(await status(page), "vault is locked", "a chart recovery must not report the vault readable");
-
-  failures.delete(rule("GET", "/api/keys"));
-  await page.getByRole("tab", { name: "Keys" }).click();
-  await waitStatus(page, "");
-});
-
-test("recovering one loader uncovers the other's unresolved failure", async (page, origin) => {
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  failures.set(rule("GET", "/api/spend"), chartDown);
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await waitStatus(page, "engine_busy");
-
-  failures.set(rule("GET", "/api/keys"), keysDown);
-  await page.getByRole("tab", { name: "Keys" }).click();
-  await waitStatus(page, "vault is locked");
-
-  // The key list comes back while the chart is still broken, so the line falls
-  // back to the chart's failure rather than reading healthy.
-  failures.delete(rule("GET", "/api/keys"));
-  await page.getByRole("tab", { name: "Keys" }).click();
-  await waitStatus(page, "engine_busy");
-  await page.waitForTimeout(4500);
-  assert.equal(await status(page), "engine_busy", "the uncovered failure is sticky like any other");
-
-  // And the line is not stuck: the last failure to recover empties it.
-  failures.delete(rule("GET", "/api/spend"));
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await waitStatus(page, "");
-});
-
-test("the engine coming back leaves a chart failure that outlived the outage", async (page, origin) => {
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  failures.set(rule("GET", "/api/spend"), chartDown);
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await waitStatus(page, "engine_busy");
-
-  // The engine dies: its banner, and the key load's unreachable message, both
-  // land on top of the chart's 503.
-  failures.set(rule("GET", "/api/keys"), "drop");
-  await page.getByRole("tab", { name: "Keys" }).click();
-  await waitStatus(page, "Can't reach the local site. Is keys dashboard still running?");
-
-  // Answering again retires the outage, whoever reported it, but the chart's
-  // own refusal has not been retried and is still current.
-  failures.delete(rule("GET", "/api/keys"));
-  await page.getByRole("tab", { name: "Keys" }).click();
-  await waitStatus(page, "engine_busy");
+  await waitSlot(page, "keys-error", "vault is locked");
 
   failures.delete(rule("GET", "/api/spend"));
   await page.getByRole("tab", { name: "Chart" }).click();
-  await waitStatus(page, "");
-});
+  await waitSlot(page, "chart-error", "");
+  assert.equal(await slot(page, "keys-error"), "vault is locked", "a chart recovery must not report the vault readable");
 
-test("a user message outlives the loader recovery that lands under it", async (page, origin) => {
-  await page.clock.install();
-  await openKeys(page, origin);
   failures.set(rule("GET", "/api/spend"), chartDown);
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await waitStatus(page, "engine_busy");
+  await page.getByRole("radio", { name: "This month" }).click();
+  await waitSlot(page, "chart-error", "engine_busy");
+  failures.delete(rule("GET", "/api/keys"));
   await page.getByRole("tab", { name: "Keys" }).click();
-
-  // Copy writes its own message, then refreshes the list 2.5 s later: that
-  // refresh succeeding may not wipe what the user is reading.
-  await rowButton(page, "bravo", "copy").click();
-  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
-  await page.clock.runFor(2600);
-  await page.waitForTimeout(200);
-  assert.equal(await status(page), "Copied bravo. Clipboard wipes in 20 s.");
+  await waitSlot(page, "keys-error", "");
+  assert.equal(await slot(page, "chart-error"), "engine_busy", "a key list must not report the chart recovered");
 });
 
 // ---------- failed requests ----------
@@ -1403,17 +1334,19 @@ async function loseEngine(page) {
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
   failures.set(rule("GET", "/api/keys"), "drop");
   await page.clock.runFor(2600);
-  await page.waitForFunction(() => document.getElementById("status").textContent.includes("Can't reach"));
+  await page.locator("#engine-down").waitFor({ state: "visible" });
 }
 
 test("an unreachable engine shows a sticky banner", async (page, origin) => {
   await page.clock.install();
   await openKeys(page, origin);
   await loseEngine(page);
-  assert.equal(await status(page), "Can't reach the local site. Is keys dashboard still running?");
+  assert.equal(await slot(page, "engine-down"), "Engine is not answering. Run keys dashboard or keys menubar, then reload.");
+  // The banner owns reachability, so the pane does not repeat it.
+  assert.equal(await slot(page, "keys-error"), "");
   // Sticky: it must outlive the ordinary 4 s status timeout.
   await page.clock.runFor(5000);
-  assert.match(await status(page), /Can't reach the local site/);
+  assert.equal(await page.locator("#engine-down").isVisible(), true);
 });
 
 test("the unreachable-engine banner clears when the engine answers again", async (page, origin) => {
@@ -1422,11 +1355,11 @@ test("the unreachable-engine banner clears when the engine answers again", async
   await loseEngine(page);
 
   // Recovery through the background status poll, with no user action to
-  // overwrite the banner. A stale outage notice must not outlive the outage.
+  // take the banner down. A stale outage notice must not outlive the outage.
   failures.delete(rule("GET", "/api/keys"));
   await page.clock.runFor(16000);
-  await page.waitForFunction(() => document.getElementById("status").textContent === "", null, { timeout: 5000 });
-  assert.equal(await status(page), "");
+  await page.locator("#engine-down").waitFor({ state: "hidden", timeout: 5000 });
+  assert.doesNotMatch(await slot(page, "keys-error"), /Can't reach/);
 });
 
 test("a stale launch token is reported as a page that must be reloaded", async (page, origin) => {

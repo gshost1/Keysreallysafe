@@ -52,7 +52,6 @@
     keyIndex: [],
     catalogVersion: null,
     status: null,
-    engineDown: false,
   };
 
   // Hand-picked shades per family. It is a palette size, not a limit on how many models a family
@@ -221,43 +220,12 @@
   // analytics.js loads after this file and reuses its fetch wrapper and token format. Published
   // before the rest of startup so a later failure here cannot take the Privacy dialog down too.
   window.KeysUI = Object.freeze({ api, fmtTokens });
-  // A sticky message has no timer, so whoever puts a failure on the line owns
-  // taking it down: otherwise a stale error outlives the failure it described,
-  // and the user reads "engine_busy" over a chart that has since loaded. The
-  // two loaders and the reachability check post here independently and overlap
-  // routinely — the startup key load is still in flight when the chart pane
-  // asks for spend — so a failure is filed under its owner and a recovery
-  // takes down only what that owner filed. Anything else on the line is left
-  // alone, so neither a still-current failure from the other loader nor a
-  // newer "Copied bravo" is swallowed by an unrelated success.
-  const ENGINE_DOWN = "Engine is not answering. Run keys dashboard or keys menubar, then reload.";
-  const OWNER_SPEND = "spend", OWNER_KEYS = "keys", OWNER_ENGINE = "engine";
-  const stickyErrors = new Map();   // owner -> the exact text that owner last posted
-  function sayError(owner, msg) {
-    stickyErrors.delete(owner);     // re-inserted so the newest poster sorts last
-    stickyErrors.set(owner, msg);
-    say(msg, true);
-  }
-  function clearError(owner) {
-    const mine = stickyErrors.get(owner);
-    stickyErrors.delete(owner);
-    // Someone else's message is on the line: this recovery has nothing to say
-    // about it, and blanking it is how the stale-error bug runs in reverse.
-    if (!mine || $("status").textContent !== mine) return;
-    // Taking this one down uncovers whichever failure is still unresolved,
-    // rather than leaving a broken pane looking healthy.
-    const waiting = [...stickyErrors.values()];
-    say(waiting.length ? waiting[waiting.length - 1] : "", true);
-  }
-  function setEngineDown(down) {
-    if (state.engineDown === down) return;
-    state.engineDown = down;
-    if (down) return sayError(OWNER_ENGINE, ENGINE_DOWN);
-    clearError(OWNER_ENGINE);
-    // A loader's UNREACHABLE came out of the same dead fetch as the banner, so
-    // the engine answering again retires it too, whoever filed it.
-    for (const [owner, msg] of [...stickyErrors]) if (msg === UNREACHABLE) clearError(owner);
-  }
+  // Each loader reports its last result in its own pane, so one loader's recovery can never
+  // take down, or be hidden by, the other's failure, and the status line is left to transient
+  // messages. An outage belongs to the banner alone: a pane never keeps a "Can't reach" that
+  // would outlive the engine answering again through the status poll.
+  function paneError(id, e) { $(id).textContent = e && e.message !== UNREACHABLE ? e.message : ""; }
+  function setEngineDown(down) { $("engine-down").hidden = !down; }
 
   // ---------- panes ----------
 
@@ -599,11 +567,11 @@
       }
       renderProviderFilter();
       renderKeysFilter();
-      clearError(OWNER_SPEND);
+      paneError("chart-error");
       renderSpend();
     } catch (e) {
       if (seq !== spendSeq) return;
-      sayError(OWNER_SPEND, e.message);
+      paneError("chart-error", e);
     }
   }
 
@@ -1413,12 +1381,12 @@
       const data = await api("/api/keys");
       if (seq !== keysSeq) return;
       state.keys = data.keys || [];
-      clearError(OWNER_KEYS);
+      paneError("keys-error");
       renderKeys(opts);
       loadGrants();
     } catch (e) {
       if (seq !== keysSeq) return;
-      if (!opts.quiet) sayError(OWNER_KEYS, e.message);
+      if (!opts.quiet) paneError("keys-error", e);
     }
   }
 
