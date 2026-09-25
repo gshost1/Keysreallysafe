@@ -75,7 +75,7 @@ enum PlanCatalog {
         openaiWeekUsdEstimate: Double?,
         codexHome: URL,
         weekPeriod: SpendPeriod? = nil,
-        openaiLimits: CodexRateSnapshot? = nil
+        now: Date
     ) -> [ToolStatus] {
         let hasCodexSessions = FileManager.default.fileExists(
             atPath: codexHome.appendingPathComponent("sessions", isDirectory: true).path
@@ -97,16 +97,7 @@ enum PlanCatalog {
             usageNote: openaiNote,
             period: weekPeriod
         )
-        if let limits = openaiLimits {
-            openai.fiveHourPct = limits.fiveHourPct
-            openai.fiveHourResetsAt = limits.fiveHourResetsAt
-            openai.weeklyPct = limits.weeklyPct
-            openai.weeklyResetsAt = limits.weeklyResetsAt
-            openai.plan = limits.plan
-            openai.snapshotAt = limits.snapshotAt
-            openai.limitReached = limits.limitReached
-            openai.usageNote = limits.usageNote
-        }
+        LiveStatus.applyCodexLimits(to: &openai, home: codexHome, now: now)
         return [
             grok,
             claude,
@@ -167,17 +158,6 @@ enum PlanCatalog {
     }
 }
 
-struct CodexRateSnapshot: Equatable {
-    var fiveHourPct: Int?
-    var fiveHourResetsAt: String?
-    var weeklyPct: Int?
-    var weeklyResetsAt: String?
-    var plan: String?
-    var snapshotAt: String?
-    var limitReached: String?
-    var usageNote: String
-}
-
 struct LiveStatus: Equatable {
     var grok: ToolStatus?
     var claude: ToolStatus?
@@ -201,19 +181,18 @@ struct LiveStatus: Equatable {
         grokHome: URL,
         claudeHome: URL,
         grokWeekUsd: Double,
-        claudePlan: URL = Paths.appSupport.appendingPathComponent("claude-plan.json"),
+        claudePlan: URL,
         openaiWeekTokens: Int = 0,
         openaiWeekUsdEstimate: Double? = nil,
-        codexHome: URL = Paths.codexHome,
+        codexHome: URL,
         weekPeriod: SpendPeriod? = nil,
         now: Date = Date()
-    ) throws -> LiveStatus {
+    ) -> LiveStatus {
         let grok = grokRow(weekUsd: grokWeekUsd, period: weekPeriod, home: grokHome, now: now)
         let claude = ClaudeUsageCache.merge(
             ClaudeUsageCache.read(home: claudeHome, now: now),
             into: readClaudePlan(home: claudeHome, extra: claudePlan)
         )
-        let openaiLimits = readCodexLimits(home: codexHome, now: now)
         return LiveStatus(
             grok: grok,
             claude: claude,
@@ -224,7 +203,7 @@ struct LiveStatus: Equatable {
                 openaiWeekUsdEstimate: openaiWeekUsdEstimate,
                 codexHome: codexHome,
                 weekPeriod: weekPeriod,
-                openaiLimits: openaiLimits
+                now: now
             )
         )
     }
@@ -263,14 +242,33 @@ struct LiveStatus: Equatable {
             weeklyUsd: weekUsd,
             period: period
         )
-        guard let snap = readGrokCredits(home: home, now: now) else { return row }
-        row.weeklyPct = snap.weeklyPct
-        row.weeklyResetsAt = snap.weeklyResetsAt
-        row.plan = snap.plan
-        row.snapshotAt = snap.snapshotAt
-        row.usageNote = snap.usageNote
-        row.onDemandUsed = snap.onDemandUsed
-        row.onDemandCap = snap.onDemandCap
+        let marker = "billing: fetched credits config"
+        guard let text = tailText(url: home.appendingPathComponent("logs/unified.jsonl")),
+              let line = text.split(separator: "\n").last(where: { $0.contains(marker) }),
+              let obj = (try? JSONSerialization.jsonObject(with: Data(line.utf8))).flatMap(JSONValue.object),
+              JSONValue.string(obj["msg"]) == marker
+        else { return row }
+        let ctx = JSONValue.object(obj["ctx"]) ?? [:]
+        let config = JSONValue.object(ctx["config"]) ?? [:]
+        let period = JSONValue.object(config["currentPeriod"]) ?? [:]
+        row.plan = JSONValue.string(ctx["subscriptionTier"]) ?? JSONValue.string(config["subscriptionTier"])
+        row.snapshotAt = JSONValue.string(obj["ts"])
+        if let cap = wrappedVal(config["onDemandCap"]), cap > 0 {
+            row.onDemandCap = cap
+            row.onDemandUsed = wrappedVal(config["onDemandUsed"])
+        }
+        let end = JSONValue.string(period["end"])
+        if let end { row.weeklyResetsAt = UTC.parse(end).map(UTC.iso) ?? end }
+        let type = JSONValue.string(period["type"])
+        guard type == "USAGE_PERIOD_TYPE_WEEKLY" else {
+            row.usageNote = type
+            return row
+        }
+        if let end, let date = UTC.parse(end), date <= now {
+            row.usageNote = "Quota resets happened since the last Grok prompt; run a Grok prompt to refresh."
+            return row
+        }
+        row.weeklyPct = percent(config["creditUsagePercent"])
         return row
     }
 
@@ -312,32 +310,6 @@ struct LiveStatus: Equatable {
 extension LiveStatus {
     static let tailMaxBytes = 256 * 1024
 
-    private struct FileStamp: Equatable {
-        var path: String
-        var size: Int64
-        var mtimeMs: Int64
-    }
-
-    private struct GrokCreditsRaw: Equatable {
-        var creditUsagePercent: Int?
-        var periodType: String?
-        var periodEnd: String?
-        var plan: String?
-        var snapshotAt: String?
-        var onDemandUsed: Int?
-        var onDemandCap: Int?
-    }
-
-    private struct GrokCreditsSnapshot {
-        var weeklyPct: Int?
-        var weeklyResetsAt: String?
-        var plan: String?
-        var snapshotAt: String?
-        var usageNote: String?
-        var onDemandUsed: Int?
-        var onDemandCap: Int?
-    }
-
     private struct CodexWindowRaw: Equatable {
         var pct: Int?
         var resetsAtUnix: Int64?
@@ -351,132 +323,28 @@ extension LiveStatus {
         var limitReached: String?
     }
 
-    private static let cacheLock = NSLock()
-    nonisolated(unsafe) private static var grokCache: (FileStamp, GrokCreditsRaw)?
-    nonisolated(unsafe) private static var openaiCache: (FileStamp, CodexRateRaw)?
-
-    private static func readGrokCredits(home: URL, now: Date) -> GrokCreditsSnapshot? {
-        let url = home.appendingPathComponent("logs/unified.jsonl")
-        guard let stamp = fileStamp(url),
-              let raw = grokRaw(url: url, stamp: stamp)
-        else { return nil }
-        return applyGrok(raw, now: now)
-    }
-
-    private static func grokRaw(url: URL, stamp: FileStamp) -> GrokCreditsRaw? {
-        cacheLock.lock()
-        if let cached = grokCache, cached.0 == stamp {
-            let raw = cached.1
-            cacheLock.unlock()
-            return raw
-        }
-        cacheLock.unlock()
-        guard let text = tailText(url: url),
-              let line = lastLine(in: text, containing: "billing: fetched credits config"),
-              let raw = parseGrokBilling(line)
-        else { return nil }
-        cacheLock.lock()
-        grokCache = (stamp, raw)
-        cacheLock.unlock()
-        return raw
-    }
-
-    private static func parseGrokBilling(_ line: String) -> GrokCreditsRaw? {
-        guard let data = line.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
-              JSONValue.string(obj["msg"]) == "billing: fetched credits config"
-        else { return nil }
-        let ctx = JSONValue.object(obj["ctx"]) ?? [:]
-        let config = JSONValue.object(ctx["config"]) ?? [:]
-        let period = JSONValue.object(config["currentPeriod"]) ?? [:]
-        let cap = wrappedVal(config["onDemandCap"])
-        let used = wrappedVal(config["onDemandUsed"])
-        return GrokCreditsRaw(
-            creditUsagePercent: percent(config["creditUsagePercent"]),
-            periodType: JSONValue.string(period["type"]),
-            periodEnd: JSONValue.string(period["end"]),
-            plan: JSONValue.string(ctx["subscriptionTier"])
-                ?? JSONValue.string(config["subscriptionTier"]),
-            snapshotAt: JSONValue.string(obj["ts"]),
-            onDemandUsed: used,
-            onDemandCap: cap
-        )
-    }
-
-    private static func applyGrok(_ raw: GrokCreditsRaw, now: Date) -> GrokCreditsSnapshot {
-        var snap = GrokCreditsSnapshot(
-            plan: raw.plan,
-            snapshotAt: raw.snapshotAt
-        )
-        if let cap = raw.onDemandCap, cap > 0 {
-            snap.onDemandCap = cap
-            snap.onDemandUsed = raw.onDemandUsed
-        }
-        if let end = raw.periodEnd {
-            snap.weeklyResetsAt = isoNormalize(end) ?? end
-        }
-        guard raw.periodType == "USAGE_PERIOD_TYPE_WEEKLY" else {
-            snap.usageNote = raw.periodType
-            return snap
-        }
-        if let end = raw.periodEnd, let date = UTC.parse(end), date <= now {
-            snap.weeklyPct = nil
-            snap.usageNote = "Quota resets happened since the last Grok prompt; run a Grok prompt to refresh."
-            return snap
-        }
-        snap.weeklyPct = raw.creditUsagePercent
-        return snap
-    }
-
-    static func readCodexLimits(home: URL, now: Date) -> CodexRateSnapshot? {
-        let sessions = home.appendingPathComponent("sessions", isDirectory: true)
-        guard let url = newestRollout(in: sessions),
-              let stamp = fileStamp(url),
-              let raw = openaiRaw(url: url, stamp: stamp)
-        else { return nil }
-        return applyCodex(raw, now: now)
-    }
-
-    private static func openaiRaw(url: URL, stamp: FileStamp) -> CodexRateRaw? {
-        cacheLock.lock()
-        if let cached = openaiCache, cached.0 == stamp {
-            let raw = cached.1
-            cacheLock.unlock()
-            return raw
-        }
-        cacheLock.unlock()
-        guard let text = tailText(url: url) else { return nil }
-        // Last line with a 300/10080 window. Codex often appends a later
-        // `premium` rate_limits object with null primary/secondary; skip those.
+    /// Fills the OpenAI · Codex row from the newest rollout's last rate_limits line
+    /// that has a 300- or 10080-minute window. Codex often appends a later `premium`
+    /// rate_limits object with null windows; that one is used only if nothing else is.
+    static func applyCodexLimits(to row: inout ToolStatus, home: URL, now: Date) {
+        guard let url = newestRollout(in: home.appendingPathComponent("sessions", isDirectory: true)),
+              let text = tailText(url: url)
+        else { return }
         var fallback: CodexRateRaw?
         var chosen: CodexRateRaw?
-        var end = text.endIndex
-        while end > text.startIndex {
-            let slice = text[..<end]
-            let start: String.Index
-            if let nl = slice.lastIndex(of: "\n") {
-                start = text.index(after: nl)
-            } else {
-                start = text.startIndex
-            }
-            let line = text[start..<end]
-            if line.contains("\"rate_limits\""),
-               let raw = parseCodexLimits(String(line))
-            {
-                if raw.fiveHour != nil || raw.weekly != nil {
-                    chosen = raw
-                    break
-                }
-                if fallback == nil { fallback = raw }
-            }
-            if start == text.startIndex { break }
-            end = text.index(before: start)
+        for line in text.split(separator: "\n").reversed() where line.contains("\"rate_limits\"") {
+            guard let raw = parseCodexLimits(String(line)) else { continue }
+            if raw.fiveHour != nil || raw.weekly != nil { chosen = raw; break }
+            if fallback == nil { fallback = raw }
         }
-        guard let raw = chosen ?? fallback else { return nil }
-        cacheLock.lock()
-        openaiCache = (stamp, raw)
-        cacheLock.unlock()
-        return raw
+        guard let raw = chosen ?? fallback else { return }
+        let plan = raw.planType.map { "ChatGPT \($0.capitalized)" }
+        (row.fiveHourPct, row.fiveHourResetsAt) = liveWindow(raw.fiveHour, now: now)
+        (row.weeklyPct, row.weeklyResetsAt) = liveWindow(raw.weekly, now: now)
+        row.plan = plan
+        row.snapshotAt = raw.snapshotAt
+        row.limitReached = raw.limitReached
+        row.usageNote = "Codex limits on the \(plan ?? "ChatGPT Plus") plan. Chat message caps are not in local files."
     }
 
     private static func parseCodexLimits(_ line: String) -> CodexRateRaw? {
@@ -507,24 +375,6 @@ extension LiveStatus {
             planType: JSONValue.string(limits["plan_type"]),
             snapshotAt: JSONValue.string(obj["timestamp"]),
             limitReached: reached
-        )
-    }
-
-    private static func applyCodex(_ raw: CodexRateRaw, now: Date) -> CodexRateSnapshot {
-        let planType = raw.planType
-        let plan = planType.map { "ChatGPT \($0.capitalized)" }
-        let planForNote = plan ?? "ChatGPT Plus"
-        let five = liveWindow(raw.fiveHour, now: now)
-        let week = liveWindow(raw.weekly, now: now)
-        return CodexRateSnapshot(
-            fiveHourPct: five.pct,
-            fiveHourResetsAt: five.resetsAt,
-            weeklyPct: week.pct,
-            weeklyResetsAt: week.resetsAt,
-            plan: plan,
-            snapshotAt: raw.snapshotAt,
-            limitReached: raw.limitReached,
-            usageNote: "Codex limits on the \(planForNote) plan. Chat message caps are not in local files."
         )
     }
 
@@ -569,16 +419,6 @@ extension LiveStatus {
         return best?.url
     }
 
-    private static func fileStamp(_ url: URL) -> FileStamp? {
-        guard FileManager.default.isReadableFile(atPath: url.path),
-              let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        else { return nil }
-        let size = Int64(values.fileSize ?? 0)
-        let mtime = values.contentModificationDate ?? Date.distantPast
-        let mtimeMs = Int64((mtime.timeIntervalSince1970 * 1000.0).rounded())
-        return FileStamp(path: url.standardizedFileURL.path, size: size, mtimeMs: mtimeMs)
-    }
-
     /// Last `maxBytes` of a jsonl file. If the file is larger, the first (possibly
     /// mid-line) chunk is dropped so we never parse a split line or the whole file.
     static func tailText(url: URL, maxBytes: Int = tailMaxBytes) -> String? {
@@ -595,26 +435,6 @@ extension LiveStatus {
             return String(decoding: data[next...], as: UTF8.self)
         }
         return String(decoding: data, as: UTF8.self)
-    }
-
-    private static func lastLine(in text: String, containing needle: String) -> String? {
-        var end = text.endIndex
-        while end > text.startIndex {
-            let slice = text[..<end]
-            let start: String.Index
-            if let nl = slice.lastIndex(of: "\n") {
-                start = text.index(after: nl)
-            } else {
-                start = text.startIndex
-            }
-            let line = text[start..<end]
-            if line.contains(needle) {
-                return String(line.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
-            if start == text.startIndex { break }
-            end = text.index(before: start)
-        }
-        return nil
     }
 
     private static func percent(_ any: Any?) -> Int? {
@@ -641,9 +461,5 @@ extension LiveStatus {
         if let n = any as? NSNumber { return n.stringValue }
         if let b = any as? Bool { return b ? "true" : "false" }
         return nil
-    }
-
-    private static func isoNormalize(_ string: String) -> String? {
-        UTC.parse(string).map(UTC.iso)
     }
 }

@@ -26,7 +26,7 @@ final class ClaudeUsageTests: XCTestCase {
     func testRealUsageCacheShapeFeedsAllThreeWindowsAndAPI() throws {
         let home = try TempDir.make()
         try writeCache(home: home)
-        let status = try LiveStatus.scan(grokHome: home, claudeHome: home, grokWeekUsd: 0, claudePlan: home.appendingPathComponent("missing.json"), codexHome: home, now: now)
+        let status = LiveStatus.scan(grokHome: home, claudeHome: home, grokWeekUsd: 0, claudePlan: home.appendingPathComponent("missing.json"), codexHome: home, now: now)
         let row = try XCTUnwrap(status.claude)
         XCTAssertEqual(row.fiveHourPct, 4)
         XCTAssertEqual(row.weeklyPct, 40)
@@ -52,7 +52,7 @@ final class ClaudeUsageTests: XCTestCase {
             "five_hour": ["used_percentage": 4],
             "model_scoped": [["display_name": "Fable", "utilization": 72, "resets_at": "2026-09-08T00:00:00Z"]],
         ]).write(to: hud)
-        let status = try LiveStatus.scan(grokHome: home, claudeHome: home, grokWeekUsd: 0, claudePlan: hud, codexHome: home, now: now)
+        let status = LiveStatus.scan(grokHome: home, claudeHome: home, grokWeekUsd: 0, claudePlan: hud, codexHome: home, now: now)
         XCTAssertNil(status.claude?.fablePct)
         XCTAssertEqual(status.claude?.fiveHourPct, 4)
     }

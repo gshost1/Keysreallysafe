@@ -930,10 +930,11 @@ final class KeysService: @unchecked Sendable {
         let grokWeek = try spend(range: .week, by: .model, source: .grok)
         let openaiWeek = try spend(range: .week, by: .model, source: .openai)
         let period = SpendPeriod.calendarWeek(now: Date(), timeZone: .current)
-        var status = try LiveStatus.scan(
+        var status = LiveStatus.scan(
             grokHome: grokHome,
             claudeHome: claudeHome,
             grokWeekUsd: grokWeek.totals.grokUsd,
+            claudePlan: Paths.appSupport.appendingPathComponent("claude-plan.json"),
             openaiWeekTokens: openaiWeek.totals.openaiTokens,
             openaiWeekUsdEstimate: openaiWeek.totals.openaiUsdEstimate,
             codexHome: codexHome,

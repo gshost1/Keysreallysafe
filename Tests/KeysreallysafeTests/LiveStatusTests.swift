@@ -3,10 +3,12 @@ import XCTest
 
 final class LiveStatusTests: XCTestCase {
     func testGrokWeeklyUsdNoContextNoFiveHour() throws {
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: try TempDir.make(),
             claudeHome: try TempDir.make(),
-            grokWeekUsd: 2.81
+            grokWeekUsd: 2.81,
+            claudePlan: try TempDir.make().appendingPathComponent("missing-plan.json"),
+            codexHome: try TempDir.make()
         )
         let grok = try XCTUnwrap(status.grok)
         XCTAssertEqual(grok.source, "grok")
@@ -34,10 +36,12 @@ final class LiveStatusTests: XCTestCase {
             ],
         ]
         try JSONValue.data(snap).write(to: dir.appendingPathComponent("usage.json"))
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: try TempDir.make(),
             claudeHome: home,
-            grokWeekUsd: 0
+            grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home
         )
         let claude = try XCTUnwrap(status.claude)
         XCTAssertEqual(claude.fiveHourPct, 22)
@@ -53,11 +57,11 @@ final class LiveStatusTests: XCTestCase {
 
     func testClaudeMissingSnapshotLeavesPercentsNil() throws {
         let home = try TempDir.make()
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: try TempDir.make(),
             claudeHome: home,
             grokWeekUsd: 0,
-            claudePlan: home.appendingPathComponent("missing-plan.json")
+            claudePlan: home.appendingPathComponent("missing-plan.json"), codexHome: home
         )
         XCTAssertEqual(status.claude?.fiveHourPct, nil)
         XCTAssertEqual(status.claude?.weeklyPct, nil)
@@ -98,7 +102,7 @@ final class LiveStatusTests: XCTestCase {
 
     func testPlansIncludeOpenAIChatGPTAndCursor() throws {
         let home = try TempDir.make()
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 1,
@@ -133,7 +137,7 @@ final class LiveStatusTests: XCTestCase {
             endDay: "2026-09-05",
             label: "Sun Aug 30 – Sat Sep 5"
         )
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 2.5,
@@ -174,11 +178,12 @@ final class LiveStatusTests: XCTestCase {
                 end: "2026-09-11T18:04:26.160272+00:00"
             ),
         ])
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 1.5,
             claudePlan: home.appendingPathComponent("missing.json"),
+            codexHome: home,
             now: now
         )
         let grok = try XCTUnwrap(status.grok)
@@ -203,10 +208,12 @@ final class LiveStatusTests: XCTestCase {
                 end: "2026-09-04T18:04:26.160272+00:00"
             ),
         ])
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home,
             now: now
         )
         let grok = try XCTUnwrap(status.grok)
@@ -231,10 +238,12 @@ final class LiveStatusTests: XCTestCase {
                 end: "2026-10-04T18:04:26.160272+00:00"
             ),
         ])
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home,
             now: now
         )
         let grok = try XCTUnwrap(status.grok)
@@ -256,10 +265,12 @@ final class LiveStatusTests: XCTestCase {
                 onDemandUsed: 3
             ),
         ])
-        let grok = try XCTUnwrap(try LiveStatus.scan(
+        let grok = try XCTUnwrap(LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home,
             now: now
         ).grok)
         XCTAssertEqual(grok.onDemandCap, 20)
@@ -285,10 +296,12 @@ final class LiveStatusTests: XCTestCase {
             data.append(noise)
         }
         try data.write(to: logs.appendingPathComponent("unified.jsonl"))
-        let grok = try XCTUnwrap(try LiveStatus.scan(
+        let grok = try XCTUnwrap(LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home,
             now: now
         ).grok)
         XCTAssertNil(grok.weeklyPct)
@@ -353,10 +366,11 @@ final class LiveStatusTests: XCTestCase {
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: older.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: newer.path))
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
             openaiWeekTokens: 42,
             openaiWeekUsdEstimate: 0.02,
             codexHome: home,
@@ -408,10 +422,11 @@ final class LiveStatusTests: XCTestCase {
             ],
             mtime: now
         )
-        let openai = try XCTUnwrap(try LiveStatus.scan(
+        let openai = try XCTUnwrap(LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
             codexHome: home,
             now: now
         ).plans.first { $0.source == "openai" })
@@ -457,10 +472,11 @@ final class LiveStatusTests: XCTestCase {
             ],
             mtime: now
         )
-        let openai = try XCTUnwrap(try LiveStatus.scan(
+        let openai = try XCTUnwrap(LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
             codexHome: home,
             now: now
         ).plans.first { $0.source == "openai" })
@@ -507,10 +523,11 @@ final class LiveStatusTests: XCTestCase {
             ],
             mtime: now
         )
-        let openai = try XCTUnwrap(try LiveStatus.scan(
+        let openai = try XCTUnwrap(LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
             codexHome: home,
             now: now
         ).plans.first { $0.source == "openai" })
@@ -543,10 +560,11 @@ final class LiveStatusTests: XCTestCase {
             ],
             mtime: now.addingTimeInterval(10)
         )
-        let openai = try XCTUnwrap(try LiveStatus.scan(
+        let openai = try XCTUnwrap(LiveStatus.scan(
             grokHome: home,
             claudeHome: home,
             grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
             codexHome: home,
             now: now
         ).plans.first { $0.source == "openai" })
@@ -557,10 +575,12 @@ final class LiveStatusTests: XCTestCase {
 
     func testFixtureGrokQuotaLastLine() throws {
         let now = UTC.parse("2026-09-04T19:00:00Z")!
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: Fixtures.grokQuotaHome,
             claudeHome: try TempDir.make(),
             grokWeekUsd: 0,
+            claudePlan: try TempDir.make().appendingPathComponent("missing-plan.json"),
+            codexHome: try TempDir.make(),
             now: now
         )
         let grok = try XCTUnwrap(status.grok)
@@ -571,10 +591,11 @@ final class LiveStatusTests: XCTestCase {
 
     func testFixtureCodexQuota() throws {
         let now = UTC.parse("2026-09-04T18:50:00Z")!
-        let status = try LiveStatus.scan(
+        let status = LiveStatus.scan(
             grokHome: try TempDir.make(),
             claudeHome: try TempDir.make(),
             grokWeekUsd: 0,
+            claudePlan: try TempDir.make().appendingPathComponent("missing-plan.json"),
             codexHome: Fixtures.codexQuotaHome,
             now: now
         )
