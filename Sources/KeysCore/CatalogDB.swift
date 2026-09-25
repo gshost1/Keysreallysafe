@@ -34,7 +34,6 @@ final class CatalogDB: @unchecked Sendable {
         // Overwrite freed pages so a deleted row does not linger in the file or the WAL.
         try exec("PRAGMA secure_delete=ON")
         try migrate()
-        try purgeLegacyTailSignatures()
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
     }
 
@@ -52,7 +51,10 @@ final class CatalogDB: @unchecked Sendable {
               kind TEXT NOT NULL DEFAULT 'runtime',
               notes TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL,
-              last_used_at TEXT
+              last_used_at TEXT,
+              gateway_enabled INTEGER NOT NULL DEFAULT 0,
+              gateway_host TEXT,
+              version INTEGER NOT NULL DEFAULT 1
             );
             """)
         try exec("""
@@ -75,6 +77,7 @@ final class CatalogDB: @unchecked Sendable {
               cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
               reasoning_tokens INTEGER NOT NULL DEFAULT 0,
               cost_usd_ticks INTEGER,
+              key_name TEXT,
               PRIMARY KEY (source, session_id, prompt_id, model)
             );
             """)
@@ -85,7 +88,9 @@ final class CatalogDB: @unchecked Sendable {
               path TEXT PRIMARY KEY,
               size INTEGER NOT NULL,
               mtime INTEGER NOT NULL,
-              byte_offset INTEGER NOT NULL
+              byte_offset INTEGER NOT NULL,
+              tail_sig TEXT,
+              parser_json TEXT
             );
             """)
         try exec("""
@@ -101,25 +106,6 @@ final class CatalogDB: @unchecked Sendable {
               slot INTEGER NOT NULL
             );
             """)
-        try exec("DELETE FROM usage_events WHERE model = '<synthetic>';")
-        let removedSynthetic = sqlite3_changes(db)
-        try exec("DELETE FROM usage_events WHERE model = 'unknown' AND source = 'codex-local';")
-        let removed = removedSynthetic + sqlite3_changes(db)
-        if removed > 0 {
-            try exec("DELETE FROM ingest_files WHERE path LIKE '%/rollout-%';")
-            try exec(
-                "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'catalog_version';"
-            )
-        }
-        if !(try hasColumn("catalog", "gateway_enabled")) {
-            try exec("ALTER TABLE catalog ADD COLUMN gateway_enabled INTEGER NOT NULL DEFAULT 0;")
-        }
-        if !(try hasColumn("catalog", "gateway_host")) {
-            try exec("ALTER TABLE catalog ADD COLUMN gateway_host TEXT;")
-        }
-        if !(try hasColumn("usage_events", "key_name")) {
-            try exec("ALTER TABLE usage_events ADD COLUMN key_name TEXT;")
-        }
         try exec("CREATE INDEX IF NOT EXISTS usage_events_key ON usage_events (key_name);")
         try exec("""
             CREATE TABLE IF NOT EXISTS gateway_usage (
@@ -133,21 +119,13 @@ final class CatalogDB: @unchecked Sendable {
               cache_read_tokens INTEGER,
               cache_write_tokens INTEGER,
               status INTEGER,
-              duration_ms INTEGER
+              duration_ms INTEGER,
+              request_id TEXT,
+              reported_cost_usd_ticks INTEGER
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS gateway_usage_key_ts ON gateway_usage (key, ts);")
-        if !(try hasColumn("gateway_usage", "request_id")) {
-            try exec("ALTER TABLE gateway_usage ADD COLUMN request_id TEXT;")
-        }
-        if !(try hasColumn("gateway_usage", "reported_cost_usd_ticks")) {
-            try exec("ALTER TABLE gateway_usage ADD COLUMN reported_cost_usd_ticks INTEGER;")
-        }
         try exec("UPDATE catalog SET gateway_enabled = 0;")
-        if !(try hasColumn("catalog", "version")) {
-            try exec("ALTER TABLE catalog ADD COLUMN version INTEGER NOT NULL DEFAULT 1;")
-        }
-        try rebuildUsagePrimaryKeyIfNeeded()
         try exec("""
             CREATE TABLE IF NOT EXISTS key_events (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,115 +183,14 @@ final class CatalogDB: @unchecked Sendable {
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
-        if !(try hasColumn("ingest_files", "tail_sig")) {
-            try exec("ALTER TABLE ingest_files ADD COLUMN tail_sig TEXT;")
+        // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
+        // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
+        // the main file nor the WAL keeps the old page images. The vacuum is best effort.
+        try exec("UPDATE ingest_files SET tail_sig = NULL WHERE tail_sig != '' AND tail_sig NOT LIKE 'v2:%';")
+        if sqlite3_changes(db) > 0 {
+            try? exec("PRAGMA wal_checkpoint(TRUNCATE)")
+            try? exec("VACUUM")
         }
-        if !(try hasColumn("ingest_files", "parser_json")) {
-            try exec("ALTER TABLE ingest_files ADD COLUMN parser_json TEXT;")
-        }
-    }
-
-    /// Cursor rows written before 0.2 held the last 32 raw bytes of each log as hex, which could
-    /// include a fragment of a user message. Clear them, then checkpoint and vacuum so neither
-    /// the main file nor the WAL keeps the old page images. Scope: this catalog file only.
-    /// Copies made by Time Machine or by hand are outside what the app can reach.
-    private func purgeLegacyTailSignatures() throws {
-        // The marker is written only after the vacuum succeeded, so a busy database on one open
-        // (another process mid-ingest) means the whole step runs again next time rather than the
-        // freed pages being left behind. Nothing here may fail `init`.
-        if try metaValue("tail_sig_format") == "v2" { return }
-        try exec(
-            "UPDATE ingest_files SET tail_sig = NULL WHERE tail_sig IS NOT NULL AND tail_sig != '' AND tail_sig NOT LIKE 'v2:%';"
-        )
-        let cleared = sqlite3_changes(db)
-        if cleared > 0 {
-            let previous = Int(try metaValue("tail_sig_purged_rows") ?? "0") ?? 0
-            try setMeta("tail_sig_purged_rows", String(previous + Int(cleared)))
-        }
-        do {
-            try exec("PRAGMA wal_checkpoint(TRUNCATE)")
-            try exec("VACUUM")
-        } catch {
-            return
-        }
-        try setMeta("tail_sig_format", "v2")
-    }
-
-    private func rebuildUsagePrimaryKeyIfNeeded() throws {
-        if try tableSQL("usage_events") == nil, try tableSQL("usage_events_v3") != nil {
-            try exec("ALTER TABLE usage_events_v3 RENAME TO usage_events;")
-        }
-        guard let sql = try tableSQL("usage_events") else { return }
-        let compact = sql.replacingOccurrences(of: " ", with: "")
-        // Session 3 briefly used PK without model; restore model so Grok
-        // two-model turns stay two rows. Claude still last-wins on request id.
-        let hasModel = compact.contains("prompt_id,model") || compact.contains("PRIMARYKEY(source,session_id,prompt_id,model)")
-        if hasModel {
-            if try metaValue("usage_pk") != "v3" {
-                try setMeta("usage_pk", "v3")
-            }
-            return
-        }
-        try exec("BEGIN IMMEDIATE")
-        do {
-            try exec("""
-                CREATE TABLE usage_events_v3 (
-                  source TEXT NOT NULL,
-                  session_id TEXT NOT NULL,
-                  prompt_id TEXT NOT NULL,
-                  model TEXT NOT NULL,
-                  occurred_at TEXT NOT NULL,
-                  provider TEXT NOT NULL,
-                  cwd TEXT,
-                  session_title TEXT,
-                  agent_name TEXT,
-                  stop_reason TEXT,
-                  model_calls INTEGER,
-                  api_duration_ms INTEGER,
-                  input_tokens INTEGER NOT NULL,
-                  output_tokens INTEGER NOT NULL,
-                  cached_read_tokens INTEGER NOT NULL DEFAULT 0,
-                  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-                  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-                  cost_usd_ticks INTEGER,
-                  key_name TEXT,
-                  PRIMARY KEY (source, session_id, prompt_id, model)
-                );
-                """)
-            try exec("""
-                INSERT OR IGNORE INTO usage_events_v3 (
-                  source, session_id, prompt_id, model, occurred_at, provider,
-                  cwd, session_title, agent_name, stop_reason, model_calls, api_duration_ms,
-                  input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-                  reasoning_tokens, cost_usd_ticks, key_name
-                )
-                SELECT
-                  source, session_id, prompt_id, model, occurred_at, provider,
-                  cwd, session_title, agent_name, stop_reason, model_calls, api_duration_ms,
-                  input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-                  reasoning_tokens, cost_usd_ticks, key_name
-                FROM usage_events
-                ORDER BY occurred_at DESC;
-                """)
-            try exec("DROP TABLE usage_events;")
-            try exec("ALTER TABLE usage_events_v3 RENAME TO usage_events;")
-            try exec("CREATE INDEX IF NOT EXISTS usage_events_occurred ON usage_events (occurred_at);")
-            try exec("CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events (model);")
-            try exec("CREATE INDEX IF NOT EXISTS usage_events_key ON usage_events (key_name);")
-            try exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('usage_pk', 'v3');")
-            try exec("COMMIT")
-        } catch {
-            try? exec("ROLLBACK")
-            throw error
-        }
-    }
-
-    private func tableSQL(_ name: String) throws -> String? {
-        let stmt = try prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?;")
-        defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, name)
-        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-        return columnText(stmt, 0)
     }
 
     struct IngestFileCursor: Equatable {
@@ -413,19 +290,6 @@ final class CatalogDB: @unchecked Sendable {
             try exec(
                 "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'catalog_version';"
             )
-        }
-    }
-
-    func deleteSyntheticModels() throws -> Int {
-        try withLock {
-            try exec("DELETE FROM usage_events WHERE model = '<synthetic>';")
-            let n = Int(sqlite3_changes(db))
-            if n > 0 {
-                try exec(
-                    "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'catalog_version';"
-                )
-            }
-            return n
         }
     }
 
@@ -1270,25 +1134,6 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
-    func deleteUsage(source: String) throws -> Int {
-        try withLock {
-            let stmt = try prepare("DELETE FROM usage_events WHERE source = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, source)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            return Int(sqlite3_changes(db))
-        }
-    }
-
-    func deleteIngestFiles(pathLike: String) throws {
-        try withLock {
-            let stmt = try prepare("DELETE FROM ingest_files WHERE path LIKE ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, pathLike)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
-    }
-
     func newestUsage(source: String) throws -> String? {
         try withLock {
             let stmt = try prepare("SELECT MAX(occurred_at) FROM usage_events WHERE source = ?;")
@@ -1312,7 +1157,6 @@ final class CatalogDB: @unchecked Sendable {
             try exec("DELETE FROM provider_checks;")
             try exec("UPDATE meta SET value = '0' WHERE key = 'catalog_version';")
             try exec("DELETE FROM meta WHERE key = 'last_ingest_at';")
-            try exec("DELETE FROM meta WHERE key = 'claude_dedup';")
             try exec("DELETE FROM meta WHERE key = 'gateway_owner_pid';")
             try exec("DELETE FROM meta WHERE key = 'product_analytics_v1';")
             // 0.6 to 0.8 stored the trial and license state here.
@@ -1332,15 +1176,6 @@ final class CatalogDB: @unchecked Sendable {
             gatewayHost: columnText(stmt, 7),
             version: Int(sqlite3_column_int(stmt, 8))
         )
-    }
-
-    private func hasColumn(_ table: String, _ name: String) throws -> Bool {
-        let stmt = try prepare("PRAGMA table_info(\(table));")
-        defer { sqlite3_finalize(stmt) }
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            if columnText(stmt, 1) == name { return true }
-        }
-        return false
     }
 
     private func withLock<T>(_ body: () throws -> T) throws -> T {

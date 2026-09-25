@@ -201,15 +201,8 @@ enum IngestFiles {
         return tailDigestPrefix + digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    static func isCurrentTailSig(_ sig: String?) -> Bool {
-        guard let sig else { return false }
-        return sig.isEmpty || sig.hasPrefix(tailDigestPrefix)
-    }
-
     private static func tailMatches(handle: FileHandle, offset: Int64, sig: String?) throws -> Bool {
         guard let sig, !sig.isEmpty else { return offset == 0 }
-        // A legacy reversible signature is never trusted; the file replays from zero.
-        guard isCurrentTailSig(sig) else { return false }
         let expected = try readTailSig(handle: handle, offset: offset)
         return expected == sig
     }

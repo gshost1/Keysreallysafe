@@ -869,7 +869,6 @@ final class KeysService: @unchecked Sendable {
         // Every ingest path (explicit, scheduled, the dashboard's stale refresh) comes through here.
         var succeeded = false
         defer { analytics?.record(succeeded ? .ingestSuccess : .ingestFailure) }
-        try ensureClaudeDedupLocked()
         let reports = try Ingest.run(
             source: source,
             grokHome: grokHome,
@@ -885,18 +884,6 @@ final class KeysService: @unchecked Sendable {
         try catalog.setLastIngestAt(UTC.iso(Date()))
         succeeded = true
         return reports
-    }
-
-    private func ensureClaudeDedupLocked() throws {
-        if try catalog.metaValue("claude_dedup") == "request_id_v2" { return }
-        try catalog.withTransaction {
-            let removed = try catalog.deleteUsage(source: "claude-local")
-            try catalog.deleteIngestFiles(pathLike: "%/projects/%")
-            try catalog.setMeta("claude_dedup", "request_id_v2")
-            if removed > 0 {
-                try catalog.bumpCatalogVersion()
-            }
-        }
     }
 
     func requireGatewayOwner() throws {

@@ -126,39 +126,6 @@ final class ClaudeIngestTests: XCTestCase {
         XCTAssertFalse(events.contains { $0.inputTokens == 0 && $0.outputTokens == 0 })
     }
 
-    func testStartupDeletesSyntheticRows() throws {
-        let dir = try TempDir.make()
-        let path = dir.appendingPathComponent("catalog.db")
-        var db: CatalogDB? = try CatalogDB(path: path)
-        _ = try db!.insertUsage(
-            UsageEvent(
-                source: "claude-local",
-                sessionId: "s",
-                promptId: "p-syn",
-                model: "<synthetic>",
-                occurredAt: "2026-01-15T12:00:00Z",
-                provider: "anthropic",
-                cwd: nil,
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
-                modelCalls: nil,
-                apiDurationMs: nil,
-                inputTokens: 0,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
-                costUsdTicks: nil
-            )
-        )
-        XCTAssertEqual(try db!.allUsageEvents().count, 1)
-        db = nil
-        let reopened = try CatalogDB(path: path)
-        XCTAssertEqual(try reopened.allUsageEvents().count, 0)
-        XCTAssertGreaterThan(try reopened.catalogVersion(), 0)
-    }
-
     func testMissingProjectsSucceedsWithZeroFiles() throws {
         let (db, dir) = try makeDB()
         let home = dir.appendingPathComponent("empty-claude")

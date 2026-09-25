@@ -4,7 +4,6 @@ enum Providers {
     struct Record: Equatable, Sendable {
         var id: String
         var name: String
-        var group: String
         var host: String?
         var api: String
         var authHeader: String
@@ -69,7 +68,6 @@ enum Providers {
                 byID[id] = Record(
                     id: id,
                     name: JSONValue.string(obj["name"]) ?? id,
-                    group: JSONValue.string(obj["group"]) ?? "",
                     host: JSONValue.string(obj["host"]),
                     api: JSONValue.string(obj["api"]) ?? "other",
                     authHeader: JSONValue.string(obj["auth_header"]) ?? "Authorization",

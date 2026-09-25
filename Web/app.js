@@ -709,9 +709,8 @@
     // writes are billed separately), Grok's cached reads already sit inside input_tokens.
     // A gateway call is real even with no token counts: TypeSafe's System One protocol reports
     // neither tokens nor cost, and dropping those rows would hide calls that did happen.
-    const isReal = (r) => r.model !== "<synthetic>"
-      && (((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0)) > 0
-        || (keysMode() && (r.model_calls || 0) > 0));
+    const isReal = (r) => ((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0)) > 0
+      || (keysMode() && (r.model_calls || 0) > 0);
     // The engine sends one row per (model, key); daily points are per model. Merge rows by model
     // first so a model with local and gateway usage, or two keys, is one series and one bucket.
     const merged = new Map();
@@ -1053,7 +1052,7 @@
     const fromEngine = [].concat(t.claude_unpriced_models || [], t.openai_unpriced_models || []);
     if (fromEngine.length) return fromEngine;
     return (data.rows || [])
-      .filter((r) => r.model !== "<synthetic>" && r.usd == null && r.usd_estimate == null)
+      .filter((r) => r.usd == null && r.usd_estimate == null)
       .filter((r) => (r.input_tokens || 0) + (r.output_tokens || 0) + (r.cached_read_tokens || 0) > 0)
       .filter((r) => src === "all" || family(r.model || "") === src)
       .filter((r) => family(r.model || "") !== "grok")
@@ -2342,10 +2341,7 @@
         ? ["provider", "key", "model", "model_calls", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate"]
         : ["model", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate", "key"];
     const lines = [cols.join(",")];
-    for (const r of data.rows) {
-      if (r.model === "<synthetic>") continue;
-      lines.push(cols.map((c) => csvCell(r[c])).join(","));
-    }
+    for (const r of data.rows) lines.push(cols.map((c) => csvCell(r[c])).join(","));
     const name = `keysreallysafe-${state.range}-${data.start_day || ""}-${data.end_day || ""}`
       + `${state.provider ? "-" + state.provider : ""}${state.key ? "-" + state.key : ""}.csv`;
     const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv" });
@@ -2776,7 +2772,7 @@
     });
     const chart = el("button", { type: "button", class: "link", text: "open the chart", onclick: () => showPane("chart") });
     if (!usdMode()) {
-      const rows = (data.rows || []).filter((r) => r.model !== "<synthetic>");
+      const rows = data.rows || [];
       const byFamily = new Map();
       let cached = 0;
       for (const r of rows) {

@@ -76,39 +76,6 @@ final class CodexIngestTests: XCTestCase {
         XCTAssertEqual(second.skippedDupes, 0)
     }
 
-    func testStartupDeletesUnknownCodexRows() throws {
-        let dir = try TempDir.make()
-        let path = dir.appendingPathComponent("catalog.db")
-        var db: CatalogDB? = try CatalogDB(path: path)
-        _ = try db!.insertUsage(
-            UsageEvent(
-                source: "codex-local",
-                sessionId: "s",
-                promptId: "p-unk",
-                model: "unknown",
-                occurredAt: "2026-01-15T12:00:00Z",
-                provider: "openai",
-                cwd: nil,
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
-                modelCalls: 1,
-                apiDurationMs: nil,
-                inputTokens: 11,
-                outputTokens: 7,
-                cachedReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
-                costUsdTicks: nil
-            )
-        )
-        XCTAssertEqual(try db!.allUsageEvents().map(\.model), ["unknown"])
-        db = nil
-        let reopened = try CatalogDB(path: path)
-        XCTAssertEqual(try reopened.allUsageEvents().count, 0)
-        XCTAssertGreaterThan(try reopened.catalogVersion(), 0)
-    }
-
     func testQuotaFixtureTokenCountWithoutModelUsesSessionMeta() throws {
         let files = try FileManager.default.contentsOfDirectory(
             at: Fixtures.codexQuotaHome.appendingPathComponent("sessions/2026/09/04"),

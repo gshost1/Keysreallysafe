@@ -68,7 +68,7 @@ final class BoundedIngestTests: XCTestCase {
         let committed = try XCTUnwrap(db.ingestFile(path: file.path))
         XCTAssertEqual(committed.byteOffset, offsets[2], "the failed batch left the cursor at the previous one")
         XCTAssertEqual(committed.size, offsets[2], "a batch cursor claims only what it consumed")
-        XCTAssertTrue(IngestFiles.isCurrentTailSig(committed.tailSig))
+        XCTAssertTrue(committed.tailSig?.hasPrefix(IngestFiles.tailDigestPrefix) ?? false)
 
         // The file itself did not change. The next pass must still notice there is more to read
         // and resume from line 300 rather than replaying or, worse, calling the file unchanged.

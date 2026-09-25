@@ -2,7 +2,7 @@ import Darwin
 import XCTest
 @testable import KeysCore
 
-/// Gateway request hardening, owner pid, framing limits, cursor replay, gateway estimates, dedup migration.
+/// Gateway request hardening, owner pid, framing limits, cursor replay, gateway estimates.
 final class GatewayHardeningAndCursorTests: XCTestCase {
     func testGatewayRejectsBadHostOriginAndCrossSiteBeforeLookup() async throws {
         let hits = HitCounter()
@@ -315,38 +315,6 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(Set(try db.allUsageEvents().map(\.model)), ["claude-sonnet-5", "claude-opus-5"])
     }
 
-    func testGrokUnknownRowsSurviveCatalogOpen() throws {
-        let dir = try TempDir.make()
-        let path = dir.appendingPathComponent("catalog.db")
-        var db: CatalogDB? = try CatalogDB(path: path)
-        _ = try db!.insertUsage(
-            UsageEvent(
-                source: "grok-local",
-                sessionId: "s",
-                promptId: "p-unk",
-                model: "unknown",
-                occurredAt: "2026-01-15T12:00:00Z",
-                provider: "xai",
-                cwd: nil,
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
-                modelCalls: 1,
-                apiDurationMs: nil,
-                inputTokens: 11,
-                outputTokens: 7,
-                cachedReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
-                costUsdTicks: 1
-            )
-        )
-        db = nil
-        let reopened = try CatalogDB(path: path)
-        XCTAssertEqual(try reopened.allUsageEvents().map(\.model), ["unknown"])
-        XCTAssertEqual(try reopened.allUsageEvents().map(\.source), ["grok-local"])
-    }
-
     func testAnthropicGatewayEstimateIsAdditive() {
         let subtract = GatewayEstimate.usd(
             model: "claude-sonnet-5",
@@ -451,15 +419,6 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(row.source, "openai")
         XCTAssertEqual(row.fiveHourPct, 11)
         XCTAssertEqual(row.weeklyPct, 32)
-    }
-
-    func testClaudeDedupMigrationIsOneTransaction() throws {
-        let (db, _) = try makeDB()
-        XCTAssertEqual(try db.metaValue("claude_dedup"), nil)
-        let (service, _, _) = makeService(db: db)
-        _ = try service.ingest(.claude)
-        XCTAssertEqual(try db.metaValue("claude_dedup"), "request_id_v2")
-        XCTAssertEqual(try db.metaValue("usage_pk"), "v3")
     }
 
     private func assistantLine(uuid: String, model: String, input: Int, output: Int) -> String {
