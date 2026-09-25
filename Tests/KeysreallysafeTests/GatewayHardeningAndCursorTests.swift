@@ -267,7 +267,7 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
 
         """
         tee.append(Data(event.utf8))
-        let parsed = tee.result(requestBody: Data(), contentType: "text/event-stream")
+        let parsed = tee.result(requestBody: Data())
         XCTAssertEqual(parsed.model, "gpt-4.1")
         XCTAssertEqual(parsed.inputTokens, 9)
         XCTAssertEqual(parsed.outputTokens, 2)

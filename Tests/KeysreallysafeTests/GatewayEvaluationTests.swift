@@ -8,7 +8,6 @@ final class GatewayEvaluationTests: XCTestCase {
             api: "vercel-evaluation",
             requestBody: Data(#"{"state":"private context","questions":{}}"#.utf8),
             responseBody: Data(#"{"answers":{},"usage":{"inputTokens":1234,"outputTokens":0}}"#.utf8),
-            contentType: "application/json",
             requestModel: "typesafe-ai/jev"
         )
         XCTAssertEqual(result.model, "typesafe-ai/jev")
@@ -28,7 +27,7 @@ final class GatewayEvaluationTests: XCTestCase {
         ] {
             let result = GatewayUsageParser.parse(
                 api: "vercel-evaluation", requestBody: Data(),
-                responseBody: Data(response.utf8), contentType: "application/json",
+                responseBody: Data(response.utf8),
                 requestModel: "typesafe-ai/jev"
             )
             XCTAssertEqual(result.model, "typesafe-ai/jev")
@@ -40,8 +39,7 @@ final class GatewayEvaluationTests: XCTestCase {
     func testEvaluationModelHeaderCannotOverrideOtherProtocols() {
         let result = GatewayUsageParser.parse(
             api: "openai", requestBody: Data(#"{"model":"gpt-4.1"}"#.utf8),
-            responseBody: Data(#"{"usage":{"inputTokens":100,"outputTokens":0}}"#.utf8),
-            contentType: "application/json", requestModel: "typesafe-ai/jev"
+            responseBody: Data(#"{"usage":{"inputTokens":100,"outputTokens":0}}"#.utf8), requestModel: "typesafe-ai/jev"
         )
         XCTAssertEqual(result.model, "gpt-4.1")
         XCTAssertNil(result.inputTokens)
@@ -56,8 +54,7 @@ final class GatewayEvaluationTests: XCTestCase {
         ] {
             let response = "{\"providerMetadata\":{\"gateway\":{\"cost\":\(value)}}}"
             let result = GatewayUsageParser.parse(
-                api: "vercel-evaluation", requestBody: Data(), responseBody: Data(response.utf8),
-                contentType: "application/json", requestModel: "typesafe-ai/jev"
+                api: "vercel-evaluation", requestBody: Data(), responseBody: Data(response.utf8), requestModel: "typesafe-ai/jev"
             )
             XCTAssertEqual(result.reportedCostUsdTicks, expected, value)
         }
@@ -311,8 +308,7 @@ extension GatewayEvaluationTests {
     func testDirectUsageUsesSnakeCaseAndNeverAssumesVercelCost() throws {
         let result = GatewayUsageParser.parse(api: "typesafe-systemone",
             requestBody: Data(#"{"model":"jev-latest"}"#.utf8),
-            responseBody: Data(#"{"model":"jev-1.13.0","answers":{},"usage":{"input_tokens":123,"output_tokens":0,"inputTokens":999},"providerMetadata":{"gateway":{"cost":"1.00"}}}"#.utf8),
-            contentType: "application/json", requestModel: "forged-header")
+            responseBody: Data(#"{"model":"jev-1.13.0","answers":{},"usage":{"input_tokens":123,"output_tokens":0,"inputTokens":999},"providerMetadata":{"gateway":{"cost":"1.00"}}}"#.utf8), requestModel: "forged-header")
         XCTAssertEqual(result.model, "jev-1.13.0")
         XCTAssertEqual(result.inputTokens, 123)
         XCTAssertEqual(result.outputTokens, 0)
@@ -320,7 +316,7 @@ extension GatewayEvaluationTests {
         XCTAssertNil(GatewayEstimate.usd(model: "gpt-4.1", input: 1_000_000, output: 1, cacheRead: 0, cacheWrite: 0, api: "typesafe-systemone"))
         for value in ["true", "-1", "1.5", "1e100", "null", #""3""#] {
             let invalid = GatewayUsageParser.parse(api: "typesafe-systemone", requestBody: Data(#"{"model":"jev-latest"}"#.utf8),
-                responseBody: Data("{\"usage\":{\"input_tokens\":\(value),\"output_tokens\":\(value)}}".utf8), contentType: "application/json")
+                responseBody: Data("{\"usage\":{\"input_tokens\":\(value),\"output_tokens\":\(value)}}".utf8))
             XCTAssertNil(invalid.inputTokens)
             XCTAssertNil(invalid.outputTokens)
             XCTAssertEqual(invalid.model, "jev-latest")

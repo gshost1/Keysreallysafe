@@ -126,33 +126,17 @@ final class GatewayListener: @unchecked Sendable {
             }
         }
         if let gatewayClient { service.noteGatewayClientUse(gatewayClient) }
-        let host = target.host
-        let hostname = host.split(separator: ":").first.map(String.init) ?? host
-        let scheme = BindPolicy.isLoopbackHostname(hostname) ? "http" : "https"
         let path = GatewayPath.join(prefix: target.provider.pathPrefix, rest: request.rest)
-        var urlString = "\(scheme)://\(host)\(path)"
-        if !rawQuery.isEmpty {
-            urlString += "?" + rawQuery
-        }
-        guard let url = URL(string: urlString) else {
+        var headers = request.headers.filter { !Self.dropIncoming.contains($0.key.lowercased()) }
+        headers["Host"] = target.host
+        guard var urlRequest = target.provider.upstreamRequest(
+            host: target.host, path: path, query: rawQuery, method: request.method, headers: headers,
+            secret: target.secret, timeout: Self.resourceTimeout
+        ) else {
             Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
             return
         }
-
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = request.method
         urlRequest.httpBody = request.body
-        urlRequest.timeoutInterval = Self.resourceTimeout
-        urlRequest.httpShouldHandleCookies = false
-        for (name, value) in request.headers {
-            let lower = name.lowercased()
-            if Self.dropIncoming.contains(lower) { continue }
-            urlRequest.setValue(value, forHTTPHeaderField: name)
-        }
-        urlRequest.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        urlRequest.setValue(host, forHTTPHeaderField: "Host")
-        let auth = target.provider.authPrefix + target.secret
-        urlRequest.setValue(auth, forHTTPHeaderField: target.provider.authHeader)
 
         // Vercel's native evaluation protocol differs from its OpenAI-compatible
         // /v1 endpoints. Keep the extra parser scoped to this provider and path.
@@ -193,7 +177,6 @@ final class GatewayListener: @unchecked Sendable {
         }
         let parsed = tee.result(
             requestBody: request.body,
-            contentType: proxy.contentType,
             requestModel: evaluation ? request.headers["ai-model-id"] : nil
         )
         do {
@@ -333,7 +316,6 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     private(set) var wroteHead = false
     private(set) var hasResponse = false
     private(set) var statusCode: Int?
-    private(set) var contentType: String?
     private(set) var requestId: String?
 
     init(clientFD: Int32, tee: GatewayTee) {
@@ -365,7 +347,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
         hasResponse = true
         let http = response as? HTTPURLResponse
         statusCode = http?.statusCode
-        contentType = http?.value(forHTTPHeaderField: "Content-Type")
+        let contentType = http?.value(forHTTPHeaderField: "Content-Type")
         requestId = Self.requestId(from: http)
         if let contentType { tee.setContentType(contentType) }
         if !wroteHead {

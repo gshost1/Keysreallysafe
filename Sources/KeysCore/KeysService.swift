@@ -330,12 +330,9 @@ final class KeysService: @unchecked Sendable {
             throw AppError.usage("unknown provider \(row.provider); edit the key and pick one from the list")
         }
         let host = row.gatewayHost ?? provider.host
+        // Before any presence prompt: a provider with nothing to probe must not ask for Touch ID.
         guard ProviderCheck.endpoint(for: provider) != nil else {
-            let result = ProviderCheck.Result(
-                key: name, provider: provider.id, host: host ?? "", checkedAt: UTC.iso(Date()),
-                outcome: .noCheckEndpoint, httpStatus: nil, models: [], requestId: nil,
-                message: "no read-only endpoint for \(provider.name); nothing was sent", endpoint: nil
-            )
+            let result = ProviderCheck.noEndpoint(key: name, provider: provider, host: host ?? "")
             try catalog.upsertProviderCheck(result)
             return result
         }

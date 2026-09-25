@@ -51,39 +51,37 @@ struct GatewayParsedUsage: Equatable {
 }
 
 enum GatewayUsageParser {
-    static func parse(
-        api: String,
-        requestBody: Data,
-        responseBody: Data,
-        contentType: String?,
-        requestModel: String? = nil
-    ) -> GatewayParsedUsage {
-        var parsed: GatewayParsedUsage
-        switch api {
-        case "openai":
-            parsed = parseOpenAI(responseBody: responseBody, contentType: contentType)
-        case "anthropic":
-            parsed = parseAnthropic(responseBody: responseBody, contentType: contentType)
-        case "gemini":
-            parsed = parseGemini(responseBody: responseBody, contentType: contentType)
-        case "vercel-evaluation":
-            parsed = parseVercelEvaluation(responseBody: responseBody)
-        case "typesafe-systemone":
-            parsed = parseTypeSafe(responseBody: responseBody)
-        default:
-            parsed = GatewayParsedUsage()
-        }
+    /// Usage from a whole, non-streamed response body.
+    static func parse(api: String, requestBody: Data, responseBody: Data, requestModel: String? = nil) -> GatewayParsedUsage {
+        var parsed = lastJSONObject(in: responseBody).map { usage(api: api, object: $0) } ?? GatewayParsedUsage()
         if parsed.model == nil {
-            // The evaluation protocol sends the model in `ai-model-id`, not in
-            // its state/questions body. Other APIs must not trust that header.
-            if api == "vercel-evaluation" {
-                let model = requestModel?.trimmingCharacters(in: .whitespacesAndNewlines)
-                parsed.model = model?.isEmpty == false ? model : nil
-            } else {
-                parsed.model = modelFromRequest(requestBody)
-            }
+            parsed.model = requestedModel(api: api, requestBody: requestBody, requestModel: requestModel)
         }
         return parsed
+    }
+
+    /// Usage from one response object: a whole JSON body or a single SSE event. A stream is the
+    /// merge of its events (see GatewayTee), so each API is parsed the same way either way.
+    static func usage(api: String, object obj: [String: Any]) -> GatewayParsedUsage {
+        switch api {
+        case "openai": return openAI(from: obj)
+        case "anthropic": return anthropic(from: obj)
+        case "gemini": return gemini(from: obj)
+        case "vercel-evaluation": return vercelEvaluation(from: obj)
+        case "typesafe-systemone": return typeSafe(from: obj)
+        default: return GatewayParsedUsage()
+        }
+    }
+
+    /// The model the request named, for when the response names none. The evaluation protocol
+    /// sends it in `ai-model-id`, not in its state/questions body; other APIs must not trust
+    /// that header.
+    static func requestedModel(api: String, requestBody: Data, requestModel: String?) -> String? {
+        if api == "vercel-evaluation" {
+            let model = requestModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return model?.isEmpty == false ? model : nil
+        }
+        return modelFromRequest(requestBody)
     }
 
     static func isSSE(_ contentType: String?, body: Data) -> Bool {
@@ -103,8 +101,7 @@ enum GatewayUsageParser {
         return JSONValue.string(obj["model"])
     }
 
-    private static func parseVercelEvaluation(responseBody: Data) -> GatewayParsedUsage {
-        guard let obj = lastJSONObject(in: responseBody) else { return GatewayParsedUsage() }
+    private static func vercelEvaluation(from obj: [String: Any]) -> GatewayParsedUsage {
         let usage = JSONValue.object(obj["usage"])
         let metadata = JSONValue.object(obj["providerMetadata"])
         let gateway = metadata.flatMap { JSONValue.object($0["gateway"]) }
@@ -115,8 +112,7 @@ enum GatewayUsageParser {
         )
     }
 
-    private static func parseTypeSafe(responseBody: Data) -> GatewayParsedUsage {
-        guard let obj = lastJSONObject(in: responseBody) else { return GatewayParsedUsage() }
+    private static func typeSafe(from obj: [String: Any]) -> GatewayParsedUsage {
         let usage = JSONValue.object(obj["usage"])
         return GatewayParsedUsage(model: JSONValue.string(obj["model"]),
             inputTokens: evaluationTokenCount(usage?["input_tokens"]),
@@ -143,52 +139,6 @@ enum GatewayUsageParser {
         }
         guard let usd, usd.isFinite, usd >= 0 else { return nil }
         return Int64(exactly: (usd * Ticks.perUSD).rounded())
-    }
-
-    private static func parseOpenAI(responseBody: Data, contentType: String?) -> GatewayParsedUsage {
-        if isSSE(contentType, body: responseBody) {
-            var last = GatewayParsedUsage()
-            for obj in sseJSONObjects(responseBody) {
-                let piece = openAI(from: obj)
-                if piece.inputTokens != nil || piece.outputTokens != nil {
-                    last.inputTokens = piece.inputTokens ?? last.inputTokens
-                    last.outputTokens = piece.outputTokens ?? last.outputTokens
-                    last.cacheReadTokens = piece.cacheReadTokens ?? last.cacheReadTokens
-                }
-                if let model = piece.model { last.model = model }
-            }
-            return last
-        }
-        guard let obj = lastJSONObject(in: responseBody) else { return GatewayParsedUsage() }
-        return openAI(from: obj)
-    }
-
-    private static func parseAnthropic(responseBody: Data, contentType: String?) -> GatewayParsedUsage {
-        if isSSE(contentType, body: responseBody) {
-            var merged = GatewayParsedUsage()
-            for obj in sseJSONObjects(responseBody) {
-                applyAnthropic(obj, into: &merged)
-            }
-            return merged
-        }
-        guard let obj = lastJSONObject(in: responseBody) else { return GatewayParsedUsage() }
-        var merged = GatewayParsedUsage()
-        applyAnthropic(obj, into: &merged)
-        return merged
-    }
-
-    private static func parseGemini(responseBody: Data, contentType: String?) -> GatewayParsedUsage {
-        if isSSE(contentType, body: responseBody) {
-            var last = GatewayParsedUsage()
-            for obj in sseJSONObjects(responseBody) {
-                let piece = gemini(from: obj)
-                if piece.inputTokens != nil || piece.outputTokens != nil { last = piece }
-                else if let model = piece.model { last.model = model }
-            }
-            return last
-        }
-        guard let obj = lastJSONObject(in: responseBody) else { return GatewayParsedUsage() }
-        return gemini(from: obj)
     }
 
     private static func openAI(from obj: [String: Any]) -> GatewayParsedUsage {
@@ -225,23 +175,25 @@ enum GatewayUsageParser {
         }
     }
 
-    private static func applyAnthropic(_ obj: [String: Any], into r: inout GatewayParsedUsage) {
+    private static func anthropic(from obj: [String: Any]) -> GatewayParsedUsage {
+        var r = GatewayParsedUsage()
         let type = obj["type"] as? String
         if type == "message_start", let message = JSONValue.object(obj["message"]) {
             r.model = JSONValue.string(message["model"]) ?? r.model
             if let usage = JSONValue.object(message["usage"]) {
                 applyAnthropicUsage(usage, into: &r, outputOnly: false)
             }
-            return
+            return r
         }
         if type == "message_delta", let usage = JSONValue.object(obj["usage"]) {
             applyAnthropicUsage(usage, into: &r, outputOnly: true)
-            return
+            return r
         }
         if let model = JSONValue.string(obj["model"]) { r.model = model }
         if let usage = JSONValue.object(obj["usage"]) {
             applyAnthropicUsage(usage, into: &r, outputOnly: false)
         }
+        return r
     }
 
     private static func applyAnthropicUsage(
@@ -396,33 +348,26 @@ final class GatewayTee: @unchecked Sendable {
         }
     }
 
-    func result(requestBody: Data, contentType: String?, requestModel: String? = nil) -> GatewayParsedUsage {
+    func result(requestBody: Data, requestModel: String? = nil) -> GatewayParsedUsage {
         lock.lock()
+        // A stream whose first chunk was too short to recognise went to jsonBuf; sniff the
+        // whole buffer again so a short-first-chunk Anthropic stream still counts.
+        if !sse, GatewayUsageParser.isSSE(contentType, body: jsonBuf) {
+            sse = true
+            eventBuf = jsonBuf
+            jsonBuf.removeAll()
+        }
         if sse, !eventBuf.isEmpty {
             parseSSEEvent(eventBuf)
             eventBuf.removeAll(keepingCapacity: true)
         }
-        var parsed = lastUsage
-        let json = jsonBuf
-        let isSSE = sse
+        var parsed = sse
+            ? lastUsage
+            : GatewayUsageParser.lastJSONObject(in: jsonBuf).map { GatewayUsageParser.usage(api: api, object: $0) }
+                ?? GatewayParsedUsage()
         lock.unlock()
-        if !isSSE {
-            parsed = GatewayUsageParser.parse(
-                api: api,
-                requestBody: requestBody,
-                responseBody: json,
-                contentType: contentType ?? self.contentType,
-                requestModel: requestModel
-            )
-        } else if parsed.model == nil {
-            let fromRequest = GatewayUsageParser.parse(
-                api: api,
-                requestBody: requestBody,
-                responseBody: Data(),
-                contentType: contentType ?? self.contentType,
-                requestModel: requestModel
-            )
-            parsed.model = fromRequest.model
+        if parsed.model == nil {
+            parsed.model = GatewayUsageParser.requestedModel(api: api, requestBody: requestBody, requestModel: requestModel)
         }
         return parsed
     }
@@ -459,18 +404,8 @@ final class GatewayTee: @unchecked Sendable {
 
     private func parseSSEEvent(_ data: Data) {
         for obj in GatewayUsageParser.sseJSONObjects(data) {
-            lastUsage = merge(lastUsage, parseObject(obj))
+            lastUsage = merge(lastUsage, GatewayUsageParser.usage(api: api, object: obj))
         }
-    }
-
-    private func parseObject(_ obj: [String: Any]) -> GatewayParsedUsage {
-        let encoded = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()
-        return GatewayUsageParser.parse(
-            api: api,
-            requestBody: Data(),
-            responseBody: encoded,
-            contentType: "application/json"
-        )
     }
 
     private func merge(_ base: GatewayParsedUsage, _ piece: GatewayParsedUsage) -> GatewayParsedUsage {

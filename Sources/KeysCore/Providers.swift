@@ -65,6 +65,31 @@ enum Providers {
     }
 }
 
+extension Providers.Record {
+    /// The authenticated request to this provider. Caller headers go on first, then identity
+    /// encoding, then the provider's auth header, so a caller's own copy of that header
+    /// (xi-api-key, x-portkey-api-key, X-Subscription-Token, ...) never replaces the vault
+    /// secret. Loopback hosts are plain http, everything else https.
+    func upstreamRequest(
+        host: String, path: String, query: String = "", method: String,
+        headers: [String: String], secret: String, timeout: TimeInterval
+    ) -> URLRequest? {
+        let hostname = host.split(separator: ":").first.map(String.init) ?? host
+        let scheme = BindPolicy.isLoopbackHostname(hostname) ? "http" : "https"
+        guard let url = URL(string: "\(scheme)://\(host)\(path)" + (query.isEmpty ? "" : "?" + query)) else {
+            return nil
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = timeout
+        request.httpShouldHandleCookies = false
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(authPrefix + secret, forHTTPHeaderField: authHeader)
+        return request
+    }
+}
+
 enum GatewayHost {
     /// Hostname or IPv4 with optional port. No scheme, path, or userinfo.
     static func validate(_ raw: String) throws -> String {

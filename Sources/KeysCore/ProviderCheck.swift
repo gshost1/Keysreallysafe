@@ -78,21 +78,22 @@ enum ProviderCheck {
         var headers: [String: String]
     }
 
-    /// Provider-specific, read-only. Nil means "do not probe".
+    /// Provider-specific, read-only: the model list. Nil means "do not probe".
     static func endpoint(for provider: Providers.Record) -> Endpoint? {
-        switch provider.api {
-        case "openai":
-            return Endpoint(path: GatewayPath.join(prefix: provider.pathPrefix, rest: "models"), headers: [:])
-        case "anthropic":
-            return Endpoint(
-                path: GatewayPath.join(prefix: provider.pathPrefix, rest: "models"),
-                headers: ["anthropic-version": "2023-06-01"]
-            )
-        case "gemini":
-            return Endpoint(path: GatewayPath.join(prefix: provider.pathPrefix, rest: "models"), headers: [:])
-        default:
-            return nil
-        }
+        guard ["openai", "anthropic", "gemini"].contains(provider.api) else { return nil }
+        return Endpoint(
+            path: GatewayPath.join(prefix: provider.pathPrefix, rest: "models"),
+            headers: provider.api == "anthropic" ? ["anthropic-version": "2023-06-01"] : [:]
+        )
+    }
+
+    /// The recorded result for a provider with no read-only endpoint: nothing is sent.
+    static func noEndpoint(key: String, provider: Providers.Record, host: String, now: Date = Date()) -> Result {
+        Result(
+            key: key, provider: provider.id, host: host, checkedAt: UTC.iso(now),
+            outcome: .noCheckEndpoint, httpStatus: nil, models: [], requestId: nil,
+            message: "no read-only endpoint for \(provider.name); nothing was sent", endpoint: nil
+        )
     }
 
     static func run(
@@ -103,43 +104,29 @@ enum ProviderCheck {
         fetcher: any ProviderCheckFetching,
         now: Date = Date()
     ) -> Result {
-        let ts = UTC.iso(now)
         guard let endpoint = endpoint(for: provider) else {
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .noCheckEndpoint, httpStatus: nil, models: [], requestId: nil,
-                message: "provider api \(provider.api) has no model-list endpoint in providers.json", endpoint: nil
+            return noEndpoint(key: key, provider: provider, host: host, now: now)
+        }
+        func result(_ outcome: Outcome, _ status: Int? = nil, models: [String] = [], requestId: String? = nil,
+                    message: String?) -> Result {
+            Result(
+                key: key, provider: provider.id, host: host, checkedAt: UTC.iso(now), outcome: outcome,
+                httpStatus: status, models: models, requestId: requestId, message: message, endpoint: endpoint.path
             )
         }
-        let hostname = host.split(separator: ":").first.map(String.init) ?? host
-        let scheme = BindPolicy.isLoopbackHostname(hostname) ? "http" : "https"
-        guard let url = URL(string: "\(scheme)://\(host)\(endpoint.path)") else {
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .network, httpStatus: nil, models: [], requestId: nil,
-                message: "invalid host", endpoint: endpoint.path
-            )
+        let headers = ["Accept": "application/json", "User-Agent": userAgent].merging(endpoint.headers) { $1 }
+        guard let req = provider.upstreamRequest(
+            host: host, path: endpoint.path, method: "GET", headers: headers, secret: secret, timeout: timeout
+        ) else {
+            return result(.network, message: "invalid host")
         }
-        var req = URLRequest(url: url)
-        req.httpMethod = "GET"
-        req.timeoutInterval = timeout
-        req.httpShouldHandleCookies = false
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        req.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-        for (k, v) in endpoint.headers { req.setValue(v, forHTTPHeaderField: k) }
-        req.setValue(provider.authPrefix + secret, forHTTPHeaderField: provider.authHeader)
 
         let data: Data
         let http: HTTPURLResponse
         do {
             (data, http) = try fetcher.fetch(req)
         } catch {
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .network, httpStatus: nil, models: [], requestId: nil,
-                message: Redact.scrub(error.localizedDescription, secrets: [secret]), endpoint: endpoint.path
-            )
+            return result(.network, message: Redact.scrub(error.localizedDescription, secrets: [secret]))
         }
         let requestId = Self.requestId(http)
         let message = Self.safeMessage(data, secret: secret)
@@ -151,44 +138,20 @@ enum ProviderCheck {
                 let why = ctype.contains("text/html") || data.prefix(64).contains(where: { $0 == UInt8(ascii: "<") })
                     ? "answered a web page, not JSON; \(host) is probably the app host, not the API host"
                     : message
-                return Result(
-                    key: key, provider: provider.id, host: host, checkedAt: ts,
-                    outcome: .malformed, httpStatus: http.statusCode, models: [], requestId: requestId,
-                    message: why, endpoint: endpoint.path
-                )
+                return result(.malformed, http.statusCode, requestId: requestId, message: why)
             }
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .ok, httpStatus: http.statusCode, models: Array(models.prefix(maxModels)),
-                requestId: requestId, message: nil, endpoint: endpoint.path
-            )
+            return result(.ok, http.statusCode, models: Array(models.prefix(maxModels)), requestId: requestId, message: nil)
         case 401:
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .providerAuthFailed, httpStatus: 401, models: [], requestId: requestId,
-                message: message, endpoint: endpoint.path
-            )
+            return result(.providerAuthFailed, 401, requestId: requestId, message: message)
         case 403:
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .providerRefused, httpStatus: 403, models: [], requestId: requestId,
-                message: message, endpoint: endpoint.path
-            )
+            return result(.providerRefused, 403, requestId: requestId, message: message)
         case 301, 302, 307, 308:
             let location = http.value(forHTTPHeaderField: "Location") ?? "unknown"
             let target = URL(string: location)?.host ?? location
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .redirect, httpStatus: http.statusCode, models: [], requestId: requestId,
-                message: "\(host) redirects to \(Redact.scrub(target, secrets: [secret])); the key was not sent there",
-                endpoint: endpoint.path
-            )
+            return result(.redirect, http.statusCode, requestId: requestId,
+                          message: "\(host) redirects to \(Redact.scrub(target, secrets: [secret])); the key was not sent there")
         default:
-            return Result(
-                key: key, provider: provider.id, host: host, checkedAt: ts,
-                outcome: .providerError, httpStatus: http.statusCode, models: [], requestId: requestId,
-                message: message, endpoint: endpoint.path
-            )
+            return result(.providerError, http.statusCode, requestId: requestId, message: message)
         }
     }
 

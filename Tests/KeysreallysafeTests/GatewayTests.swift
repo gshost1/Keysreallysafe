@@ -52,10 +52,23 @@ final class GatewayTests: XCTestCase {
         )
     }
 
+    /// A fixture stream fed through the gateway's tee in small chunks, as the proxy sees it.
+    private func streamed(_ api: String, _ fixture: String) throws -> GatewayParsedUsage {
+        let data = try Data(contentsOf: Fixtures.root.appendingPathComponent(fixture))
+        let tee = GatewayTee(api: api)
+        tee.setContentType("text/event-stream")
+        var rest = data[...]
+        while !rest.isEmpty {
+            tee.append(Data(rest.prefix(37)))
+            rest = rest.dropFirst(37)
+        }
+        return tee.result(requestBody: Data())
+    }
+
     func testUsageParserOpenAIChatAndResponses() throws {
         let chat = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/openai-chat.json"))
         let parsedChat = GatewayUsageParser.parse(
-            api: "openai", requestBody: Data(), responseBody: chat, contentType: "application/json"
+            api: "openai", requestBody: Data(), responseBody: chat
         )
         XCTAssertEqual(parsedChat.model, "gpt-4.1")
         XCTAssertEqual(parsedChat.inputTokens, 11)
@@ -64,7 +77,7 @@ final class GatewayTests: XCTestCase {
 
         let responses = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/openai-responses.json"))
         let parsedResp = GatewayUsageParser.parse(
-            api: "openai", requestBody: Data(), responseBody: responses, contentType: "application/json"
+            api: "openai", requestBody: Data(), responseBody: responses
         )
         XCTAssertEqual(parsedResp.inputTokens, 20)
         XCTAssertEqual(parsedResp.outputTokens, 5)
@@ -72,19 +85,13 @@ final class GatewayTests: XCTestCase {
     }
 
     func testUsageParserOpenAISSELastUsageEvent() throws {
-        let sse = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/openai-chat.sse"))
-        let parsed = GatewayUsageParser.parse(
-            api: "openai", requestBody: Data(), responseBody: sse, contentType: "text/event-stream"
-        )
+        let parsed = try streamed("openai", "gateway/openai-chat.sse")
         XCTAssertEqual(parsed.model, "gpt-4.1")
         XCTAssertEqual(parsed.inputTokens, 9)
         XCTAssertEqual(parsed.outputTokens, 2)
         XCTAssertEqual(parsed.cacheReadTokens, 1)
 
-        let completed = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/openai-response.sse"))
-        let parsedCompleted = GatewayUsageParser.parse(
-            api: "openai", requestBody: Data(), responseBody: completed, contentType: "text/event-stream"
-        )
+        let parsedCompleted = try streamed("openai", "gateway/openai-response.sse")
         XCTAssertEqual(parsedCompleted.model, "gpt-4.1")
         XCTAssertEqual(parsedCompleted.inputTokens, 15)
         XCTAssertEqual(parsedCompleted.outputTokens, 3)
@@ -94,7 +101,7 @@ final class GatewayTests: XCTestCase {
     func testUsageParserAnthropicStreamedAndGemini() throws {
         let json = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/anthropic.json"))
         let parsed = GatewayUsageParser.parse(
-            api: "anthropic", requestBody: Data(), responseBody: json, contentType: "application/json"
+            api: "anthropic", requestBody: Data(), responseBody: json
         )
         XCTAssertEqual(parsed.model, "claude-sonnet-5")
         XCTAssertEqual(parsed.inputTokens, 12)
@@ -102,22 +109,25 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(parsed.cacheReadTokens, 2)
         XCTAssertEqual(parsed.cacheWriteTokens, 1)
 
+        let stream = try streamed("anthropic", "gateway/anthropic.sse")
+        XCTAssertEqual(stream.model, "claude-sonnet-5")
+        XCTAssertEqual(stream.inputTokens, 10)
+        XCTAssertEqual(stream.outputTokens, 6)
+        XCTAssertEqual(stream.cacheReadTokens, 1)
+        XCTAssertEqual(stream.cacheWriteTokens, 2)
+
+        // An unlabelled stream whose first chunk is too short to recognise is still a stream.
         let sse = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/anthropic.sse"))
-        let streamed = GatewayUsageParser.parse(
-            api: "anthropic", requestBody: Data(), responseBody: sse, contentType: "text/event-stream"
-        )
-        XCTAssertEqual(streamed.model, "claude-sonnet-5")
-        XCTAssertEqual(streamed.inputTokens, 10)
-        XCTAssertEqual(streamed.outputTokens, 6)
-        XCTAssertEqual(streamed.cacheReadTokens, 1)
-        XCTAssertEqual(streamed.cacheWriteTokens, 2)
+        let tee = GatewayTee(api: "anthropic")
+        tee.append(sse.prefix(3))
+        tee.append(sse.dropFirst(3))
+        XCTAssertEqual(tee.result(requestBody: Data()), stream)
 
         let gemini = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/gemini.json"))
         let g = GatewayUsageParser.parse(
             api: "gemini",
             requestBody: Data("{\"model\":\"from-request\"}".utf8),
-            responseBody: gemini,
-            contentType: "application/json"
+            responseBody: gemini
         )
         XCTAssertEqual(g.model, "gemini-2.0-flash")
         XCTAssertEqual(g.inputTokens, 14)
@@ -127,8 +137,7 @@ final class GatewayTests: XCTestCase {
         let other = GatewayUsageParser.parse(
             api: "other",
             requestBody: Data("{\"model\":\"x\"}".utf8),
-            responseBody: Data("{\"usage\":{\"prompt_tokens\":99}}".utf8),
-            contentType: "application/json"
+            responseBody: Data("{\"usage\":{\"prompt_tokens\":99}}".utf8)
         )
         XCTAssertEqual(other.model, "x")
         XCTAssertNil(other.inputTokens)
@@ -226,6 +235,27 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(String(data: body, encoding: .utf8)!.contains("not_found"))
         XCTAssertEqual(hits.count, 0)
         _ = dir
+    }
+
+    /// A caller's own copy of a non-Authorization auth header must not replace the vault secret.
+    func testUpstreamRequestAuthHeaderWinsOverCallerCopy() throws {
+        let elevenlabs = try XCTUnwrap(Providers.provider(id: "elevenlabs"))
+        XCTAssertEqual(elevenlabs.authHeader, "xi-api-key")
+        for callerName in ["xi-api-key", "XI-API-KEY", "Xi-Api-Key"] {
+            let req = try XCTUnwrap(elevenlabs.upstreamRequest(
+                host: "api.elevenlabs.io", path: "/v1/voices", method: "GET",
+                headers: [callerName: "caller-supplied", "Accept-Encoding": "gzip", "X-Trace": "1"],
+                secret: "vault-secret", timeout: 5
+            ))
+            XCTAssertEqual(req.value(forHTTPHeaderField: "xi-api-key"), "vault-secret", callerName)
+            XCTAssertEqual(req.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
+            XCTAssertEqual(req.value(forHTTPHeaderField: "X-Trace"), "1")
+            XCTAssertEqual(req.url?.absoluteString, "https://api.elevenlabs.io/v1/voices")
+        }
+        let local = try XCTUnwrap(elevenlabs.upstreamRequest(
+            host: "127.0.0.1:9", path: "/v1/x", query: "a=1", method: "POST", headers: [:], secret: "s", timeout: 5
+        ))
+        XCTAssertEqual(local.url?.absoluteString, "http://127.0.0.1:9/v1/x?a=1")
     }
 
     func testRoundTripStripsClientAuthInjectsSecretAndOmitsSentinelFromCatalog() async throws {
