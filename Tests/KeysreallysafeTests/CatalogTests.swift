@@ -1,3 +1,4 @@
+import SQLite3
 import XCTest
 @testable import KeysCore
 
@@ -87,5 +88,29 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(fileMode?.intValue ?? 0 & 0o777, 0o600)
         let dirMode = try FileManager.default.attributesOfItem(atPath: keysDir.path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(dirMode?.intValue ?? 0 & 0o777, 0o700)
+    }
+
+    /// A 0.9 catalog has usage_events without http_status; opening it adds the column.
+    func testOpeningPre010CatalogAddsGatewayStatusColumn() throws {
+        let dir = try TempDir.make()
+        let path = dir.appendingPathComponent("catalog.db")
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path.path, &raw), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(raw, """
+            CREATE TABLE usage_events (
+              source TEXT NOT NULL, session_id TEXT NOT NULL, prompt_id TEXT NOT NULL, model TEXT NOT NULL,
+              occurred_at TEXT NOT NULL, provider TEXT NOT NULL, cwd TEXT, session_title TEXT, model_calls INTEGER,
+              input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+              cached_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+              reasoning_tokens INTEGER NOT NULL DEFAULT 0, cost_usd_ticks INTEGER, key_name TEXT,
+              PRIMARY KEY (source, session_id, prompt_id, model));
+            """, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+
+        let db = try CatalogDB(path: path)
+        try db.insertUsage(GatewayUsageRow(ts: "2026-09-01T00:00:00Z", key: "k", provider: "openai", model: "gpt-4.1",
+                                           status: 502, durationMs: 1, requestId: "r1").usageEvent())
+        XCTAssertEqual(try db.gatewayEvents().map(\.httpStatus), [502])
+        XCTAssertEqual(try CatalogDB(path: path).gatewayEvents().map(\.httpStatus), [502], "reopening is a no-op")
     }
 }

@@ -17,6 +17,8 @@ struct UsageEvent: Equatable {
     var reasoningTokens: Int = 0
     var costUsdTicks: Int64?
     var keyName: String? = nil
+    /// Upstream HTTP status of a gateway call; nil for local events.
+    var httpStatus: Int? = nil
 
     var tokenCount: Int {
         inputTokens + outputTokens + cachedReadTokens + cacheCreationTokens + reasoningTokens

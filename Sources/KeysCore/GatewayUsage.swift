@@ -2,7 +2,6 @@ import CoreFoundation
 import Foundation
 
 struct GatewayUsageRow: Equatable {
-    var id: Int64? = nil
     var ts: String
     var key: String
     var provider: String
@@ -20,21 +19,24 @@ struct GatewayUsageRow: Equatable {
     /// nil means absent/invalid, while zero is an explicit reported zero.
     var reportedCostUsdTicks: Int64? = nil
 
-    var usd: Double? {
-        if let reportedCostUsdTicks { return Ticks.usd(reportedCostUsdTicks) }
-        // TypeSafe's published System One protocol has no cost receipt. A model
-        // name from that response must not acquire an unrelated catalog price.
-        if provider == "typesafe" { return nil }
-        // No usage receipt at all: the request named a model, the response reported
-        // neither tokens nor cost. Estimating from absent counts would report $0.00
-        // as a known cost, so the cost stays unknown.
-        if inputTokens == nil, outputTokens == nil, cacheReadTokens == nil, cacheWriteTokens == nil {
-            return nil
-        }
-        return GatewayEstimate.usd(
-            model: model, input: inputTokens ?? 0, output: outputTokens ?? 0,
-            cacheRead: cacheReadTokens ?? 0, cacheWrite: cacheWriteTokens ?? 0,
-            api: Providers.provider(id: provider)?.api
+    /// The usage_events row this call is stored as. Absent token counts become zero there,
+    /// which is why pricing (`SpendQueries.gatewayUsd`) treats an all-zero call as unknown.
+    func usageEvent() -> UsageEvent {
+        UsageEvent(
+            source: "gateway",
+            sessionId: "gw:" + key,
+            promptId: requestId ?? UUID().uuidString.lowercased(),
+            model: model ?? "",
+            occurredAt: ts,
+            provider: provider,
+            modelCalls: 1,
+            inputTokens: inputTokens ?? 0,
+            outputTokens: outputTokens ?? 0,
+            cachedReadTokens: cacheReadTokens ?? 0,
+            cacheCreationTokens: cacheWriteTokens ?? 0,
+            costUsdTicks: reportedCostUsdTicks,
+            keyName: key,
+            httpStatus: status
         )
     }
 }

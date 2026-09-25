@@ -6,6 +6,7 @@
 - Upgrading moves the `Plugins` and `scripts` directories that 0.9.0 and 0.9.1 installed aside with the previous version, and `keys autostart --remove` deletes them. `keys purge` still deletes the optimizer's encrypted archive next to the catalog and its Keychain key (service `keysreallysafe.optimizer`).
 - Share to compare: the dashboard no longer sends an Optimizer pane visit, and no optimizer or context-pack counter is recorded. Reports and consent from 0.9.0 and 0.9.1 keep decoding; the collector accepts the same event names.
 - `/api/spend` and `keys spend --json` totals no longer carry the prose fields `usd_estimate_scope`, `token_rule` and the three `*_usd_estimate_label` strings; every number stays. `/api/keys` and `keys list --json` drop `provider_name`, `gateway_base_url` and `gateway_month_unpriced_tokens`. Nothing in the dashboard read them.
+- Gateway calls are recorded once, in the usage table, with their HTTP status. The key list's month cost, grant spend caps and share-to-compare's gateway rows all read that one ledger with one pricing rule, so a call whose provider reported zero tokens and no cost now shows as unknown everywhere instead of $0 on the key list. The old `gateway_usage` table is left for earlier versions and cleared by `keys purge`.
 - Development: the release packager is `scripts/prepare-release.py` (documented in `docs/release.md`) and packages only the binary, the Web files, the model fixture and the docs. The browser suites take Playwright from `scripts/tests/package.json`.
 
 ## 0.9.1 — 2026-09-24

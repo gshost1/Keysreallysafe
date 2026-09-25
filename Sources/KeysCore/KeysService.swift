@@ -541,35 +541,19 @@ final class KeysService: @unchecked Sendable {
 
     func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil) throws {
         analytics?.record((200..<400).contains(row.status) ? .gatewaySuccess : .gatewayFailure, durationMS: row.durationMs)
+        var event = row.usageEvent()
         if let grantId {
-            grants.charge(id: grantId, usd: row.usd)
+            grants.charge(id: grantId, usd: SpendQueries.gatewayUsd(event))
         }
         try catalog.withTransaction {
-            try catalog.insertGatewayUsage(row)
             // The upstream request id is the prompt id so a local event with the same id can be
             // matched. A proxy that repeats ids must not collapse two calls into one row, so a
             // second sighting of an id gets a suffix (and then no longer correlates).
-            var promptId = row.requestId ?? UUID().uuidString.lowercased()
             if row.requestId != nil,
-               try catalog.usageExists(source: "gateway", sessionId: "gw:" + row.key, promptId: promptId, model: row.model ?? "")
+               try catalog.usageExists(source: "gateway", sessionId: event.sessionId, promptId: event.promptId, model: event.model)
             {
-                promptId += "+" + UUID().uuidString.lowercased()
+                event.promptId += "+" + UUID().uuidString.lowercased()
             }
-            let event = UsageEvent(
-                source: "gateway",
-                sessionId: "gw:" + row.key,
-                promptId: promptId,
-                model: row.model ?? "",
-                occurredAt: row.ts,
-                provider: row.provider,
-                modelCalls: 1,
-                inputTokens: row.inputTokens ?? 0,
-                outputTokens: row.outputTokens ?? 0,
-                cachedReadTokens: row.cacheReadTokens ?? 0,
-                cacheCreationTokens: row.cacheWriteTokens ?? 0,
-                costUsdTicks: row.reportedCostUsdTicks,
-                keyName: row.key
-            )
             _ = try catalog.insertUsage(event)
             try catalog.bumpCatalogVersion()
             try catalog.ensureModelColors()
@@ -602,18 +586,20 @@ final class KeysService: @unchecked Sendable {
 
     func monthGatewayByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: GatewayMonth] {
         let (start, end) = SpendRange.month.interval(now: now, timeZone: timeZone)
-        let rows = try catalog.gatewayUsage(from: UTC.iso(start), to: UTC.iso(end))
+        // Straight from the gateway rows: the unkeyed report drops calls a local log correlated.
+        let events = try catalog.usageEvents(from: UTC.iso(start), to: UTC.iso(end), source: .keys)
         var out: [String: GatewayMonth] = [:]
-        for row in rows {
-            var month = out[row.key] ?? GatewayMonth()
+        for event in events {
+            guard let key = event.keyName else { continue }
+            var month = out[key] ?? GatewayMonth()
             month.calls += 1
-            if let usd = row.usd {
+            if let usd = SpendQueries.gatewayUsd(event) {
                 month.usd = (month.usd ?? 0) + usd
                 month.pricedCalls += 1
             } else {
                 month.unpricedCalls += 1
             }
-            out[row.key] = month
+            out[key] = month
         }
         return out
     }

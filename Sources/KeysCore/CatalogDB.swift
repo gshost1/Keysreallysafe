@@ -74,9 +74,15 @@ final class CatalogDB: @unchecked Sendable {
               reasoning_tokens INTEGER NOT NULL DEFAULT 0,
               cost_usd_ticks INTEGER,
               key_name TEXT,
+              http_status INTEGER,
               PRIMARY KEY (source, session_id, prompt_id, model)
             );
             """)
+        // Gateway calls used to keep their status in a separate gateway_usage table, which is
+        // left in place for older binaries; a usage_events table from those versions lacks it.
+        if try !tableHasColumn("usage_events", "http_status") {
+            try exec("ALTER TABLE usage_events ADD COLUMN http_status INTEGER;")
+        }
         try exec("CREATE INDEX IF NOT EXISTS usage_events_occurred ON usage_events (occurred_at);")
         try exec("CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events (model);")
         try exec("""
@@ -103,24 +109,6 @@ final class CatalogDB: @unchecked Sendable {
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS usage_events_key ON usage_events (key_name);")
-        try exec("""
-            CREATE TABLE IF NOT EXISTS gateway_usage (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              ts TEXT NOT NULL,
-              key TEXT NOT NULL,
-              provider TEXT NOT NULL,
-              model TEXT,
-              input_tokens INTEGER,
-              output_tokens INTEGER,
-              cache_read_tokens INTEGER,
-              cache_write_tokens INTEGER,
-              status INTEGER,
-              duration_ms INTEGER,
-              request_id TEXT,
-              reported_cost_usd_ticks INTEGER
-            );
-            """)
-        try exec("CREATE INDEX IF NOT EXISTS gateway_usage_key_ts ON gateway_usage (key, ts);")
         try exec("""
             CREATE TABLE IF NOT EXISTS key_events (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -687,8 +675,8 @@ final class CatalogDB: @unchecked Sendable {
                   source, session_id, prompt_id, model, occurred_at, provider,
                   cwd, session_title, model_calls,
                   input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-                  reasoning_tokens, cost_usd_ticks, key_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  reasoning_tokens, cost_usd_ticks, key_name, http_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, session_id, prompt_id, model) DO UPDATE SET
                   occurred_at = excluded.occurred_at,
                   provider = excluded.provider,
@@ -701,7 +689,8 @@ final class CatalogDB: @unchecked Sendable {
                   cache_creation_tokens = excluded.cache_creation_tokens,
                   reasoning_tokens = excluded.reasoning_tokens,
                   cost_usd_ticks = excluded.cost_usd_ticks,
-                  key_name = excluded.key_name;
+                  key_name = excluded.key_name,
+                  http_status = excluded.http_status;
                 """
             let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
@@ -725,6 +714,7 @@ final class CatalogDB: @unchecked Sendable {
                 sqlite3_bind_null(stmt, 15)
             }
             bindText(stmt, 16, event.keyName)
+            bindInt(stmt, 17, event.httpStatus)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
             return !existed
         }
@@ -742,7 +732,7 @@ final class CatalogDB: @unchecked Sendable {
                 SELECT source, session_id, prompt_id, model, occurred_at, provider,
                        cwd, session_title, model_calls,
                        input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-                       reasoning_tokens, cost_usd_ticks, key_name
+                       reasoning_tokens, cost_usd_ticks, key_name, http_status
                 FROM usage_events
                 WHERE occurred_at >= ? AND occurred_at < ?
                 """
@@ -801,74 +791,9 @@ final class CatalogDB: @unchecked Sendable {
             cacheCreationTokens: Int(sqlite3_column_int(stmt, 12)),
             reasoningTokens: Int(sqlite3_column_int(stmt, 13)),
             costUsdTicks: sqlite3_column_type(stmt, 14) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 14),
-            keyName: columnText(stmt, 15)
+            keyName: columnText(stmt, 15),
+            httpStatus: columnOptionalInt(stmt, 16)
         )
-    }
-
-    func insertGatewayUsage(_ row: GatewayUsageRow) throws {
-        try withLock {
-            let sql = """
-                INSERT INTO gateway_usage (
-                  ts, key, provider, model, input_tokens, output_tokens,
-                  cache_read_tokens, cache_write_tokens, status, duration_ms, request_id, reported_cost_usd_ticks
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, row.ts)
-            bindText(stmt, 2, row.key)
-            bindText(stmt, 3, row.provider)
-            bindText(stmt, 4, row.model)
-            bindInt(stmt, 5, row.inputTokens)
-            bindInt(stmt, 6, row.outputTokens)
-            bindInt(stmt, 7, row.cacheReadTokens)
-            bindInt(stmt, 8, row.cacheWriteTokens)
-            sqlite3_bind_int(stmt, 9, Int32(row.status))
-            sqlite3_bind_int(stmt, 10, Int32(row.durationMs))
-            bindText(stmt, 11, row.requestId)
-            if let ticks = row.reportedCostUsdTicks { sqlite3_bind_int64(stmt, 12, ticks) }
-            else { sqlite3_bind_null(stmt, 12) }
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
-    }
-
-    func gatewayUsage(from startISO: String, to endISO: String, key: String? = nil) throws -> [GatewayUsageRow] {
-        try withLock {
-            var sql = """
-                SELECT id, ts, key, provider, model, input_tokens, output_tokens,
-                       cache_read_tokens, cache_write_tokens, status, duration_ms, request_id, reported_cost_usd_ticks
-                FROM gateway_usage
-                WHERE ts >= ? AND ts < ?
-                """
-            if key != nil { sql += " AND key = ?" }
-            sql += " ORDER BY ts;"
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, startISO)
-            bindText(stmt, 2, endISO)
-            if let key { bindText(stmt, 3, key) }
-            var rows: [GatewayUsageRow] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                rows.append(
-                    GatewayUsageRow(
-                        id: sqlite3_column_int64(stmt, 0),
-                        ts: columnText(stmt, 1) ?? "",
-                        key: columnText(stmt, 2) ?? "",
-                        provider: columnText(stmt, 3) ?? "",
-                        model: columnText(stmt, 4),
-                        inputTokens: columnOptionalInt(stmt, 5),
-                        outputTokens: columnOptionalInt(stmt, 6),
-                        cacheReadTokens: columnOptionalInt(stmt, 7),
-                        cacheWriteTokens: columnOptionalInt(stmt, 8),
-                        status: Int(sqlite3_column_int(stmt, 9)),
-                        durationMs: Int(sqlite3_column_int(stmt, 10)),
-                        requestId: columnText(stmt, 11),
-                        reportedCostUsdTicks: sqlite3_column_type(stmt, 12) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 12)
-                    )
-                )
-            }
-            return rows
-        }
     }
 
     /// Latest read-only provider check per key. Model IDs and status only; never a secret.
@@ -1140,6 +1065,14 @@ final class CatalogDB: @unchecked Sendable {
         } else if rc != SQLITE_OK {
             throw sqliteError()
         }
+    }
+
+    private func tableHasColumn(_ table: String, _ column: String) throws -> Bool {
+        let stmt = try prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?;")
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, table)
+        bindText(stmt, 2, column)
+        return sqlite3_step(stmt) == SQLITE_ROW
     }
 
     private func prepare(_ sql: String) throws -> OpaquePointer {

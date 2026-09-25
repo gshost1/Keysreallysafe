@@ -124,6 +124,11 @@ extension CatalogDB {
     func allUsageEvents() throws -> [UsageEvent] {
         try usageEvents(from: "", to: "\u{10FFFF}", source: .all)
     }
+
+    /// Every stored gateway call.
+    func gatewayEvents() throws -> [UsageEvent] {
+        try usageEvents(from: "", to: "\u{10FFFF}", source: .keys)
+    }
 }
 
 extension CodexIngest {

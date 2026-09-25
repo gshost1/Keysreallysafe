@@ -35,7 +35,7 @@ protocol AnalyticsTransport: Sendable {
 /// Opt-in aggregate reports. The counters come only from the closed event enum.
 /// When a UTC day closes, the report also gets that day's usage totals per
 /// (tool, provider, model) from `usage_events`, per (provider, model) from
-/// `gateway_usage`, and the plan-window peaks observed through `observe`.
+/// the gateway's rows in `usage_events`, and the plan-window peaks observed through `observe`.
 /// Nothing else is read: no vault, prompt library, task ledger, session,
 /// project, path or key name. Consent and unsent aggregates live in the private
 /// local catalog, independently of vault unlock.
@@ -517,19 +517,20 @@ final class ProductAnalytics: @unchecked Sendable {
             usage[key] = row
         }
         var gateway: [String: GatewayRow] = [:]
-        for call in (try? catalog.gatewayUsage(from: UTC.iso(start), to: UTC.iso(end))) ?? [] {
+        for call in (try? catalog.usageEvents(from: UTC.iso(start), to: UTC.iso(end), source: .keys)) ?? [] {
             let provider = Self.publicProvider(call.provider), model = Self.publicModel(call.model)
             let key = "\(provider)|\(model)"
             var row = gateway[key] ?? GatewayRow(provider: provider, model: model, requests: 0, ok: 0, failed: 0,
                 input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0)
-            let ok = (200..<400).contains(call.status)
+            // A gateway row written before the status moved into usage_events has none; it counts as failed.
+            let ok = call.httpStatus.map { (200..<400).contains($0) } ?? false
             row.requests = clamp(row.requests + 1)
             row.ok = clamp(row.ok + (ok ? 1 : 0))
             row.failed = clamp(row.failed + (ok ? 0 : 1))
-            row.input_tokens = clamp(row.input_tokens + (call.inputTokens ?? 0))
-            row.output_tokens = clamp(row.output_tokens + (call.outputTokens ?? 0))
-            row.cache_read_tokens = clamp(row.cache_read_tokens + (call.cacheReadTokens ?? 0))
-            row.cache_write_tokens = clamp(row.cache_write_tokens + (call.cacheWriteTokens ?? 0))
+            row.input_tokens = clamp(row.input_tokens + call.inputTokens)
+            row.output_tokens = clamp(row.output_tokens + call.outputTokens)
+            row.cache_read_tokens = clamp(row.cache_read_tokens + call.cachedReadTokens)
+            row.cache_write_tokens = clamp(row.cache_write_tokens + call.cacheCreationTokens)
             gateway[key] = row
         }
         // The collector's row limits are 40; the biggest rows are kept, ties by name.

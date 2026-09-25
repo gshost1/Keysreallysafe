@@ -157,7 +157,7 @@ final class ApiKeyUsageTests: XCTestCase {
             model: "openai/gpt-4.1", inputTokens: nil, outputTokens: nil,
             cacheReadTokens: nil, cacheWriteTokens: nil, status: 200, durationMs: 7, requestId: "v1"
         )
-        XCTAssertNil(row.usd, "no receipt and no usage: unknown, not zero")
+        XCTAssertNil(SpendQueries.gatewayUsd(row.usageEvent()), "no receipt and no usage: unknown, not zero")
         try service.recordGatewayUsage(row)
 
         let keys = try report(db)
@@ -177,7 +177,7 @@ final class ApiKeyUsageTests: XCTestCase {
         free.inputTokens = 0
         free.outputTokens = 0
         free.reportedCostUsdTicks = 0
-        XCTAssertEqual(free.usd, 0)
+        XCTAssertEqual(SpendQueries.gatewayUsd(free.usageEvent()), 0)
         try service.recordGatewayUsage(free)
         let both = try report(db)
         XCTAssertEqual(both.totals.gatewayCalls, 2)

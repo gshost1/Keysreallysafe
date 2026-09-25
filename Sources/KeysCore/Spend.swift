@@ -376,7 +376,7 @@ struct SpendQueries {
         }
     }
 
-    private static func gatewayUsd(_ event: UsageEvent) -> Double? {
+    static func gatewayUsd(_ event: UsageEvent) -> Double? {
         guard event.source == "gateway" else { return nil }
         // A reported zero is a known zero; only an absent receipt is unknown.
         if let ticks = event.costUsdTicks { return Ticks.usd(ticks) }

@@ -288,20 +288,20 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(captured.path, "/v1/chat/completions")
 
         // The gateway finishes the client response before it records usage; wait for the row.
-        var usage: [GatewayUsageRow] = []
+        var usage: [UsageEvent] = []
         for _ in 0..<200 where usage.isEmpty {
-            usage = try db.gatewayUsage(from: "1970-01-01T00:00:00Z", to: "2099-01-01T00:00:00Z")
+            usage = try db.gatewayEvents()
             if usage.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
         }
         XCTAssertEqual(usage.count, 1)
         let row = try XCTUnwrap(usage.first)
-        XCTAssertEqual(row.key, "demo")
+        XCTAssertEqual(row.keyName, "demo")
         XCTAssertEqual(row.provider, "openai")
         XCTAssertEqual(row.model, "gpt-4.1")
         XCTAssertEqual(row.inputTokens, 11)
         XCTAssertEqual(row.outputTokens, 7)
-        XCTAssertEqual(row.cacheReadTokens, 3)
-        XCTAssertEqual(row.status, 200)
+        XCTAssertEqual(row.cachedReadTokens, 3)
+        XCTAssertEqual(row.httpStatus, 200)
 
         try assertNoSentinel(in: dir, catalog: db.path)
 

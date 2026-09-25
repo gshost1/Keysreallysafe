@@ -85,8 +85,8 @@ final class GatewayEvaluationTests: XCTestCase {
         XCTAssertEqual(month.unpricedCalls, 1)
 
         let reopened = try CatalogDB(path: db.path)
-        let saved = try reopened.gatewayUsage(from: "1970-01-01T00:00:00Z", to: "2099-01-01T00:00:00Z")
-        XCTAssertEqual(saved.map(\.reportedCostUsdTicks), [nil, 0])
+        let saved = try reopened.gatewayEvents()
+        XCTAssertEqual(Set(saved.map(\.costUsdTicks)), [nil, 0])
     }
 
     func testReportedCostOverridesListPrice() {
@@ -96,7 +96,7 @@ final class GatewayEvaluationTests: XCTestCase {
             reportedCostUsdTicks: 0
         )
         XCTAssertNotNil(ModelPrices.lookup("gpt-4.1"))
-        XCTAssertEqual(row.usd, 0)
+        XCTAssertEqual(SpendQueries.gatewayUsd(row.usageEvent()), 0)
     }
 
     func testFailedEvaluationDoesNotRecordReportedCost() async throws {
@@ -120,15 +120,15 @@ final class GatewayEvaluationTests: XCTestCase {
         request.setValue("typesafe-ai/jev", forHTTPHeaderField: "ai-model-id")
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 503)
-        var rows: [GatewayUsageRow] = []
+        var rows: [UsageEvent] = []
         for _ in 0..<200 where rows.isEmpty {
-            rows = try db.gatewayUsage(from: "1970-01-01T00:00:00Z", to: "2099-01-01T00:00:00Z")
+            rows = try db.gatewayEvents()
             if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
         }
         let row = try XCTUnwrap(rows.first)
-        XCTAssertEqual(row.status, 503)
-        XCTAssertNil(row.reportedCostUsdTicks)
-        XCTAssertNil(row.usd)
+        XCTAssertEqual(row.httpStatus, 503)
+        XCTAssertNil(row.costUsdTicks)
+        XCTAssertNil(SpendQueries.gatewayUsd(row))
     }
 
     func testEvaluationRoundTripRemainsScopedAndStoresOnlyUsage() async throws {
@@ -209,9 +209,9 @@ final class GatewayEvaluationTests: XCTestCase {
         XCTAssertEqual((exhausted as? HTTPURLResponse)?.statusCode, 429)
         XCTAssertEqual(capture.count, 1)
 
-        var rows: [GatewayUsageRow] = []
+        var rows: [UsageEvent] = []
         for _ in 0..<200 where rows.isEmpty {
-            rows = try db.gatewayUsage(from: "1970-01-01T00:00:00Z", to: "2099-01-01T00:00:00Z")
+            rows = try db.gatewayEvents()
             if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
         }
         let row = try XCTUnwrap(rows.first)
@@ -220,10 +220,10 @@ final class GatewayEvaluationTests: XCTestCase {
         XCTAssertEqual(row.model, "typesafe-ai/jev")
         XCTAssertEqual(row.inputTokens, 1234)
         XCTAssertEqual(row.outputTokens, 0)
-        XCTAssertEqual(row.requestId, "evaluation-req-1")
-        XCTAssertEqual(row.status, 200)
+        XCTAssertEqual(row.promptId, "evaluation-req-1")
+        XCTAssertEqual(row.httpStatus, 200)
 
-        XCTAssertEqual(row.reportedCostUsdTicks, 518_280)
+        XCTAssertEqual(row.costUsdTicks, 518_280)
         XCTAssertEqual(try XCTUnwrap(service.listGrants().first?.usd), 0.000051828, accuracy: 1e-12)
 
         // Provider-reported cost does not depend on a current/historical price fixture.
@@ -291,16 +291,16 @@ extension GatewayEvaluationTests {
         XCTAssertFalse(upstream.headers.values.contains { $0.contains(grant.token) })
         let (_, exhausted) = try await URLSession.shared.data(for: request("/v1/systemone"))
         XCTAssertEqual((exhausted as? HTTPURLResponse)?.statusCode, 429)
-        var rows: [GatewayUsageRow] = []
+        var rows: [UsageEvent] = []
         for _ in 0..<200 where rows.isEmpty {
-            rows = try db.gatewayUsage(from: "1970-01-01T00:00:00Z", to: "2099-01-01T00:00:00Z")
+            rows = try db.gatewayEvents()
             if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
         }
         let row = try XCTUnwrap(rows.first)
         XCTAssertEqual(row.model, "jev-1.13.0")
         XCTAssertEqual(row.inputTokens, 55)
         XCTAssertEqual(row.outputTokens, 0)
-        XCTAssertNil(row.usd)
+        XCTAssertNil(SpendQueries.gatewayUsd(row))
         XCTAssertEqual(try service.monthGatewayByKey()["direct"]?.kind, "unknown")
         let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
         while let url = files?.nextObject() as? URL {

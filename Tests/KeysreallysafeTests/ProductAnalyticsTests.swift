@@ -313,9 +313,9 @@ final class ProductAnalyticsTests: XCTestCase {
         try usage(db, "2026-05-19T09:00:00Z", provider: "acme-internal-llm", model: "acme-prod-deployment")
         try usage(db, "2026-05-20T01:00:00Z")                    // next day: not in this report
         for (status, model) in [(200, "claude-fable-5-1"), (500, "claude-fable-5-1"), (200, "my-azure-deployment")] {
-            try db.insertGatewayUsage(GatewayUsageRow(ts: "2026-05-19T10:00:00Z", key: "private-key", provider: "anthropic",
+            try db.insertUsage(GatewayUsageRow(ts: "2026-05-19T10:00:00Z", key: "private-key", provider: "anthropic",
                 model: model, inputTokens: 7, outputTokens: 3, cacheReadTokens: nil, cacheWriteTokens: 1,
-                status: status, durationMs: 40))
+                status: status, durationMs: 40).usageEvent())
         }
         analytics.record(.viewUsage)
         clock.advance(86_400)
