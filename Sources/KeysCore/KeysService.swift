@@ -235,7 +235,7 @@ final class KeysService: @unchecked Sendable {
                 version: version
             )
             gatewayLock.unlock()
-            let updated = try catalog.updateGateway(name: name, enabled: true, host: resolved)
+            let updated = try catalog.updateGatewayHost(name: name, host: resolved)
             try recordKeyEvent(name: name, action: "gateway_enable", caller: caller)
             return updated
         }
@@ -243,9 +243,8 @@ final class KeysService: @unchecked Sendable {
         gatewayCache.removeValue(forKey: name)
         gatewayLock.unlock()
         revokeGrants(key: name, reason: "gateway_off", caller: caller)
-        let updated = try catalog.updateGatewayEnabled(name: name, enabled: false)
         try recordKeyEvent(name: name, action: "gateway_disable", caller: caller)
-        return updated
+        return row
     }
 
     // MARK: - Grants (temporary, narrowly scoped access)
@@ -666,7 +665,7 @@ final class KeysService: @unchecked Sendable {
         }
         var row = try catalog.updateCatalog(name: name, provider: nextProvider, kind: kind, notes: notes)
         if updateHost {
-            row = try catalog.updateGateway(name: name, enabled: false, host: nextHost)
+            row = try catalog.updateGatewayHost(name: name, host: nextHost)
         }
         try recordKeyEvent(name: name, action: "patch", caller: caller)
         return row
@@ -899,7 +898,6 @@ final class KeysService: @unchecked Sendable {
         gatewayLock.unlock()
         guard had else { return }
         revokeGrants(key: name, reason: reason)
-        _ = try? catalog.updateGatewayEnabled(name: name, enabled: false)
         try? recordKeyEvent(
             name: name,
             action: "gateway_disable",

@@ -1463,7 +1463,7 @@
     }
   }
 
-  const gatewayOn = (k) => !!(k.gateway_enabled || k.gateway_on);
+  const gatewayOn = (k) => !!k.gateway_enabled;
 
   function renderKeys(opts = {}) {
     const body = $("keys-body");

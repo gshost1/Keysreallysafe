@@ -149,10 +149,9 @@ final class GatewayTests: XCTestCase {
         )
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         XCTAssertEqual(gate.reasons, [])
-        let enabled = try service.setGateway(name: "demo", enabled: true, host: nil)
+        _ = try service.setGateway(name: "demo", enabled: true, host: nil)
         XCTAssertTrue(service.isGatewayEnabled("demo"))
         XCTAssertEqual(gate.reasons, ["Unlock demo"])
-        XCTAssertEqual(enabled.gatewayEnabled, true)
 
         try service.add(name: "bedrock-key", provider: "bedrock", kind: "runtime", notes: "", secret: fixtureSecret)
         XCTAssertThrowsError(try service.setGateway(name: "bedrock-key", enabled: true, host: "example.com")) { error in
@@ -186,7 +185,6 @@ final class GatewayTests: XCTestCase {
         let (service2, _, _) = makeService(db: db2)
         XCTAssertFalse(service2.isGatewayEnabled("demo"))
         let row = try XCTUnwrap(try db2.catalogRow(name: "demo"))
-        XCTAssertFalse(row.gatewayEnabled)
         XCTAssertEqual(row.gatewayHost, "127.0.0.1:9")
     }
 

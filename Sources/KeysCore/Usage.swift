@@ -37,7 +37,6 @@ struct CatalogRow: Equatable {
     var notes: String
     var createdAt: String
     var lastUsedAt: String?
-    var gatewayEnabled: Bool = false
     var gatewayHost: String? = nil
     var version: Int = 1
 }

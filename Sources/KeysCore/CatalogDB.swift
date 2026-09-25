@@ -52,7 +52,6 @@ final class CatalogDB: @unchecked Sendable {
               notes TEXT NOT NULL DEFAULT '',
               created_at TEXT NOT NULL,
               last_used_at TEXT,
-              gateway_enabled INTEGER NOT NULL DEFAULT 0,
               gateway_host TEXT,
               version INTEGER NOT NULL DEFAULT 1
             );
@@ -125,7 +124,6 @@ final class CatalogDB: @unchecked Sendable {
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS gateway_usage_key_ts ON gateway_usage (key, ts);")
-        try exec("UPDATE catalog SET gateway_enabled = 0;")
         try exec("""
             CREATE TABLE IF NOT EXISTS key_events (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -330,9 +328,9 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             let sql = """
                 INSERT INTO catalog (
-                  name, provider, kind, notes, created_at, last_used_at, gateway_enabled, gateway_host, version
+                  name, provider, kind, notes, created_at, last_used_at, gateway_host, version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
                 """
             let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
@@ -342,9 +340,8 @@ final class CatalogDB: @unchecked Sendable {
             bindText(stmt, 4, row.notes)
             bindText(stmt, 5, row.createdAt)
             bindText(stmt, 6, row.lastUsedAt)
-            sqlite3_bind_int(stmt, 7, row.gatewayEnabled ? 1 : 0)
-            bindText(stmt, 8, row.gatewayHost)
-            sqlite3_bind_int(stmt, 9, Int32(row.version))
+            bindText(stmt, 7, row.gatewayHost)
+            sqlite3_bind_int(stmt, 8, Int32(row.version))
             let rc = sqlite3_step(stmt)
             if rc == SQLITE_CONSTRAINT {
                 throw AppError.alreadyExists(row.name)
@@ -494,7 +491,7 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             let stmt = try prepare(
                 """
-                SELECT name, provider, kind, notes, created_at, last_used_at, gateway_enabled, gateway_host, version
+                SELECT name, provider, kind, notes, created_at, last_used_at, gateway_host, version
                 FROM catalog WHERE name = ?;
                 """
             )
@@ -531,37 +528,18 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
-    func updateGateway(name: String, enabled: Bool, host: String?) throws -> CatalogRow {
+    func updateGatewayHost(name: String, host: String?) throws -> CatalogRow {
         try withLock {
             guard try catalogRow(name: name) != nil else {
                 throw AppError.notFound(name)
             }
             let sql = """
-                UPDATE catalog SET gateway_enabled = ?, gateway_host = ?
+                UPDATE catalog SET gateway_host = ?
                 WHERE name = ?;
                 """
             let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_int(stmt, 1, enabled ? 1 : 0)
-            bindText(stmt, 2, host)
-            bindText(stmt, 3, name)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            if sqlite3_changes(db) == 0 {
-                throw AppError.notFound(name)
-            }
-            guard let row = try catalogRow(name: name) else {
-                throw AppError.notFound(name)
-            }
-            return row
-        }
-    }
-
-    func updateGatewayEnabled(name: String, enabled: Bool) throws -> CatalogRow {
-        try withLock {
-            let sql = "UPDATE catalog SET gateway_enabled = ? WHERE name = ?;"
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_int(stmt, 1, enabled ? 1 : 0)
+            bindText(stmt, 1, host)
             bindText(stmt, 2, name)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
             if sqlite3_changes(db) == 0 {
@@ -652,7 +630,7 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             let stmt = try prepare(
                 """
-                SELECT name, provider, kind, notes, created_at, last_used_at, gateway_enabled, gateway_host, version
+                SELECT name, provider, kind, notes, created_at, last_used_at, gateway_host, version
                 FROM catalog ORDER BY name;
                 """
             )
@@ -1172,9 +1150,8 @@ final class CatalogDB: @unchecked Sendable {
             notes: columnText(stmt, 3) ?? "",
             createdAt: columnText(stmt, 4) ?? "",
             lastUsedAt: columnText(stmt, 5),
-            gatewayEnabled: sqlite3_column_int(stmt, 6) != 0,
-            gatewayHost: columnText(stmt, 7),
-            version: Int(sqlite3_column_int(stmt, 8))
+            gatewayHost: columnText(stmt, 6),
+            version: Int(sqlite3_column_int(stmt, 7))
         )
     }
 
