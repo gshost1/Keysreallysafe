@@ -218,6 +218,9 @@
       default: return code || `Request failed (${status}).`;
     }
   }
+  // analytics.js loads after this file and reuses its fetch wrapper and token format. Published
+  // before the rest of startup so a later failure here cannot take the Privacy dialog down too.
+  window.KeysUI = Object.freeze({ api, fmtTokens });
   // A sticky message has no timer, so whoever puts a failure on the line owns
   // taking it down: otherwise a stale error outlives the failure it described,
   // and the user reads "engine_busy" over a chart that has since loaded. The

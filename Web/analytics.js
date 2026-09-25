@@ -3,8 +3,7 @@
   "use strict";
 
   const CONSENT_VERSION = 2;
-  const EVENTS = new Set(["view_usage", "view_chart", "view_keys"]);
-  const TOKEN = (document.querySelector('meta[name="ksf-token"]') || {}).content || "";
+  const { api, fmtTokens } = window.KeysUI;
   const $ = (id) => document.getElementById(id);
   const dialog = $("dlg-privacy");
   const button = $("btn-privacy");
@@ -61,12 +60,6 @@
 
   const TOOLS = { claude_code: "Claude Code", codex: "Codex", grok: "Grok" };
   const WINDOWS = { "5h": "5-hour limit", weekly: "weekly limit", fable: "Fable limit" };
-  function tokens(n) {
-    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
-    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
-    return String(n);
-  }
   function standing(percent) {
     if (percent >= 95) return "in the top 5% of shared days";
     if (percent <= 0) return "in the lowest 5% of shared days";
@@ -80,7 +73,7 @@
       row && TOOLS[row.source] && Number.isInteger(row.typical_day_tokens) && Number.isInteger(row.higher_than_percent)) : [];
     if (!rows.length) { node.hidden = true; node.textContent = ""; return; }
     const parts = rows.map((row) => {
-      let line = `${TOOLS[row.source]}: your typical day ${tokens(row.typical_day_tokens)} tokens, ${standing(row.higher_than_percent)}`;
+      let line = `${TOOLS[row.source]}: your typical day ${fmtTokens(row.typical_day_tokens)} tokens, ${standing(row.higher_than_percent)}`;
       for (const cap of Array.isArray(row.cap_hits) ? row.cap_hits : []) {
         if (WINDOWS[cap.window] && typeof cap.hit_rate === "number" && cap.hit_rate >= 0 && cap.hit_rate <= 1) {
           line += `; sharers hit the ${WINDOWS[cap.window]} on ${Math.round(cap.hit_rate * 100)}% of days`;
@@ -95,8 +88,7 @@
   }
   async function loadCompare() {
     try {
-      const response = await request("/api/analytics");
-      const next = await response.json();
+      const next = await api("/api/analytics");
       renderCompare(validStatus(next) && next.enabled === true ? next.compare : null);
     } catch (_) { renderCompare(null); }
   }
@@ -116,21 +108,12 @@
     renderCompare(next.enabled === true ? next.compare : null);
   }
 
-  async function request(path, options = {}) {
-    const response = await fetch(path, {
-      credentials: "same-origin",
-      headers: options.body ? { "Content-Type": "application/json", "X-KSF-Token": TOKEN } : undefined,
-      ...options,
-    });
-    if (!response.ok) throw new Error(`Request failed (${response.status})`);
-    return response;
-  }
+  const post = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
   async function refresh() {
     const requestGeneration = ++generation;
     try {
-      const response = await request("/api/analytics");
-      const next = await response.json();
+      const next = await api("/api/analytics");
       if (!validStatus(next)) throw new Error("Invalid analytics status");
       if (requestGeneration !== generation) return false;
       render(next);
@@ -149,11 +132,7 @@
     busy(true);
     error();
     try {
-      const response = await request("/api/analytics", {
-        method: "POST",
-        body: JSON.stringify({ enabled, consent_version: CONSENT_VERSION }),
-      });
-      const next = await response.json();
+      const next = await post("/api/analytics", { enabled, consent_version: CONSENT_VERSION });
       if (!validStatus(next)) throw new Error("Invalid analytics status");
       if (requestGeneration !== generation) return;
       render(next);
@@ -190,9 +169,7 @@
 
   window.KeysAnalytics = {
     refresh,
-    event(name) {
-      if (!EVENTS.has(name)) return;
-      void request("/api/analytics/event", { method: "POST", body: JSON.stringify({ event: name }) }).catch(() => {});
-    },
+    // The server keeps the allowlist of page-originated events; anything else gets a 400.
+    event(name) { void post("/api/analytics/event", { event: name }).catch(() => {}); },
   };
 })();

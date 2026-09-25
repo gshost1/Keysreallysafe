@@ -10,6 +10,9 @@ const root = path.resolve(__dirname, "../..");
 const html = fs.readFileSync(path.join(root, "Web/index.html"), "utf8")
   .replace("<head>", '<head><meta name="ksf-token" content="test-csrf-token">');
 const analytics = fs.readFileSync(path.join(root, "Web/analytics.js"));
+// analytics.js borrows app.js's fetch wrapper (window.KeysUI), so the real one is served; its own
+// dashboard requests just get 404s here.
+const app = fs.readFileSync(path.join(root, "Web/app.js"));
 
 let status = {
   enabled: false, endpoint: "https://analytics.example/v1/reports",
@@ -39,7 +42,7 @@ const server = http.createServer((request, response) => {
   }
   if (url.pathname === "/app.js") {
     response.writeHead(200, { "Content-Type": "application/javascript" });
-    return response.end("");
+    return response.end(app);
   }
   if (url.pathname.endsWith(".css")) {
     response.writeHead(200, { "Content-Type": "text/css" });

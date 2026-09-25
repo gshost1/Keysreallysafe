@@ -260,7 +260,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Keysrs",
-            .applicationVersion: "0.9.1",
+            .applicationVersion: ProductAnalyticsConfiguration.appVersion,
             .version: "local vault + usage · loopback only",
             .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. MIT licensed."),
         ])
