@@ -696,7 +696,7 @@
     // A project row is a folder's Claude sessions; it names no model, and Claude is the only
     // source with a project path.
     if (projects || src === "claude-local") return input + output + cache;
-    if (src === "codex-local" || src === "openai-api" || src === "grok-local") return input + output + reasoning;
+    if (src === "codex-local" || src === "grok-local") return input + output + reasoning;
     if (src === "gateway" || (!src && r.provider)) return input + output + (anthropicApi(r.provider) ? cache : reasoning);
     return input + output + (family(r.model || "") === "claude" ? cache : reasoning);
   }

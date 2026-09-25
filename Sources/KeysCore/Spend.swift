@@ -25,7 +25,7 @@ enum TokenTotals {
         case "claude-local":
             return event.inputTokens + event.outputTokens
                 + event.cachedReadTokens + event.cacheCreationTokens
-        case "codex-local", "openai-api", "grok-local":
+        case "codex-local", "grok-local":
             return event.inputTokens + event.outputTokens + event.reasoningTokens
         case "gateway":
             if Providers.provider(id: event.provider)?.api == "anthropic" {
@@ -276,7 +276,7 @@ struct SpendQueries {
                     totals.claudeUnpricedTokens += tok
                 }
             }
-            if event.source == "codex-local" || event.source == "openai-api" {
+            if event.source == "codex-local" {
                 let tok = TokenTotals.normalized(event)
                 totals.openaiTokens += tok
                 if let est = OpenAIEstimate.usd(
@@ -321,9 +321,7 @@ struct SpendQueries {
             rows = groupByProject(charted)
         }
 
-        let daily = by == .project
-            ? dailyPointsByProject(charted, calendar: cal)
-            : dailyPoints(charted, calendar: cal)
+        let daily = dailyPoints(charted, calendar: cal, byProject: by == .project)
         let points = by == .hour
             ? hourlyPoints(charted, now: now, timeZone: timeZone)
             : []
@@ -364,6 +362,23 @@ struct SpendQueries {
         return (kept, dropped)
     }
 
+    /// What one event cost: `usd` from the tool's own receipt (Grok logs its charge), or
+    /// `estimate` from list prices. Nil means unknown, never zero.
+    static func cost(_ event: UsageEvent) -> (usd: Double?, estimate: Double?) {
+        switch event.source {
+        case "grok-local":
+            return (event.costUsdTicks.map(Ticks.usd), nil)
+        case "claude-local":
+            return (nil, ClaudeEstimate.usd(model: event.model, input: event.inputTokens, output: event.outputTokens,
+                                            cacheCreate: event.cacheCreationTokens, cacheRead: event.cachedReadTokens))
+        case "codex-local":
+            return (nil, OpenAIEstimate.usd(model: event.model, input: event.inputTokens, output: event.outputTokens,
+                                            cacheRead: event.cachedReadTokens, reasoning: event.reasoningTokens))
+        default:
+            return (nil, gatewayUsd(event))
+        }
+    }
+
     private static func gatewayUsd(_ event: UsageEvent) -> Double? {
         guard event.source == "gateway" else { return nil }
         // A reported zero is a known zero; only an absent receipt is unknown.
@@ -389,124 +404,22 @@ struct SpendQueries {
         return URL(fileURLWithPath: cwd).lastPathComponent
     }
 
-    private static func addTokens(_ row: inout SpendRow, _ event: UsageEvent) {
-        row.inputTokens += event.inputTokens
-        row.outputTokens += event.outputTokens
-        row.cachedReadTokens += event.cachedReadTokens
-        row.cacheCreationTokens += event.cacheCreationTokens
-        row.reasoningTokens += event.reasoningTokens
-        row.modelCalls += event.modelCalls ?? 0
-        if event.source == "grok-local", let ticks = event.costUsdTicks {
-            row.usd = (row.usd ?? 0) + Ticks.usd(ticks)
-        }
-        if event.source == "claude-local",
-           let est = ClaudeEstimate.usd(
-               model: event.model,
-               input: event.inputTokens,
-               output: event.outputTokens,
-               cacheCreate: event.cacheCreationTokens,
-               cacheRead: event.cachedReadTokens
-           )
-        {
-            row.usdEstimate = (row.usdEstimate ?? 0) + est
-        }
-        if event.source == "codex-local" || event.source == "openai-api",
-           let est = OpenAIEstimate.usd(
-               model: event.model,
-               input: event.inputTokens,
-               output: event.outputTokens,
-               cacheRead: event.cachedReadTokens,
-               reasoning: event.reasoningTokens
-           )
-        {
-            row.usdEstimate = (row.usdEstimate ?? 0) + est
-        }
-        if let est = gatewayUsd(event) {
-            row.usdEstimate = (row.usdEstimate ?? 0) + est
-        }
+    private static func byTotal(_ lhs: SpendRow, _ rhs: SpendRow) -> Bool? {
+        let lu = lhs.usd ?? lhs.usdEstimate ?? 0
+        let ru = rhs.usd ?? rhs.usdEstimate ?? 0
+        return lu != ru ? lu > ru : nil
     }
 
     private static func groupByProject(_ events: [UsageEvent]) -> [SpendRow] {
         var acc: [String: SpendRow] = [:]
         for event in events {
             let cwd = event.cwd ?? ""
-            var row = acc[cwd] ?? SpendRow(
-                cwd: event.cwd,
-                project: projectName(event.cwd)
-            )
-            addTokens(&row, event)
-            acc[cwd] = row
+            acc[cwd, default: SpendRow(cwd: event.cwd, project: projectName(event.cwd))].add(event)
         }
         return acc.values.sorted { lhs, rhs in
-            let lu = lhs.usd ?? lhs.usdEstimate ?? 0
-            let ru = rhs.usd ?? rhs.usdEstimate ?? 0
-            if lu != ru { return lu > ru }
+            if let order = byTotal(lhs, rhs) { return order }
             if (lhs.project ?? "") != (rhs.project ?? "") { return (lhs.project ?? "") < (rhs.project ?? "") }
             return (lhs.cwd ?? "") < (rhs.cwd ?? "")
-        }
-    }
-
-    private static func dailyPointsByProject(_ events: [UsageEvent], calendar: Calendar) -> [DailyPoint] {
-        struct Key: Hashable { var day: String; var cwd: String }
-        struct Acc {
-            var usd: Double?
-            var tokens: Int
-            var input: Int
-            var output: Int
-            var cachedRead: Int
-            var cacheCreate: Int
-            var usdEstimate: Double?
-            var project: String
-            var modelCalls: Int
-        }
-        var acc: [Key: Acc] = [:]
-        for event in events {
-            guard let date = UTC.parse(event.occurredAt) else { continue }
-            let day = SpendRange.localDay(date, timeZone: calendar.timeZone)
-            let cwd = event.cwd ?? ""
-            let key = Key(day: day, cwd: cwd)
-            var cur = acc[key] ?? Acc(
-                usd: nil, tokens: 0, input: 0, output: 0, cachedRead: 0, cacheCreate: 0,
-                usdEstimate: nil, project: projectName(event.cwd), modelCalls: 0
-            )
-            cur.modelCalls += event.modelCalls ?? 0
-            cur.tokens += TokenTotals.normalized(event)
-            cur.input += event.inputTokens
-            cur.output += event.outputTokens
-            cur.cachedRead += event.cachedReadTokens
-            cur.cacheCreate += event.cacheCreationTokens
-            if event.source == "claude-local",
-               let est = ClaudeEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheCreate: event.cacheCreationTokens,
-                   cacheRead: event.cachedReadTokens
-               )
-            {
-                cur.usdEstimate = (cur.usdEstimate ?? 0) + est
-            }
-            acc[key] = cur
-        }
-        return acc.keys.sorted { lhs, rhs in
-            if lhs.day != rhs.day { return lhs.day < rhs.day }
-            return lhs.cwd < rhs.cwd
-        }.map { key in
-            let v = acc[key]!
-            return DailyPoint(
-                day: key.day,
-                model: v.project,
-                usd: v.usd,
-                tokens: v.tokens,
-                inputTokens: v.input,
-                outputTokens: v.output,
-                cachedReadTokens: v.cachedRead,
-                cacheCreationTokens: v.cacheCreate,
-                usdEstimate: v.usdEstimate,
-                project: v.project,
-                cwd: key.cwd.isEmpty ? nil : key.cwd,
-                modelCalls: v.modelCalls
-            )
         }
     }
 
@@ -519,46 +432,11 @@ struct SpendQueries {
             // Only a gateway call has a vault key and therefore a provider to name. Local rows
             // keep provider nil so that adding this field does not split any existing grouping.
             if event.source == "gateway", !event.provider.isEmpty { row.provider = event.provider }
-            row.inputTokens += event.inputTokens
-            row.outputTokens += event.outputTokens
-            row.cachedReadTokens += event.cachedReadTokens
-            row.cacheCreationTokens += event.cacheCreationTokens
-            row.reasoningTokens += event.reasoningTokens
-            row.modelCalls += event.modelCalls ?? 0
-            if event.source == "grok-local", let ticks = event.costUsdTicks {
-                row.usd = (row.usd ?? 0) + Ticks.usd(ticks)
-            }
-            if event.source == "claude-local",
-               let est = ClaudeEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheCreate: event.cacheCreationTokens,
-                   cacheRead: event.cachedReadTokens
-               )
-            {
-                row.usdEstimate = (row.usdEstimate ?? 0) + est
-            }
-            if event.source == "codex-local" || event.source == "openai-api",
-               let est = OpenAIEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheRead: event.cachedReadTokens,
-                   reasoning: event.reasoningTokens
-               )
-            {
-                row.usdEstimate = (row.usdEstimate ?? 0) + est
-            }
-            if let est = gatewayUsd(event) {
-                row.usdEstimate = (row.usdEstimate ?? 0) + est
-            }
+            row.add(event)
             acc[accKey] = row
         }
         return acc.values.sorted { lhs, rhs in
-            let lu = lhs.usd ?? lhs.usdEstimate ?? 0
-            let ru = rhs.usd ?? rhs.usdEstimate ?? 0
-            if lu != ru { return lu > ru }
+            if let order = byTotal(lhs, rhs) { return order }
             if (lhs.model ?? "") != (rhs.model ?? "") { return (lhs.model ?? "") < (rhs.model ?? "") }
             return (lhs.key ?? "") < (rhs.key ?? "")
         }
@@ -573,40 +451,7 @@ struct SpendQueries {
             var row = acc[key] ?? SpendRow(sessionId: event.sessionId, source: event.source)
             if row.cwd == nil { row.cwd = event.cwd }
             if row.title == nil { row.title = event.sessionTitle }
-            row.inputTokens += event.inputTokens
-            row.outputTokens += event.outputTokens
-            row.cachedReadTokens += event.cachedReadTokens
-            row.cacheCreationTokens += event.cacheCreationTokens
-            row.reasoningTokens += event.reasoningTokens
-            row.modelCalls += event.modelCalls ?? 0
-            if event.source == "grok-local", let ticks = event.costUsdTicks {
-                row.usd = (row.usd ?? 0) + Ticks.usd(ticks)
-            }
-            if event.source == "claude-local",
-               let est = ClaudeEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheCreate: event.cacheCreationTokens,
-                   cacheRead: event.cachedReadTokens
-               )
-            {
-                row.usdEstimate = (row.usdEstimate ?? 0) + est
-            }
-            if event.source == "codex-local" || event.source == "openai-api",
-               let est = OpenAIEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheRead: event.cachedReadTokens,
-                   reasoning: event.reasoningTokens
-               )
-            {
-                row.usdEstimate = (row.usdEstimate ?? 0) + est
-            }
-            if let est = gatewayUsd(event) {
-                row.usdEstimate = (row.usdEstimate ?? 0) + est
-            }
+            row.add(event)
             if let keyName = event.keyName { row.key = keyName }
             acc[key] = row
             models[key, default: []].insert(event.model)
@@ -618,163 +463,85 @@ struct SpendQueries {
         }
     }
 
-    private static func dailyPoints(_ events: [UsageEvent], calendar: Calendar) -> [DailyPoint] {
-        struct Key: Hashable { var day: String; var model: String }
-        struct Acc {
-            var usd: Double?
-            var tokens: Int
-            var input: Int
-            var output: Int
-            var cachedRead: Int
-            var cacheCreate: Int
-            var usdEstimate: Double?
-            var modelCalls: Int = 0
-        }
-        var acc: [Key: Acc] = [:]
+    /// Chart buckets: one per (bucket, series), sorted by both. `bucket` returns nil to skip an event.
+    private static func points(
+        _ events: [UsageEvent], bucket: (Date) -> String?, series: (UsageEvent) -> String
+    ) -> [(bucket: String, series: String, row: SpendRow, tokens: Int)] {
+        struct Key: Hashable { var bucket: String; var series: String }
+        var acc: [Key: (row: SpendRow, tokens: Int)] = [:]
         for event in events {
-            guard let date = UTC.parse(event.occurredAt) else { continue }
-            let day = SpendRange.localDay(date, timeZone: calendar.timeZone)
-            let key = Key(day: day, model: event.model)
-            var cur = acc[key] ?? Acc(usd: nil, tokens: 0, input: 0, output: 0, cachedRead: 0, cacheCreate: 0, usdEstimate: nil)
-            cur.modelCalls += event.modelCalls ?? 0
+            guard let date = UTC.parse(event.occurredAt), let b = bucket(date) else { continue }
+            let key = Key(bucket: b, series: series(event))
+            var cur = acc[key] ?? (SpendRow(), 0)
+            cur.row.add(event)
             cur.tokens += TokenTotals.normalized(event)
-            cur.input += event.inputTokens
-            cur.output += event.outputTokens
-            cur.cachedRead += event.cachedReadTokens
-            cur.cacheCreate += event.cacheCreationTokens
-            if event.source == "grok-local", let ticks = event.costUsdTicks {
-                cur.usd = (cur.usd ?? 0) + Ticks.usd(ticks)
-            }
-            if event.source == "claude-local",
-               let est = ClaudeEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheCreate: event.cacheCreationTokens,
-                   cacheRead: event.cachedReadTokens
-               )
-            {
-                cur.usdEstimate = (cur.usdEstimate ?? 0) + est
-            }
-            if event.source == "codex-local" || event.source == "openai-api",
-               let est = OpenAIEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheRead: event.cachedReadTokens,
-                   reasoning: event.reasoningTokens
-               )
-            {
-                cur.usdEstimate = (cur.usdEstimate ?? 0) + est
-            }
-            if let est = gatewayUsd(event) {
-                cur.usdEstimate = (cur.usdEstimate ?? 0) + est
-            }
             acc[key] = cur
         }
-        return acc.keys.sorted { lhs, rhs in
-            if lhs.day != rhs.day { return lhs.day < rhs.day }
-            return lhs.model < rhs.model
-        }.map { key in
+        return acc.keys.sorted { ($0.bucket, $0.series) < ($1.bucket, $1.series) }.map { key in
             let v = acc[key]!
+            return (key.bucket, key.series, v.row, v.tokens)
+        }
+    }
+
+    private static func dailyPoints(_ events: [UsageEvent], calendar: Calendar, byProject: Bool) -> [DailyPoint] {
+        let day = { (date: Date) -> String? in SpendRange.localDay(date, timeZone: calendar.timeZone) }
+        return points(events, bucket: day, series: { byProject ? ($0.cwd ?? "") : $0.model }).map { point in
+            let project = byProject ? projectName(point.series) : nil
             return DailyPoint(
-                day: key.day,
-                model: key.model,
-                usd: v.usd,
-                tokens: v.tokens,
-                inputTokens: v.input,
-                outputTokens: v.output,
-                cachedReadTokens: v.cachedRead,
-                cacheCreationTokens: v.cacheCreate,
-                usdEstimate: v.usdEstimate,
-                modelCalls: v.modelCalls
+                day: point.bucket,
+                model: project ?? point.series,
+                usd: point.row.usd,
+                tokens: point.tokens,
+                inputTokens: point.row.inputTokens,
+                outputTokens: point.row.outputTokens,
+                cachedReadTokens: point.row.cachedReadTokens,
+                cacheCreationTokens: point.row.cacheCreationTokens,
+                usdEstimate: point.row.usdEstimate,
+                project: project,
+                cwd: byProject && !point.series.isEmpty ? point.series : nil,
+                modelCalls: point.row.modelCalls
             )
         }
     }
 
     /// One point per (elapsed local hour, model). Hours after `now` are dropped.
-    private static func hourlyPoints(
-        _ events: [UsageEvent],
-        now: Date,
-        timeZone: TimeZone
-    ) -> [HourlyPoint] {
+    private static func hourlyPoints(_ events: [UsageEvent], now: Date, timeZone: TimeZone) -> [HourlyPoint] {
         let today = SpendRange.localDay(now, timeZone: timeZone)
         let currentHour = SpendRange.localHour(now, timeZone: timeZone)
-        struct Key: Hashable { var hour: String; var model: String }
-        struct Acc {
-            var usd: Double?
-            var tokens: Int
-            var input: Int
-            var output: Int
-            var cachedRead: Int
-            var cacheCreate: Int
-            var usdEstimate: Double?
-            var modelCalls: Int = 0
-        }
-        var acc: [Key: Acc] = [:]
-        for event in events {
-            guard let date = UTC.parse(event.occurredAt) else { continue }
-            let day = SpendRange.localDay(date, timeZone: timeZone)
-            guard day == today else { continue }
+        let hour = { (date: Date) -> String? in
+            guard SpendRange.localDay(date, timeZone: timeZone) == today else { return nil }
             let hour = SpendRange.localHour(date, timeZone: timeZone)
-            guard hour <= currentHour else { continue }
-            let key = Key(hour: hour, model: event.model)
-            var cur = acc[key] ?? Acc(
-                usd: nil, tokens: 0, input: 0, output: 0, cachedRead: 0, cacheCreate: 0, usdEstimate: nil
-            )
-            cur.modelCalls += event.modelCalls ?? 0
-            cur.tokens += TokenTotals.normalized(event)
-            cur.input += event.inputTokens
-            cur.output += event.outputTokens
-            cur.cachedRead += event.cachedReadTokens
-            cur.cacheCreate += event.cacheCreationTokens
-            if event.source == "grok-local", let ticks = event.costUsdTicks {
-                cur.usd = (cur.usd ?? 0) + Ticks.usd(ticks)
-            }
-            if event.source == "claude-local",
-               let est = ClaudeEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheCreate: event.cacheCreationTokens,
-                   cacheRead: event.cachedReadTokens
-               )
-            {
-                cur.usdEstimate = (cur.usdEstimate ?? 0) + est
-            }
-            if event.source == "codex-local" || event.source == "openai-api",
-               let est = OpenAIEstimate.usd(
-                   model: event.model,
-                   input: event.inputTokens,
-                   output: event.outputTokens,
-                   cacheRead: event.cachedReadTokens,
-                   reasoning: event.reasoningTokens
-               )
-            {
-                cur.usdEstimate = (cur.usdEstimate ?? 0) + est
-            }
-            if let est = gatewayUsd(event) {
-                cur.usdEstimate = (cur.usdEstimate ?? 0) + est
-            }
-            acc[key] = cur
+            return hour <= currentHour ? hour : nil
         }
-        return acc.keys.sorted { lhs, rhs in
-            if lhs.hour != rhs.hour { return lhs.hour < rhs.hour }
-            return lhs.model < rhs.model
-        }.map { key in
-            let v = acc[key]!
-            return HourlyPoint(
-                hour: key.hour,
-                model: key.model,
-                usd: v.usd,
-                tokens: v.tokens,
-                inputTokens: v.input,
-                outputTokens: v.output,
-                cachedReadTokens: v.cachedRead,
-                cacheCreationTokens: v.cacheCreate,
-                usdEstimate: v.usdEstimate,
-                modelCalls: v.modelCalls
+        return points(events, bucket: hour, series: \.model).map { point in
+            HourlyPoint(
+                hour: point.bucket,
+                model: point.series,
+                usd: point.row.usd,
+                tokens: point.tokens,
+                inputTokens: point.row.inputTokens,
+                outputTokens: point.row.outputTokens,
+                cachedReadTokens: point.row.cachedReadTokens,
+                cacheCreationTokens: point.row.cacheCreationTokens,
+                usdEstimate: point.row.usdEstimate,
+                modelCalls: point.row.modelCalls
             )
         }
+    }
+}
+
+extension SpendRow {
+    /// Adds one event's tokens and cost. `usd` and `usdEstimate` stay nil until a priced event
+    /// arrives, so an unpriced row reads as unknown rather than $0.
+    mutating func add(_ event: UsageEvent) {
+        inputTokens += event.inputTokens
+        outputTokens += event.outputTokens
+        cachedReadTokens += event.cachedReadTokens
+        cacheCreationTokens += event.cacheCreationTokens
+        reasoningTokens += event.reasoningTokens
+        modelCalls += event.modelCalls ?? 0
+        let cost = SpendQueries.cost(event)
+        if let usd = cost.usd { self.usd = (self.usd ?? 0) + usd }
+        if let estimate = cost.estimate { usdEstimate = (usdEstimate ?? 0) + estimate }
     }
 }

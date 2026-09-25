@@ -60,7 +60,7 @@ enum SourceFilter: String {
         case .all: return nil
         case .grok: return ["grok-local"]
         case .claude: return ["claude-local"]
-        case .openai: return ["codex-local", "openai-api"]
+        case .openai: return ["codex-local"]
         case .keys: return ["gateway"]
         }
     }
