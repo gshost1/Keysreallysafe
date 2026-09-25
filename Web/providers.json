@@ -1,6 +1,4 @@
 {
-  "version": 1,
-  "updated_at": "2026-09-04",
   "groups": [
     {
       "id": "labs",
@@ -24,14 +22,14 @@
     }
   ],
   "fields": {
-    "api": "usage parser: openai (chat-completions + responses), anthropic (messages), gemini (generateContent usageMetadata), other (no usage parsed)",
-    "auth_header": "header the gateway sets",
-    "auth_prefix": "string prepended to the secret in that header",
-    "path_prefix": "prepended to the client path after /<keyname>",
-    "host": "null when the host is per account; the key row must carry it",
-    "key_prefix": "secret prefix hint for the Add dialog, null if none",
-    "usage_endpoint": "GET with the key for remaining balance, null if the vendor has none",
-    "gateway": "false when the vendor needs request signing or OAuth, so it cannot be proxied"
+    "api": "usage parser: openai (chat-completions + responses), anthropic (messages), gemini (generateContent usageMetadata), other (no usage parsed); omitted means other",
+    "auth_header": "header the gateway sets; omitted means Authorization",
+    "auth_prefix": "string prepended to the secret in that header; omitted means \"Bearer \"",
+    "path_prefix": "prepended to the client path after /<keyname>; omitted means none",
+    "host": "omitted when the host is per account; the key row must carry it",
+    "key_prefix": "secret prefix hint for the Add dialog, omitted if none",
+    "gateway": "false when the vendor needs request signing or OAuth, so it cannot be proxied; omitted means true",
+    "note": "shown when asking for a per-account host; omitted if none"
   },
   "providers": [
     {
@@ -40,14 +38,8 @@
       "group": "labs",
       "host": "api.openai.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "sk-",
-      "usage_endpoint": null,
-      "docs": "https://platform.openai.com/docs",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-"
     },
     {
       "id": "typesafe",
@@ -55,13 +47,6 @@
       "group": "labs",
       "host": "api.typesafe.ai",
       "api": "typesafe-systemone",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": null,
-      "gateway": true,
       "note": "SystemOne evaluation API"
     },
     {
@@ -73,11 +58,7 @@
       "auth_header": "x-api-key",
       "auth_prefix": "",
       "path_prefix": "/v1",
-      "key_prefix": "sk-ant-",
-      "usage_endpoint": null,
-      "docs": "https://docs.anthropic.com",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-ant-"
     },
     {
       "id": "google",
@@ -88,11 +69,7 @@
       "auth_header": "x-goog-api-key",
       "auth_prefix": "",
       "path_prefix": "/v1beta",
-      "key_prefix": "AIza",
-      "usage_endpoint": null,
-      "docs": "https://ai.google.dev/api",
-      "gateway": true,
-      "note": null
+      "key_prefix": "AIza"
     },
     {
       "id": "xai",
@@ -100,14 +77,8 @@
       "group": "labs",
       "host": "api.x.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "xai-",
-      "usage_endpoint": null,
-      "docs": "https://docs.x.ai",
-      "gateway": true,
-      "note": null
+      "key_prefix": "xai-"
     },
     {
       "id": "mistral",
@@ -115,29 +86,14 @@
       "group": "labs",
       "host": "api.mistral.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.mistral.ai",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "cohere",
       "name": "Cohere",
       "group": "labs",
       "host": "api.cohere.com",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v2",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.cohere.com",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v2"
     },
     {
       "id": "deepseek",
@@ -145,14 +101,8 @@
       "group": "labs",
       "host": "api.deepseek.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "sk-",
-      "usage_endpoint": null,
-      "docs": "https://api-docs.deepseek.com",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-"
     },
     {
       "id": "moonshot",
@@ -160,14 +110,8 @@
       "group": "labs",
       "host": "api.moonshot.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "sk-",
-      "usage_endpoint": null,
-      "docs": "https://platform.moonshot.ai/docs",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-"
     },
     {
       "id": "zhipu",
@@ -175,14 +119,7 @@
       "group": "labs",
       "host": "open.bigmodel.cn",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/api/paas/v4",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://open.bigmodel.cn/dev/api",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/api/paas/v4"
     },
     {
       "id": "dashscope",
@@ -190,14 +127,8 @@
       "group": "labs",
       "host": "dashscope-intl.aliyuncs.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/compatible-mode/v1",
-      "key_prefix": "sk-",
-      "usage_endpoint": null,
-      "docs": "https://www.alibabacloud.com/help/en/model-studio",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-"
     },
     {
       "id": "minimax",
@@ -205,14 +136,7 @@
       "group": "labs",
       "host": "api.minimax.io",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://platform.minimax.io/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "meta",
@@ -220,14 +144,7 @@
       "group": "labs",
       "host": "api.llama.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://llama.developer.meta.com/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "perplexity",
@@ -235,14 +152,7 @@
       "group": "labs",
       "host": "api.perplexity.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": "pplx-",
-      "usage_endpoint": null,
-      "docs": "https://docs.perplexity.ai",
-      "gateway": true,
-      "note": null
+      "key_prefix": "pplx-"
     },
     {
       "id": "openrouter",
@@ -250,14 +160,8 @@
       "group": "routers",
       "host": "openrouter.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/api/v1",
-      "key_prefix": "sk-or-",
-      "usage_endpoint": "https://openrouter.ai/api/v1/key",
-      "docs": "https://openrouter.ai/docs",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-or-"
     },
     {
       "id": "haimaker",
@@ -265,13 +169,7 @@
       "group": "routers",
       "host": "api.haimaker.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://haimaker.ai",
-      "gateway": true,
       "note": "No usage endpoint (checked 2026-09-04); dollars only via gateway."
     },
     {
@@ -280,13 +178,7 @@
       "group": "routers",
       "host": "api.router.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://ramp.com",
-      "gateway": true,
       "note": "No usage endpoint (checked 2026-09-04); dollars only via gateway."
     },
     {
@@ -295,14 +187,7 @@
       "group": "routers",
       "host": "router.requesty.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.requesty.ai",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "portkey",
@@ -312,12 +197,7 @@
       "api": "openai",
       "auth_header": "x-portkey-api-key",
       "auth_prefix": "",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://portkey.ai/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "helicone",
@@ -325,14 +205,7 @@
       "group": "routers",
       "host": "ai-gateway.helicone.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": "sk-helicone-",
-      "usage_endpoint": null,
-      "docs": "https://docs.helicone.ai",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-helicone-"
     },
     {
       "id": "kilo",
@@ -340,14 +213,7 @@
       "group": "routers",
       "host": "api.kilo.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/api/gateway",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://kilo.ai/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/api/gateway"
     },
     {
       "id": "vercel-ai-gateway",
@@ -355,14 +221,8 @@
       "group": "routers",
       "host": "ai-gateway.vercel.sh",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "vck_",
-      "usage_endpoint": null,
-      "docs": "https://vercel.com/docs/ai-gateway",
-      "gateway": true,
-      "note": null
+      "key_prefix": "vck_"
     },
     {
       "id": "cloudflare-ai-gateway",
@@ -370,13 +230,6 @@
       "group": "routers",
       "host": "gateway.ai.cloudflare.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://developers.cloudflare.com/ai-gateway",
-      "gateway": true,
       "note": "Path includes account and gateway id; set path_prefix per key."
     },
     {
@@ -385,14 +238,8 @@
       "group": "hosts",
       "host": "api.groq.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/openai/v1",
-      "key_prefix": "gsk_",
-      "usage_endpoint": null,
-      "docs": "https://console.groq.com/docs",
-      "gateway": true,
-      "note": null
+      "key_prefix": "gsk_"
     },
     {
       "id": "together",
@@ -400,14 +247,7 @@
       "group": "hosts",
       "host": "api.together.xyz",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.together.ai",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "fireworks",
@@ -415,14 +255,8 @@
       "group": "hosts",
       "host": "api.fireworks.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/inference/v1",
-      "key_prefix": "fw_",
-      "usage_endpoint": null,
-      "docs": "https://docs.fireworks.ai",
-      "gateway": true,
-      "note": null
+      "key_prefix": "fw_"
     },
     {
       "id": "deepinfra",
@@ -430,14 +264,7 @@
       "group": "hosts",
       "host": "api.deepinfra.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1/openai",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://deepinfra.com/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1/openai"
     },
     {
       "id": "cerebras",
@@ -445,14 +272,8 @@
       "group": "hosts",
       "host": "api.cerebras.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "csk-",
-      "usage_endpoint": null,
-      "docs": "https://inference-docs.cerebras.ai",
-      "gateway": true,
-      "note": null
+      "key_prefix": "csk-"
     },
     {
       "id": "sambanova",
@@ -460,14 +281,7 @@
       "group": "hosts",
       "host": "api.sambanova.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.sambanova.ai",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "novita",
@@ -475,14 +289,7 @@
       "group": "hosts",
       "host": "api.novita.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v3/openai",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://novita.ai/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v3/openai"
     },
     {
       "id": "hyperbolic",
@@ -490,14 +297,7 @@
       "group": "hosts",
       "host": "api.hyperbolic.xyz",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.hyperbolic.xyz",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "nebius",
@@ -505,14 +305,7 @@
       "group": "hosts",
       "host": "api.studio.nebius.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.nebius.com/studio",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "baseten",
@@ -520,29 +313,16 @@
       "group": "hosts",
       "host": "inference.baseten.co",
       "api": "openai",
-      "auth_header": "Authorization",
       "auth_prefix": "Api-Key ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.baseten.co",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "replicate",
       "name": "Replicate",
       "group": "hosts",
       "host": "api.replicate.com",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "r8_",
-      "usage_endpoint": null,
-      "docs": "https://replicate.com/docs",
-      "gateway": true,
-      "note": null
+      "key_prefix": "r8_"
     },
     {
       "id": "huggingface",
@@ -550,14 +330,8 @@
       "group": "hosts",
       "host": "router.huggingface.co",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "hf_",
-      "usage_endpoint": null,
-      "docs": "https://huggingface.co/docs/inference-providers",
-      "gateway": true,
-      "note": null
+      "key_prefix": "hf_"
     },
     {
       "id": "lambda",
@@ -565,14 +339,7 @@
       "group": "hosts",
       "host": "api.lambda.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.lambda.ai",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "featherless",
@@ -580,42 +347,22 @@
       "group": "hosts",
       "host": "api.featherless.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://featherless.ai/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "azure-openai",
       "name": "Azure OpenAI",
       "group": "clouds",
-      "host": null,
       "api": "openai",
       "auth_header": "api-key",
       "auth_prefix": "",
       "path_prefix": "/openai/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://learn.microsoft.com/azure/ai-services/openai",
-      "gateway": true,
       "note": "Host is per resource: <name>.openai.azure.com. Set per key."
     },
     {
       "id": "bedrock",
       "name": "AWS Bedrock",
       "group": "clouds",
-      "host": null,
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.aws.amazon.com/bedrock",
       "gateway": false,
       "note": "SigV4 or per-region bearer key; not proxied."
     },
@@ -623,14 +370,7 @@
       "id": "vertex",
       "name": "Google Vertex AI",
       "group": "clouds",
-      "host": null,
       "api": "gemini",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://cloud.google.com/vertex-ai/docs",
       "gateway": false,
       "note": "OAuth access tokens, not static keys; not proxied."
     },
@@ -640,27 +380,12 @@
       "group": "clouds",
       "host": "api.cloudflare.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://developers.cloudflare.com/workers-ai",
-      "gateway": true,
       "note": "Path includes account id; set path_prefix per key."
     },
     {
       "id": "watsonx",
       "name": "IBM watsonx",
       "group": "clouds",
-      "host": null,
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://cloud.ibm.com/apidocs/watsonx-ai",
       "gateway": false,
       "note": "IAM token exchange; not proxied."
     },
@@ -670,179 +395,99 @@
       "group": "clouds",
       "host": "integrate.api.nvidia.com",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "nvapi-",
-      "usage_endpoint": null,
-      "docs": "https://docs.api.nvidia.com/nim",
-      "gateway": true,
-      "note": null
+      "key_prefix": "nvapi-"
     },
     {
       "id": "elevenlabs",
       "name": "ElevenLabs",
       "group": "non-chat",
       "host": "api.elevenlabs.io",
-      "api": "other",
       "auth_header": "xi-api-key",
       "auth_prefix": "",
       "path_prefix": "/v1",
-      "key_prefix": "sk_",
-      "usage_endpoint": null,
-      "docs": "https://elevenlabs.io/docs",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk_"
     },
     {
       "id": "deepgram",
       "name": "Deepgram",
       "group": "non-chat",
       "host": "api.deepgram.com",
-      "api": "other",
-      "auth_header": "Authorization",
       "auth_prefix": "Token ",
-      "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://developers.deepgram.com",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v1"
     },
     {
       "id": "assemblyai",
       "name": "AssemblyAI",
       "group": "non-chat",
       "host": "api.assemblyai.com",
-      "api": "other",
       "auth_header": "authorization",
       "auth_prefix": "",
-      "path_prefix": "/v2",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://www.assemblyai.com/docs",
-      "gateway": true,
-      "note": null
+      "path_prefix": "/v2"
     },
     {
       "id": "voyage",
       "name": "Voyage AI",
       "group": "non-chat",
       "host": "api.voyageai.com",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "pa-",
-      "usage_endpoint": null,
-      "docs": "https://docs.voyageai.com",
-      "gateway": true,
-      "note": null
+      "key_prefix": "pa-"
     },
     {
       "id": "jina",
       "name": "Jina",
       "group": "non-chat",
       "host": "api.jina.ai",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "jina_",
-      "usage_endpoint": null,
-      "docs": "https://jina.ai/embeddings",
-      "gateway": true,
-      "note": null
+      "key_prefix": "jina_"
     },
     {
       "id": "tavily",
       "name": "Tavily",
       "group": "non-chat",
       "host": "api.tavily.com",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
-      "path_prefix": "",
-      "key_prefix": "tvly-",
-      "usage_endpoint": null,
-      "docs": "https://docs.tavily.com",
-      "gateway": true,
-      "note": null
+      "key_prefix": "tvly-"
     },
     {
       "id": "exa",
       "name": "Exa",
       "group": "non-chat",
       "host": "api.exa.ai",
-      "api": "other",
       "auth_header": "x-api-key",
-      "auth_prefix": "",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.exa.ai",
-      "gateway": true,
-      "note": null
+      "auth_prefix": ""
     },
     {
       "id": "firecrawl",
       "name": "Firecrawl",
       "group": "non-chat",
       "host": "api.firecrawl.dev",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": "fc-",
-      "usage_endpoint": null,
-      "docs": "https://docs.firecrawl.dev",
-      "gateway": true,
-      "note": null
+      "key_prefix": "fc-"
     },
     {
       "id": "brave-search",
       "name": "Brave Search",
       "group": "non-chat",
       "host": "api.search.brave.com",
-      "api": "other",
       "auth_header": "X-Subscription-Token",
       "auth_prefix": "",
       "path_prefix": "/res/v1",
-      "key_prefix": "BSA",
-      "usage_endpoint": null,
-      "docs": "https://api-dashboard.search.brave.com/app/documentation",
-      "gateway": true,
-      "note": null
+      "key_prefix": "BSA"
     },
     {
       "id": "fal",
       "name": "fal",
       "group": "non-chat",
       "host": "fal.run",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Key ",
-      "path_prefix": "",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://docs.fal.ai",
-      "gateway": true,
-      "note": null
+      "auth_prefix": "Key "
     },
     {
       "id": "stability",
       "name": "Stability AI",
       "group": "non-chat",
       "host": "api.stability.ai",
-      "api": "other",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v2beta",
-      "key_prefix": "sk-",
-      "usage_endpoint": null,
-      "docs": "https://platform.stability.ai/docs",
-      "gateway": true,
-      "note": null
+      "key_prefix": "sk-"
     },
     {
       "id": "experiential-labs",
@@ -850,13 +495,7 @@
       "group": "routers",
       "host": "api.experientiallabs.ai",
       "api": "openai",
-      "auth_header": "Authorization",
-      "auth_prefix": "Bearer ",
       "path_prefix": "/v1",
-      "key_prefix": null,
-      "usage_endpoint": null,
-      "docs": "https://platform.experientiallabs.ai",
-      "gateway": true,
       "note": "Gateway with virtual keys; OpenAI-shaped, /v1/models answers (checked 2026-09-06)."
     }
   ]
