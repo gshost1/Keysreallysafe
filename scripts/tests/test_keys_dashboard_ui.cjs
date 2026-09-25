@@ -343,8 +343,8 @@ test("copy reports the wipe deadline and refreshes the row afterwards", async (p
 
   const before = requests.filter((r) => r.pathname === "/api/keys" && r.method === "GET").length;
   await page.clock.runFor(2600);
-  await page.waitForFunction((n) => window.__keyReloads > n, before, { timeout: 5000 }).catch(() => {});
-  await page.waitForTimeout(200);
+  // Only the deferred reload's re-render puts the resting label back.
+  await page.waitForFunction(() => document.querySelector('#keys-body tr[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
   const after = requests.filter((r) => r.pathname === "/api/keys" && r.method === "GET").length;
   assert.ok(after > before, "the deferred reload must refresh the list");
   assert.equal(await rowButton(page, "bravo", "copy").textContent(), "Copy", "button returns to its resting label");
@@ -549,8 +549,6 @@ test("a link that names a key boots into the API keys scope with that key chosen
   await page.locator("#keys-filter:visible").waitFor();
   assert.equal(await page.evaluate(inKeysScope), true, "a key only means anything in that scope");
   assert.equal(await page.locator('#keys-filter [data-key-filter="alpha"]').getAttribute("aria-checked"), "true");
-  // The picker carries the choice, so the standalone chip would only repeat it.
-  assert.equal(await page.locator("#key-chip").isHidden(), true);
   const filtered = requests.filter((r) => r.pathname === "/api/spend" && r.search.includes("key=alpha"));
   assert.ok(filtered.length > 0, "the key filter must reach the engine");
 

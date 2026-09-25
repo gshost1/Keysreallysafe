@@ -418,7 +418,7 @@
   // A key filter narrows both charts and the model list to calls that went through the gateway
   // with that key. It only means anything in the API keys source, so it takes the view there.
   function setKey(name) {
-    applyKey(state.key === name ? null : name);
+    applyKey(name);
     loadSpend();
   }
   // `keepProvider` is for the picker inside the chart, where the key list is already narrowed to
@@ -452,18 +452,6 @@
   function showKeyInChart(name) {
     applyKey(name, false);
     showPane("chart");
-  }
-  // A standalone "key · name ×" chip, for a key filter arrived at from outside the chart. In the
-  // API keys view the picker already carries the same choice and an "All keys" way out of it.
-  function renderKeyChip() {
-    const box = $("key-chip");
-    box.hidden = !state.key || keysMode();
-    box.replaceChildren();
-    if (!state.key || keysMode()) return;
-    box.append(el("button", {
-      type: "button", role: "button", class: "chip-clear", "aria-checked": "true", "aria-label": "Stop filtering by key " + state.key,
-      onclick: () => setKey(state.key),
-    }, el("span", { text: "key · " + state.key }), el("span", { class: "x", text: "×", "aria-hidden": "true" })));
   }
   // Every gateway call is one request, so requests are countable even when a provider reports no
   // tokens and no cost. Local logs do not always record a call count, so the unit is offered only
@@ -526,7 +514,7 @@
       .concat(state.key ? [state.key] : []))].sort();
     renderPicker("keys-filter", "data-key-filter", "All keys",
       "Show every key", names.map((n) => ({ value: n, label: n, hint: "Show only key " + n })),
-      state.key, (name) => setKey(name === null ? state.key : name));
+      state.key, setKey);
   }
   wirePickerKeys("provider-filter", "data-provider-filter");
   wirePickerKeys("keys-filter", "data-key-filter");
@@ -587,18 +575,11 @@
   let spendSeq = 0;
   async function loadSpend() {
     const seq = ++spendSeq;
-    // Today draws by hour, which the engine only groups by model; the model list still needs rows.
-    const q = new URLSearchParams({ range: state.range, by: projectMode() && !todayMode() ? "project" : "model", source: state.source });
+    // A by=hour report carries the same model rows as by=model plus the hourly points Today draws.
+    const q = new URLSearchParams({ range: state.range, by: todayMode() ? "hour" : projectMode() ? "project" : "model", source: state.source });
     if (state.key) q.set("key", state.key);
     if (keysMode() && state.provider) q.set("provider", state.provider);
-    renderKeyChip();
     try {
-      const hourlyReq = todayMode() ? (() => {
-        const h = new URLSearchParams({ range: "today", by: "hour", source: state.source });
-        if (state.key) h.set("key", state.key);
-        if (keysMode() && state.provider) h.set("provider", state.provider);
-        return api("/api/spend?" + h.toString()).catch(() => null);
-      })() : null;
       // A filtered report only names the provider and key already chosen, so the pickers would
       // narrow to the current choice and strand the user there. The unfiltered report over the
       // same range is what lists every choice; it is only needed while a filter is applied.
@@ -606,10 +587,9 @@
       const indexReq = filtered
         ? api("/api/spend?" + new URLSearchParams({ range: state.range, by: "model", source: "keys" }).toString()).catch(() => null)
         : null;
-      const [data, hourly, index] = await Promise.all([api("/api/spend?" + q.toString()), hourlyReq, indexReq]);
+      const [data, index] = await Promise.all([api("/api/spend?" + q.toString()), indexReq]);
       if (seq !== spendSeq) return;
       state.spend = data;
-      state.hourlyPoints = todayMode() && hourly ? hourly.points || [] : null;
       const indexReport = keysMode() ? (filtered ? index : data) : null;
       const indexRows = indexReport ? indexReport.rows || [] : null;
       if (indexRows) {
@@ -823,15 +803,13 @@
     const onlyRouted = "Only requests routed through Keys are recorded here; a provider called directly is not observable.";
     if (state.key && keysMode()) {
       node.append(`No calls through the gateway with ${state.key} in this range. ${onlyRouted} `,
-        el("button", { type: "button", class: "link", text: "Show every key", onclick: () => setKey(state.key) }));
+        el("button", { type: "button", class: "link", text: "Show every key", onclick: () => setKey(null) }));
     } else if (state.provider && keysMode()) {
       node.append(`No calls through the gateway to ${providerName(state.provider)} in this range. ${onlyRouted} `,
         el("button", { type: "button", class: "link", text: "Show every provider", onclick: () => setProvider(state.provider) }));
     } else if (keysMode()) {
       node.append(`No API key calls in this range. ${onlyRouted} `,
         el("button", { type: "button", class: "link", text: "Show subscriptions", onclick: () => { document.querySelector('[data-scope="subs"]').click(); } }));
-    } else if (state.key) {
-      node.append(`No calls through the gateway with ${state.key} in this range. `, el("button", { type: "button", class: "link", text: "Show everything", onclick: () => setKey(state.key) }));
     } else if (state.source !== "all") {
       const name = { grok: "Grok", claude: "Claude Code", openai: "Codex" }[state.source] || state.source;
       node.append(`No ${name} sessions in this range. `, el("button", { type: "button", class: "link", text: "Show all", onclick: () => { document.querySelector('[data-source="all"]').click(); } }));
@@ -1365,7 +1343,7 @@
     const data = state.spend;
     if (!data || $("daily").hidden) return;
     if (todayMode()) {
-      const points = state.hourlyPoints || [];
+      const points = data.points || [];
       $("daily-title").textContent = "Today by hour";
       $("daily-unit").textContent = unitLabel("hour");
       const now = new Date();
