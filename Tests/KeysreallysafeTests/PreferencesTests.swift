@@ -18,25 +18,26 @@ final class PreferencesTests: XCTestCase {
     func testWelcomeAsksOnceAndRecordsTheAnswer() throws {
         let (db, _) = try makeDB()
         let prefs = AppPreferences(catalog: db)
-        let first = prefs.welcomePlan(analyticsConfigured: false, analyticsEnabled: false)
-        XCTAssertEqual(first, .init(firstRun: true, askAnalytics: false), "no collector, no analytics question")
+        let first = prefs.welcomePlan(analyticsEnabled: false)
+        XCTAssertEqual(first, .init(firstRun: true, askAnalytics: true))
         try prefs.recordWelcome(first, claudeRefresh: false)
-        XCTAssertTrue(prefs.welcomePlan(analyticsConfigured: false, analyticsEnabled: false).isEmpty)
+        XCTAssertTrue(prefs.welcomePlan(analyticsEnabled: false).isEmpty, "declining is not asked again")
         XCTAssertFalse(prefs.claudeUsageRefresh, "Continue with nothing ticked keeps it off")
     }
 
-    func testAnalyticsQuestionAppearsOnceACollectorExists() throws {
+    func testAnalyticsQuestionReturnsOnlyForANewConsentVersion() throws {
         let (db, _) = try makeDB()
         let prefs = AppPreferences(catalog: db)
-        try prefs.recordWelcome(prefs.welcomePlan(analyticsConfigured: false, analyticsEnabled: false), claudeRefresh: true)
-        XCTAssertTrue(prefs.claudeUsageRefresh)
-        // A later build ships with a collector: ask that one question, once.
-        let later = prefs.welcomePlan(analyticsConfigured: true, analyticsEnabled: false)
+        // Someone who answered the welcome under an older consent version.
+        try db.setMeta(AppPreferences.welcomeKey, "2026-09-01T00:00:00Z")
+        try db.setMeta(AppPreferences.claudeRefreshKey, "on")
+        try db.setMeta(AppPreferences.analyticsAskedKey, String(ProductAnalytics.consentVersion - 1))
+        let later = prefs.welcomePlan(analyticsEnabled: false)
         XCTAssertEqual(later, .init(firstRun: false, askAnalytics: true))
         try prefs.recordWelcome(later, claudeRefresh: false)
         XCTAssertTrue(prefs.claudeUsageRefresh, "answering analytics does not touch the Claude choice")
-        XCTAssertTrue(prefs.welcomePlan(analyticsConfigured: true, analyticsEnabled: false).isEmpty, "declining is not asked again")
-        XCTAssertTrue(AppPreferences(catalog: try makeDB().0).welcomePlan(analyticsConfigured: true, analyticsEnabled: true).askAnalytics == false,
-                      "someone who already opted in is not asked")
+        XCTAssertTrue(prefs.welcomePlan(analyticsEnabled: false).isEmpty)
+        XCTAssertFalse(AppPreferences(catalog: try makeDB().0).welcomePlan(analyticsEnabled: true).askAnalytics,
+                       "someone who already opted in is not asked")
     }
 }

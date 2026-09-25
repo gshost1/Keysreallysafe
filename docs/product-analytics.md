@@ -44,7 +44,7 @@ The collector keeps received reports for 30 days and offers an owner-only local 
 
 ## Changing the destination
 
-`ProductAnalyticsConfiguration.endpoint` in `Sources/KeysCore/ProductAnalytics.swift` holds the HTTPS `/v1/reports` URL and `appVersion` the release version. Credentials, query strings and fragments are not supported. A new endpoint, schema or consent version requires a fresh opt-in. Before a release changes any of them, run a bounded end-to-end trial with synthetic reports on the deployed collector (delivery, retry deduplication, conflict, benchmarks) and delete the trial rows afterwards.
+`ProductAnalyticsConfiguration.endpoint` in `Sources/KeysCore/ProductAnalytics.swift` holds the HTTPS `/v1/reports` URL and `appVersion` the release version. A test pins the URL to HTTPS on that path with no credentials, query string or fragment. A new endpoint, schema or consent version requires a fresh opt-in. Before a release changes any of them, run a bounded end-to-end trial with synthetic reports on the deployed collector (delivery, retry deduplication, conflict, benchmarks) and delete the trial rows afterwards.
 
 ## Offline verification
 

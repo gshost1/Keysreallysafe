@@ -25,20 +25,20 @@ final class AppPreferences: @unchecked Sendable {
     }
 
     /// What the welcome window still has to ask. The analytics question appears
-    /// only when this build has a collector configured, and once per consent
-    /// version: an unticked box is an answer and is not asked again.
+    /// once per consent version, unless sharing is already on: an unticked box is
+    /// an answer and is not asked again.
     struct WelcomePlan: Equatable, Sendable {
         var firstRun: Bool
         var askAnalytics: Bool
         var isEmpty: Bool { !firstRun && !askAnalytics }
     }
 
-    func welcomePlan(analyticsConfigured: Bool, analyticsEnabled: Bool) -> WelcomePlan {
+    func welcomePlan(analyticsEnabled: Bool) -> WelcomePlan {
         let answered = (try? catalog.metaValue(Self.welcomeKey)).map { !$0.isEmpty } ?? false
         let asked = (try? catalog.metaValue(Self.analyticsAskedKey)).flatMap { Int($0) } ?? 0
         return WelcomePlan(
             firstRun: !answered,
-            askAnalytics: analyticsConfigured && !analyticsEnabled && asked < ProductAnalytics.consentVersion
+            askAnalytics: !analyticsEnabled && asked < ProductAnalytics.consentVersion
         )
     }
 

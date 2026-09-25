@@ -2,10 +2,10 @@ import CoreFoundation
 import Foundation
 
 /// The deployed HTTPS collector (Analytics/collector.py behind a Cloudflare
-/// Tunnel). An unconfigured build cannot opt in or upload. Changing this URL
-/// requires fresh consent. `appVersion` follows the release version.
+/// Tunnel). Changing this URL requires fresh consent; a test pins its shape.
+/// `appVersion` follows the release version.
 enum ProductAnalyticsConfiguration {
-    static let endpoint: URL? = URL(string: "https://analytics.keysrs.com/v1/reports")
+    static let endpoint = URL(string: "https://analytics.keysrs.com/v1/reports")!
     static let appVersion = "0.9.1"
 }
 
@@ -29,7 +29,7 @@ protocol AnalyticsUpload: Sendable { func cancel() }
 protocol AnalyticsTransport: Sendable {
     func send(to endpoint: URL, data: Data, completion: @escaping @Sendable (Bool) -> Void) -> any AnalyticsUpload
     /// GET with no body; completes with the response body only on a 200.
-    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload
+    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void)
 }
 
 /// Opt-in aggregate reports. The counters come only from the closed event enum.
@@ -48,14 +48,15 @@ final class ProductAnalytics: @unchecked Sendable {
     static let maxBenchmarkBytes = 32_768
     static let maxTokens = 1_000_000_000_000
     private let catalog: CatalogDB
-    private let endpoint: URL?
+    private let endpoint: URL
     private let transport: any AnalyticsTransport
     private let now: @Sendable () -> Date
     private let appVersion: String
     private let operationLock = NSRecursiveLock()
+    /// The one report upload in flight from this process, kept so opting out can
+    /// cancel it, and the report it carries.
     private var upload: (any AnalyticsUpload)?
-    private var uploadAttempt: String?
-    private var fetch: (any AnalyticsUpload)?
+    private var uploading: String?
     private var timer: DispatchSourceTimer?
 
     struct UsageRow: Codable, Equatable, Sendable {
@@ -122,7 +123,6 @@ final class ProductAnalytics: @unchecked Sendable {
         var enabled = false
         var consentVersion = 0
         var endpoint: String? = nil
-        var generation = UUID().uuidString.lowercased()
         var reports: [Report] = []
         /// Report IDs whose day has closed and whose arrays are filled; they
         /// never change again, so a retry sends identical bytes.
@@ -131,19 +131,16 @@ final class ProductAnalytics: @unchecked Sendable {
         /// Usage before this instant is never summarized: no backfill before
         /// opting in, and nothing from before a "discard unsent reports".
         var collectFrom: Double = 0
-        var leaseID: String? = nil
-        var leaseToken: String? = nil
-        var leaseUntil: Double = 0
         var retryAfter: Double = 0
         var lastResult = "never"
     }
 
-    init(catalog: CatalogDB, endpoint: URL? = ProductAnalyticsConfiguration.endpoint,
+    init(catalog: CatalogDB, endpoint: URL = ProductAnalyticsConfiguration.endpoint,
          transport: any AnalyticsTransport = AnalyticsHTTPTransport(),
          appVersion: String = ProductAnalyticsConfiguration.appVersion,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.catalog = catalog
-        self.endpoint = endpoint.flatMap(Self.validEndpoint)
+        self.endpoint = endpoint
         self.transport = transport
         self.appVersion = Self.validVersion(appVersion) ? appVersion : "development"
         self.now = now
@@ -152,11 +149,11 @@ final class ProductAnalytics: @unchecked Sendable {
         try? update { _ in }
     }
 
-    deinit { timer?.cancel(); upload?.cancel(); fetch?.cancel() }
+    deinit { timer?.cancel(); upload?.cancel() }
 
     /// Same host as the report endpoint; the Privacy dialog shows that host.
     var benchmarksURL: URL? {
-        guard let endpoint, var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else { return nil }
         components.path = "/v1/benchmarks"
         return components.url
     }
@@ -182,9 +179,7 @@ final class ProductAnalytics: @unchecked Sendable {
             (state, state.reports.map { state.sealed.contains($0.report_id) ? $0 : sealedCopy($0, state: state) })
         }
         let previewJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(preview))
-        return ["enabled": state.enabled, "configured": endpoint != nil,
-                "endpoint": endpoint?.absoluteString as Any? ?? NSNull(),
-                "benchmarks_url": (endpoint == nil ? nil : benchmarksURL?.absoluteString) as Any? ?? NSNull(),
+        return ["enabled": state.enabled, "endpoint": endpoint.absoluteString,
                 "consent_version": Self.consentVersion,
                 "pending_events": state.reports.reduce(0) { $0 + $1.counts.values.reduce(0, +) },
                 "last_result": state.lastResult,
@@ -192,10 +187,12 @@ final class ProductAnalytics: @unchecked Sendable {
                 "compare": (state.enabled ? compare() : nil) as Any? ?? NSNull()]
     }
 
+    var isEnabled: Bool { (try? update { $0.enabled }) ?? false }
+
     func setEnabled(_ enabled: Bool, consentVersion: Int) throws {
         operationLock.lock(); defer { operationLock.unlock() }
-        guard !enabled || (consentVersion == Self.consentVersion && endpoint != nil) else {
-            throw AppError.usage("analytics_not_configured_or_consent_outdated")
+        guard !enabled || consentVersion == Self.consentVersion else {
+            throw AppError.usage("analytics_consent_outdated")
         }
         try update { state in
             if !enabled {
@@ -205,14 +202,14 @@ final class ProductAnalytics: @unchecked Sendable {
                 state = State()
                 state.enabled = true
                 state.consentVersion = Self.consentVersion
-                state.endpoint = endpoint?.absoluteString
+                state.endpoint = endpoint.absoluteString
                 state.collectFrom = now().timeIntervalSince1970
             }
         }
         if !enabled {
-            let previous = upload, previousFetch = fetch
-            upload = nil; uploadAttempt = nil; fetch = nil
-            previous?.cancel(); previousFetch?.cancel()
+            let previous = upload
+            upload = nil; uploading = nil
+            previous?.cancel()
             try? catalog.setMeta(Self.benchmarkKey, "")
         }
     }
@@ -224,14 +221,10 @@ final class ProductAnalytics: @unchecked Sendable {
             state.sealed = []
             state.readings = []
             state.collectFrom = now().timeIntervalSince1970
-            state.generation = UUID().uuidString.lowercased()
-            state.leaseID = nil
-            state.leaseToken = nil
-            state.leaseUntil = 0
             state.retryAfter = 0
         }
         let previous = upload
-        upload = nil; uploadAttempt = nil
+        upload = nil; uploading = nil
         previous?.cancel()
     }
 
@@ -291,13 +284,14 @@ final class ProductAnalytics: @unchecked Sendable {
         }
     }
 
-    /// Send immutable, completed UTC days only, at most one report per tick.
-    /// Failed attempts keep the same report ID for collector deduplication.
+    /// Send immutable, completed UTC days only, one report at a time. Failed
+    /// attempts keep the same report ID, and a sealed report's bytes never change,
+    /// so the collector acknowledges a duplicate send from another process as-is.
     func flushCompletedReports() {
         operationLock.lock(); defer { operationLock.unlock() }
-        guard let endpoint else { return }
+        guard uploading == nil else { return }
         do {
-            let prepared: (Report, String, String)? = try update { state in
+            let prepared: Report? = try update { state in
                 let timestamp = now().timeIntervalSince1970
                 let today = Self.day(now())
                 guard state.enabled else { return nil }
@@ -309,45 +303,38 @@ final class ProductAnalytics: @unchecked Sendable {
                     let day = state.reports[index].day
                     state.readings.removeAll { $0.day == day }
                 }
-                guard state.leaseUntil <= timestamp, state.retryAfter <= timestamp,
-                      let report = state.reports.first(where: { $0.day < today }) else { return nil }
-                state.leaseID = report.report_id
-                let attempt = UUID().uuidString.lowercased()
-                state.leaseToken = attempt
-                state.leaseUntil = timestamp + 60
-                return (report, state.generation, attempt)
+                guard state.retryAfter <= timestamp else { return nil }
+                return state.reports.first(where: { $0.day < today })
             }
-            guard let (report, generation, attempt) = prepared else { return }
+            guard let report = prepared else { return }
             // Sorted keys: a retry of the same sealed report is byte-identical.
             let encoder = JSONEncoder()
             encoder.outputFormatting = .sortedKeys
             let data = try encoder.encode(report)
             guard data.count <= Self.maxReportBytes else { return }
-            let previous = upload
-            upload = nil; uploadAttempt = attempt
-            previous?.cancel()
+            uploading = report.report_id
             let sending = transport.send(to: endpoint, data: data) { [weak self] success in
-                self?.complete(reportID: report.report_id, generation: generation, attempt: attempt, success: success)
+                self?.complete(reportID: report.report_id, success: success)
             }
-            if uploadAttempt == attempt { upload = sending } else { sending.cancel() }
+            // A transport that answers synchronously has already finished this upload.
+            if uploading == report.report_id { upload = sending }
         } catch { /* Collection must not interfere with Keys. */ }
     }
 
-    private func complete(reportID: String, generation: String, attempt: String, success: Bool) {
+    /// A completion for a report that opting out or "discard unsent reports" already
+    /// removed is stale: it changes nothing, including the current upload.
+    private func complete(reportID: String, success: Bool) {
         operationLock.lock(); defer { operationLock.unlock() }
         try? update { state in
-            guard state.enabled, state.generation == generation, state.leaseID == reportID, state.leaseToken == attempt else { return }
+            guard state.enabled, state.reports.contains(where: { $0.report_id == reportID }) else { return }
             if success {
                 state.reports.removeAll { $0.report_id == reportID }
                 state.sealed.removeAll { $0 == reportID }
             }
-            state.leaseID = nil
-            state.leaseToken = nil
-            state.leaseUntil = 0
             state.retryAfter = now().timeIntervalSince1970 + (success ? 0 : 900)
             state.lastResult = success ? "sent" : "failed"
         }
-        if uploadAttempt == attempt { upload = nil; uploadAttempt = nil }
+        if uploading == reportID { upload = nil; uploading = nil }
     }
 
     // MARK: Benchmarks and Compare
@@ -388,7 +375,7 @@ final class ProductAnalytics: @unchecked Sendable {
     /// sharing is on. The request carries nothing about this Mac.
     func refreshBenchmarks() {
         operationLock.lock(); defer { operationLock.unlock() }
-        guard let url = benchmarksURL, fetch == nil else { return }
+        guard let url = benchmarksURL else { return }
         let enabled = (try? update { $0.enabled }) ?? false
         guard enabled else { return }
         let today = Self.day(now()), timestamp = now().timeIntervalSince1970
@@ -396,15 +383,15 @@ final class ProductAnalytics: @unchecked Sendable {
         if let cached, cached.fetched_day == today || timestamp - cached.attempted_at < 6 * 3_600 { return }
         let attempt = BenchmarkCache(fetched_day: cached?.fetched_day ?? "", attempted_at: timestamp, table: cached?.table)
         guard let data = try? JSONEncoder().encode(attempt) else { return }
+        // Recording the attempt first is what keeps a second fetch from starting while this one runs.
         try? catalog.setMeta(Self.benchmarkKey, String(decoding: data, as: UTF8.self))
-        fetch = transport.fetch(from: url, maxBytes: Self.maxBenchmarkBytes) { [weak self] body in
+        transport.fetch(from: url, maxBytes: Self.maxBenchmarkBytes) { [weak self] body in
             self?.completeBenchmarks(body, day: today, attemptedAt: timestamp)
         }
     }
 
     private func completeBenchmarks(_ body: Data?, day: String, attemptedAt: Double) {
         operationLock.lock(); defer { operationLock.unlock() }
-        fetch = nil
         guard let body, body.count <= Self.maxBenchmarkBytes,
               let table = try? JSONDecoder().decode(Benchmarks.self, from: body), table.isValid,
               (try? update { $0.enabled }) == true,
@@ -580,13 +567,16 @@ final class ProductAnalytics: @unchecked Sendable {
     private func update<T>(_ body: (inout State) throws -> T) throws -> T {
         try catalog.withTransaction {
             let original = try catalog.metaValue(Self.stateKey)
-            var state = original.flatMap(Self.decodeState) ?? State()
-            if state.enabled && (endpoint == nil || state.endpoint != endpoint?.absoluteString || state.consentVersion != Self.consentVersion) {
+            // Keys this version does not know (such as 0.9.1's upload lease) are dropped on decode.
+            var state = original.flatMap { raw in
+                raw.utf8.count <= 262_144 ? try? JSONDecoder().decode(State.self, from: Data(raw.utf8)) : nil
+            } ?? State()
+            if state.enabled && (state.endpoint != endpoint.absoluteString || state.consentVersion != Self.consentVersion) {
                 state = State()
             }
             let today = Self.day(now())
             let oldest = Self.day(now().addingTimeInterval(-7 * 86_400))
-            let valid = state.schemaVersion == Self.schemaVersion && UUID(uuidString: state.generation) != nil
+            let valid = state.schemaVersion == Self.schemaVersion
                 && ["never", "sent", "failed", "disabled"].contains(state.lastResult)
                 && state.reports.count <= 8 && Set(state.reports.map(\.day)).count == state.reports.count
                 && Set(state.reports.map(\.report_id)).count == state.reports.count
@@ -645,20 +635,6 @@ final class ProductAnalytics: @unchecked Sendable {
             }
     }
 
-    private static func decodeState(_ value: String) -> State? {
-        guard value.utf8.count <= 262_144, let data = value.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
-        let required: Set<String> = ["schemaVersion", "enabled", "consentVersion", "generation", "reports", "sealed",
-                                     "readings", "collectFrom", "leaseUntil", "retryAfter", "lastResult"]
-        let allowed = required.union(["endpoint", "leaseID", "leaseToken"])
-        guard required.isSubset(of: Set(object.keys)), Set(object.keys).isSubset(of: allowed),
-              let reports = object["reports"] as? [[String: Any]], reports.count <= 8 else { return nil }
-        let fields: Set<String> = ["schema_version", "consent_version", "report_id", "day", "app_version", "os_major",
-                                   "architecture", "counts", "usage", "windows", "gateway"]
-        guard reports.allSatisfy({ Set($0.keys) == fields }) else { return nil }
-        return try? JSONDecoder().decode(State.self, from: data)
-    }
-
     private static func day(_ date: Date) -> String { String(UTC.iso(date).prefix(10)) }
     private static func dayStart(_ day: String) -> Date { UTC.parse(day + "T00:00:00Z") ?? Date(timeIntervalSince1970: 0) }
     static func validDay(_ value: String) -> Bool {
@@ -668,12 +644,6 @@ final class ProductAnalytics: @unchecked Sendable {
     }
     private static func validVersion(_ value: String) -> Bool {
         value == "development" || (value.utf8.count <= 32 && value.range(of: "^[0-9]+(\\.[0-9]+){1,3}$", options: .regularExpression) != nil)
-    }
-    private static func validEndpoint(_ url: URL) -> URL? {
-        guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.scheme == "https",
-              let host = c.host, !host.isEmpty, c.user == nil, c.password == nil,
-              c.query == nil, c.fragment == nil, c.path == "/v1/reports" else { return nil }
-        return url
     }
 }
 
@@ -686,10 +656,10 @@ struct AnalyticsHTTPTransport: AnalyticsTransport {
         return AnalyticsHTTPUpload(request: request, expect: 204, maxBytes: 4_096) { completion($0 != nil) }
     }
 
-    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload {
+    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        return AnalyticsHTTPUpload(request: request, expect: 200, maxBytes: maxBytes, completion: completion)
+        _ = AnalyticsHTTPUpload(request: request, expect: 200, maxBytes: maxBytes, completion: completion)
     }
 }
 

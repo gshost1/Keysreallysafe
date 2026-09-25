@@ -35,9 +35,8 @@ final class ProductAnalyticsTests: XCTestCase {
         }
         private var fetchStorage: [Fetch] = []
         var fetches: [Fetch] { lock.lock(); defer { lock.unlock() }; return fetchStorage }
-        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload {
+        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) {
             lock.lock(); fetchStorage.append(Fetch(url: url, complete: completion)); lock.unlock()
-            return Upload()
         }
     }
     let endpoint = URL(string: "https://analytics.example/v1/reports")!
@@ -53,7 +52,7 @@ final class ProductAnalyticsTests: XCTestCase {
         ((try analytics.status()["preview"] as? [String: Any])?["reports"] as? [[String: Any]]) ?? []
     }
 
-    func testDefaultOffHasNoStorageNoUploadAndUnconfiguredCannotOptIn() throws {
+    func testDefaultOffHasNoStorageNoUploadAndOldConsentCannotOptIn() throws {
         let (db, clock, transport, analytics) = try harness()
         analytics.record(.keyAdd)
         clock.advance(86_400)
@@ -61,8 +60,6 @@ final class ProductAnalyticsTests: XCTestCase {
         XCTAssertEqual(try analytics.status()["enabled"] as? Bool, false)
         XCTAssertNil(try db.metaValue(ProductAnalytics.stateKey))
         XCTAssertEqual(transport.calls.count, 0)
-        let unconfigured = ProductAnalytics(catalog: db, endpoint: nil, transport: transport)
-        XCTAssertThrowsError(try unconfigured.setEnabled(true, consentVersion: 2))
         XCTAssertThrowsError(try analytics.setEnabled(true, consentVersion: 1))
         XCTAssertEqual(transport.calls.count, 0)
     }
@@ -152,30 +149,40 @@ final class ProductAnalyticsTests: XCTestCase {
         XCTAssertTrue(transport.calls.isEmpty)
         XCTAssertTrue(try reports(analytics).isEmpty)
         analytics.record(.viewKeys)
-        let changed = ProductAnalytics(catalog: db, endpoint: URL(string: "https://different.example/v1/reports"),
+        let changed = ProductAnalytics(catalog: db, endpoint: URL(string: "https://different.example/v1/reports")!,
             transport: transport, now: { clock.date() })
         XCTAssertEqual(try changed.status()["enabled"] as? Bool, false)
         XCTAssertTrue(try reports(changed).isEmpty)
         XCTAssertEqual(try analytics.status()["enabled"] as? Bool, false)
     }
 
-    func testUnknownStoredFieldsSchemasAndCountersFailClosed() throws {
+    func testUnknownStoredFieldsAreDroppedAndBadSchemasOrCountersFailClosed() throws {
         let (db, _, _, analytics) = try harness()
         for alteration in 0..<5 {
             try analytics.setEnabled(true, consentVersion: 2)
             analytics.record(.viewUsage)
             var state = try JSONSerialization.jsonObject(with: Data(try XCTUnwrap(db.metaValue(ProductAnalytics.stateKey)).utf8)) as! [String: Any]
             var pending = state["reports"] as! [[String: Any]]
+            let dropped: Bool
             switch alteration {
-            case 0: state["future_schema_field"] = "private sample"
-            case 1: state["schemaVersion"] = 1
-            case 2: pending[0]["private_prompt"] = "do not send me"; state["reports"] = pending
-            case 3: pending[0]["counts"] = ["unknown_event": 1]; state["reports"] = pending
-            default: pending[0]["schema_version"] = 1; state["reports"] = pending
+            case 0: state["future_schema_field"] = "private sample"; dropped = true
+            case 1: state["schemaVersion"] = 1; dropped = false
+            case 2: pending[0]["private_prompt"] = "do not send me"; state["reports"] = pending; dropped = true
+            case 3: pending[0]["counts"] = ["unknown_event": 1]; state["reports"] = pending; dropped = false
+            default: pending[0]["schema_version"] = 1; state["reports"] = pending; dropped = false
             }
             try db.setMeta(ProductAnalytics.stateKey, String(decoding: try JSONSerialization.data(withJSONObject: state), as: UTF8.self))
-            XCTAssertEqual(try analytics.status()["enabled"] as? Bool, false)
-            XCTAssertTrue(try reports(analytics).isEmpty)
+            if dropped {
+                // An unknown key is ignored and never sent; sharing and the day's counts survive.
+                XCTAssertEqual(try analytics.status()["enabled"] as? Bool, true)
+                XCTAssertEqual(try reports(analytics).first?["counts"] as? [String: Int], ["view_usage": 1])
+                let stored = try XCTUnwrap(db.metaValue(ProductAnalytics.stateKey))
+                XCTAssertFalse(stored.contains("private"), "the unknown key is not written back")
+                try analytics.setEnabled(false, consentVersion: 2)
+            } else {
+                XCTAssertEqual(try analytics.status()["enabled"] as? Bool, false)
+                XCTAssertTrue(try reports(analytics).isEmpty)
+            }
         }
     }
 
@@ -189,7 +196,10 @@ final class ProductAnalyticsTests: XCTestCase {
         clock.advance(86_400)
         analytics.flushCompletedReports()
         second.flushCompletedReports()
-        XCTAssertEqual(transport.calls.count, 1, "The persisted lease must prevent duplicate simultaneous dispatch")
+        // Two processes may both send a closed day; the bytes are identical, so the
+        // collector acknowledges the second copy as a duplicate.
+        XCTAssertEqual(transport.calls.count, 2)
+        XCTAssertEqual(transport.calls[0].data, transport.calls[1].data)
         try second.setEnabled(false, consentVersion: 2)
         analytics.record(.viewKeys)
         XCTAssertTrue(try reports(analytics).isEmpty)
@@ -266,15 +276,15 @@ final class ProductAnalyticsTests: XCTestCase {
         XCTAssertEqual(identifier, UUID(uuidString: identifier)?.uuidString.lowercased(), "Collector requires canonical lowercase UUIDs")
     }
 
-    func testInvalidEndpointCannotReceiveConsent() throws {
-        let (db, _, transport, _) = try harness()
-        for raw in ["http://analytics.example/v1/reports", "https://user:password@analytics.example/v1/reports",
-                    "https://analytics.example/v1/reports?token=secret", "https://analytics.example/v1/reports#extra", "https://analytics.example/other"] {
-            let analytics = ProductAnalytics(catalog: db, endpoint: URL(string: raw), transport: transport)
-            XCTAssertEqual(try analytics.status()["configured"] as? Bool, false)
-            XCTAssertThrowsError(try analytics.setEnabled(true, consentVersion: 2))
-        }
-        XCTAssertTrue(transport.calls.isEmpty)
+    func testShippedEndpointIsAPlainHTTPSReportsURL() throws {
+        let c = try XCTUnwrap(URLComponents(url: ProductAnalyticsConfiguration.endpoint, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(c.scheme, "https")
+        XCTAssertEqual(c.host, "analytics.keysrs.com")
+        XCTAssertEqual(c.path, "/v1/reports")
+        XCTAssertNil(c.user)
+        XCTAssertNil(c.password)
+        XCTAssertNil(c.query)
+        XCTAssertNil(c.fragment)
     }
 
     func usage(_ db: CatalogDB, _ at: String, source: String = "claude-local", provider: String = "anthropic",

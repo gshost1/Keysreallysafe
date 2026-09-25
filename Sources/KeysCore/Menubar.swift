@@ -374,10 +374,8 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// box unticked, one Continue button. Continuing with nothing ticked is a full
     /// answer and is never asked again.
     private func showWelcomeIfNeeded() {
-        let analytics = try? service.analytics?.status()
-        let configured = (analytics?["configured"] as? Bool) ?? false
-        let enabled = (analytics?["enabled"] as? Bool) ?? false
-        let plan = service.preferences.welcomePlan(analyticsConfigured: configured, analyticsEnabled: enabled)
+        // Without an analytics service there is nothing to ask about.
+        let plan = service.preferences.welcomePlan(analyticsEnabled: service.analytics?.isEnabled ?? true)
         guard !plan.isEmpty else { return }
 
         let alert = NSAlert()

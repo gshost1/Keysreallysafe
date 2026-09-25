@@ -14,7 +14,7 @@ import XCTest
 /// | Secret storage | `MemorySecretStore` in a temp dir | never the login keychain |
 /// | Touch ID | `RecordingPresenceGate` | no GUI presence prompt in CI |
 /// | Clipboard | `FakeClipboard` | no real pasteboard write |
-/// | Analytics upload | endpoint `nil` + refusing transport | nothing leaves the machine |
+/// | Analytics upload | refusing transport, sharing never turned on | nothing leaves the machine |
 ///
 /// The browser half lives in `scripts/tests/test_backend_contract_ui.cjs`, which
 /// this test launches against the port it just bound. Every secret below is
@@ -30,7 +30,7 @@ import XCTest
 /// test in bounded time and leaves no Chromium behind. That teardown has its own
 /// tests, without a browser, in `BoundedChildProcessTests`.
 final class BackendContractUITests: XCTestCase {
-    /// A transport that must never be reached: analytics is unconfigured here.
+    /// A transport that must never be reached: sharing stays off here.
     final class RefusingAnalyticsTransport: AnalyticsTransport, @unchecked Sendable {
         final class NoUpload: AnalyticsUpload, @unchecked Sendable {
             func cancel() {}
@@ -42,10 +42,9 @@ final class BackendContractUITests: XCTestCase {
             completion(false)
             return NoUpload()
         }
-        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload {
+        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) {
             lock.lock(); attempts += 1; lock.unlock()
             completion(nil)
-            return NoUpload()
         }
     }
 
@@ -81,9 +80,9 @@ final class BackendContractUITests: XCTestCase {
             claudeHome: Fixtures.claudeHome,
             codexHome: Fixtures.codexHome
         )
-        // Unconfigured endpoint: the privacy pane reads a real status and no
-        // report can be uploaded even if something tried.
-        service.analytics = ProductAnalytics(catalog: db, endpoint: nil, transport: analyticsTransport)
+        // Sharing is off: the privacy pane reads a real status, and the refusing
+        // transport would fail any report or benchmark request that slipped out.
+        service.analytics = ProductAnalytics(catalog: db, transport: analyticsTransport)
 
         // A synthetic vault: four keys the browser will list, two of them on the
         // providers that bill by key so the API keys view has a real ledger.

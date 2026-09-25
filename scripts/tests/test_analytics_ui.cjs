@@ -12,7 +12,7 @@ const html = fs.readFileSync(path.join(root, "Web/index.html"), "utf8")
 const analytics = fs.readFileSync(path.join(root, "Web/analytics.js"));
 
 let status = {
-  enabled: false, configured: true, endpoint: null,
+  enabled: false, endpoint: "https://analytics.example/v1/reports",
   consent_version: 2, pending_events: 2, last_result: "never",
   preview: { reports: [{ date: "2026-09-19", report_id: "fixture" }] },
 };
@@ -112,15 +112,7 @@ async function open(page) {
     assert.equal(collectorRequests, 0, "the browser must not contact the analytics collector");
 
     await page.locator("#dlg-privacy").evaluate((element) => element.close());
-    status = { ...status, enabled: false, configured: false, endpoint: null, pending_events: 0, preview: null, last_result: "disabled" };
-    await page.reload();
-    await page.waitForLoadState("networkidle");
-    await open(page);
-    assert.equal(await page.locator("#analytics-enabled").isDisabled(), true);
-    assert.equal(await page.getByRole("button", { name: "Save preference" }).isDisabled(), true);
-
-    await page.locator("#dlg-privacy").evaluate((element) => element.close());
-    status = { ...status, enabled: true, configured: false, endpoint: null, pending_events: 3,
+    status = { ...status, enabled: true, pending_events: 3,
       preview: { reports: [{ date: "2026-09-19", report_id: "pending" }] }, last_result: "failed" };
     await page.reload();
     await page.waitForLoadState("networkidle");
@@ -132,7 +124,7 @@ async function open(page) {
     assert.equal(requests.some((item) => item.path === "/api/analytics/clear"), false);
 
     await page.locator("#dlg-privacy").evaluate((element) => element.close());
-    status = { ...status, enabled: false, configured: true, pending_events: 1,
+    status = { ...status, enabled: false, pending_events: 1,
       preview: { reports: [{ date: "2026-09-19", report_id: "uncertain" }] }, last_result: "never" };
     malformedNextPost = true;
     await page.reload();
@@ -143,7 +135,7 @@ async function open(page) {
     await page.waitForFunction(() => document.getElementById("analytics-state").textContent.startsWith("Current preference unknown"));
     assert.equal(await page.locator("#analytics-enabled").isDisabled(), true);
 
-    status = { ...status, enabled: false, configured: true, pending_events: 1,
+    status = { ...status, enabled: false, pending_events: 1,
       preview: { reports: [{ date: "2026-09-19", report_id: "failed" }] }, last_result: "never" };
     failedNextPost = true;
     await page.reload();
@@ -156,7 +148,7 @@ async function open(page) {
 
     await page.reload();
     await page.waitForLoadState("networkidle");
-    status = { ...status, enabled: true, configured: true, pending_events: 2,
+    status = { ...status, enabled: true, pending_events: 2,
       preview: { reports: [{ date: "2026-09-19", report_id: "race" }] }, last_result: "never" };
     await open(page);
     delayedGet = true;
@@ -168,7 +160,7 @@ async function open(page) {
 
     // Compare line: absent without sharing or without a benchmark; plain text when present.
     assert.equal(await page.locator("#usage-compare").isHidden(), true);
-    status = { ...status, enabled: true, configured: true, compare: {
+    status = { ...status, enabled: true, compare: {
       window_days: 28,
       sources: [{ source: "claude_code", typical_day_tokens: 42_000_000, higher_than_percent: 80,
         cap_hits: [{ window: "5h", hit_rate: 0.18 }, { window: "<img src=x onerror=alert(1)>", hit_rate: 0.5 }] },

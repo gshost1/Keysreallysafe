@@ -33,9 +33,8 @@
       download.disabled = true;
       return;
     }
-    const canChange = state.configured === true || state.enabled === true;
-    checkbox.disabled = !canChange;
-    save.disabled = !canChange;
+    checkbox.disabled = false;
+    save.disabled = false;
     discard.disabled = state.enabled !== true && Number(state.pending_events || 0) === 0;
     download.disabled = preview === null;
   }
@@ -52,8 +51,7 @@
   function validStatus(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value)
       && typeof value.enabled === "boolean"
-      && typeof value.configured === "boolean"
-      && (value.endpoint === null || typeof value.endpoint === "string")
+      && typeof value.endpoint === "string"
       && value.consent_version === CONSENT_VERSION
       && Number.isInteger(value.pending_events) && value.pending_events >= 0
       && ["never", "sent", "failed", "disabled"].includes(value.last_result)
@@ -107,17 +105,13 @@
     state = next;
     preview = next.preview && typeof next.preview === "object" && !Array.isArray(next.preview) ? next.preview : null;
     checkbox.checked = next.enabled === true;
-    const configured = next.configured === true;
-    const endpoint = typeof next.endpoint === "string" && next.endpoint ? next.endpoint : null;
-    text("analytics-destination", configured && endpoint
-      ? `Reports are sent to: ${endpoint}`
-      : "No analytics destination is configured. Product analytics cannot be enabled until one is configured.");
+    text("analytics-destination", `Reports are sent to: ${next.endpoint}`);
     text("analytics-pending", String(Number.isInteger(next.pending_events) && next.pending_events >= 0 ? next.pending_events : 0));
     text("analytics-last-result", describeResult(next.last_result));
     text("analytics-preview", preview === null ? "No unsent reports available." : JSON.stringify(preview, null, 2));
     discard.hidden = next.enabled !== true && Number(next.pending_events || 0) === 0;
     text("analytics-state", next.enabled === true
-      ? (configured ? "Enabled. Reports send automatically when ready." : "Enabled, waiting for an analytics destination.")
+      ? "Enabled. Reports send automatically when ready."
       : "Off. No new product analytics reports will be sent.");
     renderCompare(next.enabled === true ? next.compare : null);
   }
@@ -151,11 +145,6 @@
 
   async function setEnabled(enabled) {
     if (!state) return;
-    if (enabled && state.configured !== true) {
-      error("Product analytics needs a configured destination before it can be enabled.");
-      checkbox.checked = false;
-      return;
-    }
     const requestGeneration = ++generation;
     busy(true);
     error();
