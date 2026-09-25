@@ -270,6 +270,7 @@ final class GatewayTests: XCTestCase {
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/chat/completions")!)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue(token, forHTTPHeaderField: "X-KSF-Grant")
         req.setValue("leaked-api-key", forHTTPHeaderField: "x-api-key")
         req.setValue("leaked-google", forHTTPHeaderField: "x-goog-api-key")
         req.setValue("leaked-azure", forHTTPHeaderField: "api-key")
@@ -281,6 +282,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(data, stubBody)
         XCTAssertEqual(captured.headers["authorization"], "Bearer sk-test-secret")
         XCTAssertNil(captured.headers["x-ksf-client"])
+        XCTAssertNil(captured.headers["x-ksf-grant"])
         XCTAssertFalse(captured.headers.values.contains { $0.contains(token) }, "the grant token never reaches upstream")
         XCTAssertNotEqual(captured.headers["x-api-key"], "leaked-api-key")
         XCTAssertNil(captured.headers["x-api-key"])
@@ -333,6 +335,28 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(rows.first?["key"] as? String, "demo")
         XCTAssertEqual(rows.first?["model"] as? String, "gpt-4.1")
         XCTAssertGreaterThan(spendObj["catalog_version"] as? Int ?? 0, 0)
+    }
+
+    func testEveryQueryGrantTokenIsStrippedEvenWhenAHeaderCarriesOne() {
+        let header = GrantToken.generate(id: "0a0b0c0d")
+        let query = GrantToken.generate(id: "01020304")
+        let (fromHeader, rest) = GatewayListener.extractGrantToken(
+            headers: ["authorization": "Bearer \(header)"], rawQuery: "alt=sse&key=\(query)"
+        )
+        XCTAssertEqual(fromHeader, header)
+        XCTAssertEqual(rest, "alt=sse")
+
+        let (fromQuery, kept) = GatewayListener.extractGrantToken(headers: [:], rawQuery: "key=\(query)&key=AIza-real")
+        XCTAssertEqual(fromQuery, query)
+        XCTAssertEqual(kept, "key=AIza-real")
+
+        let (encoded, stripped) = GatewayListener.extractGrantToken(headers: [:], rawQuery: "%6Bey=\(query)&KEY=\(header)&alt=sse")
+        XCTAssertNotNil(encoded)
+        XCTAssertEqual(stripped, "alt=sse")
+
+        let (none, untouched) = GatewayListener.extractGrantToken(headers: [:], rawQuery: "alt=sse")
+        XCTAssertNil(none)
+        XCTAssertEqual(untouched, "alt=sse")
     }
 
     func testDoesNotFollowRedirects() async throws {

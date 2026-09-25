@@ -118,6 +118,14 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         )
         XCTAssertEqual(chunked.status, 200)
         XCTAssertEqual(String(data: captured.body, encoding: .utf8), "hello")
+
+        // A chunk size near Int.max after a non-empty chunk used to overflow the size check and
+        // trap, taking down the whole app before auth.
+        let hugeChunk = try sendRaw(
+            port: gateway.boundPort,
+            request: "POST /demo/v1/x HTTP/1.1\r\nHost: 127.0.0.1:\(gateway.boundPort)\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n7fffffffffffffff\r\n"
+        )
+        XCTAssertEqual(hugeChunk.status, 413)
     }
 
     func testDashboardRejectsOversizeAndShortBodies() throws {

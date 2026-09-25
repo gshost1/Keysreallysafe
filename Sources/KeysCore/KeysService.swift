@@ -764,7 +764,6 @@ final class KeysService: @unchecked Sendable {
         gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
         gatewayLock.unlock()
-        gatewayCache.removeValue(forKey: name)
         revokeGrants(key: name, reason: "key_deleted", caller: caller)
         try secrets.delete(name: name)
         try catalog.deleteCatalog(name: name)

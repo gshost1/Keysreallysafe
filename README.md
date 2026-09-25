@@ -9,8 +9,8 @@ It reads the usage numbers that Claude Code, Grok and Codex already write to
 your home folder, prices them from a checked-in list-price table, and shows the
 result on a loopback web page and in the menu bar. Secrets live in the macOS
 Keychain, and the app asks for Touch ID before it reads one out. The dashboard
-stays local; Claude's built-in `/usage` command refreshes subscription limits
-through its existing login.
+stays local. If you turn on Keep Claude Limits Fresh (off by default), Claude's
+built-in `/usage` command refreshes subscription limits through its existing login.
 
 ## Install
 
@@ -102,9 +102,11 @@ It never accesses vault items. Do not claim upgrade continuity until this test
 passes on the target Mac.
 
 Claude's Fable quota comes from Claude Code's account-matched `/usage` cache in
-`~/.claude.json`. While the menu-bar app runs, it refreshes that cache every five
-minutes through Claude's built-in `/usage` command (no model request), using the
-existing Claude login. Readings older than one hour or past their reset are ignored.
+`~/.claude.json`. With Keep Claude Limits Fresh on (menu bar or welcome window; off
+by default), the menu-bar app refreshes that cache every five minutes through
+Claude's built-in `/usage` command (no model request), using the existing Claude
+login. Otherwise the limits are as fresh as Claude Code last left them. Readings
+older than one hour or past their reset are ignored.
 
 Remove everything with `keys autostart --remove` (login item and snapshot) and
 `keys purge` (catalog and every Keychain item, after Touch ID).
@@ -386,7 +388,7 @@ row is empty. Start there when a number is missing.
 |---|---|---|
 | Claude Code sessions | `~/.claude/projects/**/*.jsonl` | Claude tokens, estimate, per-project view |
 | claude-hud snapshot | `~/Library/Application Support/Keysreallysafe/claude-plan.json` | Claude 5-hour and weekly % |
-| Claude Code usage cache | `~/.claude.json` → `cachedUsageUtilization` | Claude Fable, five-hour, and weekly %; refreshed every five minutes while the menu-bar app runs |
+| Claude Code usage cache | `~/.claude.json` → `cachedUsageUtilization` | Claude Fable, five-hour, and weekly %; refreshed every five minutes when Keep Claude Limits Fresh is on |
 | Grok sessions | `~/.grok/sessions` | Grok dollars |
 | Grok billing log | `~/.grok/logs/unified.jsonl` | Grok weekly % |
 | Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate, 5-hour and weekly % |

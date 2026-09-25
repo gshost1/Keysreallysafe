@@ -1309,11 +1309,14 @@ final class CatalogDB: @unchecked Sendable {
             try exec("DELETE FROM key_events;")
             try exec("DELETE FROM provider_snapshots;")
             try exec("DELETE FROM model_colors;")
+            try exec("DELETE FROM provider_checks;")
             try exec("UPDATE meta SET value = '0' WHERE key = 'catalog_version';")
             try exec("DELETE FROM meta WHERE key = 'last_ingest_at';")
             try exec("DELETE FROM meta WHERE key = 'claude_dedup';")
             try exec("DELETE FROM meta WHERE key = 'gateway_owner_pid';")
             try exec("DELETE FROM meta WHERE key = 'product_analytics_v1';")
+            // 0.6 to 0.8 stored the trial and license state here.
+            try exec("DELETE FROM meta WHERE key LIKE 'license%';")
         }
     }
 

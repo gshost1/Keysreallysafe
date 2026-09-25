@@ -110,7 +110,7 @@ struct GetCommand: ParsableCommand {
 
     func run() throws {
         let service = try AppFactory.makeService()
-        let secret = try service.get(name: name)
+        let secret = try service.reveal(name: name, caller: "get")
         FileHandle.standardOutput.write(Data((secret + "\n").utf8))
     }
 }

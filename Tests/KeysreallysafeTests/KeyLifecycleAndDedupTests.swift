@@ -350,12 +350,19 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
             codexHome: Fixtures.codexHome
         )
         try service.add(name: "demo", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
+        try db.upsertProviderCheck(ProviderCheck.Result(
+            key: "demo", provider: "xai", host: "api.x.ai", checkedAt: "2026-09-25T00:00:00Z",
+            outcome: .ok, httpStatus: 200, models: [], requestId: nil, message: nil, endpoint: nil
+        ))
+        try db.setMeta("license_key", "left over from 0.8")
         XCTAssertThrowsError(try service.purge(confirmation: "nope"))
         XCTAssertEqual(try service.list().map(\.name), ["demo"])
         try service.purge(confirmation: "purge")
         XCTAssertEqual(gate.reasons.last, "Purge Keysrs")
         XCTAssertTrue(try service.list().isEmpty)
         XCTAssertThrowsError(try inner.get(name: "demo"))
+        XCTAssertNil(try db.providerCheck(keyName: "demo"))
+        XCTAssertNil(try db.metaValue("license_key"))
     }
 
     func testCodexSkipsConsecutiveDuplicateTokenCount() throws {

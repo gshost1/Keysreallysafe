@@ -266,7 +266,9 @@ final class GatewayListener: @unchecked Sendable {
                     ts: UTC.iso(Date()),
                     key: target.name,
                     provider: target.provider.id,
-                    model: parsed.model,
+                    // The model can come from the caller's request body; cap it so a local
+                    // client cannot store arbitrary text in the catalog and the dashboard.
+                    model: parsed.model.map { String(String.UnicodeScalarView($0.unicodeScalars.prefix(128))) },
                     inputTokens: parsed.inputTokens,
                     outputTokens: parsed.outputTokens,
                     cacheReadTokens: parsed.cacheReadTokens,
@@ -293,40 +295,45 @@ final class GatewayListener: @unchecked Sendable {
         var body: Data
     }
 
-    /// Grant token from any auth-style header, or Gemini's `?key=`. The query is returned
-    /// with a token-bearing `key` removed so it never reaches the provider.
+    /// Headers a caller may put a grant token in, where its SDK would put the provider key.
+    /// `dropIncoming` strips every one of them, so a token never reaches the provider.
+    static let grantHeaders = ["authorization", "x-api-key", "x-goog-api-key", "api-key", "x-ksf-grant"]
+
+    /// Grant token from any auth-style header, or Gemini's `?key=`. Every token-bearing `key` is
+    /// removed from the returned query, even when a header carried the grant, so none reaches the
+    /// provider.
     static func extractGrantToken(headers: [String: String], rawQuery: String) -> (String?, String) {
-        for name in ["authorization", "x-api-key", "x-goog-api-key", "api-key", "x-ksf-grant"] {
-            guard var value = headers[name]?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { continue }
-            if name == "authorization" {
-                let parts = value.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-                if parts.count == 2 { value = String(parts[1]).trimmingCharacters(in: .whitespaces) }
-            }
-            if GrantToken.looksLikeToken(value) { return (value, rawQuery) }
-        }
-        guard !rawQuery.isEmpty else { return (nil, rawQuery) }
         var kept: [String] = []
-        var found: String?
+        var fromQuery: String?
         for pair in rawQuery.split(separator: "&", omittingEmptySubsequences: true) {
             let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            if kv.count == 2, kv[0] == "key" {
+            let name = (String(kv[0]).removingPercentEncoding ?? String(kv[0])).lowercased()
+            if kv.count == 2, name == "key" {
                 let v = String(kv[1]).removingPercentEncoding ?? String(kv[1])
                 if GrantToken.looksLikeToken(v) {
-                    found = v
+                    fromQuery = v
                     continue
                 }
             }
             kept.append(String(pair))
         }
-        return (found, found == nil ? rawQuery : kept.joined(separator: "&"))
+        let query = fromQuery == nil ? rawQuery : kept.joined(separator: "&")
+        for name in grantHeaders {
+            guard var value = headers[name]?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { continue }
+            if name == "authorization" {
+                let parts = value.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                if parts.count == 2 { value = String(parts[1]).trimmingCharacters(in: .whitespaces) }
+            }
+            if GrantToken.looksLikeToken(value) { return (value, query) }
+        }
+        return (fromQuery, query)
     }
 
-    private static let dropIncoming: Set<String> = [
+    private static let dropIncoming = Set(grantHeaders).union([
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailers", "transfer-encoding", "upgrade", "proxy-connection",
-        "host", "content-length", "authorization", "x-api-key", "x-goog-api-key",
-        "api-key", "accept-encoding", "x-ksf-token", "x-ksf-client",
-    ]
+        "host", "content-length", "accept-encoding", "x-ksf-token", "x-ksf-client",
+    ])
 
     /// Split on the first `?` in the raw target. Path/query bytes are not decoded.
     static func splitTarget(_ target: String) -> (String, String) {
@@ -386,7 +393,6 @@ final class GatewayListener: @unchecked Sendable {
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         if status == 401 { head += "WWW-Authenticate: Bearer realm=\"keysreallysafe-gateway\"\r\n" }
         head += "Content-Type: application/json; charset=utf-8\r\n"
-        if status == 401 { head += "WWW-Authenticate: Bearer realm=\"keysreallysafe grant\"\r\n" }
         head += "Content-Length: \(body.count)\r\n"
         head += "Connection: close\r\n"
         head += "Cache-Control: no-store\r\n"

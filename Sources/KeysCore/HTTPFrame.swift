@@ -175,7 +175,8 @@ enum HTTPFrame {
                 _ = readLine()
                 return .ok(body)
             }
-            if body.count + size > cap { return .tooLarge }
+            // Written so a huge hex size cannot overflow and trap before auth.
+            if size > cap - body.count { return .tooLarge }
             if !need(size + 2) { return .failure }
             body.append(pending.prefix(size))
             pending.removeFirst(size)
