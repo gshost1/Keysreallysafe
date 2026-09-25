@@ -28,12 +28,11 @@ tests in `Tests/KeysreallysafeTests`. `Web/` is the local dashboard (plain
 HTML/CSS/JS, no build step, no external resources), not a marketing site.
 `Analytics/` is the self-hosted aggregate collector.
 `Fixtures/` holds synthetic session logs, the price table and provider catalog.
-`Site/` is the public marketing site at https://keysrs.com (static, no
-scripts; Google Fonts is the only external resource). It is served by a
+`Site/` is the public marketing site at https://keysrs.com (static; the only script is `Site/posthog.js`, and Google Fonts is the only external resource). It is served by a
 Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
 custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
 deploy` after `wrangler login`. Support mail is support@keysrs.com via
-Cloudflare Email Routing. PostHog (US cloud, project key in the pages, a
+Cloudflare Email Routing. PostHog (US cloud, project key in `Site/posthog.js`, a
 public client token) counts page views and download clicks, cookieless,
 no session replay; privacy.html describes exactly that and must stay true.
 Download links point at the latest GitHub release's `Keysrs-arm64.dmg`.
