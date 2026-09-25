@@ -200,8 +200,6 @@
       const code = data && data.error;
       const err = new Error(friendly(code, res.status));
       err.status = res.status;
-      err.code = code;
-      err.reason = data && typeof data.reason === "string" ? data.reason : undefined;
       throw err;
     }
     return data;
@@ -889,7 +887,6 @@
   const breakdownTitle = (b) =>
     `${fmtInt(b.input)} input · ${fmtInt(b.output)} output · ${fmtInt(b.cached)} cached input read · ${fmtInt(b.created)} cache writes`
     + (b.reasoning ? ` · ${fmtInt(b.reasoning)} reasoning` : "") + `. ${CACHE_NOTE}`;
-  const tokensPart = (n, title) => el("span", { class: "totals-part", title }, el("b", { text: fmtTokens(n) }), " tokens");
   const requestsPart = (n, title) => el("span", { class: "totals-part", title }, el("b", { text: fmtInt(n) }), " " + (n === 1 ? "request" : "requests"));
 
   // The API keys view is the gateway's own ledger, so requests lead: a call is always countable,
@@ -1035,7 +1032,7 @@
         el("b", { text: label }), " via gateway"));
     }
     parts.forEach((p, i) => { if (i) nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
-    const unpriced = unpricedModels(data, src);
+    const unpriced = unpricedModels(data);
     if (unpriced.length) {
       nodes.push(el("span", { class: "totals-sep", text: "·" }));
       nodes.push(el("span", { class: "totals-note warn", text: `${plural(unpriced.length, "model", "models")} unpriced`, title: "No local price row, left out of the estimate: " + unpriced.join(", ") }));
@@ -1044,19 +1041,11 @@
     $("totals").replaceChildren(...nodes);
   }
 
-  // Models the engine could not price. Prefer its own list when it sends one; otherwise infer
-  // from rows that have tokens but neither usd nor usd_estimate.
-  function unpricedModels(data, src) {
+  // Models the engine could not price.
+  function unpricedModels(data) {
     if (projectMode()) return [];
     const t = data.totals || {};
-    const fromEngine = [].concat(t.claude_unpriced_models || [], t.openai_unpriced_models || []);
-    if (fromEngine.length) return fromEngine;
-    return (data.rows || [])
-      .filter((r) => r.usd == null && r.usd_estimate == null)
-      .filter((r) => (r.input_tokens || 0) + (r.output_tokens || 0) + (r.cached_read_tokens || 0) > 0)
-      .filter((r) => src === "all" || family(r.model || "") === src)
-      .filter((r) => family(r.model || "") !== "grok")
-      .map((r) => r.model);
+    return [].concat(t.claude_unpriced_models || [], t.openai_unpriced_models || []);
   }
 
   function renderInterval(data) {
@@ -1196,19 +1185,8 @@
   function axisDays(data) {
     const out = [];
     const today = new Date();
-    const startP = parseDay(data.start_day);
-    const endP = parseDay(data.end_day);
-    let start, end;
-    if (startP && endP) { start = startP.date; end = endP.date; }
-    else if (state.range === "month") {
-      start = new Date(today.getFullYear(), today.getMonth(), 1);
-      end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-    } else {
-      start = new Date(today);
-      start.setDate(today.getDate() - today.getDay());
-      end = new Date(start);
-      end.setDate(start.getDate() + 6);
-    }
+    const start = parseDay(data.start_day).date;
+    let end = parseDay(data.end_day).date;
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     if (end > todayMidnight) end = todayMidnight;
     const d = new Date(start);
@@ -1463,8 +1441,6 @@
     }
   }
 
-  const gatewayOn = (k) => !!k.gateway_enabled;
-
   function renderKeys(opts = {}) {
     const body = $("keys-body");
     const keys = state.keys;
@@ -1479,7 +1455,7 @@
       const selected = k.name === state.selected;
       const tab = selected ? "0" : "-1";
       const tr = el("tr", { tabindex: selected ? "0" : "-1", "data-name": k.name, "aria-selected": String(selected) });
-      const on = gatewayOn(k);
+      const on = !!k.gateway_enabled;
       const nameCell = el("td", { class: "td-name", "data-label": "Name" },
         el("span", { class: "key-name" }, k.name,
           on ? el("span", { class: "badge", text: "Gateway on", title: "Requests to the local gateway use this key until the engine restarts" }) : null),
@@ -2040,7 +2016,7 @@
     if (!k) return;
     const prov = providerById(k.provider);
     if (prov && prov.gateway === false) { say(prov.name + " cannot be proxied (request signing)."); return; }
-    const on = gatewayOn(k);
+    const on = !!k.gateway_enabled;
     if (!on && prov && !prov.host && !host && !k.gateway_host) { askHost(name, prov); return; }
     state.busy = true;
     const btn = btnFor(name, "gateway");
@@ -2453,7 +2429,6 @@
     }
   }
   $("btn-ingest").addEventListener("click", ingest);
-  document.querySelectorAll('[data-action="ingest"]').forEach((b) => b.addEventListener("click", ingest));
   document.querySelectorAll('[data-action="add"]').forEach((b) => b.addEventListener("click", openAdd));
 
   // ---------- dialogs ----------
@@ -2616,19 +2591,6 @@
     return false;
   }
 
-  // Locale calendar week (Sunday start, same as the engine's weekOfYear), unless the engine sends its own period.
-  function weekSpan(row) {
-    if (row.period && row.period.label) return row.period.label;
-    if (row.period && row.period.start_day && row.period.end_day) return fmtRange(row.period.start_day, row.period.end_day);
-    const today = new Date();
-    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay());
-    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
-    const crosses = start.getMonth() !== today.getMonth() || end.getMonth() !== today.getMonth();
-    return fmtRange(isoDay(start), isoDay(end)) + (crosses ? ", crosses the month" : "");
-  }
-
-  const sourceFamily = (source) => ({ grok: "grok", "xai-api": "grok", claude: "claude", openai: "openai", codex: "openai", chatgpt: "openai" })[source] || "other";
-
   // Where "open dashboard" goes for a vendor we cannot read locally. Plain links, no requests.
   const DASHBOARDS = {
     chatgpt: "https://chatgpt.com/#settings",
@@ -2643,7 +2605,9 @@
   function renderLiveRow(row) {
     if (!row) return null;
     const meters = [];
-    const weekly = "Weekly · " + weekSpan(row);
+    // The engine attaches its calendar-week period to every row with a weekly figure;
+    // Claude and OpenRouter rows carry none.
+    const weekly = "Weekly · " + (row.period ? row.period.label : "");
     if (row.five_hour_pct != null || row.source === "claude") {
       meters.push(meter("5 hour", row.five_hour_pct, usedRight(row.five_hour_pct, row.five_hour_resets_at)));
     }
@@ -2680,7 +2644,7 @@
     }
     const note = row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null;
     const stale = (row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null || row.limit_remaining != null) ? asOf(row.snapshot_at) : "";
-    const planText = row.plan || (row.kind === "api" ? "API" : row.kind === "local" ? "" : "");
+    const planText = row.plan || (row.kind === "api" ? "API" : "");
     return el("div", { class: "live-row", "data-source": row.source },
       el("div", { class: "live-head" },
         el("span", { class: "live-title", text: row.title || row.source }),
@@ -2706,7 +2670,7 @@
   async function loadStatus() {
     try {
       const data = await api("/api/status");
-      const version = data.catalog_version ?? data.last_ingest_at ?? null;
+      const version = data.catalog_version;
       if (version != null && state.catalogVersion != null && version !== state.catalogVersion && state.pane === "chart") {
         loadModels().then(loadSpend);
       }
@@ -2723,14 +2687,7 @@
     const data = state.status;
     if (!data) return;
     const box = $("live-status");
-    let list = Array.isArray(data.plans) && data.plans.length
-      ? data.plans
-      : [data.grok, data.claude].filter(Boolean);
-    // Codex is the same local token count the OpenAI row already carries; one row is enough.
-    const openai = list.find((r) => r.source === "openai");
-    if (openai && openai.weekly_tokens != null) {
-      list = list.filter((r) => !(r.source === "codex" && r.weekly_tokens === openai.weekly_tokens));
-    }
+    const list = data.plans || [];
     const useful = [];
     const absent = [];
     for (const row of list) {

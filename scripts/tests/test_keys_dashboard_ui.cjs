@@ -82,7 +82,7 @@ function spend(params) {
   if (provider && source !== "keys") return [400, { error: "provider requires source=keys" }];
   const day = localDay(new Date());
   if (source !== "keys") {
-    if (!localRows.length) return [200, { source, by, totals: {}, rows: [], daily: [], points: [], models: [] }];
+    if (!localRows.length) return [200, { source, by, start_day: day, end_day: day, totals: {}, rows: [], daily: [], points: [], models: [] }];
     // A local row is a model the tool priced in its own log, or left unpriced; there is no call
     // count, which is why requests are not a unit outside the gateway ledger.
     const fam = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude" : "openai");
@@ -1080,7 +1080,7 @@ test("the Keys unit switch survives the narrow layout that drops the table head"
 // measured by default, a sum only when USD is chosen.
 test("the plan cards hide local dollars and OpenRouter credit until USD is chosen", async (page, origin) => {
   plans = [
-    { source: "grok", title: "Grok", kind: "local", weekly_usd: 1.25, weekly_tokens: 120000 },
+    { source: "grok", title: "Grok", kind: "local", weekly_usd: 1.25, weekly_tokens: 120000, period: { label: "This week" } },
     { source: "openrouter", title: "OpenRouter", kind: "api", limit: 20, limit_remaining: 5, usage_weekly: 3.5 },
   ];
   localRows = subscriptionRows();

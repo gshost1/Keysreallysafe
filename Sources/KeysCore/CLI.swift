@@ -272,10 +272,7 @@ struct StatusCommand: ParsableCommand {
     func run() throws {
         let service = try AppFactory.makeService()
         let status = try service.liveStatus()
-        let rows = status.plans.isEmpty
-            ? [status.grok, status.claude].compactMap { $0 }
-            : status.plans
-        for row in rows {
+        for row in status.plans {
             printPlan(row)
         }
     }

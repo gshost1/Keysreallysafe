@@ -4,10 +4,6 @@ struct ToolStatus: Equatable {
     var source: String
     var title: String
     var kind: String = "local"
-    var contextPct: Int?
-    var contextUsed: Int?
-    var contextWindow: Int?
-    var durationSeconds: Int?
     var fiveHourPct: Int?
     var fiveHourResetsAt: String?
     var weeklyPct: Int?
@@ -18,9 +14,6 @@ struct ToolStatus: Equatable {
     var period: SpendPeriod?
     var plan: String? = nil
     var snapshotAt: String? = nil
-    var onDemandUsed: Int? = nil
-    var onDemandCap: Int? = nil
-    var limitReached: String? = nil
     var limit: Double? = nil
     var limitRemaining: Double? = nil
     var usageWeekly: Double? = nil
@@ -50,24 +43,11 @@ struct ToolStatus: Equatable {
         if weeklyUsd != nil || weeklyTokens != nil, let period {
             obj["period"] = period.jsonObject()
         }
-        if let onDemandCap, onDemandCap > 0 {
-            obj["on_demand_cap"] = onDemandCap
-            obj["on_demand_used"] = onDemandUsed as Any? ?? NSNull()
-        }
-        if let limitReached {
-            obj["limit_reached"] = limitReached
-        }
         return obj
     }
 }
 
 enum PlanCatalog {
-    static let providers = [
-        "openai", "anthropic", "xai", "grok", "openrouter", "google", "gemini",
-        "cursor", "copilot", "perplexity", "groq", "mistral", "deepseek",
-        "together", "fireworks", "azure-openai", "huggingface",
-    ]
-
     static func rows(
         grok: ToolStatus,
         claude: ToolStatus,
@@ -107,16 +87,6 @@ enum PlanCatalog {
                 title: "ChatGPT",
                 kind: "subscription",
                 usageNote: "Covered by the OpenAI · Codex row above; chat message caps are not in local files."
-            ),
-            ToolStatus(
-                source: "codex",
-                title: "Codex",
-                kind: "local",
-                weeklyTokens: openaiWeekTokens,
-                usageNote: hasCodexSessions || openaiWeekTokens > 0
-                    ? nil
-                    : "No ~/.codex/sessions on this Mac.",
-                period: weekPeriod
             ),
             ToolStatus(
                 source: "cursor",
@@ -167,11 +137,7 @@ struct LiveStatus: Equatable {
 
     func jsonObject() -> [String: Any] {
         [
-            "grok": grok?.jsonObject() as Any? ?? NSNull(),
-            "claude": claude?.jsonObject() as Any? ?? NSNull(),
             "plans": plans.map { $0.jsonObject() },
-            "providers": PlanCatalog.providers,
-            "caption": "Plan % only when cached locally. Dollars and tokens are local logs, not a remaining bar. We do not scrape provider websites.",
             "last_ingest_at": lastIngestAt as Any? ?? NSNull(),
             "catalog_version": catalogVersion,
         ]
@@ -253,10 +219,6 @@ struct LiveStatus: Equatable {
         let period = JSONValue.object(config["currentPeriod"]) ?? [:]
         row.plan = JSONValue.string(ctx["subscriptionTier"]) ?? JSONValue.string(config["subscriptionTier"])
         row.snapshotAt = JSONValue.string(obj["ts"])
-        if let cap = wrappedVal(config["onDemandCap"]), cap > 0 {
-            row.onDemandCap = cap
-            row.onDemandUsed = wrappedVal(config["onDemandUsed"])
-        }
         let end = JSONValue.string(period["end"])
         if let end { row.weeklyResetsAt = UTC.parse(end).map(UTC.iso) ?? end }
         let type = JSONValue.string(period["type"])
@@ -320,7 +282,6 @@ extension LiveStatus {
         var weekly: CodexWindowRaw?
         var planType: String?
         var snapshotAt: String?
-        var limitReached: String?
     }
 
     /// Fills the OpenAI · Codex row from the newest rollout's last rate_limits line
@@ -343,7 +304,6 @@ extension LiveStatus {
         (row.weeklyPct, row.weeklyResetsAt) = liveWindow(raw.weekly, now: now)
         row.plan = plan
         row.snapshotAt = raw.snapshotAt
-        row.limitReached = raw.limitReached
         row.usageNote = "Codex limits on the \(plan ?? "ChatGPT Plus") plan. Chat message caps are not in local files."
     }
 
@@ -368,13 +328,11 @@ extension LiveStatus {
             if minutes == 300 { five = raw }
             else if minutes == 10080 { week = raw }
         }
-        let reached = scalar(limits["rate_limit_reached_type"])
         return CodexRateRaw(
             fiveHour: five,
             weekly: week,
             planType: JSONValue.string(limits["plan_type"]),
-            snapshotAt: JSONValue.string(obj["timestamp"]),
-            limitReached: reached
+            snapshotAt: JSONValue.string(obj["timestamp"])
         )
     }
 
@@ -446,20 +404,5 @@ extension LiveStatus {
             return Int(d.rounded())
         }
         return JSONValue.int(any)
-    }
-
-    private static func wrappedVal(_ any: Any?) -> Int? {
-        if let obj = JSONValue.object(any) {
-            return percent(obj["val"]) ?? JSONValue.int(obj["val"])
-        }
-        return JSONValue.int(any)
-    }
-
-    private static func scalar(_ any: Any?) -> String? {
-        if any == nil || any is NSNull { return nil }
-        if let s = any as? String { return s.isEmpty ? nil : s }
-        if let n = any as? NSNumber { return n.stringValue }
-        if let b = any as? Bool { return b ? "true" : "false" }
-        return nil
     }
 }

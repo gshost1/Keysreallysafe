@@ -13,7 +13,6 @@ final class LiveStatusTests: XCTestCase {
         let grok = try XCTUnwrap(status.grok)
         XCTAssertEqual(grok.source, "grok")
         XCTAssertEqual(grok.title, "Grok")
-        XCTAssertNil(grok.contextPct)
         XCTAssertNil(grok.fiveHourPct)
         XCTAssertEqual(grok.weeklyUsd ?? 0, 2.81, accuracy: 1e-9)
         XCTAssertNil(grok.weeklyPct)
@@ -51,7 +50,6 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertNil(claude.fableResetsAt)
         XCTAssertEqual(claude.weeklyResetsAt, "2026-09-08T00:00:00Z")
         XCTAssertEqual(claude.snapshotAt, "2026-09-03T18:00:00Z")
-        XCTAssertNil(claude.contextPct)
         XCTAssertEqual(claude.jsonObject()["snapshot_at"] as? String, "2026-09-03T18:00:00Z")
     }
 
@@ -114,7 +112,7 @@ final class LiveStatusTests: XCTestCase {
         let sources = status.plans.map(\.source)
         XCTAssertTrue(sources.contains("openai"))
         XCTAssertTrue(sources.contains("chatgpt"))
-        XCTAssertTrue(sources.contains("codex"))
+        XCTAssertFalse(sources.contains("codex"), "the OpenAI · Codex row already carries Codex")
         XCTAssertTrue(sources.contains("cursor"))
         XCTAssertTrue(sources.contains("gemini"))
         let chatgpt = try XCTUnwrap(status.plans.first { $0.source == "chatgpt" })
@@ -193,7 +191,6 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(grok.snapshotAt, "2026-09-04T18:43:52.216Z")
         XCTAssertEqual(grok.weeklyResetsAt, "2026-09-11T18:04:26Z")
         XCTAssertNil(grok.usageNote)
-        XCTAssertNil(grok.jsonObject()["on_demand_cap"])
         XCTAssertEqual(grok.jsonObject()["plan"] as? String, "SuperGrok Plus")
         XCTAssertEqual(grok.jsonObject()["snapshot_at"] as? String, "2026-09-04T18:43:52.216Z")
     }
@@ -251,32 +248,6 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(grok.usageNote, "USAGE_PERIOD_TYPE_MONTHLY")
         XCTAssertEqual(grok.plan, "SuperGrok Plus")
         XCTAssertEqual(grok.snapshotAt, "2026-09-04T18:43:52.216Z")
-    }
-
-    func testGrokOnDemandWhenCapPositive() throws {
-        let home = try TempDir.make()
-        let now = UTC.parse("2026-09-04T19:00:00Z")!
-        try writeGrokLog(home, lines: [
-            try grokBilling(
-                ts: "2026-09-04T18:43:52.216Z",
-                pct: 8,
-                end: "2026-09-11T18:04:26Z",
-                onDemandCap: 20,
-                onDemandUsed: 3
-            ),
-        ])
-        let grok = try XCTUnwrap(LiveStatus.scan(
-            grokHome: home,
-            claudeHome: home,
-            grokWeekUsd: 0,
-            claudePlan: home.appendingPathComponent("missing-plan.json"),
-            codexHome: home,
-            now: now
-        ).grok)
-        XCTAssertEqual(grok.onDemandCap, 20)
-        XCTAssertEqual(grok.onDemandUsed, 3)
-        XCTAssertEqual(grok.jsonObject()["on_demand_cap"] as? Int, 20)
-        XCTAssertEqual(grok.jsonObject()["on_demand_used"] as? Int, 3)
     }
 
     func testGrokTailDoesNotReadWholeFile() throws {
@@ -482,8 +453,6 @@ final class LiveStatusTests: XCTestCase {
         ).plans.first { $0.source == "openai" })
         XCTAssertEqual(openai.fiveHourPct, 12)
         XCTAssertEqual(openai.weeklyPct, 31)
-        XCTAssertEqual(openai.limitReached, "primary")
-        XCTAssertEqual(openai.jsonObject()["limit_reached"] as? String, "primary")
     }
 
     func testCodexSkipsTrailingEmptyPremiumLimits() throws {
@@ -616,9 +585,7 @@ private func grokBilling(
     pct: Int,
     periodType: String = "USAGE_PERIOD_TYPE_WEEKLY",
     end: String,
-    tier: String = "SuperGrok Plus",
-    onDemandCap: Int = 0,
-    onDemandUsed: Int = 0
+    tier: String = "SuperGrok Plus"
 ) throws -> String {
     try jsonLine([
         "ts": ts,
@@ -631,8 +598,6 @@ private func grokBilling(
                     "start": "2026-09-04T18:04:26.160272+00:00",
                     "end": end,
                 ],
-                "onDemandCap": ["val": onDemandCap],
-                "onDemandUsed": ["val": onDemandUsed],
             ],
             "subscriptionTier": tier,
         ],
@@ -655,10 +620,9 @@ private func codexLimits(
     secondaryPct: Int,
     secondaryMinutes: Int,
     secondaryResets: Int64,
-    message: String? = nil,
-    reached: String? = nil
+    message: String? = nil
 ) throws -> String {
-    var limits: [String: Any] = [
+    let limits: [String: Any] = [
         "limit_id": "codex",
         "plan_type": planType,
         "primary": [
@@ -673,11 +637,6 @@ private func codexLimits(
         ],
         "credits": ["has_credits": false, "unlimited": false, "balance": "0"],
     ]
-    if let reached {
-        limits["rate_limit_reached_type"] = reached
-    } else {
-        limits["rate_limit_reached_type"] = NSNull()
-    }
     var payload: [String: Any] = [
         "type": "event_msg",
         "rate_limits": limits,

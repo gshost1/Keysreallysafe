@@ -376,8 +376,7 @@ main { flex: 1; min-height: 0; overflow: auto; }
   background: var(--s-grok-1);
 }
 .live-row[data-source="claude"] .live-fill { background: var(--live-claude); }
-.live-row[data-source="openai"] .live-fill,
-.live-row[data-source="codex"] .live-fill { background: var(--s-openai-1); }
+.live-row[data-source="openai"] .live-fill { background: var(--s-openai-1); }
 .live-note { color: var(--fg-3); }
 .live-used { color: var(--fg); }
 .live-reset { color: var(--fg-2); }

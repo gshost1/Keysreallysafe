@@ -8,7 +8,7 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body data-pane="spend">
+<body data-pane="usage">
   <header class="toolbar">
     <div class="brand">
       <p class="brand-name">Keysrs</p>
@@ -51,7 +51,7 @@
     </section>
 
     <section id="pane-chart" role="tabpanel" aria-labelledby="nav-chart" hidden>
-      <div class="filters" id="filters">
+      <div class="filters">
         <div class="chips" role="radiogroup" aria-label="Range">
           <button type="button" role="radio" data-range="today" aria-checked="true">Today</button>
           <button type="button" role="radio" data-range="week" aria-checked="false" tabindex="-1">This week</button>
@@ -104,7 +104,7 @@
       <!-- The unit for the gateway column, outside the table head so it survives the narrow
            layout that drops the head entirely. -->
       <div class="keys-toolbar" id="keys-toolbar" hidden>
-        <span id="keys-unit-label">Via gateway, in</span>
+        <span>Via gateway, in</span>
         <button type="button" id="keys-unit" class="link th-unit"></button>
       </div>
       <table class="keys" id="keys-table">
