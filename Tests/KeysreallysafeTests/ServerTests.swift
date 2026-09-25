@@ -7,6 +7,7 @@ final class ServerTests: XCTestCase {
         let service = KeysService(
             catalog: db,
             secrets: ThrowingSecretStore(.keychain("add failed (-25308)")),
+            presence: RecordingPresenceGate(),
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome
@@ -39,6 +40,7 @@ final class ServerTests: XCTestCase {
         let service = KeysService(
             catalog: db,
             secrets: ThrowingSecretStore(.authFailed),
+            presence: RecordingPresenceGate(),
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome
@@ -441,6 +443,7 @@ final class ServerTests: XCTestCase {
         let service = KeysService(
             catalog: db,
             secrets: MemorySecretStore(),
+            presence: RecordingPresenceGate(),
             clipboard: FakeClipboard(),
             grokHome: empty,
             claudeHome: empty,

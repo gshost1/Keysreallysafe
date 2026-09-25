@@ -46,7 +46,8 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let gate = RecordingPresenceGate()
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: inner, presence: gate),
+            secrets: inner,
+            presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,
@@ -115,6 +116,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let service = KeysService(
             catalog: db,
             secrets: MemorySecretStore(),
+            presence: RecordingPresenceGate(),
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,
@@ -307,7 +309,8 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let gate = RecordingPresenceGate()
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: inner, presence: gate),
+            secrets: inner,
+            presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,

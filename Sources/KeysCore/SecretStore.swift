@@ -2,30 +2,14 @@ import Foundation
 import LocalAuthentication
 import Security
 
+/// Storage only. Presence (Touch ID or the login password) is `KeysService.presence`,
+/// asked before every read, so no store can hand out a secret on its own.
 protocol SecretStore: Sendable {
     func add(name: String, secret: String) throws
     func get(name: String) throws -> String
     func delete(name: String) throws
     func replace(name: String, secret: String) throws
     func deleteAll() throws
-    func confirmPresence(reason: String) throws
-    /// Read after the caller already confirmed presence with a task-specific reason.
-    func getAfterPresence(name: String) throws -> String
-}
-
-extension SecretStore {
-    func getAfterPresence(name: String) throws -> String {
-        try get(name: name)
-    }
-
-    func replace(name: String, secret: String) throws {
-        try delete(name: name)
-        try add(name: name, secret: secret)
-    }
-
-    func deleteAll() throws {}
-
-    func confirmPresence(reason: String) throws {}
 }
 
 final class MemorySecretStore: SecretStore, @unchecked Sendable {
@@ -137,41 +121,6 @@ struct LocalPresenceGate: PresenceGate {
             if case .authUnavailable(let m) = map(la) { return m }
         }
         return "this Mac has no Touch ID or password to unlock keys"
-    }
-}
-
-/// Keychain item plus a presence gate. Add/delete skip the gate (spec: Touch ID on get/copy).
-struct GatedSecretStore: SecretStore {
-    var inner: any SecretStore
-    var presence: any PresenceGate
-
-    func add(name: String, secret: String) throws {
-        try inner.add(name: name, secret: secret)
-    }
-
-    func get(name: String) throws -> String {
-        try presence.require(reason: "Unlock \(name)")
-        return try inner.get(name: name)
-    }
-
-    func delete(name: String) throws {
-        try inner.delete(name: name)
-    }
-
-    func replace(name: String, secret: String) throws {
-        try inner.replace(name: name, secret: secret)
-    }
-
-    func deleteAll() throws {
-        try inner.deleteAll()
-    }
-
-    func confirmPresence(reason: String) throws {
-        try presence.require(reason: reason)
-    }
-
-    func getAfterPresence(name: String) throws -> String {
-        try inner.get(name: name)
     }
 }
 

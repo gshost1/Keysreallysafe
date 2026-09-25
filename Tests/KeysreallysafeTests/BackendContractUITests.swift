@@ -74,7 +74,8 @@ final class BackendContractUITests: XCTestCase {
         let analyticsTransport = RefusingAnalyticsTransport()
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: secrets, presence: presence),
+            secrets: secrets,
+            presence: presence,
             clipboard: clipboard,
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,

@@ -4,6 +4,9 @@ import Foundation
 final class KeysService: @unchecked Sendable {
     let catalog: CatalogDB
     let secrets: any SecretStore
+    /// Asked before every secret read (get, copy, reveal, env, gateway enable, provider check)
+    /// and before grant, client issue, delete, rotate and purge.
+    let presence: any PresenceGate
     let clipboard: any ClipboardClient
     let runner: any CommandRunner
     var grokHome: URL
@@ -26,6 +29,7 @@ final class KeysService: @unchecked Sendable {
     init(
         catalog: CatalogDB,
         secrets: any SecretStore,
+        presence: any PresenceGate,
         clipboard: any ClipboardClient,
         grokHome: URL = Paths.grokHome,
         claudeHome: URL = Paths.claudeHome,
@@ -35,6 +39,7 @@ final class KeysService: @unchecked Sendable {
     ) {
         self.catalog = catalog
         self.secrets = secrets
+        self.presence = presence
         self.clipboard = clipboard
         self.grokHome = grokHome
         self.claudeHome = claudeHome
@@ -180,7 +185,7 @@ final class KeysService: @unchecked Sendable {
         return cached
     }
 
-    /// Enable requires one Touch ID (same `secrets.get` path as copy). Secret is held in memory only.
+    /// Enable requires one Touch ID (the same presence check as copy). Secret is held in memory only.
     func setGateway(
         name: String,
         enabled: Bool,
@@ -213,13 +218,8 @@ final class KeysService: @unchecked Sendable {
             if let previous, previous.host != resolved || previous.provider.id != provider.id {
                 disableGatewayMemory(name: name, reason: "target_changed")
             }
-            let secret: String
-            if let reason {
-                try secrets.confirmPresence(reason: reason)
-                secret = try secrets.getAfterPresence(name: name)
-            } else {
-                secret = try secrets.get(name: name)
-            }
+            try presence.require(reason: reason ?? "Unlock \(name)")
+            let secret = try secrets.get(name: name)
             let version = row.version
             gatewayLock.lock()
             gatewayCache[name] = GatewayTarget(
@@ -270,7 +270,7 @@ final class KeysService: @unchecked Sendable {
             task: request.task, key: name, provider: provider, host: host, minutes: request.minutes
         )
         if let cached = lookupGateway(name: name), cached.host == host {
-            try secrets.confirmPresence(reason: reason)
+            try presence.require(reason: reason)
         } else {
             _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
         }
@@ -383,8 +383,8 @@ final class KeysService: @unchecked Sendable {
         if let cached {
             secret = cached
         } else {
-            try secrets.confirmPresence(reason: "Check \(name) against \(provider.name) at \(host) (read-only)")
-            secret = try secrets.getAfterPresence(name: name)
+            try presence.require(reason: "Check \(name) against \(provider.name) at \(host) (read-only)")
+            secret = try secrets.get(name: name)
         }
         let result = ProviderCheck.run(key: name, provider: provider, host: host, secret: secret, fetcher: checker)
         try catalog.upsertProviderCheck(result)
@@ -465,7 +465,7 @@ final class KeysService: @unchecked Sendable {
         let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
         let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
         let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        try secrets.confirmPresence(reason: "Issue gateway client for \(name)")
+        try presence.require(reason: "Issue gateway client for \(name)")
         let token = GatewayClientToken.generate()
         let client = try catalog.insertGatewayClient(
             keyName: name,
@@ -669,6 +669,7 @@ final class KeysService: @unchecked Sendable {
         guard try catalog.catalogExists(name: name) else {
             throw AppError.notFound(name)
         }
+        try presence.require(reason: "Unlock \(name)")
         return try secrets.get(name: name)
     }
 
@@ -694,7 +695,7 @@ final class KeysService: @unchecked Sendable {
         guard try catalog.catalogExists(name: name) else {
             throw AppError.notFound(name)
         }
-        try secrets.confirmPresence(reason: "Delete \(name)")
+        try presence.require(reason: "Delete \(name)")
         gatewayLock.lock()
         gatewayCache.removeValue(forKey: name)
         gatewayLock.unlock()
@@ -712,7 +713,7 @@ final class KeysService: @unchecked Sendable {
         guard try catalog.catalogExists(name: name) else {
             throw AppError.notFound(name)
         }
-        try secrets.confirmPresence(reason: "Unlock \(name)")
+        try presence.require(reason: "Unlock \(name)")
         try secrets.replace(name: name, secret: secret)
         let version = try catalog.incrementVersion(name: name)
         gatewayLock.lock()
@@ -740,7 +741,7 @@ final class KeysService: @unchecked Sendable {
 
     func purge(confirmation: String) throws {
         try requireGatewayOwner()
-        try secrets.confirmPresence(reason: "Purge Keysrs")
+        try presence.require(reason: "Purge Keysrs")
         guard confirmation == "purge" else {
             throw AppError.usage("type purge to confirm")
         }
@@ -967,7 +968,8 @@ enum AppFactory {
         let db = try CatalogDB(path: Paths.catalogDB)
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: KeychainStore(), presence: LocalPresenceGate()),
+            secrets: KeychainStore(),
+            presence: LocalPresenceGate(),
             clipboard: AppKitClipboard()
         )
         service.observeScreenLock()

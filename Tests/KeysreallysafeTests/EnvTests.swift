@@ -82,7 +82,8 @@ final class EnvTests: XCTestCase {
         let runner = FakeCommandRunner()
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: MemorySecretStore(), presence: gate),
+            secrets: MemorySecretStore(),
+            presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,
@@ -124,7 +125,8 @@ final class EnvTests: XCTestCase {
         let runner = FakeCommandRunner()
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: inner, presence: gate),
+            secrets: inner,
+            presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,
@@ -174,6 +176,7 @@ final class EnvTests: XCTestCase {
         let service = KeysService(
             catalog: db,
             secrets: secrets,
+            presence: RecordingPresenceGate(),
             clipboard: clipboard,
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,

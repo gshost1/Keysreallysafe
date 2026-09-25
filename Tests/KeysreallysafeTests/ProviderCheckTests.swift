@@ -22,7 +22,8 @@ final class ProviderCheckTests: XCTestCase {
         let gate = RecordingPresenceGate()
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: MemorySecretStore(), presence: gate),
+            secrets: MemorySecretStore(),
+            presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,
@@ -174,7 +175,7 @@ final class ProviderCheckTests: XCTestCase {
             (AppError.authFailed, 403, "auth_failed"),
         ] {
             let service = KeysService(
-                catalog: db, secrets: ThrowingSecretStore(error), clipboard: FakeClipboard(),
+                catalog: db, secrets: MemorySecretStore(), presence: RecordingPresenceGate(error: error), clipboard: FakeClipboard(),
                 grokHome: Fixtures.grokHome, claudeHome: Fixtures.claudeHome, codexHome: Fixtures.codexHome
             )
             try? db.insertCatalog(CatalogRow(name: "demo", provider: "openai", kind: "runtime", notes: "", createdAt: "2026-01-01T00:00:00Z", lastUsedAt: nil))

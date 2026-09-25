@@ -45,6 +45,7 @@ final class SecretStoreTests: XCTestCase {
         let service = KeysService(
             catalog: db,
             secrets: secrets,
+            presence: RecordingPresenceGate(),
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome
@@ -68,30 +69,34 @@ final class SecretStoreTests: XCTestCase {
         XCTAssertNil(query[kSecAttrSynchronizable as String])
     }
 
-    func testGetRequiresPresenceAddDoesNot() throws {
-        let inner = MemorySecretStore()
+    func testCopyAndRevealRequirePresenceAddDoesNot() throws {
+        let (db, _) = try makeDB()
         let gate = RecordingPresenceGate()
-        let store = GatedSecretStore(inner: inner, presence: gate)
-        try store.add(name: "xai", secret: fixtureSecret)
+        let clipboard = FakeClipboard()
+        let service = KeysService(catalog: db, secrets: MemorySecretStore(), presence: gate, clipboard: clipboard)
+        try service.add(name: "xai", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
         XCTAssertEqual(gate.reasons, [])
-        XCTAssertEqual(try store.get(name: "xai"), fixtureSecret)
-        XCTAssertEqual(gate.reasons, ["Unlock xai"])
-        try store.delete(name: "xai")
-        XCTAssertEqual(gate.reasons, ["Unlock xai"])
+        try service.copy(name: "xai", holdUntilWipe: false)
+        XCTAssertEqual(clipboard.value, fixtureSecret)
+        XCTAssertEqual(try service.reveal(name: "xai"), fixtureSecret)
+        XCTAssertEqual(gate.reasons, ["Unlock xai", "Unlock xai"])
     }
 
-    func testGetDoesNotReadSecretIfPresenceFails() throws {
-        let inner = MemorySecretStore()
-        try inner.add(name: "xai", secret: fixtureSecret)
+    func testFailedPresenceReadsNothing() throws {
+        let (db, _) = try makeDB()
         let gate = RecordingPresenceGate()
+        let clipboard = FakeClipboard()
+        let service = KeysService(catalog: db, secrets: MemorySecretStore(), presence: gate, clipboard: clipboard)
+        try service.add(name: "xai", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
         gate.error = .authFailed
-        let store = GatedSecretStore(inner: inner, presence: gate)
-        XCTAssertThrowsError(try store.get(name: "xai")) { error in
+        XCTAssertThrowsError(try service.copy(name: "xai", holdUntilWipe: false)) { error in
             guard let app = error as? AppError, case .authFailed = app else {
                 return XCTFail("expected authFailed, got \(error)")
             }
         }
-        XCTAssertEqual(try inner.get(name: "xai"), fixtureSecret)
+        XCTAssertNil(clipboard.value, "a failed presence check leaves the clipboard empty")
+        XCTAssertThrowsError(try service.reveal(name: "xai"))
+        XCTAssertTrue(try service.keyEvents(name: "xai").allSatisfy { $0.action == "add" }, "nothing was read")
     }
 
     func testLiveKeychainUserPresenceGated() throws {
@@ -99,13 +104,11 @@ final class SecretStoreTests: XCTestCase {
             ProcessInfo.processInfo.environment["KEYS_LIVE_KEYCHAIN"] == "1",
             "live Keychain is a manual check, not CI"
         )
-        let store = GatedSecretStore(
-            inner: KeychainStore(service: "keysreallysafe.test"),
-            presence: LocalPresenceGate()
-        )
+        let store = KeychainStore(service: "keysreallysafe.test")
         let name = "live-test-\(UUID().uuidString.prefix(8).lowercased())"
         try store.add(name: name, secret: "live-only")
         defer { try? store.delete(name: name) }
+        try LocalPresenceGate().require(reason: "Unlock \(name)")
         let got = try store.get(name: name)
         XCTAssertEqual(got, "live-only")
     }

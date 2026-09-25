@@ -35,7 +35,8 @@ final class GatewayClientTests: XCTestCase {
         let gate = RecordingPresenceGate()
         let service = KeysService(
             catalog: db,
-            secrets: GatedSecretStore(inner: MemorySecretStore(), presence: gate),
+            secrets: MemorySecretStore(),
+            presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,

@@ -137,7 +137,7 @@ final class BoundedIngestTests: XCTestCase {
         var text = ""
         for i in 0..<6_000 { text += assistantLine(uuid: "s\(i)", model: "claude-sonnet-5", input: 1, output: 1) + "\n" }
         try text.write(to: project.appendingPathComponent("s.jsonl"), atomically: true, encoding: .utf8)
-        let service = KeysService(catalog: db, secrets: secrets, clipboard: FakeClipboard(),
+        let service = KeysService(catalog: db, secrets: secrets, presence: RecordingPresenceGate(), clipboard: FakeClipboard(),
                                   grokHome: Fixtures.grokHome, claudeHome: slowHome, codexHome: Fixtures.codexHome)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         _ = try service.setGateway(name: "demo", enabled: true, host: "api.openai.com")

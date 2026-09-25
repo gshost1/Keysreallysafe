@@ -45,6 +45,7 @@ func makeService(db: CatalogDB) -> (KeysService, MemorySecretStore, FakeClipboar
     let service = KeysService(
         catalog: db,
         secrets: secrets,
+        presence: RecordingPresenceGate(),
         clipboard: clipboard,
         grokHome: Fixtures.grokHome,
         claudeHome: Fixtures.claudeHome,
@@ -61,7 +62,6 @@ final class ThrowingSecretStore: SecretStore, @unchecked Sendable {
     func delete(name: String) throws { throw error }
     func replace(name: String, secret: String) throws { throw error }
     func deleteAll() throws { throw error }
-    func confirmPresence(reason: String) throws { throw error }
 }
 
 final class FakeOpenRouter: OpenRouterFetching, @unchecked Sendable {
@@ -95,6 +95,7 @@ final class RecordingPresenceGate: PresenceGate, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var reasons: [String] = []
     var error: AppError?
+    init(error: AppError? = nil) { self.error = error }
     func require(reason: String) throws {
         lock.lock()
         reasons.append(reason)
