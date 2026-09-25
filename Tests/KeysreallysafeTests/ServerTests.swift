@@ -541,17 +541,9 @@ final class ServerTests: XCTestCase {
             model: model,
             occurredAt: iso,
             provider: "xai",
-            cwd: nil,
-            sessionTitle: nil,
-            agentName: nil,
-            stopReason: nil,
             modelCalls: 1,
-            apiDurationMs: 1,
             inputTokens: 10,
             outputTokens: 5,
-            cachedReadTokens: 0,
-            cacheCreationTokens: 0,
-            reasoningTokens: 0,
             costUsdTicks: Int64((usd * Ticks.perUSD).rounded())
         )
     }

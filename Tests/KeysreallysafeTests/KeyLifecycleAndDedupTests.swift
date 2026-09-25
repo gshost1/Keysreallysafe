@@ -207,17 +207,9 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
                 occurredAt: "2026-09-03T18:00:00Z",
                 provider: "anthropic",
                 cwd: "/tmp/alpha/keysreallysafe",
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
                 modelCalls: 1,
-                apiDurationMs: nil,
                 inputTokens: 10,
-                outputTokens: 4,
-                cachedReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
-                costUsdTicks: nil
+                outputTokens: 4
             )
         )
         _ = try service.catalog.insertUsage(
@@ -229,17 +221,9 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
                 occurredAt: "2026-09-03T19:00:00Z",
                 provider: "anthropic",
                 cwd: "/tmp/beta/other",
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
                 modelCalls: 1,
-                apiDurationMs: nil,
                 inputTokens: 20,
-                outputTokens: 8,
-                cachedReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
-                costUsdTicks: nil
+                outputTokens: 8
             )
         )
         let now = UTC.parse("2026-09-04T12:00:00Z")!
@@ -282,17 +266,9 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
                 model: "grok-4.6-build",
                 occurredAt: "2026-09-02T05:30:00Z",
                 provider: "xai",
-                cwd: nil,
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
                 modelCalls: 1,
-                apiDurationMs: 1,
                 inputTokens: 10,
                 outputTokens: 5,
-                cachedReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
                 costUsdTicks: Int64((1.25 * Ticks.perUSD).rounded())
             )
         )

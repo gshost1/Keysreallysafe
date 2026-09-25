@@ -59,17 +59,9 @@ final class CatalogTests: XCTestCase {
                     model: "m-\(i)",
                     occurredAt: String(format: "2026-01-01T00:%02d:00Z", i),
                     provider: "xai",
-                    cwd: nil,
-                    sessionTitle: nil,
-                    agentName: nil,
-                    stopReason: nil,
                     modelCalls: 1,
-                    apiDurationMs: 1,
                     inputTokens: 1,
                     outputTokens: 1,
-                    cachedReadTokens: 0,
-                    cacheCreationTokens: 0,
-                    reasoningTokens: 0,
                     costUsdTicks: 1
                 )
             )

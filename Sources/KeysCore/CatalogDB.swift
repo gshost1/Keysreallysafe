@@ -66,10 +66,7 @@ final class CatalogDB: @unchecked Sendable {
               provider TEXT NOT NULL,
               cwd TEXT,
               session_title TEXT,
-              agent_name TEXT,
-              stop_reason TEXT,
               model_calls INTEGER,
-              api_duration_ms INTEGER,
               input_tokens INTEGER NOT NULL,
               output_tokens INTEGER NOT NULL,
               cached_read_tokens INTEGER NOT NULL DEFAULT 0,
@@ -692,19 +689,16 @@ final class CatalogDB: @unchecked Sendable {
             let sql = """
                 INSERT INTO usage_events (
                   source, session_id, prompt_id, model, occurred_at, provider,
-                  cwd, session_title, agent_name, stop_reason, model_calls, api_duration_ms,
+                  cwd, session_title, model_calls,
                   input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
                   reasoning_tokens, cost_usd_ticks, key_name
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, session_id, prompt_id, model) DO UPDATE SET
                   occurred_at = excluded.occurred_at,
                   provider = excluded.provider,
                   cwd = excluded.cwd,
                   session_title = excluded.session_title,
-                  agent_name = excluded.agent_name,
-                  stop_reason = excluded.stop_reason,
                   model_calls = excluded.model_calls,
-                  api_duration_ms = excluded.api_duration_ms,
                   input_tokens = excluded.input_tokens,
                   output_tokens = excluded.output_tokens,
                   cached_read_tokens = excluded.cached_read_tokens,
@@ -723,21 +717,18 @@ final class CatalogDB: @unchecked Sendable {
             bindText(stmt, 6, event.provider)
             bindText(stmt, 7, event.cwd)
             bindText(stmt, 8, event.sessionTitle)
-            bindText(stmt, 9, event.agentName)
-            bindText(stmt, 10, event.stopReason)
-            bindInt(stmt, 11, event.modelCalls)
-            bindInt(stmt, 12, event.apiDurationMs)
-            sqlite3_bind_int(stmt, 13, Int32(event.inputTokens))
-            sqlite3_bind_int(stmt, 14, Int32(event.outputTokens))
-            sqlite3_bind_int(stmt, 15, Int32(event.cachedReadTokens))
-            sqlite3_bind_int(stmt, 16, Int32(event.cacheCreationTokens))
-            sqlite3_bind_int(stmt, 17, Int32(event.reasoningTokens))
+            bindInt(stmt, 9, event.modelCalls)
+            sqlite3_bind_int(stmt, 10, Int32(event.inputTokens))
+            sqlite3_bind_int(stmt, 11, Int32(event.outputTokens))
+            sqlite3_bind_int(stmt, 12, Int32(event.cachedReadTokens))
+            sqlite3_bind_int(stmt, 13, Int32(event.cacheCreationTokens))
+            sqlite3_bind_int(stmt, 14, Int32(event.reasoningTokens))
             if let ticks = event.costUsdTicks {
-                sqlite3_bind_int64(stmt, 18, ticks)
+                sqlite3_bind_int64(stmt, 15, ticks)
             } else {
-                sqlite3_bind_null(stmt, 18)
+                sqlite3_bind_null(stmt, 15)
             }
-            bindText(stmt, 19, event.keyName)
+            bindText(stmt, 16, event.keyName)
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
             if existed { return .updated }
             return sqlite3_changes(db) == 1 ? .inserted : .duplicate
@@ -754,7 +745,7 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             var sql = """
                 SELECT source, session_id, prompt_id, model, occurred_at, provider,
-                       cwd, session_title, agent_name, stop_reason, model_calls, api_duration_ms,
+                       cwd, session_title, model_calls,
                        input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
                        reasoning_tokens, cost_usd_ticks, key_name
                 FROM usage_events
@@ -802,7 +793,7 @@ final class CatalogDB: @unchecked Sendable {
         try withLock {
             let sql = """
                 SELECT source, session_id, prompt_id, model, occurred_at, provider,
-                       cwd, session_title, agent_name, stop_reason, model_calls, api_duration_ms,
+                       cwd, session_title, model_calls,
                        input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
                        reasoning_tokens, cost_usd_ticks, key_name
                 FROM usage_events
@@ -828,17 +819,14 @@ final class CatalogDB: @unchecked Sendable {
             provider: columnText(stmt, 5) ?? "",
             cwd: columnText(stmt, 6),
             sessionTitle: columnText(stmt, 7),
-            agentName: columnText(stmt, 8),
-            stopReason: columnText(stmt, 9),
-            modelCalls: columnOptionalInt(stmt, 10),
-            apiDurationMs: columnOptionalInt(stmt, 11),
-            inputTokens: Int(sqlite3_column_int(stmt, 12)),
-            outputTokens: Int(sqlite3_column_int(stmt, 13)),
-            cachedReadTokens: Int(sqlite3_column_int(stmt, 14)),
-            cacheCreationTokens: Int(sqlite3_column_int(stmt, 15)),
-            reasoningTokens: Int(sqlite3_column_int(stmt, 16)),
-            costUsdTicks: sqlite3_column_type(stmt, 17) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 17),
-            keyName: columnText(stmt, 18)
+            modelCalls: columnOptionalInt(stmt, 8),
+            inputTokens: Int(sqlite3_column_int(stmt, 9)),
+            outputTokens: Int(sqlite3_column_int(stmt, 10)),
+            cachedReadTokens: Int(sqlite3_column_int(stmt, 11)),
+            cacheCreationTokens: Int(sqlite3_column_int(stmt, 12)),
+            reasoningTokens: Int(sqlite3_column_int(stmt, 13)),
+            costUsdTicks: sqlite3_column_type(stmt, 14) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 14),
+            keyName: columnText(stmt, 15)
         )
     }
 

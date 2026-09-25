@@ -215,17 +215,11 @@ enum CodexIngest {
             occurredAt: occurredAt,
             provider: "openai",
             cwd: cwd,
-            sessionTitle: nil,
-            agentName: nil,
-            stopReason: nil,
             modelCalls: 1,
-            apiDurationMs: nil,
             inputTokens: input,
             outputTokens: output,
             cachedReadTokens: cached,
-            cacheCreationTokens: 0,
-            reasoningTokens: reasoning,
-            costUsdTicks: nil
+            reasoningTokens: reasoning
         )
     }
 

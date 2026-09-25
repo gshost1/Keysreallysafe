@@ -567,17 +567,11 @@ final class KeysService: @unchecked Sendable {
                 model: row.model ?? "",
                 occurredAt: row.ts,
                 provider: row.provider,
-                cwd: nil,
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
                 modelCalls: 1,
-                apiDurationMs: row.durationMs,
                 inputTokens: row.inputTokens ?? 0,
                 outputTokens: row.outputTokens ?? 0,
                 cachedReadTokens: row.cacheReadTokens ?? 0,
                 cacheCreationTokens: row.cacheWriteTokens ?? 0,
-                reasoningTokens: 0,
                 costUsdTicks: row.reportedCostUsdTicks,
                 keyName: row.key
             )

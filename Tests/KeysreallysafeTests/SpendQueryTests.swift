@@ -352,18 +352,9 @@ final class SpendQueryTests: XCTestCase {
             model: model,
             occurredAt: "2026-01-15T12:00:00Z",
             provider: "anthropic",
-            cwd: nil,
-            sessionTitle: nil,
-            agentName: nil,
-            stopReason: nil,
             modelCalls: 1,
-            apiDurationMs: nil,
             inputTokens: input,
-            outputTokens: output,
-            cachedReadTokens: 0,
-            cacheCreationTokens: 0,
-            reasoningTokens: 0,
-            costUsdTicks: nil
+            outputTokens: output
         )
     }
 
@@ -375,17 +366,9 @@ final class SpendQueryTests: XCTestCase {
             model: "grok-4.6-build",
             occurredAt: iso,
             provider: "xai",
-            cwd: nil,
-            sessionTitle: nil,
-            agentName: nil,
-            stopReason: nil,
             modelCalls: 1,
-            apiDurationMs: 1,
             inputTokens: 10,
             outputTokens: 5,
-            cachedReadTokens: 0,
-            cacheCreationTokens: 0,
-            reasoningTokens: 0,
             costUsdTicks: Int64((usd * Ticks.perUSD).rounded())
         )
     }

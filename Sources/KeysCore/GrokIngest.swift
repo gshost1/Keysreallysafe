@@ -3,7 +3,6 @@ import Foundation
 struct SessionSummary {
     var cwd: String?
     var title: String?
-    var agentName: String?
     var currentModelId: String?
 }
 
@@ -85,7 +84,6 @@ enum GrokIngest {
 
         let sessionId = JSONValue.string(params["sessionId"]) ?? sessionDirName
         let occurredAt = parseTimestamp(root["timestamp"]) ?? UTC.iso(Date(timeIntervalSince1970: 0))
-        let stopReason = JSONValue.string(update["stop_reason"])
         let usage = JSONValue.object(update["usage"]) ?? [:]
         let promptFromUpdate = JSONValue.string(update["prompt_id"])
 
@@ -131,10 +129,7 @@ enum GrokIngest {
                 provider: "xai",
                 cwd: summary?.cwd,
                 sessionTitle: summary?.title,
-                agentName: summary?.agentName,
-                stopReason: stopReason,
                 modelCalls: JSONValue.int(b["modelCalls"]),
-                apiDurationMs: JSONValue.int(b["apiDurationMs"]),
                 inputTokens: input,
                 outputTokens: output,
                 cachedReadTokens: cachedRead,
@@ -165,7 +160,6 @@ enum GrokIngest {
         let summary = SessionSummary(
             cwd: JSONValue.string(info?["cwd"]),
             title: JSONValue.string(root["generated_title"]),
-            agentName: JSONValue.string(root["agent_name"]),
             currentModelId: JSONValue.string(root["current_model_id"])
         )
         cache[key] = summary

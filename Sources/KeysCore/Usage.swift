@@ -9,24 +9,17 @@ struct UsageEvent: Equatable {
     var provider: String
     var cwd: String?
     var sessionTitle: String?
-    var agentName: String?
-    var stopReason: String?
     var modelCalls: Int?
-    var apiDurationMs: Int?
     var inputTokens: Int
     var outputTokens: Int
-    var cachedReadTokens: Int
-    var cacheCreationTokens: Int
-    var reasoningTokens: Int
+    var cachedReadTokens: Int = 0
+    var cacheCreationTokens: Int = 0
+    var reasoningTokens: Int = 0
     var costUsdTicks: Int64?
     var keyName: String? = nil
 
     var tokenCount: Int {
         inputTokens + outputTokens + cachedReadTokens + cacheCreationTokens + reasoningTokens
-    }
-
-    var hasUsage: Bool {
-        tokenCount != 0 || (costUsdTicks ?? 0) != 0
     }
 }
 

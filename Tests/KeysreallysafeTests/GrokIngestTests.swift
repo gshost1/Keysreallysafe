@@ -46,17 +46,9 @@ final class GrokIngestTests: XCTestCase {
             model: "grok-4.6-build",
             occurredAt: "2026-01-15T12:00:00Z",
             provider: "xai",
-            cwd: nil,
-            sessionTitle: nil,
-            agentName: nil,
-            stopReason: "end_turn",
             modelCalls: 1,
-            apiDurationMs: 1,
             inputTokens: 1,
             outputTokens: 1,
-            cachedReadTokens: 0,
-            cacheCreationTokens: 0,
-            reasoningTokens: 0,
             costUsdTicks: 1
         )
         let names = fieldNames(event)
@@ -98,7 +90,6 @@ final class GrokIngestTests: XCTestCase {
             .split(whereSeparator: \.isNewline)
             .joined()
         let events = try GrokIngest.parseLine(line, sessionDirName: "sess-2", summary: nil)
-        XCTAssertEqual(events.first?.stopReason, "cancelled")
         XCTAssertFalse(events.isEmpty)
     }
 }

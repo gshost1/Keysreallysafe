@@ -282,7 +282,7 @@ final class ProductAnalyticsTests: XCTestCase {
                cacheWrite: Int = 10, reasoning: Int = 0, prompt: String = UUID().uuidString) throws {
         _ = try db.insertUsage(UsageEvent(source: source, sessionId: "private-session", promptId: prompt, model: model,
             occurredAt: at, provider: provider, cwd: "/Users/private/project", sessionTitle: "private title",
-            agentName: nil, stopReason: nil, modelCalls: 2, apiDurationMs: nil, inputTokens: input, outputTokens: output,
+            modelCalls: 2, inputTokens: input, outputTokens: output,
             cachedReadTokens: cacheRead, cacheCreationTokens: cacheWrite, reasoningTokens: reasoning, costUsdTicks: 123,
             keyName: "private-key"))
     }

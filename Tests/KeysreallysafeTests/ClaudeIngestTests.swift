@@ -81,18 +81,8 @@ final class ClaudeIngestTests: XCTestCase {
             model: "claude-sonnet-5",
             occurredAt: "2026-01-15T12:00:01Z",
             provider: "anthropic",
-            cwd: nil,
-            sessionTitle: nil,
-            agentName: nil,
-            stopReason: nil,
-            modelCalls: nil,
-            apiDurationMs: nil,
             inputTokens: 1,
-            outputTokens: 1,
-            cachedReadTokens: 0,
-            cacheCreationTokens: 0,
-            reasoningTokens: 0,
-            costUsdTicks: nil
+            outputTokens: 1
         )
         let names = fieldNames(event)
         XCTAssertFalse(names.contains("content"))

@@ -130,17 +130,10 @@ enum ClaudeIngest {
             occurredAt: occurredAt,
             provider: "anthropic",
             cwd: JSONValue.string(root["cwd"]),
-            sessionTitle: nil,
-            agentName: nil,
-            stopReason: JSONValue.string(message["stop_reason"]),
-            modelCalls: nil,
-            apiDurationMs: nil,
             inputTokens: input,
             outputTokens: output,
             cachedReadTokens: cacheRead,
-            cacheCreationTokens: cacheCreate,
-            reasoningTokens: 0,
-            costUsdTicks: nil
+            cacheCreationTokens: cacheCreate
         )
     }
 

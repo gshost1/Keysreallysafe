@@ -62,18 +62,9 @@ final class PriceTableTests: XCTestCase {
                 model: "priced-only",
                 occurredAt: "2026-01-15T12:00:00Z",
                 provider: "anthropic",
-                cwd: nil,
-                sessionTitle: nil,
-                agentName: nil,
-                stopReason: nil,
                 modelCalls: 1,
-                apiDurationMs: nil,
                 inputTokens: 1_000_000,
-                outputTokens: 0,
-                cachedReadTokens: 0,
-                cacheCreationTokens: 0,
-                reasoningTokens: 0,
-                costUsdTicks: nil
+                outputTokens: 0
             )
         )
         let report = try SpendQueries(db: db).report(
