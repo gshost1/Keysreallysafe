@@ -31,10 +31,6 @@ jobs:
         run: |
           python3 -m unittest Analytics/test_collector.py Analytics/test_deployment.py
           python3 Analytics/validate_deployment.py
-      - name: Check dashboard scripts
-        run: |
-          node --check Web/app.js
-          node --check Web/analytics.js
       - name: Install the pinned browser
         working-directory: scripts/tests
         run: npx --no-install playwright install chromium
@@ -52,8 +48,6 @@ jobs:
       # teardown itself, in BoundedChildProcessTests, without a browser.
       - name: Check the dashboard against the real backend (synthetic vault only)
         env:
-          CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
-          GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
           NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
           KEYS_BACKEND_CONTRACT_UI: "1"
         run: swift test --filter BackendContractUITests

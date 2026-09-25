@@ -22,8 +22,6 @@
 *.xcuserstate
 xcuserdata/
 *.log
-Web/.cache/
-.github/.DS_Store
 
 # Playwright for the browser suites, installed by `npm ci` in scripts/tests.
 scripts/tests/node_modules/
