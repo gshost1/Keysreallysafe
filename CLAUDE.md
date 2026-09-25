@@ -27,7 +27,7 @@ Swift 6 package, macOS 14+. Executable `keys`, core in `Sources/KeysCore`,
 tests in `Tests/KeysreallysafeTests`. `Web/` is the local dashboard (plain
 HTML/CSS/JS, no build step, no external resources), not a marketing site.
 `Analytics/` is the self-hosted aggregate collector.
-`Fixtures/` holds synthetic session logs, the price table and provider catalog.
+`Fixtures/` holds synthetic session logs and the price table; the provider catalog is `Web/providers.json`.
 `Site/` is the public marketing site at https://keysrs.com (static; the only script is `Site/posthog.js`, and Google Fonts is the only external resource). It is served by a
 Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
 custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
