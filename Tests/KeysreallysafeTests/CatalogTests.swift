@@ -35,7 +35,9 @@ final class CatalogTests: XCTestCase {
             lastUsedAt: nil
         )
         try db.insertCatalog(row)
-        XCTAssertThrowsError(try db.insertCatalog(row))
+        XCTAssertThrowsError(try db.insertCatalog(row)) { error in
+            guard case AppError.alreadyExists("demo") = error else { return XCTFail("\(error)") }
+        }
     }
 
     func testNoSecretColumnInListJSON() throws {

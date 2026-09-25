@@ -185,19 +185,13 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     func ingestFile(path: String) throws -> IngestFileCursor? {
-        try withLock {
-            let stmt = try prepare(
-                "SELECT size, mtime, byte_offset, tail_sig, parser_json FROM ingest_files WHERE path = ?;"
-            )
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, path)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            return IngestFileCursor(
-                size: sqlite3_column_int64(stmt, 0),
-                mtimeMs: sqlite3_column_int64(stmt, 1),
-                byteOffset: sqlite3_column_int64(stmt, 2),
-                tailSig: columnText(stmt, 3),
-                parserJSON: columnText(stmt, 4)
+        try one("SELECT size, mtime, byte_offset, tail_sig, parser_json FROM ingest_files WHERE path = ?;", path) {
+            IngestFileCursor(
+                size: sqlite3_column_int64($0, 0),
+                mtimeMs: sqlite3_column_int64($0, 1),
+                byteOffset: sqlite3_column_int64($0, 2),
+                tailSig: columnText($0, 3),
+                parserJSON: columnText($0, 4)
             )
         }
     }
@@ -210,27 +204,16 @@ final class CatalogDB: @unchecked Sendable {
         tailSig: String? = nil,
         parserJSON: String? = nil
     ) throws {
-        try withLock {
-            let sql = """
-                INSERT INTO ingest_files (path, size, mtime, byte_offset, tail_sig, parser_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                  size = excluded.size,
-                  mtime = excluded.mtime,
-                  byte_offset = excluded.byte_offset,
-                  tail_sig = excluded.tail_sig,
-                  parser_json = excluded.parser_json;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, path)
-            sqlite3_bind_int64(stmt, 2, size)
-            sqlite3_bind_int64(stmt, 3, mtimeMs)
-            sqlite3_bind_int64(stmt, 4, byteOffset)
-            bindText(stmt, 5, tailSig)
-            bindText(stmt, 6, parserJSON)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run("""
+            INSERT INTO ingest_files (path, size, mtime, byte_offset, tail_sig, parser_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+              size = excluded.size,
+              mtime = excluded.mtime,
+              byte_offset = excluded.byte_offset,
+              tail_sig = excluded.tail_sig,
+              parser_json = excluded.parser_json;
+            """, path, size, mtimeMs, byteOffset, tailSig, parserJSON)
     }
 
     func lastIngestAt() throws -> String? {
@@ -277,78 +260,43 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     func metaValue(_ key: String) throws -> String? {
-        try withLock {
-            let stmt = try prepare("SELECT value FROM meta WHERE key = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, key)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            return columnText(stmt, 0)
-        }
+        try one("SELECT value FROM meta WHERE key = ?;", key) { columnText($0, 0) } ?? nil
     }
 
     func setMeta(_ key: String, _ value: String) throws {
-        try withLock {
-            let sql = """
-                INSERT INTO meta (key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, key)
-            bindText(stmt, 2, value)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run("""
+            INSERT INTO meta (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """, key, value)
     }
 
     func clearMeta(_ key: String) throws {
-        try withLock {
-            let stmt = try prepare("DELETE FROM meta WHERE key = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, key)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run("DELETE FROM meta WHERE key = ?;", key)
     }
+
+    private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version"
 
     func insertCatalog(_ row: CatalogRow) throws {
         try withLock {
-            let sql = """
-                INSERT INTO catalog (
-                  name, provider, kind, notes, created_at, last_used_at, gateway_host, version
+            do {
+                try run(
+                    "INSERT INTO catalog (\(Self.catalogColumns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                    row.name, row.provider, row.kind, row.notes, row.createdAt, row.lastUsedAt, row.gatewayHost,
+                    row.version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, row.name)
-            bindText(stmt, 2, row.provider)
-            bindText(stmt, 3, row.kind)
-            bindText(stmt, 4, row.notes)
-            bindText(stmt, 5, row.createdAt)
-            bindText(stmt, 6, row.lastUsedAt)
-            bindText(stmt, 7, row.gatewayHost)
-            sqlite3_bind_int(stmt, 8, Int32(row.version))
-            let rc = sqlite3_step(stmt)
-            if rc == SQLITE_CONSTRAINT {
+            } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
                 throw AppError.alreadyExists(row.name)
             }
-            guard rc == SQLITE_DONE else { throw sqliteError() }
         }
     }
 
     func deleteCatalog(name: String) throws {
         try withLock {
-            let stmt = try prepare("DELETE FROM catalog WHERE name = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, name)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            if sqlite3_changes(db) == 0 {
+            if try run("DELETE FROM catalog WHERE name = ?;", name) == 0 {
                 throw AppError.notFound(name)
             }
             // A capability for a key that no longer exists must not outlive it.
-            let clients = try prepare("DELETE FROM gateway_clients WHERE key_name = ?;")
-            defer { sqlite3_finalize(clients) }
-            bindText(clients, 1, name)
-            guard sqlite3_step(clients) == SQLITE_DONE else { throw sqliteError() }
+            try run("DELETE FROM gateway_clients WHERE key_name = ?;", name)
         }
     }
 
@@ -365,21 +313,11 @@ final class CatalogDB: @unchecked Sendable {
         expiresAt: String
     ) throws -> GatewayClient {
         try withLock {
-            let stmt = try prepare("""
+            try run("""
                 INSERT INTO gateway_clients
                   (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, keyName)
-            bindText(stmt, 2, label)
-            bindText(stmt, 3, tokenHash)
-            bindText(stmt, 4, hint)
-            bindText(stmt, 5, methods.joined(separator: ","))
-            bindText(stmt, 6, pathPrefix)
-            bindText(stmt, 7, createdAt)
-            bindText(stmt, 8, expiresAt)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
+                """, keyName, label, tokenHash, hint, methods.joined(separator: ","), pathPrefix, createdAt, expiresAt)
             return GatewayClient(
                 id: sqlite3_last_insert_rowid(db),
                 keyName: keyName,
@@ -414,77 +352,37 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     func gatewayClients(keyName: String) throws -> [GatewayClient] {
-        try withLock {
-            let stmt = try prepare(
-                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE key_name = ? ORDER BY id;"
-            )
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, keyName)
-            var out: [GatewayClient] = []
-            while sqlite3_step(stmt) == SQLITE_ROW { out.append(decodeGatewayClient(stmt)) }
-            return out
-        }
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE key_name = ? ORDER BY id;", keyName,
+            row: decodeGatewayClient
+        )
     }
 
     func gatewayClient(tokenHash: String) throws -> GatewayClient? {
-        try withLock {
-            let stmt = try prepare(
-                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE token_hash = ? LIMIT 1;"
-            )
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, tokenHash)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            return decodeGatewayClient(stmt)
-        }
+        try one(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE token_hash = ? LIMIT 1;", tokenHash,
+            row: decodeGatewayClient
+        )
     }
 
     /// Returns false when no such client belongs to the key or it was already revoked.
     func revokeGatewayClient(id: Int64, keyName: String, at iso: String) throws -> Bool {
-        try withLock {
-            let stmt = try prepare(
-                "UPDATE gateway_clients SET revoked_at = ? WHERE id = ? AND key_name = ? AND revoked_at IS NULL;"
-            )
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, iso)
-            sqlite3_bind_int64(stmt, 2, id)
-            bindText(stmt, 3, keyName)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            return sqlite3_changes(db) > 0
-        }
+        try run(
+            "UPDATE gateway_clients SET revoked_at = ? WHERE id = ? AND key_name = ? AND revoked_at IS NULL;",
+            iso, id, keyName
+        ) > 0
     }
 
     func touchGatewayClient(id: Int64, at iso: String) throws {
-        try withLock {
-            let stmt = try prepare("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, iso)
-            sqlite3_bind_int64(stmt, 2, id)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
     }
 
     func catalogExists(name: String) throws -> Bool {
-        try withLock {
-            let stmt = try prepare("SELECT 1 FROM catalog WHERE name = ? LIMIT 1;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, name)
-            return sqlite3_step(stmt) == SQLITE_ROW
-        }
+        try one("SELECT 1 FROM catalog WHERE name = ? LIMIT 1;", name) { _ in true } ?? false
     }
 
     func catalogRow(name: String) throws -> CatalogRow? {
-        try withLock {
-            let stmt = try prepare(
-                """
-                SELECT name, provider, kind, notes, created_at, last_used_at, gateway_host, version
-                FROM catalog WHERE name = ?;
-                """
-            )
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, name)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            return decodeCatalog(stmt)
-        }
+        try one("SELECT \(Self.catalogColumns) FROM catalog WHERE name = ?;", name, row: decodeCatalog)
     }
 
     func updateCatalog(name: String, provider: String?, kind: String?, notes: String?) throws -> CatalogRow {
@@ -495,18 +393,11 @@ final class CatalogDB: @unchecked Sendable {
             if let provider { row.provider = provider }
             if let kind { row.kind = kind }
             if let notes { row.notes = notes }
-            let sql = """
-                UPDATE catalog SET provider = ?, kind = ?, notes = ?
-                WHERE name = ?;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, row.provider)
-            bindText(stmt, 2, row.kind)
-            bindText(stmt, 3, row.notes)
-            bindText(stmt, 4, name)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            if sqlite3_changes(db) == 0 {
+            let changed = try run(
+                "UPDATE catalog SET provider = ?, kind = ?, notes = ? WHERE name = ?;",
+                row.provider, row.kind, row.notes, name
+            )
+            if changed == 0 {
                 throw AppError.notFound(name)
             }
             return row
@@ -518,16 +409,7 @@ final class CatalogDB: @unchecked Sendable {
             guard try catalogRow(name: name) != nil else {
                 throw AppError.notFound(name)
             }
-            let sql = """
-                UPDATE catalog SET gateway_host = ?
-                WHERE name = ?;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, host)
-            bindText(stmt, 2, name)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            if sqlite3_changes(db) == 0 {
+            if try run("UPDATE catalog SET gateway_host = ? WHERE name = ?;", host, name) == 0 {
                 throw AppError.notFound(name)
             }
             guard let row = try catalogRow(name: name) else {
@@ -547,28 +429,17 @@ final class CatalogDB: @unchecked Sendable {
         try withTransaction {
             var occupied = Set<Int>()
             var known = Set<String>()
-            let existing = try prepare("SELECT model, slot FROM model_colors;")
-            defer { sqlite3_finalize(existing) }
-            while sqlite3_step(existing) == SQLITE_ROW {
-                let model = columnText(existing, 0) ?? ""
-                known.insert(model)
-                occupied.insert(Int(sqlite3_column_int(existing, 1)))
+            for color in try query("SELECT model, slot FROM model_colors;", row: decodeModelColor) {
+                known.insert(color.model)
+                occupied.insert(color.slot)
             }
             var assignedCount = known.count
-            let pending = try prepare(
-                """
+            let pending = try query("""
                 SELECT model FROM usage_events
                 GROUP BY model
                 ORDER BY MIN(occurred_at), model;
-                """
-            )
-            defer { sqlite3_finalize(pending) }
-            let insert = try prepare(
-                "INSERT OR IGNORE INTO model_colors (model, slot) VALUES (?, ?);"
-            )
-            defer { sqlite3_finalize(insert) }
-            while sqlite3_step(pending) == SQLITE_ROW {
-                let model = columnText(pending, 0) ?? ""
+                """) { columnText($0, 0) ?? "" }
+            for model in pending {
                 if model.isEmpty || known.contains(model) { continue }
                 let slot: Int
                 if let free = (0..<24).first(where: { !occupied.contains($0) }) {
@@ -577,106 +448,59 @@ final class CatalogDB: @unchecked Sendable {
                 } else {
                     slot = assignedCount % 24
                 }
-                sqlite3_reset(insert)
-                sqlite3_clear_bindings(insert)
-                bindText(insert, 1, model)
-                sqlite3_bind_int(insert, 2, Int32(slot))
-                guard sqlite3_step(insert) == SQLITE_DONE else { throw sqliteError() }
+                try run("INSERT OR IGNORE INTO model_colors (model, slot) VALUES (?, ?);", model, slot)
                 known.insert(model)
                 assignedCount += 1
             }
         }
     }
 
+    private func decodeModelColor(_ stmt: OpaquePointer) -> ModelColor {
+        ModelColor(model: columnText(stmt, 0) ?? "", slot: Int(sqlite3_column_int(stmt, 1)))
+    }
+
     func listModelColors() throws -> [ModelColor] {
-        try withLock {
-            let sql = """
-                SELECT c.model, c.slot
-                FROM model_colors c
-                INNER JOIN (SELECT DISTINCT model FROM usage_events) u ON u.model = c.model
-                ORDER BY c.slot, c.model;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            var rows: [ModelColor] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                rows.append(
-                    ModelColor(
-                        model: columnText(stmt, 0) ?? "",
-                        slot: Int(sqlite3_column_int(stmt, 1))
-                    )
-                )
-            }
-            return rows
-        }
+        try query("""
+            SELECT c.model, c.slot
+            FROM model_colors c
+            INNER JOIN (SELECT DISTINCT model FROM usage_events) u ON u.model = c.model
+            ORDER BY c.slot, c.model;
+            """, row: decodeModelColor)
     }
 
     func listCatalog() throws -> [CatalogRow] {
-        try withLock {
-            let stmt = try prepare(
-                """
-                SELECT name, provider, kind, notes, created_at, last_used_at, gateway_host, version
-                FROM catalog ORDER BY name;
-                """
-            )
-            defer { sqlite3_finalize(stmt) }
-            var rows: [CatalogRow] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                rows.append(decodeCatalog(stmt))
-            }
-            return rows
-        }
+        try query("SELECT \(Self.catalogColumns) FROM catalog ORDER BY name;", row: decodeCatalog)
     }
 
     func touchLastUsed(name: String, at iso: String) throws {
-        try withLock {
-            let stmt = try prepare("UPDATE catalog SET last_used_at = ? WHERE name = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, iso)
-            bindText(stmt, 2, name)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run("UPDATE catalog SET last_used_at = ? WHERE name = ?;", iso, name)
     }
 
     @discardableResult
     func usageExists(source: String, sessionId: String, promptId: String, model: String) throws -> Bool {
-        try withLock {
-            let stmt = try prepare(
-                "SELECT 1 FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ? LIMIT 1;"
-            )
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, source)
-            bindText(stmt, 2, sessionId)
-            bindText(stmt, 3, promptId)
-            bindText(stmt, 4, model)
-            return sqlite3_step(stmt) == SQLITE_ROW
-        }
+        try one(
+            "SELECT 1 FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ? LIMIT 1;",
+            source, sessionId, promptId, model
+        ) { _ in true } ?? false
     }
+
+    private static let usageColumns = """
+        source, session_id, prompt_id, model, occurred_at, provider,
+        cwd, session_title, model_calls,
+        input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
+        reasoning_tokens, cost_usd_ticks, key_name, http_status
+        """
 
     /// Upserts one event; true when it was new, false when it replaced an existing row.
     @discardableResult
     func insertUsage(_ event: UsageEvent) throws -> Bool {
         try withLock {
-            let existedStmt = try prepare(
-                """
-                SELECT 1 FROM usage_events
-                WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ?
-                LIMIT 1;
-                """
+            let existed = try usageExists(
+                source: event.source, sessionId: event.sessionId, promptId: event.promptId, model: event.model
             )
-            defer { sqlite3_finalize(existedStmt) }
-            bindText(existedStmt, 1, event.source)
-            bindText(existedStmt, 2, event.sessionId)
-            bindText(existedStmt, 3, event.promptId)
-            bindText(existedStmt, 4, event.model)
-            let existed = sqlite3_step(existedStmt) == SQLITE_ROW
-            let sql = """
-                INSERT INTO usage_events (
-                  source, session_id, prompt_id, model, occurred_at, provider,
-                  cwd, session_title, model_calls,
-                  input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-                  reasoning_tokens, cost_usd_ticks, key_name, http_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            try run("""
+                INSERT INTO usage_events (\(Self.usageColumns))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, session_id, prompt_id, model) DO UPDATE SET
                   occurred_at = excluded.occurred_at,
                   provider = excluded.provider,
@@ -691,31 +515,12 @@ final class CatalogDB: @unchecked Sendable {
                   cost_usd_ticks = excluded.cost_usd_ticks,
                   key_name = excluded.key_name,
                   http_status = excluded.http_status;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, event.source)
-            bindText(stmt, 2, event.sessionId)
-            bindText(stmt, 3, event.promptId)
-            bindText(stmt, 4, event.model)
-            bindText(stmt, 5, event.occurredAt)
-            bindText(stmt, 6, event.provider)
-            bindText(stmt, 7, event.cwd)
-            bindText(stmt, 8, event.sessionTitle)
-            bindInt(stmt, 9, event.modelCalls)
-            sqlite3_bind_int(stmt, 10, Int32(event.inputTokens))
-            sqlite3_bind_int(stmt, 11, Int32(event.outputTokens))
-            sqlite3_bind_int(stmt, 12, Int32(event.cachedReadTokens))
-            sqlite3_bind_int(stmt, 13, Int32(event.cacheCreationTokens))
-            sqlite3_bind_int(stmt, 14, Int32(event.reasoningTokens))
-            if let ticks = event.costUsdTicks {
-                sqlite3_bind_int64(stmt, 15, ticks)
-            } else {
-                sqlite3_bind_null(stmt, 15)
-            }
-            bindText(stmt, 16, event.keyName)
-            bindInt(stmt, 17, event.httpStatus)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
+                """,
+                event.source, event.sessionId, event.promptId, event.model, event.occurredAt, event.provider,
+                event.cwd, event.sessionTitle, event.modelCalls,
+                event.inputTokens, event.outputTokens, event.cachedReadTokens, event.cacheCreationTokens,
+                event.reasoningTokens, event.costUsdTicks, event.keyName, event.httpStatus
+            )
             return !existed
         }
     }
@@ -727,51 +532,24 @@ final class CatalogDB: @unchecked Sendable {
         key: String? = nil,
         provider: String? = nil
     ) throws -> [UsageEvent] {
-        try withLock {
-            var sql = """
-                SELECT source, session_id, prompt_id, model, occurred_at, provider,
-                       cwd, session_title, model_calls,
-                       input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-                       reasoning_tokens, cost_usd_ticks, key_name, http_status
-                FROM usage_events
-                WHERE occurred_at >= ? AND occurred_at < ?
-                """
-            if let values = source.sqlValues, !values.isEmpty {
-                sql += " AND source IN (" + values.map { _ in "?" }.joined(separator: ", ") + ")"
-            }
-            if key != nil {
-                sql += " AND key_name = ?"
-            }
-            // Narrowing to one provider happens here, before any aggregation, so totals, rows,
-            // daily and hourly buckets all describe the same set of calls.
-            if provider != nil {
-                sql += " AND provider = ?"
-            }
-            sql += " ORDER BY occurred_at, model;"
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, startISO)
-            bindText(stmt, 2, endISO)
-            var idx: Int32 = 3
-            if let values = source.sqlValues {
-                for src in values {
-                    bindText(stmt, idx, src)
-                    idx += 1
-                }
-            }
-            if let key {
-                bindText(stmt, idx, key)
-                idx += 1
-            }
-            if let provider {
-                bindText(stmt, idx, provider)
-            }
-            var events: [UsageEvent] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                events.append(event(from: stmt))
-            }
-            return events
+        var sql = "SELECT \(Self.usageColumns) FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?"
+        var args: [any SQLBindable] = [startISO, endISO]
+        if let values = source.sqlValues, !values.isEmpty {
+            sql += " AND source IN (" + values.map { _ in "?" }.joined(separator: ", ") + ")"
+            args += values as [any SQLBindable]
         }
+        if let key {
+            sql += " AND key_name = ?"
+            args.append(key)
+        }
+        // Narrowing to one provider happens here, before any aggregation, so totals, rows,
+        // daily and hourly buckets all describe the same set of calls.
+        if let provider {
+            sql += " AND provider = ?"
+            args.append(provider)
+        }
+        sql += " ORDER BY occurred_at, model;"
+        return try query(sql, args, row: event(from:))
     }
 
     private func event(from stmt: OpaquePointer) -> UsageEvent {
@@ -798,50 +576,25 @@ final class CatalogDB: @unchecked Sendable {
 
     /// Latest read-only provider check per key. Model IDs and status only; never a secret.
     func upsertProviderCheck(_ r: ProviderCheck.Result) throws {
-        try withLock {
-            let sql = """
-                INSERT INTO provider_checks
-                  (key_name, provider, host, ts, outcome, http_status, models_json, request_id, message, endpoint)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(key_name) DO UPDATE SET
-                  provider = excluded.provider, host = excluded.host, ts = excluded.ts,
-                  outcome = excluded.outcome, http_status = excluded.http_status,
-                  models_json = excluded.models_json, request_id = excluded.request_id,
-                  message = excluded.message, endpoint = excluded.endpoint;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, r.key)
-            bindText(stmt, 2, r.provider)
-            bindText(stmt, 3, r.host)
-            bindText(stmt, 4, r.checkedAt)
-            bindText(stmt, 5, r.outcome.rawValue)
-            if let status = r.httpStatus {
-                sqlite3_bind_int(stmt, 6, Int32(status))
-            } else {
-                sqlite3_bind_null(stmt, 6)
-            }
-            let models = (try? JSONValue.data(r.models)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-            bindText(stmt, 7, models)
-            bindText(stmt, 8, r.requestId)
-            bindText(stmt, 9, r.message)
-            bindText(stmt, 10, r.endpoint)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        let models = (try? JSONValue.data(r.models)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        try run("""
+            INSERT INTO provider_checks
+              (key_name, provider, host, ts, outcome, http_status, models_json, request_id, message, endpoint)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(key_name) DO UPDATE SET
+              provider = excluded.provider, host = excluded.host, ts = excluded.ts,
+              outcome = excluded.outcome, http_status = excluded.http_status,
+              models_json = excluded.models_json, request_id = excluded.request_id,
+              message = excluded.message, endpoint = excluded.endpoint;
+            """, r.key, r.provider, r.host, r.checkedAt, r.outcome.rawValue, r.httpStatus, models,
+            r.requestId, r.message, r.endpoint)
     }
 
     func providerCheck(keyName: String) throws -> ProviderCheck.Result? {
-        try withLock {
-            let sql = """
-                SELECT key_name, provider, host, ts, outcome, http_status, models_json, request_id, message, endpoint
-                FROM provider_checks WHERE key_name = ?;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, keyName)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            let outcome = ProviderCheck.Outcome(rawValue: columnText(stmt, 4) ?? "") ?? .malformed
-            let status: Int? = sqlite3_column_type(stmt, 5) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 5))
+        try one("""
+            SELECT key_name, provider, host, ts, outcome, http_status, models_json, request_id, message, endpoint
+            FROM provider_checks WHERE key_name = ?;
+            """, keyName) { stmt in
             let modelsData = Data((columnText(stmt, 6) ?? "[]").utf8)
             let models = ((try? JSONSerialization.jsonObject(with: modelsData)) as? [Any])?
                 .compactMap { $0 as? String } ?? []
@@ -850,8 +603,8 @@ final class CatalogDB: @unchecked Sendable {
                 provider: columnText(stmt, 1) ?? "",
                 host: columnText(stmt, 2) ?? "",
                 checkedAt: columnText(stmt, 3) ?? "",
-                outcome: outcome,
-                httpStatus: status,
+                outcome: ProviderCheck.Outcome(rawValue: columnText(stmt, 4) ?? "") ?? .malformed,
+                httpStatus: columnOptionalInt(stmt, 5),
                 models: models,
                 requestId: columnText(stmt, 7),
                 message: columnText(stmt, 8),
@@ -861,12 +614,7 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     func deleteProviderCheck(keyName: String) throws {
-        try withLock {
-            let stmt = try prepare("DELETE FROM provider_checks WHERE key_name = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, keyName)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run("DELETE FROM provider_checks WHERE key_name = ?;", keyName)
     }
 
     struct KeyEventRow: Equatable {
@@ -879,49 +627,28 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     func insertKeyEvent(ts: String, name: String, action: String, caller: String?, detail: String?) throws {
-        try withLock {
-            let sql = """
-                INSERT INTO key_events (ts, name, action, caller, detail)
-                VALUES (?, ?, ?, ?, ?);
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, ts)
-            bindText(stmt, 2, name)
-            bindText(stmt, 3, action)
-            bindText(stmt, 4, caller)
-            bindText(stmt, 5, detail)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run(
+            "INSERT INTO key_events (ts, name, action, caller, detail) VALUES (?, ?, ?, ?, ?);",
+            ts, name, action, caller, detail
+        )
     }
 
     func keyEvents(name: String, limit: Int) throws -> [KeyEventRow] {
-        try withLock {
-            let sql = """
-                SELECT id, ts, name, action, caller, detail
-                FROM key_events
-                WHERE name = ?
-                ORDER BY ts DESC, id DESC
-                LIMIT ?;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, name)
-            sqlite3_bind_int(stmt, 2, Int32(limit))
-            var rows: [KeyEventRow] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                rows.append(
-                    KeyEventRow(
-                        id: sqlite3_column_int64(stmt, 0),
-                        ts: columnText(stmt, 1) ?? "",
-                        name: columnText(stmt, 2) ?? "",
-                        action: columnText(stmt, 3) ?? "",
-                        caller: columnText(stmt, 4),
-                        detail: columnText(stmt, 5)
-                    )
-                )
-            }
-            return rows
+        try query("""
+            SELECT id, ts, name, action, caller, detail
+            FROM key_events
+            WHERE name = ?
+            ORDER BY ts DESC, id DESC
+            LIMIT ?;
+            """, name, limit) {
+            KeyEventRow(
+                id: sqlite3_column_int64($0, 0),
+                ts: columnText($0, 1) ?? "",
+                name: columnText($0, 2) ?? "",
+                action: columnText($0, 3) ?? "",
+                caller: columnText($0, 4),
+                detail: columnText($0, 5)
+            )
         }
     }
 
@@ -938,90 +665,59 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     func insertProviderSnapshot(_ row: ProviderSnapshot) throws {
-        try withLock {
-            let sql = """
-                INSERT INTO provider_snapshots (
-                  provider, key_name, ts, usage_daily, usage_weekly, usage_monthly,
-                  "limit", limit_remaining, raw_kind
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, row.provider)
-            bindText(stmt, 2, row.keyName)
-            bindText(stmt, 3, row.ts)
-            bindDouble(stmt, 4, row.usageDaily)
-            bindDouble(stmt, 5, row.usageWeekly)
-            bindDouble(stmt, 6, row.usageMonthly)
-            bindDouble(stmt, 7, row.limit)
-            bindDouble(stmt, 8, row.limitRemaining)
-            bindText(stmt, 9, row.rawKind)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-        }
+        try run("""
+            INSERT INTO provider_snapshots (
+              provider, key_name, ts, usage_daily, usage_weekly, usage_monthly,
+              "limit", limit_remaining, raw_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """, row.provider, row.keyName, row.ts, row.usageDaily, row.usageWeekly, row.usageMonthly,
+            row.limit, row.limitRemaining, row.rawKind)
     }
 
     func latestProviderSnapshot(provider: String) throws -> ProviderSnapshot? {
-        try withLock {
-            let sql = """
-                SELECT provider, key_name, ts, usage_daily, usage_weekly, usage_monthly,
-                       "limit", limit_remaining, raw_kind
-                FROM provider_snapshots
-                WHERE provider = ?
-                ORDER BY ts DESC
-                LIMIT 1;
-                """
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, provider)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            return ProviderSnapshot(
-                provider: columnText(stmt, 0) ?? "",
-                keyName: columnText(stmt, 1) ?? "",
-                ts: columnText(stmt, 2) ?? "",
-                usageDaily: columnOptionalDouble(stmt, 3),
-                usageWeekly: columnOptionalDouble(stmt, 4),
-                usageMonthly: columnOptionalDouble(stmt, 5),
-                limit: columnOptionalDouble(stmt, 6),
-                limitRemaining: columnOptionalDouble(stmt, 7),
-                rawKind: columnText(stmt, 8)
+        try one("""
+            SELECT provider, key_name, ts, usage_daily, usage_weekly, usage_monthly,
+                   "limit", limit_remaining, raw_kind
+            FROM provider_snapshots
+            WHERE provider = ?
+            ORDER BY ts DESC
+            LIMIT 1;
+            """, provider) {
+            ProviderSnapshot(
+                provider: columnText($0, 0) ?? "",
+                keyName: columnText($0, 1) ?? "",
+                ts: columnText($0, 2) ?? "",
+                usageDaily: columnOptionalDouble($0, 3),
+                usageWeekly: columnOptionalDouble($0, 4),
+                usageMonthly: columnOptionalDouble($0, 5),
+                limit: columnOptionalDouble($0, 6),
+                limitRemaining: columnOptionalDouble($0, 7),
+                rawKind: columnText($0, 8)
             )
         }
     }
 
     func incrementVersion(name: String) throws -> Int {
         try withLock {
-            let stmt = try prepare("UPDATE catalog SET version = version + 1 WHERE name = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, name)
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw sqliteError() }
-            if sqlite3_changes(db) == 0 { throw AppError.notFound(name) }
+            if try run("UPDATE catalog SET version = version + 1 WHERE name = ?;", name) == 0 {
+                throw AppError.notFound(name)
+            }
             guard let row = try catalogRow(name: name) else { throw AppError.notFound(name) }
             return row.version
         }
     }
 
     func newestUsage(source: String) throws -> String? {
-        try withLock {
-            let stmt = try prepare("SELECT MAX(occurred_at) FROM usage_events WHERE source = ?;")
-            defer { sqlite3_finalize(stmt) }
-            bindText(stmt, 1, source)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            return columnText(stmt, 0)
-        }
+        try one("SELECT MAX(occurred_at) FROM usage_events WHERE source = ?;", source) { columnText($0, 0) } ?? nil
     }
 
     /// Every table is emptied, meta included, so a table or meta key added later cannot be
     /// forgotten here; only the catalog version is put back so open dashboards reload.
     func wipeData() throws {
         try withLock {
-            let stmt = try prepare(
+            let tables = try query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\';"
-            )
-            var tables: [String] = []
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let name = columnText(stmt, 0) { tables.append(name) }
-            }
-            sqlite3_finalize(stmt)
+            ) { columnText($0, 0) }.compactMap { $0 }
             try exec("BEGIN IMMEDIATE")
             do {
                 for table in tables {
@@ -1068,18 +764,54 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     private func tableHasColumn(_ table: String, _ column: String) throws -> Bool {
-        let stmt = try prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?;")
-        defer { sqlite3_finalize(stmt) }
-        bindText(stmt, 1, table)
-        bindText(stmt, 2, column)
-        return sqlite3_step(stmt) == SQLITE_ROW
+        try one("SELECT 1 FROM pragma_table_info(?) WHERE name = ?;", table, column) { _ in true } ?? false
     }
 
-    private func prepare(_ sql: String) throws -> OpaquePointer {
-        var stmt: OpaquePointer?
-        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-        guard rc == SQLITE_OK, let stmt else { throw sqliteError() }
-        return stmt
+    // MARK: statements
+
+    /// Prepares, binds by position, steps until done and finalizes, all under the lock.
+    /// `row` sees each result row; the return value is sqlite3_changes for a write.
+    @discardableResult
+    private func step(_ sql: String, _ args: [any SQLBindable], row: (OpaquePointer) throws -> Bool) throws -> Int {
+        try withLock {
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { throw sqliteError() }
+            defer { sqlite3_finalize(stmt) }
+            for (i, arg) in args.enumerated() { arg.bind(stmt, Int32(i + 1)) }
+            while true {
+                switch sqlite3_step(stmt) {
+                case SQLITE_ROW:
+                    if try !row(stmt) { return 0 }
+                case SQLITE_DONE:
+                    return Int(sqlite3_changes(db))
+                default:
+                    throw sqliteError()
+                }
+            }
+        }
+    }
+
+    /// Runs a write; returns the number of rows it changed.
+    @discardableResult
+    private func run(_ sql: String, _ args: any SQLBindable...) throws -> Int {
+        try step(sql, args) { _ in true }
+    }
+
+    private func query<T>(_ sql: String, _ args: [any SQLBindable], row: (OpaquePointer) throws -> T) throws -> [T] {
+        var out: [T] = []
+        try step(sql, args) { out.append(try row($0)); return true }
+        return out
+    }
+
+    private func query<T>(_ sql: String, _ args: any SQLBindable..., row: (OpaquePointer) throws -> T) throws -> [T] {
+        try query(sql, args, row: row)
+    }
+
+    /// The first result row, or nil when there is none.
+    private func one<T>(_ sql: String, _ args: any SQLBindable..., row: (OpaquePointer) throws -> T) throws -> T? {
+        var out: T?
+        try step(sql, args) { out = try row($0); return false }
+        return out
     }
 
     private func sqliteError() -> AppError {
@@ -1087,30 +819,6 @@ final class CatalogDB: @unchecked Sendable {
             return .sqlite(String(cString: msg))
         }
         return .sqlite("unknown sqlite error")
-    }
-
-    private func bindText(_ stmt: OpaquePointer, _ idx: Int32, _ value: String?) {
-        if let value {
-            sqlite3_bind_text(stmt, idx, value, -1, SQLITE_TRANSIENT)
-        } else {
-            sqlite3_bind_null(stmt, idx)
-        }
-    }
-
-    private func bindInt(_ stmt: OpaquePointer, _ idx: Int32, _ value: Int?) {
-        if let value {
-            sqlite3_bind_int(stmt, idx, Int32(value))
-        } else {
-            sqlite3_bind_null(stmt, idx)
-        }
-    }
-
-    private func bindDouble(_ stmt: OpaquePointer, _ idx: Int32, _ value: Double?) {
-        if let value {
-            sqlite3_bind_double(stmt, idx, value)
-        } else {
-            sqlite3_bind_null(stmt, idx)
-        }
     }
 
     private func columnText(_ stmt: OpaquePointer, _ idx: Int32) -> String? {
@@ -1127,5 +835,38 @@ final class CatalogDB: @unchecked Sendable {
     private func columnOptionalDouble(_ stmt: OpaquePointer, _ idx: Int32) -> Double? {
         guard sqlite3_column_type(stmt, idx) != SQLITE_NULL else { return nil }
         return sqlite3_column_double(stmt, idx)
+    }
+}
+
+/// A value bound to a statement parameter. Integers bind as 64-bit.
+fileprivate protocol SQLBindable {
+    func bind(_ stmt: OpaquePointer, _ idx: Int32)
+}
+
+extension String: SQLBindable {
+    fileprivate func bind(_ stmt: OpaquePointer, _ idx: Int32) {
+        sqlite3_bind_text(stmt, idx, self, -1, SQLITE_TRANSIENT)
+    }
+}
+
+extension Int: SQLBindable {
+    fileprivate func bind(_ stmt: OpaquePointer, _ idx: Int32) { sqlite3_bind_int64(stmt, idx, Int64(self)) }
+}
+
+extension Int64: SQLBindable {
+    fileprivate func bind(_ stmt: OpaquePointer, _ idx: Int32) { sqlite3_bind_int64(stmt, idx, self) }
+}
+
+extension Double: SQLBindable {
+    fileprivate func bind(_ stmt: OpaquePointer, _ idx: Int32) { sqlite3_bind_double(stmt, idx, self) }
+}
+
+extension Bool: SQLBindable {
+    fileprivate func bind(_ stmt: OpaquePointer, _ idx: Int32) { sqlite3_bind_int64(stmt, idx, self ? 1 : 0) }
+}
+
+extension Optional: SQLBindable where Wrapped: SQLBindable {
+    fileprivate func bind(_ stmt: OpaquePointer, _ idx: Int32) {
+        if let self { self.bind(stmt, idx) } else { sqlite3_bind_null(stmt, idx) }
     }
 }
