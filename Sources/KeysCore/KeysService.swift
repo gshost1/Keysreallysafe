@@ -104,7 +104,6 @@ final class KeysService: @unchecked Sendable {
         return [
             "name": row.name,
             "provider": row.provider,
-            "provider_name": provider?.name ?? row.provider,
             "host": host as Any? ?? NSNull(),
             "checkable": provider.map { ProviderCheck.endpoint(for: $0) != nil } ?? false,
             "last_check": check.map { c -> [String: Any] in
@@ -117,9 +116,6 @@ final class KeysService: @unchecked Sendable {
                 ]
             } as Any? ?? NSNull(),
             "active_grants": active.count,
-            "gateway_base_url": enabled
-                ? "http://127.0.0.1:\(GatewayListener.port)/\(row.name)" + (provider?.pathPrefix ?? "")
-                : NSNull(),
             "kind": row.kind,
             "notes": row.notes,
             "created_at": row.createdAt,
@@ -134,7 +130,6 @@ final class KeysService: @unchecked Sendable {
             "usd_month_kind": month.kind,
             "gateway_month_calls": month.calls,
             "gateway_month_unpriced_calls": month.unpricedCalls,
-            "gateway_month_unpriced_tokens": month.unpricedTokens,
             "version": row.version,
         ]
     }
@@ -595,7 +590,6 @@ final class KeysService: @unchecked Sendable {
         var calls: Int = 0
         var pricedCalls: Int = 0
         var unpricedCalls: Int = 0
-        var unpricedTokens: Int = 0
 
         /// none: no calls. estimate: every call priced. partial: some priced. unknown: none priced.
         var kind: String {
@@ -618,8 +612,6 @@ final class KeysService: @unchecked Sendable {
                 month.pricedCalls += 1
             } else {
                 month.unpricedCalls += 1
-                month.unpricedTokens += (row.inputTokens ?? 0) + (row.outputTokens ?? 0)
-                    + (row.cacheReadTokens ?? 0) + (row.cacheWriteTokens ?? 0)
             }
             out[row.key] = month
         }

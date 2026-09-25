@@ -345,7 +345,6 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(unpriced["model_calls"] as? Int, 1)
         let totals = obj["totals"] as! [String: Any]
         XCTAssertEqual(totals["gateway_calls"] as? Int, 2)
-        XCTAssertEqual(totals["usd_estimate_scope"] as? String, SpendTotals.keysScope)
         XCTAssertFalse(String(data: all.body, encoding: .utf8)!.contains(fixtureSecret))
 
         let keyed = handle(

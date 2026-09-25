@@ -83,7 +83,6 @@ final class ApiKeyUsageTests: XCTestCase {
         let after = try report(db, source: .all)
         XCTAssertEqual(after.totals.tokens, before.totals.tokens)
         XCTAssertEqual(after.totals.usdEstimate ?? -1, before.totals.usdEstimate ?? -1, accuracy: 1e-12)
-        XCTAssertEqual(after.totals.usdEstimateScope, SpendTotals.localScope)
         XCTAssertEqual(after.rows.count, before.rows.count, "a gateway call adds no row to the local ledger")
     }
 
@@ -143,8 +142,6 @@ final class ApiKeyUsageTests: XCTestCase {
         let totals = obj["totals"] as! [String: Any]
         XCTAssertTrue(totals["gateway_usd_estimate"] is NSNull)
         XCTAssertTrue(totals["usd_estimate"] is NSNull, "there is no local figure to headline here")
-        XCTAssertEqual(totals["usd_estimate_scope"] as? String, SpendTotals.keysScope)
-        XCTAssertEqual(totals["gateway_usd_estimate_label"] as? String, EstimateLabel.text(unpricedCount: 1))
         let daily = obj["daily"] as! [[String: Any]]
         XCTAssertEqual(daily.reduce(0) { $0 + ($1["model_calls"] as? Int ?? 0) }, 2)
     }
@@ -222,7 +219,6 @@ final class ApiKeyUsageTests: XCTestCase {
         XCTAssertEqual(keys.totals.gatewayTokens, 0)
         let totals = keys.jsonObject()["totals"] as! [String: Any]
         XCTAssertTrue(totals["usd_estimate"] is NSNull)
-        XCTAssertNil(totals["gateway_usd_estimate_label"], "no calls means no estimate to label")
 
         let filtered = try report(db, key: "idle")
         XCTAssertTrue(filtered.rows.isEmpty)

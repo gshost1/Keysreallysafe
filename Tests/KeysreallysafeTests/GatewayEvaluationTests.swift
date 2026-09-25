@@ -230,7 +230,6 @@ final class GatewayEvaluationTests: XCTestCase {
         let month = try XCTUnwrap(try service.monthGatewayByKey()["evaluation"])
         XCTAssertEqual(try XCTUnwrap(month.usd), 0.000051828, accuracy: 1e-12)
         XCTAssertEqual(month.kind, "estimate")
-        XCTAssertEqual(month.unpricedTokens, 0)
         let report = try SpendQueries(db: db).report(
             range: .month, by: .model, source: .all, now: Date(), timeZone: .current, key: "evaluation"
         )

@@ -293,7 +293,6 @@ final class GrantTests: XCTestCase {
         let row = (keysObj["keys"] as! [[String: Any]])[0]
         XCTAssertEqual(row["active_grants"] as? Int, 1)
         XCTAssertEqual(row["host"] as? String, "api.openai.com")
-        XCTAssertEqual(row["provider_name"] as? String, "OpenAI")
         XCTAssertEqual(row["checkable"] as? Bool, true)
 
         let bad = handler.handle(HTTPRequest(

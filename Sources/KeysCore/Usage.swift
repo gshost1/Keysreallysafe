@@ -192,15 +192,10 @@ struct SpendTotals: Equatable {
     /// Gateway calls dropped because a local event carried the same upstream request id.
     var gatewayCorrelatedCalls: Int = 0
     /// Local sources only (Grok cost log, Claude and OpenAI list-price estimates).
+    /// Gateway dollars stay out of it, because a routed call can also appear in a local log.
+    /// With `source=keys` the report is the gateway ledger and this is nil; see gatewayUsdEstimate.
     var usdEstimate: Double?
-    var usdEstimateScope: String = SpendTotals.localScope
     var tokens: Int = 0
-    var tokenRule: String = TokenTotals.rule
-
-    static let localScope = "local logs only; gateway dollars are reported separately because a routed call can also appear in a local log"
-    /// `source=keys`: the report is the gateway ledger, so there is no local figure to headline.
-    /// Dollars, tokens and calls are the gateway ones, and unpriced calls stay unpriced.
-    static let keysScope = "api keys only: calls routed through the local gateway; see gateway_usd_estimate, which is unknown rather than zero when a call has no receipt or list price"
 }
 
 struct SpendRow: Equatable {
@@ -304,34 +299,17 @@ struct SpendReport: Equatable {
             "gateway_unpriced_models": totals.gatewayUnpricedModels,
             "gateway_correlated_calls": totals.gatewayCorrelatedCalls,
             "usd_estimate": totals.usdEstimate as Any? ?? NSNull(),
-            "usd_estimate_scope": totals.usdEstimateScope,
             "tokens": totals.tokens,
-            "token_rule": totals.tokenRule,
         ]
-        if totals.gatewayCalls > 0 || totals.gatewayCorrelatedCalls > 0 {
-            totalsObj["gateway_usd_estimate_label"] = EstimateLabel.text(
-                unpricedCount: totals.gatewayUnpricedModels.count
-            )
-        }
         if let est = totals.claudeUsdEstimate {
             totalsObj["claude_usd_estimate"] = est
         } else {
             totalsObj["claude_usd_estimate"] = NSNull()
         }
-        if totals.claudeTokens > 0 || !totals.claudeUnpricedModels.isEmpty {
-            totalsObj["claude_usd_estimate_label"] = EstimateLabel.text(
-                unpricedCount: totals.claudeUnpricedModels.count
-            )
-        }
         if let est = totals.openaiUsdEstimate {
             totalsObj["openai_usd_estimate"] = est
         } else {
             totalsObj["openai_usd_estimate"] = NSNull()
-        }
-        if totals.openaiTokens > 0 || !totals.openaiUnpricedModels.isEmpty {
-            totalsObj["openai_usd_estimate_label"] = EstimateLabel.text(
-                unpricedCount: totals.openaiUnpricedModels.count
-            )
         }
         return [
             "range": range.rawValue,
@@ -378,14 +356,6 @@ struct SpendReport: Equatable {
                 ]
             },
         ]
-    }
-}
-
-enum EstimateLabel {
-    static func text(unpricedCount: Int) -> String {
-        if unpricedCount <= 0 { return "estimate, not invoice" }
-        let noun = unpricedCount == 1 ? "model" : "models"
-        return "estimate, not invoice; \(unpricedCount) \(noun) unpriced"
     }
 }
 

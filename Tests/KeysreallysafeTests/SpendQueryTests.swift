@@ -82,7 +82,6 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertNil(claude.usd)
         XCTAssertNotNil(claude.usdEstimate)
         let json = String(data: try JSONValue.data(report.jsonObject()), encoding: .utf8)!
-        XCTAssertTrue(json.contains("estimate, not invoice"))
         XCTAssertFalse(json.contains(sentinelClaude))
         XCTAssertFalse(json.contains(sentinelMessage))
     }
@@ -240,7 +239,6 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertEqual(report.totals.claudeUnpricedTokens, 60)
         XCTAssertEqual(report.totals.claudePricedTokens, 1200)
         let json = report.jsonObject()["totals"] as! [String: Any]
-        XCTAssertEqual(json["claude_usd_estimate_label"] as? String, "estimate, not invoice; 1 model unpriced")
     }
 
     func testEmptySpendJSONIncludesIntervalKeys() throws {

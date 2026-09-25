@@ -137,7 +137,6 @@ function spend(params) {
       gateway_unpriced_models: rows.filter((r) => unpricedCalls(r) > 0).map((r) => r.model),
       gateway_correlated_calls: 0,
       usd_estimate: null,
-      usd_estimate_scope: "api keys only: calls routed through the local gateway",
     },
     rows,
     daily: by === "hour" ? [] : point({ day }),

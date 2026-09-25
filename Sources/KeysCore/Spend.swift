@@ -17,9 +17,8 @@ enum ClaudeEstimate {
 }
 
 enum TokenTotals {
-    static let rule =
-        "claude includes cache tokens; openai/codex/grok exclude cached reads and include reasoning; gateway follows provider api"
-
+    /// Claude includes cache tokens; Codex and Grok exclude cached reads and include reasoning;
+    /// a gateway call follows its provider's API.
     static func normalized(_ event: UsageEvent) -> Int {
         switch event.source {
         case "claude-local":
@@ -225,7 +224,7 @@ struct SpendQueries {
         var gatewayUnpriced = Set<String>()
         for event in events {
             if event.source == "gateway" {
-                // Separate ledger. See SpendTotals.localScope.
+                // Separate ledger. See SpendTotals.usdEstimate.
                 let tok = TokenTotals.normalized(event)
                 totals.gatewayTokens += tok
                 totals.gatewayCalls += 1
@@ -308,8 +307,6 @@ struct SpendQueries {
         // Gateway dollars stay in gatewayUsdEstimate. Adding them here double-counted every
         // Claude Code or Codex call that went through the gateway.
         totals.usdEstimate = keysMode ? nil : grand
-        if keysMode { totals.usdEstimateScope = SpendTotals.keysScope }
-        totals.tokenRule = TokenTotals.rule
 
         let rows: [SpendRow]
         switch by {

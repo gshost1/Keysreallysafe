@@ -37,7 +37,6 @@ final class GatewayAccountingTests: XCTestCase {
         XCTAssertNotNil(after.totals.gatewayUsdEstimate)
         XCTAssertEqual(after.totals.gatewayCorrelatedCalls, 0)
         let json = after.jsonObject()["totals"] as! [String: Any]
-        XCTAssertEqual(json["usd_estimate_scope"] as? String, SpendTotals.localScope)
         XCTAssertEqual(json["gateway_calls"] as? Int, 1)
     }
 
@@ -77,7 +76,6 @@ final class GatewayAccountingTests: XCTestCase {
         XCTAssertNil(month.usd)
         XCTAssertEqual(month.kind, "unknown")
         XCTAssertEqual(month.unpricedCalls, 1)
-        XCTAssertEqual(month.unpricedTokens, 150)
         let row = try XCTUnwrap(db.catalogRow(name: "probe"))
         let obj = service.keyJSONObject(row, month: month)
         XCTAssertTrue(obj["usd_month"] is NSNull)
@@ -95,7 +93,6 @@ final class GatewayAccountingTests: XCTestCase {
         XCTAssertEqual(totals.gatewayUnpricedTokens, 150)
         XCTAssertEqual(totals.gatewayUnpricedModels, ["unknown"])
         let json = try report(db, key: "probe").jsonObject()["totals"] as! [String: Any]
-        XCTAssertEqual(json["gateway_usd_estimate_label"] as? String, EstimateLabel.text(unpricedCount: 1))
     }
 
     func testNoCallsIsNoneAndZeroDollarsStaysExplicit() throws {
