@@ -130,8 +130,7 @@ final class BackendContractUITests: XCTestCase {
         XCTAssertEqual(vercel.totals.gatewayUnpricedCalls, 0)
 
         let handler = APIHandler(service: service, webRoot: webRoot)
-        let server = try LoopbackHTTPServer(host: "127.0.0.1", port: 0, handler: handler.handle)
-        XCTAssertTrue(server.isBoundToLoopback)
+        let server = try LoopbackHTTPServer(port: 0, handler: handler.handle)
         server.start()
         defer { server.stop() }
         let base = "http://127.0.0.1:\(server.boundPort)"

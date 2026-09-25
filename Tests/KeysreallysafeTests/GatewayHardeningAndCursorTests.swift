@@ -6,7 +6,7 @@ import XCTest
 final class GatewayHardeningAndCursorTests: XCTestCase {
     func testGatewayRejectsBadHostOriginAndCrossSiteBeforeLookup() async throws {
         let hits = HitCounter()
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let stub = try LoopbackHTTPServer(port: 0) { _ in
             hits.bump()
             return HTTPResponse.json(200, ["ok": true])
         }
@@ -73,7 +73,7 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
 
     func testContentLengthNegativeDuplicateShortAndChunked() async throws {
         let captured = HeaderBox()
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { request in
+        let stub = try LoopbackHTTPServer(port: 0) { request in
             captured.body = request.body
             return HTTPResponse.json(200, ["ok": true])
         }
@@ -129,7 +129,7 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
     }
 
     func testDashboardRejectsOversizeAndShortBodies() throws {
-        let server = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let server = try LoopbackHTTPServer(port: 0) { _ in
             HTTPResponse.json(200, ["ok": true])
         }
         server.start()
@@ -233,13 +233,13 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
 
     func testOpenRouterPollDeniesRedirects() async throws {
         let secondHits = HitCounter()
-        let second = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let second = try LoopbackHTTPServer(port: 0) { _ in
             secondHits.bump()
             return HTTPResponse.json(200, ["data": ["limit": 1]])
         }
         second.start()
         defer { second.stop() }
-        let first = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let first = try LoopbackHTTPServer(port: 0) { _ in
             HTTPResponse(
                 status: 302,
                 headers: [

@@ -6,7 +6,6 @@ enum HTTPFrame {
         case ok(method: String, target: String, headers: [String: String], body: Data)
         case bad
         case tooLarge
-        case lengthRequired
         case unsupported
     }
 
@@ -100,6 +99,60 @@ enum HTTPFrame {
         )
     }
 
+    static func reason(_ status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 201: return "Created"
+        case 204: return "No Content"
+        case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 403: return "Forbidden"
+        case 404: return "Not Found"
+        case 405: return "Method Not Allowed"
+        case 409: return "Conflict"
+        case 413: return "Payload Too Large"
+        case 429: return "Too Many Requests"
+        case 500: return "Internal Server Error"
+        case 501: return "Not Implemented"
+        case 502: return "Bad Gateway"
+        case 503: return "Service Unavailable"
+        case 504: return "Gateway Timeout"
+        // The reason phrase is optional (RFC 9110 §15); an unlisted upstream status goes without.
+        default: return ""
+        }
+    }
+
+    /// One complete `Connection: close` response.
+    @discardableResult
+    static func write(fd: Int32, status: Int, headers: [String: String], body: Data) -> Bool {
+        var headers = headers
+        headers["Content-Length"] = String(body.count)
+        headers["Connection"] = "close"
+        headers["X-Content-Type-Options"] = "nosniff"
+        var head = "HTTP/1.1 \(status) \(reason(status))\r\n"
+        for (k, v) in headers.sorted(by: { $0.key < $1.key }) {
+            head += "\(k): \(v)\r\n"
+        }
+        head += "\r\n"
+        var payload = Data(head.utf8)
+        payload.append(body)
+        return writeAll(fd: fd, payload)
+    }
+
+    static func writeAll(fd: Int32, _ data: Data) -> Bool {
+        data.withUnsafeBytes { raw -> Bool in
+            var written = 0
+            let total = data.count
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return total == 0 }
+            while written < total {
+                let n = Darwin.write(fd, base + written, total - written)
+                if n <= 0 { return false }
+                written += n
+            }
+            return true
+        }
+    }
+
     /// Non-negative integer that fits in `Int`. Rejects signs, spaces, and overflow.
     static func parseContentLength(_ raw: String) -> Int? {
         let s = raw.trimmingCharacters(in: .whitespaces)
@@ -184,6 +237,137 @@ enum HTTPFrame {
                 return .failure
             }
             pending.removeFirst(2)
+        }
+    }
+}
+
+/// A TCP listener on 127.0.0.1 and nowhere else, shared by the dashboard site and the gateway.
+/// Each accepted connection gets socket deadlines and SO_NOSIGPIPE, is served on the work
+/// queue, and is closed when `serve` returns.
+final class LoopbackListener: @unchecked Sendable {
+    let port: UInt16
+    /// The bound address as getsockname reports it; init refuses anything but 127.0.0.1.
+    let address: String
+    private var fd: Int32
+    private let acceptQueue: DispatchQueue
+    private let workQueue: DispatchQueue
+    private let ioTimeoutSeconds: Int
+    private let maxConcurrent: Int?
+    private let lock = NSLock()
+    private var stopped = false
+    private var active = 0
+
+    /// Queue labels show up in process samples, so each listener keeps its own.
+    init(
+        port: UInt16, acceptLabel: String, workLabel: String,
+        ioTimeoutSeconds: Int = HTTPFrame.socketTimeoutSeconds, maxConcurrent: Int? = nil
+    ) throws {
+        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        if fd < 0 { throw AppError.http("socket failed") }
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr = in_addr(s_addr: inet_addr(BindPolicy.loopback))
+        let bound = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if bound != 0 {
+            let inUse = errno == EADDRINUSE
+            Darwin.close(fd)
+            throw AppError.http("bind 127.0.0.1:\(port) failed" + (inUse ? " (address in use; is Keysrs already running?)" : ""))
+        }
+        if Darwin.listen(fd, 32) != 0 {
+            Darwin.close(fd)
+            throw AppError.http("listen failed")
+        }
+        var local = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let rc = withUnsafeMutablePointer(to: &local) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                getsockname(fd, sa, &len)
+            }
+        }
+        let ip = String(cString: inet_ntoa(local.sin_addr))
+        guard rc == 0 else {
+            Darwin.close(fd)
+            throw AppError.http("getsockname failed")
+        }
+        guard ip == BindPolicy.loopback else {
+            Darwin.close(fd)
+            throw AppError.refusedBind(ip)
+        }
+        self.fd = fd
+        self.port = UInt16(bigEndian: local.sin_port)
+        self.address = ip
+        self.acceptQueue = DispatchQueue(label: acceptLabel)
+        self.workQueue = DispatchQueue(label: workLabel, attributes: .concurrent)
+        self.ioTimeoutSeconds = ioTimeoutSeconds
+        self.maxConcurrent = maxConcurrent
+    }
+
+    deinit { stop() }
+
+    func start(serve: @escaping @Sendable (Int32) -> Void) {
+        let fd = self.fd
+        acceptQueue.async { [weak self] in
+            self?.acceptLoop(listenFD: fd, serve: serve)
+        }
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        let fd = self.fd
+        self.fd = -1
+        lock.unlock()
+        if fd >= 0 {
+            Darwin.shutdown(fd, SHUT_RDWR)
+            Darwin.close(fd)
+        }
+    }
+
+    private func isStopped() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return stopped
+    }
+
+    private func acceptLoop(listenFD: Int32, serve: @escaping @Sendable (Int32) -> Void) {
+        while !isStopped() {
+            let client = Darwin.accept(listenFD, nil, nil)
+            if client < 0 {
+                if isStopped() { return }
+                continue
+            }
+            var nosig: Int32 = 1
+            setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
+            HTTPFrame.setDeadlines(fd: client, seconds: ioTimeoutSeconds)
+            lock.lock()
+            let busy = maxConcurrent.map { active >= $0 } ?? false
+            if !busy { active += 1 }
+            lock.unlock()
+            if busy {
+                HTTPFrame.write(
+                    fd: client, status: 503,
+                    headers: ["Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"],
+                    body: Data(#"{"error":"too many connections"}"#.utf8)
+                )
+                Darwin.close(client)
+                continue
+            }
+            workQueue.async { [weak self] in
+                serve(client)
+                Darwin.close(client)
+                guard let self else { return }
+                self.lock.lock()
+                self.active = max(0, self.active - 1)
+                self.lock.unlock()
+            }
         }
     }
 }

@@ -329,10 +329,6 @@ enum JSONValue {
 enum BindPolicy {
     static let loopback = "127.0.0.1"
 
-    static func allowBind(host: String) -> Bool {
-        host == loopback
-    }
-
     static func isLoopbackHostname(_ host: String) -> Bool {
         let h = host.lowercased()
         return h == "127.0.0.1" || h == "localhost"

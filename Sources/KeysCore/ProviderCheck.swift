@@ -5,7 +5,7 @@ import Foundation
 enum ProviderCheck {
     static let timeout: TimeInterval = 20
     static let maxModels = 2000
-    static let userAgent = "keysrs/0.5 (+https://keysrs.com)"
+    static let userAgent = "keysrs (+https://keysrs.com)"
 
     enum Outcome: String, Sendable {
         case ok

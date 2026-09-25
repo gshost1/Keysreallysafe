@@ -64,19 +64,15 @@ final class ServerTests: XCTestCase {
         XCTAssertTrue(String(data: response.body, encoding: .utf8)!.contains("auth_failed"))
     }
 
-    func testRefuseNonLoopbackHosts() {
-        XCTAssertFalse(BindPolicy.allowBind(host: "0.0.0.0"))
-        XCTAssertFalse(BindPolicy.allowBind(host: "192.168.1.5"))
-        XCTAssertFalse(BindPolicy.allowBind(host: "10.0.0.1"))
-        XCTAssertFalse(BindPolicy.allowBind(host: "::"))
-        XCTAssertFalse(BindPolicy.allowBind(host: "localhost"))
-        XCTAssertTrue(BindPolicy.allowBind(host: "127.0.0.1"))
-        XCTAssertThrowsError(try LoopbackHTTPServer(host: "0.0.0.0", port: 0, handler: { _ in HTTPResponse.text(200, "x") })) { error in
-            guard let app = error as? AppError, case .refusedBind("0.0.0.0") = app else {
-                return XCTFail("expected refusedBind, got \(error)")
-            }
-        }
-        XCTAssertThrowsError(try LoopbackHTTPServer(host: "192.168.0.10", port: 0, handler: { _ in HTTPResponse.text(200, "x") }))
+    func testListenersBindLoopbackOnly() throws {
+        let server = try LoopbackHTTPServer(port: 0) { _ in HTTPResponse.text(200, "x") }
+        defer { server.stop() }
+        XCTAssertEqual(server.listener.address, "127.0.0.1", "getsockname must report the loopback address")
+        let (db, _) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        let gateway = try GatewayListener(service: service, port: 0)
+        defer { gateway.stop() }
+        XCTAssertEqual(gateway.listener.address, "127.0.0.1")
     }
 
     func testBindIsLoopbackOnlyAndAPIOmitsSecrets() async throws {
@@ -90,9 +86,7 @@ final class ServerTests: XCTestCase {
             encoding: .utf8
         )
         let handler = APIHandler(service: service, webRoot: web)
-        let server = try LoopbackHTTPServer(host: "127.0.0.1", port: 0, handler: handler.handle)
-        XCTAssertEqual(server.boundHost, "127.0.0.1")
-        XCTAssertTrue(server.isBoundToLoopback)
+        let server = try LoopbackHTTPServer(port: 0, handler: handler.handle)
         XCTAssertGreaterThan(server.boundPort, 0)
         server.start()
         defer { server.stop() }

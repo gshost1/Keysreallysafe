@@ -17,104 +17,40 @@ final class GatewayListener: @unchecked Sendable {
     static let maxConcurrent = 32
     static let ioTimeoutSeconds = 30
 
-    private var listenFD: Int32 = -1
-    private(set) var boundPort: UInt16
-    private(set) var boundHost: String = BindPolicy.loopback
+    let listener: LoopbackListener
     private let service: KeysService
-    private let acceptQueue = DispatchQueue(label: "keysreallysafe.gateway.accept")
-    private let workQueue = DispatchQueue(label: "keysreallysafe.gateway", attributes: .concurrent)
-    private var stopped = false
-    private let lock = NSLock()
-    private var activeConnections = 0
+
+    var boundPort: UInt16 { listener.port }
 
     init(service: KeysService, port: UInt16 = GatewayListener.port) throws {
         self.service = service
-        let fd = try Self.bindListen(port: port)
-        self.listenFD = fd
-        self.boundPort = try Self.readPort(fd: fd)
-        try Self.assertLoopback(fd: fd)
+        self.listener = try LoopbackListener(
+            port: port, acceptLabel: "keysreallysafe.gateway.accept", workLabel: "keysreallysafe.gateway",
+            ioTimeoutSeconds: Self.ioTimeoutSeconds, maxConcurrent: Self.maxConcurrent
+        )
     }
-
-    deinit { stop() }
 
     func start() {
-        let fd = listenFD
-        acceptQueue.async { [weak self] in
-            self?.acceptLoop(listenFD: fd)
+        listener.start { [weak self] client in
+            self?.serve(client: client)
         }
     }
 
-    func stop() {
-        lock.lock()
-        stopped = true
-        let fd = listenFD
-        listenFD = -1
-        lock.unlock()
-        if fd >= 0 {
-            Darwin.shutdown(fd, SHUT_RDWR)
-            Darwin.close(fd)
-        }
-    }
-
-    private func isStopped() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stopped
-    }
-
-    private func acceptLoop(listenFD: Int32) {
-        while !isStopped() {
-            var addr = sockaddr_in()
-            var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-            let client = withUnsafeMutablePointer(to: &addr) { ptr -> Int32 in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                    Darwin.accept(listenFD, sa, &len)
-                }
-            }
-            if client < 0 {
-                if isStopped() { return }
-                continue
-            }
-            var nosig: Int32 = 1
-            setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
-            HTTPFrame.setDeadlines(fd: client, seconds: Self.ioTimeoutSeconds)
-            lock.lock()
-            let busy = activeConnections >= Self.maxConcurrent
-            if !busy { activeConnections += 1 }
-            lock.unlock()
-            if busy {
-                _ = Self.writeJSON(fd: client, status: 503, object: ["error": "too many connections"])
-                Darwin.close(client)
-                continue
-            }
-            workQueue.async { [weak self] in
-                self?.serve(client: client)
-            }
-        }
-    }
+    func stop() { listener.stop() }
 
     private func serve(client: Int32) {
-        defer {
-            Darwin.close(client)
-            lock.lock()
-            activeConnections = max(0, activeConnections - 1)
-            lock.unlock()
-        }
         switch HTTPFrame.read(fd: client, bodyCap: Self.bodyCap) {
         case .tooLarge:
-            _ = Self.writeJSON(fd: client, status: 413, object: ["error": "payload too large"])
+            Self.writeJSON(fd: client, status: 413, object: ["error": "payload too large"])
             // Closing with unread bytes in the receive buffer makes the kernel send RST, and the
             // client then sees a dropped connection instead of the 413. Drain briefly first.
             Self.drain(fd: client)
             return
         case .bad:
-            _ = Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
-            return
-        case .lengthRequired:
-            _ = Self.writeJSON(fd: client, status: 411, object: ["error": "length required"])
+            Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
             return
         case .unsupported:
-            _ = Self.writeJSON(fd: client, status: 501, object: ["error": "unsupported transfer-encoding"])
+            Self.writeJSON(fd: client, status: 501, object: ["error": "unsupported transfer-encoding"])
             return
         case .ok(let method, let target, let headers, let body):
             let (path, rawQuery) = Self.splitTarget(target)
@@ -138,11 +74,11 @@ final class GatewayListener: @unchecked Sendable {
             || !HTTPFrame.LoopbackOrigin.originAllowed(request.headers["origin"], port: boundPort)
             || !HTTPFrame.LoopbackOrigin.fetchSiteAllowed(request.headers["sec-fetch-site"])
         {
-            _ = Self.writeJSON(fd: client, status: 403, object: ["error": "forbidden"])
+            Self.writeJSON(fd: client, status: 403, object: ["error": "forbidden"])
             return
         }
         guard let keyName = request.keyName, (try? KeyName.validate(keyName)) != nil else {
-            _ = Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
+            Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
             return
         }
         // Loopback headers say where a browser request came from; they say nothing about a native
@@ -158,7 +94,7 @@ final class GatewayListener: @unchecked Sendable {
                 gatewayClient = c
             case .denied(let reason):
                 service.recordGatewayDenial(name: keyName, reason: reason)
-                _ = Self.writeJSON(fd: client, status: 401, object: [
+                Self.writeJSON(fd: client, status: 401, object: [
                     "error": "client_required",
                     "hint": "issue one with: keys grant \(keyName) --task \"...\" (temporary) or keys client issue \(keyName) (long-lived)",
                 ])
@@ -166,7 +102,7 @@ final class GatewayListener: @unchecked Sendable {
             }
         }
         guard let target = service.lookupGateway(name: keyName) else {
-            _ = Self.writeJSON(fd: client, status: 404, object: [
+            Self.writeJSON(fd: client, status: 404, object: [
                 "error": "not_found",
                 "message": "no key \(keyName) with the gateway on; run: keys grant \(keyName) --task \"...\"",
             ])
@@ -179,7 +115,7 @@ final class GatewayListener: @unchecked Sendable {
                 grant = g
             case .failure(let denial):
                 service.recordGatewayDenial(name: keyName, reason: denial.code)
-                _ = Self.writeJSON(fd: client, status: denial.status, object: [
+                Self.writeJSON(fd: client, status: denial.status, object: [
                     "error": denial.code,
                     "message": denial.message,
                     "key": keyName,
@@ -199,7 +135,7 @@ final class GatewayListener: @unchecked Sendable {
             urlString += "?" + rawQuery
         }
         guard let url = URL(string: urlString) else {
-            _ = Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
+            Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
             return
         }
 
@@ -253,7 +189,7 @@ final class GatewayListener: @unchecked Sendable {
         let durationMs = Int((Date().timeIntervalSince(started) * 1000.0).rounded())
         let status = proxy.statusCode ?? 502
         if !proxy.wroteHead {
-            _ = Self.writeJSON(fd: client, status: 502, object: ["error": "upstream_error"])
+            Self.writeJSON(fd: client, status: 502, object: ["error": "upstream_error"])
         }
         let parsed = tee.result(
             requestBody: request.body,
@@ -373,100 +309,12 @@ final class GatewayListener: @unchecked Sendable {
         }
     }
 
+    @discardableResult
     static func writeJSON(fd: Int32, status: Int, object: [String: Any]) -> Bool {
+        var headers = ["Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"]
+        if status == 401 { headers["WWW-Authenticate"] = "Bearer realm=\"keysreallysafe-gateway\"" }
         let body = (try? JSONValue.data(object)) ?? Data("{}".utf8)
-        let reason: String
-        switch status {
-        case 400: reason = "Bad Request"
-        case 401: reason = "Unauthorized"
-        case 403: reason = "Forbidden"
-        case 404: reason = "Not Found"
-        case 409: reason = "Conflict"
-        case 411: reason = "Length Required"
-        case 413: reason = "Payload Too Large"
-        case 429: reason = "Too Many Requests"
-        case 501: reason = "Not Implemented"
-        case 502: reason = "Bad Gateway"
-        case 503: reason = "Service Unavailable"
-        default: reason = "Error"
-        }
-        var head = "HTTP/1.1 \(status) \(reason)\r\n"
-        if status == 401 { head += "WWW-Authenticate: Bearer realm=\"keysreallysafe-gateway\"\r\n" }
-        head += "Content-Type: application/json; charset=utf-8\r\n"
-        head += "Content-Length: \(body.count)\r\n"
-        head += "Connection: close\r\n"
-        head += "Cache-Control: no-store\r\n"
-        head += "X-Content-Type-Options: nosniff\r\n\r\n"
-        var payload = Data(head.utf8)
-        payload.append(body)
-        return writeRaw(fd: fd, payload)
-    }
-
-    static func writeRaw(fd: Int32, _ data: Data) -> Bool {
-        data.withUnsafeBytes { raw -> Bool in
-            var written = 0
-            let total = data.count
-            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return false }
-            while written < total {
-                let n = Darwin.write(fd, base + written, total - written)
-                if n <= 0 { return false }
-                written += n
-            }
-            return true
-        }
-    }
-
-    private static func bindListen(port: UInt16) throws -> Int32 {
-        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        if fd < 0 { throw AppError.http("socket failed") }
-        var yes: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        addr.sin_addr = in_addr(s_addr: inet_addr(BindPolicy.loopback))
-        let rc = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                Darwin.bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        if rc != 0 {
-            Darwin.close(fd)
-            throw AppError.http("bind 127.0.0.1:\(port) failed")
-        }
-        if Darwin.listen(fd, 32) != 0 {
-            Darwin.close(fd)
-            throw AppError.http("listen failed")
-        }
-        return fd
-    }
-
-    private static func readPort(fd: Int32) throws -> UInt16 {
-        var addr = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let rc = withUnsafeMutablePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                getsockname(fd, sa, &len)
-            }
-        }
-        guard rc == 0 else { throw AppError.http("getsockname failed") }
-        return UInt16(bigEndian: addr.sin_port)
-    }
-
-    private static func assertLoopback(fd: Int32) throws {
-        var addr = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                getsockname(fd, sa, &len)
-            }
-        }
-        let ip = String(cString: inet_ntoa(addr.sin_addr))
-        if ip != BindPolicy.loopback {
-            Darwin.close(fd)
-            throw AppError.refusedBind(ip)
-        }
+        return HTTPFrame.write(fd: fd, status: status, headers: headers, body: body)
     }
 }
 
@@ -535,7 +383,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        if !GatewayListener.writeRaw(fd: clientFD, data) {
+        if !HTTPFrame.writeAll(fd: clientFD, data) {
             sessionTask?.cancel()
             finish()
             return
@@ -561,7 +409,6 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
 
     private func writeHead(_ http: HTTPURLResponse?) -> Bool {
         let status = http?.statusCode ?? 502
-        let reason = HTTPURLResponse.localizedString(forStatusCode: status)
         var headers: [(String, String)] = []
         var skipContentLength = false
         if let http {
@@ -584,12 +431,12 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
             headers.removeAll { $0.0.lowercased() == "content-length" }
         }
         headers.append(("Connection", "close"))
-        var head = "HTTP/1.1 \(status) \(reason)\r\n"
+        var head = "HTTP/1.1 \(status) \(HTTPFrame.reason(status))\r\n"
         for (k, v) in headers {
             head += "\(k): \(v)\r\n"
         }
         head += "\r\n"
-        return GatewayListener.writeRaw(fd: clientFD, Data(head.utf8))
+        return HTTPFrame.writeAll(fd: clientFD, Data(head.utf8))
     }
 
     private func finish() {

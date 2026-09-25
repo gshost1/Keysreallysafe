@@ -189,7 +189,7 @@ final class GatewayTests: XCTestCase {
 
     func testUnknownKeyIs401WithoutClientAndDoesNotCallUpstream() async throws {
         let hits = HitCounter()
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let stub = try LoopbackHTTPServer(port: 0) { _ in
             hits.bump()
             return HTTPResponse.json(200, ["ok": true])
         }
@@ -230,7 +230,7 @@ final class GatewayTests: XCTestCase {
     func testRoundTripStripsClientAuthInjectsSecretAndOmitsSentinelFromCatalog() async throws {
         let captured = HeaderBox()
         let stubBody = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/openai-chat.json"))
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { request in
+        let stub = try LoopbackHTTPServer(port: 0) { request in
             captured.headers = request.headers
             captured.body = request.body
             captured.path = request.path
@@ -358,14 +358,14 @@ final class GatewayTests: XCTestCase {
 
     func testDoesNotFollowRedirects() async throws {
         let secondHits = HitCounter()
-        let second = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let second = try LoopbackHTTPServer(port: 0) { _ in
             secondHits.bump()
             return HTTPResponse.json(200, ["should": "not"])
         }
         second.start()
         defer { second.stop() }
 
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let stub = try LoopbackHTTPServer(port: 0) { _ in
             HTTPResponse(
                 status: 302,
                 headers: [
@@ -398,7 +398,7 @@ final class GatewayTests: XCTestCase {
 
     func testBodyOver8MBIs413() async throws {
         let hits = HitCounter()
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let stub = try LoopbackHTTPServer(port: 0) { _ in
             hits.bump()
             return HTTPResponse.json(200, ["ok": true])
         }

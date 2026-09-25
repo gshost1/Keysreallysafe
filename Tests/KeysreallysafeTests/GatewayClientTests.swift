@@ -26,7 +26,7 @@ final class GatewayClientTests: XCTestCase {
 
     private func makeRig() throws -> Rig {
         let hits = Counter()
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let stub = try LoopbackHTTPServer(port: 0) { _ in
             hits.bump()
             return HTTPResponse.json(200, ["ok": true])
         }

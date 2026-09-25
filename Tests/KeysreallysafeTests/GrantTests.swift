@@ -19,7 +19,7 @@ final class GrantTests: XCTestCase {
     }
 
     private func stub(_ handler: @escaping @Sendable (HTTPRequest) -> HTTPResponse) throws -> LoopbackHTTPServer {
-        let s = try LoopbackHTTPServer(host: "127.0.0.1", port: 0, handler: handler)
+        let s = try LoopbackHTTPServer(port: 0, handler: handler)
         s.start()
         return s
     }
@@ -366,7 +366,7 @@ final class ControlClientTests: XCTestCase {
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         let handler = APIHandler(service: service, webRoot: web)
-        let server = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { handler.handle($0) }
+        let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
         server.start()
         defer { server.stop() }
 

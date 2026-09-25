@@ -112,12 +112,8 @@ enum LoopbackSite {
     static func bind(service: KeysService, preferredPort: UInt16 = LoginItem.dashboardPort) throws -> LoopbackHTTPServer {
         let web = try WebRoot.find()
         let handler = APIHandler(service: service, webRoot: web)
-        let server = try LoopbackHTTPServer.startOnAvailablePort(preferred: preferredPort) { request in
+        let server = try LoopbackHTTPServer(port: preferredPort) { request in
             handler.handle(request)
-        }
-        guard server.isBoundToLoopback, server.boundHost == "127.0.0.1" else {
-            server.stop()
-            throw AppError.refusedBind(server.boundHost)
         }
         server.start()
         do {

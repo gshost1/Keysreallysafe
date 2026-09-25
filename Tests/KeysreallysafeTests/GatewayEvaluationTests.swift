@@ -100,7 +100,7 @@ final class GatewayEvaluationTests: XCTestCase {
     }
 
     func testFailedEvaluationDoesNotRecordReportedCost() async throws {
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { _ in
+        let stub = try LoopbackHTTPServer(port: 0) { _ in
             HTTPResponse.json(503, ["error": "unavailable", "providerMetadata": ["gateway": ["cost": "1.25"]]])
         }
         stub.start()
@@ -139,7 +139,7 @@ final class GatewayEvaluationTests: XCTestCase {
             "usage":{"inputTokens":1234,"outputTokens":0},"private":"\(sentinel)",
             "providerMetadata":{"gateway":{"cost":"0.000051828"}}}
             """.utf8)
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { request in
+        let stub = try LoopbackHTTPServer(port: 0) { request in
             capture.record(request)
             return HTTPResponse(
                 status: 200,
@@ -256,7 +256,7 @@ extension GatewayEvaluationTests {
     func testDirectGatewayRoundTripKeepsGrantScopedAndStoresOnlyUsage() async throws {
         let capture = EvaluationCapture()
         let sentinel = "synthetic-private-context-4e8a"
-        let stub = try LoopbackHTTPServer(host: "127.0.0.1", port: 0) { request in
+        let stub = try LoopbackHTTPServer(port: 0) { request in
             capture.record(request)
             return HTTPResponse.json(200, ["model": "jev-1.13.0", "answers": ["keep": ["type": "noul", "noul": 0.9]],
                 "usage": ["input_tokens": 55, "output_tokens": 0], "private": sentinel])

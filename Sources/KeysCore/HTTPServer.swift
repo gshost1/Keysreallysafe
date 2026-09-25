@@ -47,162 +47,43 @@ struct HTTPResponse: Sendable {
 }
 
 final class LoopbackHTTPServer: @unchecked Sendable {
-    private var listenFD: Int32 = -1
-    private(set) var boundPort: UInt16
-    private(set) var boundHost: String = BindPolicy.loopback
+    let listener: LoopbackListener
     private let handler: @Sendable (HTTPRequest) -> HTTPResponse
-    private let acceptQueue = DispatchQueue(label: "keysreallysafe.accept")
-    private let workQueue = DispatchQueue(label: "keysreallysafe.http", attributes: .concurrent)
-    private var stopped = false
-    private let lock = NSLock()
 
-    init(host: String = BindPolicy.loopback, port: UInt16 = 12765, handler: @escaping @Sendable (HTTPRequest) -> HTTPResponse) throws {
-        guard BindPolicy.allowBind(host: host) else {
-            throw AppError.refusedBind(host)
-        }
+    var boundPort: UInt16 { listener.port }
+
+    init(port: UInt16 = 12765, handler: @escaping @Sendable (HTTPRequest) -> HTTPResponse) throws {
         self.handler = handler
-        let fd = try Self.bindListen(port: port)
-        self.listenFD = fd
-        self.boundPort = try Self.readPort(fd: fd)
-        try Self.assertLoopback(fd: fd)
+        self.listener = try LoopbackListener(port: port, acceptLabel: "keysreallysafe.accept", workLabel: "keysreallysafe.http")
     }
-
-    deinit { stop() }
 
     func start() {
-        let fd = listenFD
-        acceptQueue.async { [weak self] in
-            self?.acceptLoop(listenFD: fd)
+        let port = boundPort
+        listener.start { [handler] client in
+            Self.serve(client: client, port: port, handler: handler)
         }
     }
 
-    func stop() {
-        lock.lock()
-        stopped = true
-        let fd = listenFD
-        listenFD = -1
-        lock.unlock()
-        if fd >= 0 {
-            Darwin.shutdown(fd, SHUT_RDWR)
-            Darwin.close(fd)
-        }
-    }
-
-    var isBoundToLoopback: Bool { boundHost == BindPolicy.loopback }
-
-    private func isStopped() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stopped
-    }
-
-    private func acceptLoop(listenFD: Int32) {
-        while !isStopped() {
-            var addr = sockaddr_in()
-            var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-            let client = withUnsafeMutablePointer(to: &addr) { ptr -> Int32 in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                    Darwin.accept(listenFD, sa, &len)
-                }
-            }
-            if client < 0 {
-                if isStopped() { return }
-                continue
-            }
-            var nosig: Int32 = 1
-            setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &nosig, socklen_t(MemoryLayout<Int32>.size))
-            HTTPFrame.setDeadlines(fd: client)
-            let port = boundPort
-            workQueue.async { [handler] in
-                Self.serve(client: client, port: port, handler: handler)
-            }
-        }
-    }
+    func stop() { listener.stop() }
 
     static let bodyCap = 1_000_000
 
     private static func serve(client: Int32, port: UInt16, handler: @Sendable (HTTPRequest) -> HTTPResponse) {
-        defer { Darwin.close(client) }
+        let response: HTTPResponse
         switch HTTPFrame.read(fd: client, bodyCap: bodyCap) {
         case .tooLarge:
-            _ = writeResponse(fd: client, HTTPResponse.json(413, ["error": "payload too large"]))
-            return
+            response = HTTPResponse.json(413, ["error": "payload too large"])
         case .bad:
-            _ = writeResponse(fd: client, HTTPResponse.text(400, "bad request"))
-            return
-        case .lengthRequired:
-            _ = writeResponse(fd: client, HTTPResponse.json(411, ["error": "length required"]))
-            return
+            response = HTTPResponse.text(400, "bad request")
         case .unsupported:
-            _ = writeResponse(fd: client, HTTPResponse.json(501, ["error": "unsupported transfer-encoding"]))
-            return
+            response = HTTPResponse.json(501, ["error": "unsupported transfer-encoding"])
         case .ok(let method, let target, let headers, let body):
             let (path, query) = splitTarget(target)
-            var request = HTTPRequest(
-                method: method,
-                path: path,
-                query: query,
-                headers: headers,
-                body: body,
-                serverPort: port
-            )
-            request.serverPort = port
-            let response = handler(request)
-            _ = writeResponse(fd: client, response)
+            response = handler(HTTPRequest(
+                method: method, path: path, query: query, headers: headers, body: body, serverPort: port
+            ))
         }
-    }
-
-    private static func bindListen(port: UInt16) throws -> Int32 {
-        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        if fd < 0 { throw AppError.http("socket failed") }
-        var yes: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = port.bigEndian
-        addr.sin_addr = in_addr(s_addr: inet_addr(BindPolicy.loopback))
-        let rc = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                Darwin.bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        if rc != 0 {
-            Darwin.close(fd)
-            throw AppError.http("bind 127.0.0.1:\(port) failed")
-        }
-        if Darwin.listen(fd, 32) != 0 {
-            Darwin.close(fd)
-            throw AppError.http("listen failed")
-        }
-        return fd
-    }
-
-    private static func readPort(fd: Int32) throws -> UInt16 {
-        var addr = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let rc = withUnsafeMutablePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                getsockname(fd, sa, &len)
-            }
-        }
-        guard rc == 0 else { throw AppError.http("getsockname failed") }
-        return UInt16(bigEndian: addr.sin_port)
-    }
-
-    private static func assertLoopback(fd: Int32) throws {
-        var addr = sockaddr_in()
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        _ = withUnsafeMutablePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                getsockname(fd, sa, &len)
-            }
-        }
-        let ip = String(cString: inet_ntoa(addr.sin_addr))
-        if ip != BindPolicy.loopback {
-            Darwin.close(fd)
-            throw AppError.refusedBind(ip)
-        }
+        HTTPFrame.write(fd: client, status: response.status, headers: response.headers, body: response.body)
     }
 
     static func splitTarget(_ target: String) -> (String, [String: String]) {
@@ -219,62 +100,6 @@ final class LoopbackHTTPServer: @unchecked Sendable {
             }
         }
         return (path, query)
-    }
-
-    private static func writeResponse(fd: Int32, _ response: HTTPResponse) -> Bool {
-        let reason: String
-        switch response.status {
-        case 200: reason = "OK"
-        case 201: reason = "Created"
-        case 204: reason = "No Content"
-        case 400: reason = "Bad Request"
-        case 403: reason = "Forbidden"
-        case 404: reason = "Not Found"
-        case 405: reason = "Method Not Allowed"
-        case 409: reason = "Conflict"
-        case 411: reason = "Length Required"
-        case 413: reason = "Payload Too Large"
-        case 501: reason = "Not Implemented"
-        case 503: reason = "Service Unavailable"
-        default: reason = "Error"
-        }
-        var headers = response.headers
-        headers["Content-Length"] = String(response.body.count)
-        headers["Connection"] = "close"
-        headers["X-Content-Type-Options"] = "nosniff"
-        var head = "HTTP/1.1 \(response.status) \(reason)\r\n"
-        for (k, v) in headers.sorted(by: { $0.key < $1.key }) {
-            head += "\(k): \(v)\r\n"
-        }
-        head += "\r\n"
-        var payload = Data(head.utf8)
-        payload.append(response.body)
-        return payload.withUnsafeBytes { raw -> Bool in
-            var written = 0
-            let total = payload.count
-            let base = raw.bindMemory(to: UInt8.self).baseAddress!
-            while written < total {
-                let n = Darwin.write(fd, base + written, total - written)
-                if n <= 0 { return false }
-                written += n
-            }
-            return true
-        }
-    }
-
-    static func startOnAvailablePort(
-        preferred: UInt16 = 12765,
-        handler: @escaping @Sendable (HTTPRequest) -> HTTPResponse
-    ) throws -> LoopbackHTTPServer {
-        var last: Error = AppError.http("could not bind loopback port")
-        for port in preferred..<(preferred + 20) {
-            do {
-                return try LoopbackHTTPServer(host: BindPolicy.loopback, port: port, handler: handler)
-            } catch {
-                last = error
-            }
-        }
-        throw last
     }
 }
 
