@@ -20,7 +20,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import uuid
 
 MAX_BODY = 32 * 1024
-MAX_DEPTH = 6
 RETENTION_DAYS = 30
 MAX_TOKENS = 10**12
 MAX_USAGE_ROWS = 40
@@ -41,14 +40,16 @@ FIELDS = frozenset(
     {"schema_version", "consent_version", "report_id", "day", "app_version", "os_major", "architecture", "counts",
      "usage", "windows", "gateway"}
 )
-USAGE_FIELDS = frozenset(
-    "source provider model prompts model_calls input_tokens output_tokens cached_read_tokens "
-    "cache_creation_tokens reasoning_tokens".split()
-)
-WINDOW_FIELDS = frozenset({"source", "window", "peak_percent", "hit_cap", "readings"})
-GATEWAY_FIELDS = frozenset(
-    "provider model requests ok failed input_tokens output_tokens cache_read_tokens cache_write_tokens".split()
-)
+# Each report array, its table, its text columns and its integer columns, in stored order.
+ROW_TABLES = {
+    "usage": ("usage_rows", ("source", "provider", "model"),
+              ("prompts", "model_calls", "input_tokens", "output_tokens", "cached_read_tokens",
+               "cache_creation_tokens", "reasoning_tokens")),
+    "windows": ("window_rows", ("source", "window"), ("peak_percent", "hit_cap", "readings")),
+    "gateway": ("gateway_rows", ("provider", "model"),
+                ("requests", "ok", "failed", "input_tokens", "output_tokens", "cache_read_tokens",
+                 "cache_write_tokens")),
+}
 SOURCES = ("claude_code", "codex", "grok")
 WINDOWS = frozenset({("claude_code", "5h"), ("claude_code", "weekly"), ("claude_code", "fable"),
                      ("codex", "5h"), ("codex", "weekly"), ("grok", "weekly")})
@@ -96,19 +97,6 @@ def reject_duplicate_keys(pairs):
     return result
 
 
-def depth(value, level=1):
-    if level > MAX_DEPTH:
-        raise InvalidReport("json_too_deep")
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise InvalidReport("invalid_json_key")
-            depth(child, level + 1)
-    elif isinstance(value, list):
-        for child in value:
-            depth(child, level + 1)
-
-
 def parse_report(body, today=None):
     if not body or len(body) > MAX_BODY:
         raise InvalidReport("invalid_size")
@@ -122,7 +110,6 @@ def parse_report(body, today=None):
         if isinstance(error, InvalidReport):
             raise
         raise InvalidReport("invalid_json") from None
-    depth(value)
     if not isinstance(value, dict) or set(value) != FIELDS:
         raise InvalidReport("invalid_fields")
     if type(value["schema_version"]) is not int or value["schema_version"] != 2:
@@ -160,15 +147,15 @@ def parse_report(body, today=None):
         raise InvalidReport("invalid_counts")
     if any(type(count) is not int or not 1 <= count <= 1_000_000 for count in counts.values()):
         raise InvalidReport("invalid_count_value")
-    usage = rows(value["usage"], USAGE_FIELDS, MAX_USAGE_ROWS, "usage")
+    usage = rows(value, "usage", MAX_USAGE_ROWS)
     for row in usage:
         if row["source"] not in SOURCES or row["provider"] not in PROVIDERS or not valid_model(row["model"]):
             raise InvalidReport("invalid_usage")
-        integers(row, USAGE_FIELDS - {"source", "provider", "model"}, "usage")
+        integers(row, ROW_TABLES["usage"][2], "usage")
         if row["prompts"] < 1:
             raise InvalidReport("invalid_usage")
     unique(usage, ("source", "provider", "model"), "usage")
-    windows = rows(value["windows"], WINDOW_FIELDS, MAX_WINDOW_ROWS, "windows")
+    windows = rows(value, "windows", MAX_WINDOW_ROWS)
     for row in windows:
         if (row["source"], row["window"]) not in WINDOWS or type(row["hit_cap"]) is not bool:
             raise InvalidReport("invalid_windows")
@@ -178,11 +165,11 @@ def parse_report(body, today=None):
         if type(readings) is not int or not 1 <= readings <= 24:
             raise InvalidReport("invalid_windows")
     unique(windows, ("source", "window"), "windows")
-    gateway = rows(value["gateway"], GATEWAY_FIELDS, MAX_GATEWAY_ROWS, "gateway")
+    gateway = rows(value, "gateway", MAX_GATEWAY_ROWS)
     for row in gateway:
         if row["provider"] not in PROVIDERS or not valid_model(row["model"]):
             raise InvalidReport("invalid_gateway")
-        integers(row, GATEWAY_FIELDS - {"provider", "model"}, "gateway")
+        integers(row, ROW_TABLES["gateway"][2], "gateway")
         if row["requests"] < 1 or row["ok"] + row["failed"] != row["requests"]:
             raise InvalidReport("invalid_gateway")
     unique(gateway, ("provider", "model"), "gateway")
@@ -200,11 +187,16 @@ def valid_model(model):
     )
 
 
-def rows(value, fields, limit, name):
+def rows(report, name, limit):
+    value = report[name]
+    _, text, numbers = ROW_TABLES[name]
     if not isinstance(value, list) or len(value) > limit:
         raise InvalidReport(f"invalid_{name}")
     for row in value:
-        if not isinstance(row, dict) or set(row) != fields:
+        # Every row value is a scalar, so nested input is a clean 400 rather than an
+        # unhashable lookup further down.
+        if (not isinstance(row, dict) or set(row) != set(text + numbers)
+                or any(isinstance(v, (dict, list)) for v in row.values())):
             raise InvalidReport(f"invalid_{name}")
     return value
 
@@ -261,55 +253,30 @@ class Store:
             "os_major INTEGER NOT NULL, architecture TEXT NOT NULL, payload_hash BLOB NOT NULL, "
             "counts_json TEXT NOT NULL, received_at INTEGER NOT NULL)"
         )
-        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(reports)")}
-        if "os_major" not in columns:
-            self.connection.execute("ALTER TABLE reports ADD COLUMN os_major INTEGER NOT NULL DEFAULT 10")
-        if "architecture" not in columns:
-            self.connection.execute("ALTER TABLE reports ADD COLUMN architecture TEXT NOT NULL DEFAULT 'unknown'")
         self.connection.execute("CREATE INDEX IF NOT EXISTS reports_received_at ON reports(received_at)")
-        self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS usage_rows ("
-            "report_id TEXT NOT NULL, source TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, "
-            "prompts INTEGER NOT NULL, model_calls INTEGER NOT NULL, input_tokens INTEGER NOT NULL, "
-            "output_tokens INTEGER NOT NULL, cached_read_tokens INTEGER NOT NULL, "
-            "cache_creation_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL)"
-        )
-        self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS window_rows ("
-            "report_id TEXT NOT NULL, source TEXT NOT NULL, window TEXT NOT NULL, peak_percent INTEGER NOT NULL, "
-            "hit_cap INTEGER NOT NULL, readings INTEGER NOT NULL)"
-        )
-        self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS gateway_rows ("
-            "report_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, requests INTEGER NOT NULL, "
-            "ok INTEGER NOT NULL, failed INTEGER NOT NULL, input_tokens INTEGER NOT NULL, "
-            "output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL)"
-        )
-        for table in ("usage_rows", "window_rows", "gateway_rows"):
+        for table, text, numbers in ROW_TABLES.values():
+            columns = ", ".join([f"{c} TEXT NOT NULL" for c in ("report_id",) + text]
+                                + [f"{c} INTEGER NOT NULL" for c in numbers])
+            self.connection.execute(f"CREATE TABLE IF NOT EXISTS {table} ({columns})")
             self.connection.execute(f"CREATE INDEX IF NOT EXISTS {table}_report ON {table}(report_id)")
         self.connection.commit()
         self.prune()
 
-    def delete_expired(self, cutoff):
-        self.connection.execute("DELETE FROM reports WHERE received_at < ?", (cutoff,))
-        for table in ("usage_rows", "window_rows", "gateway_rows"):
-            self.connection.execute(f"DELETE FROM {table} WHERE report_id NOT IN (SELECT report_id FROM reports)")
-
     def prune(self):
         cutoff = int((self.now() - dt.timedelta(days=RETENTION_DAYS)).timestamp())
         with self.lock:
-            self.delete_expired(cutoff)
+            self.connection.execute("DELETE FROM reports WHERE received_at < ?", (cutoff,))
+            for table, _, _ in ROW_TABLES.values():
+                self.connection.execute(f"DELETE FROM {table} WHERE report_id NOT IN (SELECT report_id FROM reports)")
             self.connection.commit()
 
     def insert(self, report):
         encoded = canonical(report)
         digest = hashlib.sha256(encoded).digest()
         received = int(self.now().timestamp())
-        cutoff = int((self.now() - dt.timedelta(days=RETENTION_DAYS)).timestamp())
         with self.lock:
             self.connection.execute("BEGIN IMMEDIATE")
             try:
-                self.delete_expired(cutoff)
                 existing = self.connection.execute(
                     "SELECT payload_hash FROM reports WHERE report_id = ?", (report["report_id"],)
                 ).fetchone()
@@ -335,25 +302,13 @@ class Store:
                                 received,
                             ),
                         )
-                        identifier = report["report_id"]
-                        self.connection.executemany(
-                            "INSERT INTO usage_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            [(identifier, row["source"], row["provider"], row["model"], row["prompts"],
-                              row["model_calls"], row["input_tokens"], row["output_tokens"],
-                              row["cached_read_tokens"], row["cache_creation_tokens"], row["reasoning_tokens"])
-                             for row in report["usage"]],
-                        )
-                        self.connection.executemany(
-                            "INSERT INTO window_rows VALUES (?, ?, ?, ?, ?, ?)",
-                            [(identifier, row["source"], row["window"], row["peak_percent"], int(row["hit_cap"]),
-                              row["readings"]) for row in report["windows"]],
-                        )
-                        self.connection.executemany(
-                            "INSERT INTO gateway_rows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            [(identifier, row["provider"], row["model"], row["requests"], row["ok"], row["failed"],
-                              row["input_tokens"], row["output_tokens"], row["cache_read_tokens"],
-                              row["cache_write_tokens"]) for row in report["gateway"]],
-                        )
+                        for name, (table, text, numbers) in ROW_TABLES.items():
+                            columns = ("report_id",) + text + numbers
+                            self.connection.executemany(
+                                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
+                                [(report["report_id"],) + tuple(row[c] for c in text + numbers)
+                                 for row in report[name]],
+                            )
                         outcome = "accepted"
                 self.connection.commit()
                 return outcome
@@ -362,7 +317,6 @@ class Store:
                 raise
 
     def summary(self):
-        self.prune()
         result = collections.defaultdict(int)
         with self.lock:
             rows = self.connection.execute(
@@ -386,7 +340,6 @@ class Store:
     def usage_summary(self):
         """Owner-only CLI totals per day, source, provider and model, plus the
         gateway's per-provider totals and plan-window cap hits."""
-        self.prune()
         with self.lock:
             usage = self.connection.execute(
                 "SELECT r.day, u.source, u.provider, u.model, COUNT(*), SUM(u.prompts), SUM(u.model_calls), "
@@ -417,12 +370,11 @@ class Store:
     def benchmarks(self):
         """Public aggregate table for the app's Compare line. Every cell needs
         MIN_CELL contributing reports; smaller cells are left out, not guessed."""
-        self.prune()
         today = self.now().date()
         since = (today - dt.timedelta(days=BENCHMARK_DAYS)).isoformat()
         with self.lock:
             usage = self.connection.execute(
-                "SELECT u.report_id, u.source, u.model, u.input_tokens, u.output_tokens, u.cached_read_tokens, "
+                "SELECT u.report_id, u.source, u.input_tokens, u.output_tokens, u.cached_read_tokens, "
                 "u.cache_creation_tokens, u.reasoning_tokens FROM usage_rows u JOIN reports r USING (report_id) "
                 "WHERE r.day >= ?", (since,)
             ).fetchall()
@@ -431,17 +383,9 @@ class Store:
                 "JOIN reports r USING (report_id) WHERE r.day >= ? GROUP BY 1, 2 ORDER BY 1, 2", (since,)
             ).fetchall()
         per_day = collections.defaultdict(int)
-        model_tokens = collections.defaultdict(int)
-        model_reports = collections.defaultdict(set)
-        source_tokens = collections.defaultdict(int)
         names = ("input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "reasoning_tokens")
-        for report_id, source, model, *numbers in usage:
-            tokens = day_tokens(source, dict(zip(names, numbers)))
-            per_day[(source, report_id)] += tokens
-            source_tokens[source] += tokens
-            if model != "unknown":
-                model_tokens[(source, model)] += tokens
-                model_reports[(source, model)].add(report_id)
+        for report_id, source, *numbers in usage:
+            per_day[(source, report_id)] += day_tokens(source, dict(zip(names, numbers)))
         daily = []
         for source in SOURCES:
             values = sorted(tokens for (name, _), tokens in per_day.items() if name == source)
@@ -456,15 +400,6 @@ class Store:
             for source, window, count, hits in windows
             if count >= MIN_CELL
         ]
-        models = []
-        for source in SOURCES:
-            total = source_tokens.get(source, 0)
-            shares = sorted(
-                ((tokens / total, model) for (name, model), tokens in model_tokens.items()
-                 if name == source and total and len(model_reports[(name, model)]) >= MIN_CELL),
-                reverse=True,
-            )[:10]
-            models.extend({"source": source, "model": model, "share": round(share, 3)} for share, model in shares)
         return {
             "schema_version": 1,
             "generated_day": today.isoformat(),
@@ -472,7 +407,8 @@ class Store:
             "min_reports": MIN_CELL,
             "daily_tokens": daily,
             "cap_hits": caps,
-            "models": models,
+            # 0.9.1 decodes this key as required and cannot update itself, so it stays, empty.
+            "models": [],
         }
 
     def close(self):

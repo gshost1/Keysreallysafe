@@ -361,19 +361,17 @@ final class ProductAnalytics: @unchecked Sendable {
     struct Benchmarks: Codable, Equatable, Sendable {
         struct Daily: Codable, Equatable, Sendable { var source: String; var reports: Int; var percentiles: [Int] }
         struct CapHit: Codable, Equatable, Sendable { var source: String; var window: String; var reports: Int; var hit_rate: Double }
-        struct ModelShare: Codable, Equatable, Sendable { var source: String; var model: String; var share: Double }
         var schema_version: Int
         var generated_day: String
         var window_days: Int
         var min_reports: Int
         var daily_tokens: [Daily]
         var cap_hits: [CapHit]
-        var models: [ModelShare]
 
         var isValid: Bool {
             let sources = Set(ProductAnalytics.sources.values)
             return schema_version == 1 && ProductAnalytics.validDay(generated_day) && (1...90).contains(window_days)
-                && (1...1_000_000).contains(min_reports) && daily_tokens.count <= 3 && cap_hits.count <= 8 && models.count <= 30
+                && (1...1_000_000).contains(min_reports) && daily_tokens.count <= 3 && cap_hits.count <= 8
                 && daily_tokens.allSatisfy { row in
                     sources.contains(row.source) && row.reports >= min_reports && row.percentiles.count == 19
                         && row.percentiles.allSatisfy { (0...ProductAnalytics.maxTokens).contains($0) }
@@ -382,10 +380,6 @@ final class ProductAnalytics: @unchecked Sendable {
                 && cap_hits.allSatisfy { row in
                     ProductAnalytics.windows.contains("\(row.source)|\(row.window)") && row.reports >= min_reports
                         && row.hit_rate.isFinite && (0...1).contains(row.hit_rate)
-                }
-                && models.allSatisfy { row in
-                    sources.contains(row.source) && ProductAnalytics.publicModel(row.model) == row.model
-                        && row.share.isFinite && (0...1).contains(row.share)
                 }
         }
     }
@@ -446,13 +440,12 @@ final class ProductAnalytics: @unchecked Sendable {
             let median = days[(days.count - 1) / 2]
             let above = daily.percentiles.filter { $0 <= median }.count * 5
             let caps = table.cap_hits.filter { $0.source == daily.source }.map {
-                ["window": $0.window, "hit_rate": $0.hit_rate, "reports": $0.reports] as [String: Any]
+                ["window": $0.window, "hit_rate": $0.hit_rate] as [String: Any]
             }
-            rows.append(["source": daily.source, "typical_day_tokens": median, "active_days": days.count,
-                         "higher_than_percent": above, "reports": daily.reports, "cap_hits": caps])
+            rows.append(["source": daily.source, "typical_day_tokens": median, "higher_than_percent": above, "cap_hits": caps])
         }
         guard !rows.isEmpty else { return nil }
-        return ["generated_day": table.generated_day, "window_days": table.window_days, "sources": rows]
+        return ["window_days": table.window_days, "sources": rows]
     }
 
     // MARK: Day summaries

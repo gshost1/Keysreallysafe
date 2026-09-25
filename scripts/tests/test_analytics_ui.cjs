@@ -169,9 +169,9 @@ async function open(page) {
     // Compare line: absent without sharing or without a benchmark; plain text when present.
     assert.equal(await page.locator("#usage-compare").isHidden(), true);
     status = { ...status, enabled: true, configured: true, compare: {
-      generated_day: "2026-09-19", window_days: 28,
-      sources: [{ source: "claude_code", typical_day_tokens: 42_000_000, active_days: 5, higher_than_percent: 80,
-        reports: 120, cap_hits: [{ window: "5h", hit_rate: 0.18, reports: 90 }, { window: "<img src=x onerror=alert(1)>", hit_rate: 0.5 }] },
+      window_days: 28,
+      sources: [{ source: "claude_code", typical_day_tokens: 42_000_000, higher_than_percent: 80,
+        cap_hits: [{ window: "5h", hit_rate: 0.18 }, { window: "<img src=x onerror=alert(1)>", hit_rate: 0.5 }] },
         { source: "<b>injected</b>", typical_day_tokens: 1, higher_than_percent: 5 }],
     } };
     await page.reload();

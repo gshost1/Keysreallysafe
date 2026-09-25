@@ -428,7 +428,6 @@ final class ProductAnalyticsTests: XCTestCase {
             "daily_tokens": [["source": "claude_code", "reports": 80,
                               "percentiles": (1...19).map { $0 * 1_000 }]],
             "cap_hits": [["source": "claude_code", "window": "5h", "reports": 60, "hit_rate": 0.25]],
-            "models": [["source": "claude_code", "model": "claude-fable-5-1", "share": 0.9]],
         ]
         transport.fetches[0].complete(try JSONSerialization.data(withJSONObject: table))
         XCTAssertNil(try analytics.status()["compare"] as? [String: Any], "No local activity yet: no line")
@@ -440,7 +439,6 @@ final class ProductAnalyticsTests: XCTestCase {
         let compare = try XCTUnwrap(try analytics.status()["compare"] as? [String: Any])
         let claude = try XCTUnwrap((compare["sources"] as? [[String: Any]])?.first)
         XCTAssertEqual(claude["typical_day_tokens"] as? Int, 5_220)
-        XCTAssertEqual(claude["active_days"] as? Int, 3)
         XCTAssertEqual(claude["higher_than_percent"] as? Int, 25)
         XCTAssertEqual((claude["cap_hits"] as? [[String: Any]])?.first?["hit_rate"] as? Double, 0.25)
         clock.advance(3_600)

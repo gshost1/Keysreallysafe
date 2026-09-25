@@ -137,6 +137,7 @@ class CollectorTests(unittest.TestCase):
             report(usage=[usage_row(extra=1)]),
             report(usage=[usage_row(source="cursor")]),
             report(usage=[usage_row(provider="acme-internal")]),
+            report(usage=[usage_row(provider=[0])]),
             report(usage=[usage_row(model="ft:gpt-4o:acme:secret:1")]),
             report(usage=[usage_row(model="acme-prod-deployment")]),
             report(usage=[usage_row(model="claude-" + "x" * 64)]),
@@ -233,6 +234,7 @@ class CollectorTests(unittest.TestCase):
         cutoff = int((dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=31)).timestamp())
         self.server.store.connection.execute("UPDATE reports SET received_at = ?", (cutoff,))
         self.server.store.connection.commit()
+        self.server.store.prune()
         self.assertEqual(self.server.store.summary(), [])
 
     def test_accepts_empty_counts_and_arrays_and_stores_rows(self):
@@ -246,6 +248,7 @@ class CollectorTests(unittest.TestCase):
         cutoff = int((dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=31)).timestamp())
         self.server.store.connection.execute("UPDATE reports SET received_at = ?", (cutoff,))
         self.server.store.connection.commit()
+        self.server.store.prune()
         self.assertEqual(self.server.store.usage_summary(), {"usage": [], "gateway": [], "windows": []})
         for table in ("usage_rows", "window_rows", "gateway_rows"):
             self.assertEqual(self.server.store.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
@@ -293,8 +296,9 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(claude["percentiles"][9], 25_000_000)
         self.assertEqual(claude["percentiles"], sorted(claude["percentiles"]))
         self.assertEqual(table["cap_hits"], [{"source": "claude_code", "window": "5h", "reports": 50, "hit_rate": 0.2}])
-        # Codex appeared in 25 reports, under the minimum: no daily cell and no model share.
-        self.assertEqual(table["models"], [{"source": "claude_code", "model": "claude-fable-5-1", "share": 1.0}])
+        # Codex appeared in 25 reports, under the minimum: no daily cell. Model shares are no
+        # longer published, but the key stays for 0.9.1's decoder.
+        self.assertEqual(table["models"], [])
         # The published response is cached, so it still reads as empty until the TTL passes.
         self.assertEqual(json.loads(self.get("/v1/benchmarks")[2])["daily_tokens"], [])
         self.server.benchmark_at -= collector.BENCHMARK_TTL

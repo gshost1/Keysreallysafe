@@ -28,7 +28,7 @@ The counters are operational, not task-quality labels. A gateway success means t
 
 ## Compare
 
-While sharing is on, the app downloads `GET /v1/benchmarks` from the same host at most once a day (one attempt per six hours), through the same ephemeral transport, and caches it in the local catalog. The request carries nothing about the user. The table contains, over the last 28 days of received reports: percentiles (5% steps, rounded to two significant figures) of daily tokens per tool, plan-window cap-hit rates, and model shares. A cell appears only when at least 50 reports contribute to it.
+While sharing is on, the app downloads `GET /v1/benchmarks` from the same host at most once a day (one attempt per six hours), through the same ephemeral transport, and caches it in the local catalog. The request carries nothing about the user. The table contains, over the last 28 days of received reports: percentiles (5% steps, rounded to two significant figures) of daily tokens per tool and plan-window cap-hit rates. A cell appears only when at least 50 reports contribute to it.
 
 The app computes the comparison locally: this Mac's typical day is the median of its active days in the last seven closed UTC days, using the dashboard's own token rule (Claude Code includes cache reads and writes; Codex and Grok include reasoning). A tool without a published cell or without local activity gets no line; nothing is estimated. Reports are per day, not per person, so the line compares days ("more than 80% of shared days"), not users.
 
@@ -48,12 +48,4 @@ The collector keeps received reports for 30 days and offers an owner-only local 
 
 ## Offline verification
 
-```sh
-swift test
-python3 -m unittest Analytics/test_collector.py
-python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-node --check Web/analytics.js
-node scripts/tests/test_analytics_ui.cjs
-```
-
-The last command requires Playwright and its Chromium browser in the Node environment. The repository pins Playwright 1.62.1 in `scripts/tests/package.json`; after `npm ci` there, run `npx --no-install playwright install chromium` in that directory and start the browser scripts with `NODE_PATH=scripts/tests/node_modules`, as CI does for this script and `scripts/tests/test_keys_dashboard_ui.cjs`. The schema shared by the app and the collector is pinned by the synthetic `Fixtures/analytics/report-golden.json`, which both the Swift and the collector tests parse, and both sides pin their provider allowlist to `Fixtures/providers.json`. Its API is a local synthetic fixture; it does not use the running Keys app or send reports externally. Swift tests use temporary catalogs, a fake transport and in-memory credentials. Collector tests use a temporary database and loopback HTTP sockets. Live deployment and Apple signing are separate validation steps.
+CI runs the full offline suite, listed in `.github/workflows/test.yml`. The schema shared by the app and the collector is pinned by the synthetic `Fixtures/analytics/report-golden.json`, which both the Swift and the collector tests parse, and both sides pin their provider allowlist to `Fixtures/providers.json`. Tests use temporary catalogs and databases, a fake transport and loopback sockets, and never send reports to the live collector. Live deployment and Apple signing are separate validation steps.
