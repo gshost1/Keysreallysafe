@@ -10,9 +10,8 @@ The package has a strict runtime allowlist: `bin/keys`, the static Web files
 (including the Privacy dialog's `analytics.js`) and the `models.json` fixture
 catalog. An explicit documentation allowlist includes the root MIT license,
 third-party notices, preserved legacy MIT and Swift Argument Parser license
-texts, main README, signing guide, collector README, the MVP quickstart and
-acceptance checklist (`docs/mvp-quickstart.md`, `docs/mvp-acceptance.md`),
-this guide and the product analytics guide. Other local notes are excluded.
+texts, main README, signing guide, collector README, this guide and the
+product analytics guide. Other local notes are excluded.
 Collector deployment source is delivered separately; the application package
 does not deploy it. It refuses symlinks in every packaged input. It does not
 package tests, development fixtures, environment files or anything else outside

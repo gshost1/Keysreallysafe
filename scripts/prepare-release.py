@@ -26,9 +26,7 @@ DOC_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md",
     "licenses/Keysreallysafe-legacy-MIT.txt", "licenses/swift-argument-parser.txt",
     "README.md", "SIGNING.md", "Analytics/README.md",
-    # The recipient of a package needs the install and acceptance instructions inside it, not in
-    # a checkout they do not have.
-    "docs/mvp-quickstart.md", "docs/mvp-acceptance.md", "docs/release.md", "docs/product-analytics.md",
+    "docs/release.md", "docs/product-analytics.md",
 )
 
 

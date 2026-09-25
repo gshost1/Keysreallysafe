@@ -36,7 +36,9 @@ each secret read. Do not disable Keychain access controls or allow all apps.
 adds a synthetic item with build 1, replaces the executable with different build
 2 at the same path, and reads with UI interaction disabled. It also requires an
 explicit authorization failure for an unrelated signer. The temporary Keychain
-is deleted afterward. It never reads vault secrets.
+is deleted afterward. It never reads vault secrets. Run it outside a sandbox
+before installing a new signing configuration, and don't claim upgrade
+continuity until it passes on the target Mac.
 
 Run `KEYS_SIGNING_IDENTITY=<fingerprint> swift test --filter StableSigningTests`
 outside a sandbox for the certificate-backed fresh install, upgrade, legacy

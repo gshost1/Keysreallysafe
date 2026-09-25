@@ -19,6 +19,21 @@ https://keysrs.com or the [latest release](https://github.com/gshost1/Keysreally
 There is no trial, license key or account. Versions 0.6 to 0.8 had a 14-day
 trial; 0.9.0 removed it, so a lapsed trial clears by updating.
 
+Open the disk image, copy the `Keysrs-arm64` folder somewhere permanent, and
+run it from inside that folder:
+
+```sh
+./bin/keys autostart
+```
+
+That installs a per-user login item serving `http://127.0.0.1:12766/` and the
+menu bar item from a snapshot, so run `./bin/keys autostart` again after
+replacing the folder with a newer release. Keep `bin/keys` beside its `Web/`
+folder, or name moved assets with `KEYS_WEB_ROOT=/path/to/Web`.
+`./bin/keys autostart --remove` uninstalls; it also deletes the retained
+`~/Library/Application Support/Keysreallysafe/.previous/`, so copy that first
+if you might roll back (see `ROLLBACK.md` in the folder).
+
 ## Privacy boundaries
 
 - The dashboard and its API bind to `127.0.0.1` only. Optional product analytics
@@ -48,23 +63,15 @@ trial; 0.9.0 removed it, so a lapsed trial clears by updating.
   Touch ID per task, bound to one key, one host, a method and path scope and
   an expiry. Screen lock, revoke, gateway off or a restart kills it.
 
-## Install
+## Build from source
 
-Requires macOS and Swift.
-
-Local builds need an Apple Development or Developer ID Application signing
-certificate in the login Keychain. Create one in Xcode Settings → Apple Accounts
-→ your team → Manage Certificates. Use the same team for every build.
-`security find-identity -v -p codesigning` lists the certificate fingerprints.
-Set `KEYS_SIGNING_IDENTITY` to the chosen 40-character SHA-1 fingerprint, or save
-that fingerprint alone in `~/.config/keysreallysafe/signing-identity`.
-The build never falls back to ad-hoc signing. Installation preserves the signed
-binary and rejects a changed identity before stopping the running app.
+Requires macOS and Swift. Builds need an Apple Development or Developer ID
+Application certificate and never fall back to ad-hoc signing; setup,
+`KEYS_SIGNING_IDENTITY` and upgrade checks are in [SIGNING.md](SIGNING.md).
 
 ```sh
 git clone <this repo> && cd Keysreallysafe
-swift build
-./scripts/codesign.sh .build/debug/keys
+make build
 ./.build/debug/keys autostart
 ```
 
@@ -75,20 +82,6 @@ shows `C —`. All plan windows are in the dropdown. Re-run it
 after every build; the login item serves a snapshot. Put `.build/debug/keys`
 on your `PATH` as `keys` for the commands below.
 
-When migrating from an older ad-hoc build, each existing key may need one native
-Keychain password approval using **Always Allow** for the newly signed app.
-Touch ID remains required by the app when reading secrets. Subsequent builds
-use the same designated requirement and Apple team Keychain partition, so
-ordinary updates do not repeat this migration. A local self-signed certificate
-does not fix this: macOS still assigns it a build-specific partition.
-
-Before installing a new signing configuration, run
-`python3 scripts/test-signing-upgrade.py` outside a sandbox. It creates one
-disposable item, reads it from two different signed builds at the same path with
-interaction disabled, rejects an unrelated ad-hoc signer, and deletes the item.
-It never accesses vault items. Do not claim upgrade continuity until this test
-passes on the target Mac.
-
 Claude's Fable quota comes from Claude Code's account-matched `/usage` cache in
 `~/.claude.json`. With Keep Claude Limits Fresh on (menu bar or welcome window; off
 by default), the menu-bar app refreshes that cache every five minutes through
@@ -98,14 +91,6 @@ older than one hour or past their reset are ignored.
 
 Remove everything with `keys autostart --remove` (login item and snapshot) and
 `keys purge` (catalog and every Keychain item, after Touch ID).
-
-To run a prepared package on a second Mac without a Swift toolchain there, see
-the [MVP quickstart](docs/mvp-quickstart.md) and the
-[acceptance checklist](docs/mvp-acceptance.md), which records what has been
-verified on a second Mac. Releases are Developer ID signed, notarized and
-stapled DMGs published on the GitHub Releases page and linked from
-https://keysrs.com. A candidate that has not been through notarization must be
-verified as the quickstart describes before it is trusted.
 
 ## The site
 
@@ -214,10 +199,6 @@ Presence failures are told apart: `Mac authentication cancelled`, `failed`
 (wrong password), or `unavailable` with the reason (no GUI session, a sandbox,
 nothing enrolled). The exit code is 3 for all three.
 
-Presence failures are told apart: `Mac authentication cancelled`, `failed`
-(wrong password), or `unavailable` with the reason (no GUI session, a sandbox,
-nothing enrolled). The exit code is 3 for all three.
-
 ## The gateway
 
 Two kinds of credential open the gateway, and a request without one of them
@@ -232,9 +213,7 @@ keys grant router --task "list models" --minutes 30 --methods GET --paths /model
 # prints ksf_… once, plus the base URL http://127.0.0.1:12767/router/v1
 ```
 
-One Touch ID, whose prompt names the task, the provider, the host and the
-lifetime. Back comes a token that the client uses *as its API key*, plus the
-base URL:
+Back comes a token that the client uses *as its API key*, plus the base URL:
 
 ```
 base url http://127.0.0.1:12767/router/v1
@@ -385,16 +364,16 @@ and puts the old one back if signing or launch fails.
 ## Development
 
 ```sh
-swift test                      # synthetic fixtures only, no network
+CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```
 
 `Web/` is plain HTML, CSS and JavaScript with no build step and no external
 resources. `Fixtures/` holds synthetic session logs for the tests, the price
-table, and the provider catalog. CI runs `swift test` on macOS, the Python
-tests in `scripts/tests` and the dashboard browser suites, with Playwright pinned
-in `scripts/tests/package.json`.
+table, and the provider catalog. `.github/workflows/test.yml` is the full list
+of checks CI runs, including the dashboard browser suites, with Playwright
+pinned in `scripts/tests/package.json`.
 
 ## License
 
