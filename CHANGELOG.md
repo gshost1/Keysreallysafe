@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1 — 2026-09-26
+
+- **Sort your API keys.** A Sort by menu above the key table orders them by name, recently used, most used this month (requests through the gateway), newest or oldest. Keys never used sort last, and the choice is remembered in that browser view.
+- The disk image opens as a laid-out install window: the Keysrs name, a one-line description and an arrow from the app to Applications.
+
 ## 0.10.0 — 2026-09-25
 
 - **Keysrs.app.** The disk image now holds `Keysrs.app` and an Applications shortcut: drag it to Applications and open it. No folder to keep and no Terminal step. It is a regular Mac app with a Dock icon, a main menu and a window showing the dashboard; the menu bar meter stays. Closing the window keeps the meter, usage tracking and the gateway running, the Dock icon or Open Keysrs brings the window back, and `⌘Q` quits.
