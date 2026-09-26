@@ -42,9 +42,10 @@ final class BackendContractUITests: XCTestCase {
             completion(false)
             return NoUpload()
         }
-        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) {
+        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload {
             lock.lock(); attempts += 1; lock.unlock()
             completion(nil)
+            return NoUpload()
         }
     }
 

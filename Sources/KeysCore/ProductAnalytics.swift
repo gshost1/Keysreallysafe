@@ -29,7 +29,7 @@ protocol AnalyticsUpload: Sendable { func cancel() }
 protocol AnalyticsTransport: Sendable {
     func send(to endpoint: URL, data: Data, completion: @escaping @Sendable (Bool) -> Void) -> any AnalyticsUpload
     /// GET with no body; completes with the response body only on a 200.
-    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void)
+    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload
 }
 
 /// Opt-in aggregate reports. The counters come only from the closed event enum.
@@ -57,6 +57,10 @@ final class ProductAnalytics: @unchecked Sendable {
     /// cancel it, and the report it carries.
     private var upload: (any AnalyticsUpload)?
     private var uploading: String?
+    /// The benchmarks GET in flight, kept so opting out can cancel it, and the attempt it
+    /// belongs to: a completion from any other attempt is stale and changes nothing.
+    private var fetching: (any AnalyticsUpload)?
+    private var fetchAttempt: UUID?
     private var timer: DispatchSourceTimer?
 
     struct UsageRow: Codable, Equatable, Sendable {
@@ -149,7 +153,7 @@ final class ProductAnalytics: @unchecked Sendable {
         try? update { _ in }
     }
 
-    deinit { timer?.cancel(); upload?.cancel() }
+    deinit { timer?.cancel(); upload?.cancel(); fetching?.cancel() }
 
     /// Same host as the report endpoint; the Privacy dialog shows that host.
     var benchmarksURL: URL? {
@@ -207,9 +211,11 @@ final class ProductAnalytics: @unchecked Sendable {
             }
         }
         if !enabled {
-            let previous = upload
+            let previous = upload, previousFetch = fetching
             upload = nil; uploading = nil
+            fetching = nil; fetchAttempt = nil
             previous?.cancel()
+            previousFetch?.cancel()
             try? catalog.setMeta(Self.benchmarkKey, "")
         }
     }
@@ -371,13 +377,19 @@ final class ProductAnalytics: @unchecked Sendable {
         guard let data = try? JSONEncoder().encode(attempt) else { return }
         // Recording the attempt first is what keeps a second fetch from starting while this one runs.
         try? catalog.setMeta(Self.benchmarkKey, String(decoding: data, as: UTF8.self))
-        transport.fetch(from: url, maxBytes: Self.maxBenchmarkBytes) { [weak self] body in
-            self?.completeBenchmarks(body, day: today, attemptedAt: timestamp)
+        let id = UUID()
+        fetchAttempt = id
+        let request = transport.fetch(from: url, maxBytes: Self.maxBenchmarkBytes) { [weak self] body in
+            self?.completeBenchmarks(body, attempt: id, day: today, attemptedAt: timestamp)
         }
+        // A transport that answers synchronously has already finished this attempt.
+        if fetchAttempt == id { fetching = request }
     }
 
-    private func completeBenchmarks(_ body: Data?, day: String, attemptedAt: Double) {
+    private func completeBenchmarks(_ body: Data?, attempt: UUID, day: String, attemptedAt: Double) {
         operationLock.lock(); defer { operationLock.unlock() }
+        guard fetchAttempt == attempt else { return }
+        fetching = nil; fetchAttempt = nil
         guard let body, body.count <= Self.maxBenchmarkBytes,
               let table = try? JSONDecoder().decode(Benchmarks.self, from: body), table.isValid,
               (try? update { $0.enabled }) == true,
@@ -643,10 +655,10 @@ struct AnalyticsHTTPTransport: AnalyticsTransport {
         return AnalyticsHTTPUpload(request: request, expect: 204, maxBytes: 4_096) { completion($0 != nil) }
     }
 
-    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) {
+    func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        _ = AnalyticsHTTPUpload(request: request, expect: 200, maxBytes: maxBytes, completion: completion)
+        return AnalyticsHTTPUpload(request: request, expect: 200, maxBytes: maxBytes, completion: completion)
     }
 }
 

@@ -32,11 +32,14 @@ final class ProductAnalyticsTests: XCTestCase {
         struct Fetch {
             let url: URL
             let complete: @Sendable (Data?) -> Void
+            let upload: Upload
         }
         private var fetchStorage: [Fetch] = []
         var fetches: [Fetch] { lock.lock(); defer { lock.unlock() }; return fetchStorage }
-        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) {
-            lock.lock(); fetchStorage.append(Fetch(url: url, complete: completion)); lock.unlock()
+        func fetch(from url: URL, maxBytes: Int, completion: @escaping @Sendable (Data?) -> Void) -> any AnalyticsUpload {
+            let upload = Upload()
+            lock.lock(); fetchStorage.append(Fetch(url: url, complete: completion, upload: upload)); lock.unlock()
+            return upload
         }
     }
     let endpoint = URL(string: "https://analytics.example/v1/reports")!
@@ -445,6 +448,32 @@ final class ProductAnalyticsTests: XCTestCase {
         try analytics.setEnabled(false, consentVersion: 2)
         XCTAssertTrue(try analytics.status()["compare"] is NSNull)
         XCTAssertEqual(try db.metaValue(ProductAnalytics.benchmarkKey), "")
+    }
+
+    func testOptingOutCancelsTheBenchmarksFetchAndIgnoresItsLateAnswer() throws {
+        let (db, clock, transport, analytics) = try harness()
+        try analytics.setEnabled(true, consentVersion: 2)
+        analytics.refreshBenchmarks()
+        let inFlight = try XCTUnwrap(transport.fetches.first)
+        XCTAssertFalse(inFlight.upload.isCancelled)
+        try analytics.setEnabled(false, consentVersion: 2)
+        XCTAssertTrue(inFlight.upload.isCancelled, "opting out cancels the GET in flight")
+
+        // Sharing is turned back on, and only then does the old request answer.
+        try analytics.setEnabled(true, consentVersion: 2)
+        let table: [String: Any] = [
+            "schema_version": 1, "generated_day": "2026-05-19", "window_days": 28, "min_reports": 50,
+            "daily_tokens": [["source": "claude_code", "reports": 80, "percentiles": (1...19).map { $0 * 1_000 }]],
+            "cap_hits": [],
+        ]
+        inFlight.complete(try JSONSerialization.data(withJSONObject: table))
+        XCTAssertEqual(try db.metaValue(ProductAnalytics.benchmarkKey), "", "a stale answer caches nothing")
+
+        clock.advance(7 * 3_600)
+        analytics.refreshBenchmarks()
+        XCTAssertEqual(transport.fetches.count, 2, "the new consent starts its own fetch")
+        transport.fetches[1].complete(try JSONSerialization.data(withJSONObject: table))
+        XCTAssertNotEqual(try db.metaValue(ProductAnalytics.benchmarkKey), "")
     }
 
     func testInvalidBenchmarksAreIgnored() throws {
