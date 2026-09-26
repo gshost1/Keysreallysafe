@@ -1580,6 +1580,30 @@ test("repeated reveals of different keys never show the wrong secret", async (pa
   await waitDialog(page, "dlg-reveal", false);
 });
 
+test("key sort orders rows and survives a reload", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#keys-body tr[data-name]").first().waitFor();
+  const order = () => page.locator("#keys-body tr[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
+  const names = keys.map((k) => k.name).sort();
+  assert.deepEqual(await order(), names, "name order is the default");
+  const expect = {
+    // Never-used keys go last, then by name.
+    recent: [...keys].sort((a, b) => (b.last_used_at || "").localeCompare(a.last_used_at || "") || a.name.localeCompare(b.name)),
+    most: [...keys].sort((a, b) => (b.gateway_month_calls || 0) - (a.gateway_month_calls || 0) || a.name.localeCompare(b.name)),
+    newest: [...keys].sort((a, b) => b.created_at.localeCompare(a.created_at) || a.name.localeCompare(b.name)),
+    oldest: [...keys].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.name.localeCompare(b.name)),
+  };
+  for (const [value, sorted] of Object.entries(expect)) {
+    await page.selectOption("#keys-sort", value);
+    assert.deepEqual(await order(), sorted.map((k) => k.name), value);
+  }
+  // A fresh load of the page opens on another pane; go back to the keys.
+  await openKeys(page, origin);
+  await page.locator("#keys-body tr[data-name]").first().waitFor();
+  assert.equal(await page.inputValue("#keys-sort"), "oldest");
+  assert.deepEqual(await order(), expect.oldest.map((k) => k.name), "the choice is remembered");
+});
+
 test("long key metadata keeps every action inside the viewport", async (page, origin) => {
   keys[0].name = "acceptance-" + "long-key-name-".repeat(8);
   keys[0].host = "api.openai.com";

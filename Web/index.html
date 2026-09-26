@@ -106,6 +106,15 @@
       <!-- The unit for the gateway column, outside the table head so it survives the narrow
            layout that drops the head entirely. -->
       <div class="keys-toolbar" id="keys-toolbar" hidden>
+        <label class="keys-sort">Sort by
+          <select id="keys-sort">
+            <option value="name">Name</option>
+            <option value="recent">Recently used</option>
+            <option value="most">Most used this month</option>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+          </select>
+        </label>
         <span>Via gateway, in</span>
         <button type="button" id="keys-unit" class="link th-unit"></button>
       </div>

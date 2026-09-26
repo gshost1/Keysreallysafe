@@ -536,6 +536,11 @@
     btn.title = btn.getAttribute("aria-label");
   }
   $("keys-unit").addEventListener("click", () => setUnit(usdMode() ? "tokens" : "usd"));
+  $("keys-sort").addEventListener("change", (e) => {
+    state.keySort = keySorts[e.target.value] ? e.target.value : "name";
+    try { localStorage.setItem("ksf.keysort", state.keySort); } catch { /* fine */ }
+    renderKeys();
+  });
   const usdMode = () => state.unit === "usd";
   const requestMode = () => state.unit === "requests";
 
@@ -1381,9 +1386,23 @@
     }
   }
 
+  // Per-viewer convenience only; the page works the same without storage.
+  const keySorts = {
+    name: (a, b) => a.name.localeCompare(b.name),
+    // Keys never copied, revealed or proxied sort last rather than first.
+    recent: (a, b) => (b.last_used_at || "").localeCompare(a.last_used_at || ""),
+    most: (a, b) => (Number(b.gateway_month_calls) || 0) - (Number(a.gateway_month_calls) || 0),
+    newest: (a, b) => (b.created_at || "").localeCompare(a.created_at || ""),
+    oldest: (a, b) => (a.created_at || "\uffff").localeCompare(b.created_at || "\uffff"),
+  };
+  const readKeySort = () => { try { const v = localStorage.getItem("ksf.keysort"); return keySorts[v] ? v : "name"; } catch { return "name"; } };
+  state.keySort = readKeySort();
+
   function renderKeys(opts = {}) {
     const body = $("keys-body");
-    const keys = state.keys;
+    const by = keySorts[state.keySort] || keySorts.name;
+    const keys = [...state.keys].sort((a, b) => by(a, b) || keySorts.name(a, b));
+    $("keys-sort").value = state.keySort;
     $("keys-count").textContent = plural(keys.length, "key", "keys");
     syncOnboard();
     $("keys-table").hidden = keys.length === 0;
