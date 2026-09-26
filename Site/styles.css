@@ -237,7 +237,8 @@ code { font-family: var(--mono); font-size: .86em; background: var(--bg-2); bord
 
 footer { background: var(--bg-2); border-top: 1px solid var(--line); padding: 28px 0 44px; font-size: 13px; color: var(--ink-3); }
 footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px 32px; }
-footer nav { display: flex; gap: 22px; }
+footer nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+footer nav.guides { flex-basis: 100%; }
 footer nav a { color: var(--ink-2); }
 footer nav a:hover { color: var(--ink); text-decoration: underline; }
 footer .legal { max-width: 62ch; }
@@ -310,5 +311,6 @@ article.legal p + p { margin-top: 12px; }
 article.legal ul { padding-left: 20px; }
 article.legal a { color: var(--blue-ink); text-decoration: underline; text-underline-offset: 2px; }
 article.legal a:hover { text-decoration: underline; }
+article.legal a.btn { text-decoration: none; }
 article.legal .meta { color: var(--ink-3); font-size: 14px; }
 

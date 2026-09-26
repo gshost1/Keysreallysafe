@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code usage limits: the 5-hour and weekly windows — Keysrs</title>
+<meta name="description" content="How Claude Code&#x27;s 5-hour session limit and weekly limit work on Pro and Max, what happens when you hit one, and where to see how much you have left.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="canonical" href="https://keysrs.com/claude-code-usage-limits">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Keysrs">
+<meta property="og:title" content="Claude Code usage limits: the 5-hour and weekly windows — Keysrs">
+<meta property="og:description" content="How Claude Code&#x27;s 5-hour session limit and weekly limit work on Pro and Max, what happens when you hit one, and where to see how much you have left.">
+<meta property="og:url" content="https://keysrs.com/claude-code-usage-limits">
+<meta property="og:image" content="https://keysrs.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="styles.css">
+<script src="posthog.js" defer></script>
+</head>
+<body>
+<header class="nav"><div class="wrap"><a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a><nav><a href="/#features">Features</a><a href="/#privacy">Privacy</a><a href="/#faq">FAQ</a><a class="btn primary" href="/#pricing">Download</a></nav></div></header>
+
+<article class="legal">
+<h1>How Claude Code usage limits work</h1>
+<p class="meta">Checked against the sources linked on this page on 2026-09-25.</p>
+
+<h2>What are the Claude Code usage limits?</h2>
+<p>On a Pro or Max plan, Claude Code runs against two limits at once: a session limit that resets every five hours and a weekly limit across all models. <a href="https://support.claude.com/en/articles/8325606-what-is-the-pro-plan">Anthropic's Pro plan page</a> describes both, and says further caps may apply at Anthropic's discretion.</p>
+<p>Max 5x gives five times Pro's per-session allowance and Max 20x gives twenty times, with the same five-hour reset and weekly limit (<a href="https://support.claude.com/en/articles/11049741-what-is-the-max-plan">Max plan page</a>).</p>
+
+<h2>When does the weekly limit reset?</h2>
+<p>At a fixed day and time set for your account. It is not tied to when you first use Claude or when you subscribed (<a href="https://support.claude.com/en/articles/8325606-what-is-the-pro-plan">Pro plan page</a>).</p>
+
+<h2>Do claude.ai and Claude Code share the same limit?</h2>
+<p>Yes. Chats on claude.ai, Claude Desktop and Claude Code all count against the same allowance (<a href="https://support.claude.com/en/articles/11647753-how-do-usage-and-length-limits-work">how usage limits work</a>). A long chat in the browser leaves less for the terminal.</p>
+
+<h2>Are there separate Opus and Sonnet limits?</h2>
+<p>There can be. Claude Code can report a session limit, a weekly limit, an Opus limit or a Sonnet limit. The session and weekly limits cover every model, so switching model does not help. An Opus or Sonnet limit covers only that family, so switching with <code>/model</code> lets you keep working (<a href="https://code.claude.com/docs/en/errors">Claude Code error reference</a>).</p>
+
+<h2>What happens when you hit a limit?</h2>
+<p>Claude Code stops sending requests until the reset time it shows. In an interactive session it can wait and carry on after the reset by itself (<a href="https://code.claude.com/docs/en/errors">error reference</a>). Your other options are to wait, buy more usage with <code>/usage-credits</code> on Pro and Max (<a href="https://code.claude.com/docs/en/commands">commands</a>), switch to a Claude Console account billed at API rates, or move up a plan (<a href="https://support.claude.com/en/articles/11145838-use-claude-code-with-your-pro-or-max-plan">using Claude Code with Pro or Max</a>).</p>
+
+<h2>How do I check my Claude Code usage?</h2>
+<p>Type <code>/usage</code> in Claude Code. It shows your plan limits and what is counting against them (<a href="https://code.claude.com/docs/en/commands">commands</a>). On the web, Settings › Usage on claude.ai shows the current session with its time remaining and the weekly limits with their reset time (<a href="https://support.claude.com/en/articles/9797557-usage-limit-best-practices">usage limit best practices</a>). Claude Code also warns you as a limit gets close.</p>
+
+<h2>Can I see Claude Code limits in the Mac menu bar?</h2>
+<p>Yes, with Keysrs. It reads the five-hour, weekly and Fable percentages that Claude Code already keeps in <code>~/.claude.json</code>, and shows each window as percent used and time to reset. It makes no request of its own and never opens Claude's login files. If you want the numbers refreshed while Claude Code is idle, Keep Claude Limits Fresh (off by default) runs Claude Code's own <code>/usage</code> every five minutes with the login it already has. Codex and Grok windows sit alongside.</p>
+<p><a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download Keysrs for Mac</a></p>
+<p class="meta">Free and MIT licensed. macOS 14 or newer on Apple Silicon. Open the disk image and drag Keysrs to Applications.</p>
+
+<h2>Related</h2>
+<ul>
+<li><a href="/codex-usage-limits">Where to see your Codex usage and limits</a></li>
+<li><a href="/api-keys-out-of-env-mac">How to keep API keys out of .env files on a Mac</a></li>
+<li><a href="/keysrs-vs-ccusage-vs-codexbar">Keysrs vs ccusage vs CodexBar</a></li>
+<li><a href="/">Keysrs home</a></li>
+</ul>
+</article>
+
+<footer><div class="wrap"><nav><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:support@keysrs.com">Support</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></nav><div class="legal">© 2026 Keysrs</div></div></footer>
+</body>
+</html>

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keysrs vs ccusage vs CodexBar — Keysrs</title>
+<meta name="description" content="An honest comparison of three AI usage trackers: what Keysrs, ccusage and CodexBar each do, where their numbers come from, and when the others are the better pick.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="canonical" href="https://keysrs.com/keysrs-vs-ccusage-vs-codexbar">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Keysrs">
+<meta property="og:title" content="Keysrs vs ccusage vs CodexBar — Keysrs">
+<meta property="og:description" content="An honest comparison of three AI usage trackers: what Keysrs, ccusage and CodexBar each do, where their numbers come from, and when the others are the better pick.">
+<meta property="og:url" content="https://keysrs.com/keysrs-vs-ccusage-vs-codexbar">
+<meta property="og:image" content="https://keysrs.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="styles.css">
+<script src="posthog.js" defer></script>
+</head>
+<body>
+<header class="nav"><div class="wrap"><a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a><nav><a href="/#features">Features</a><a href="/#privacy">Privacy</a><a href="/#faq">FAQ</a><a class="btn primary" href="/#pricing">Download</a></nav></div></header>
+
+<article class="legal">
+<h1>Keysrs vs ccusage vs CodexBar</h1>
+<p class="meta">Written by the Keysrs author. Facts about ccusage and CodexBar come from their own repositories, linked below. Checked against the sources linked on this page on 2026-09-25.</p>
+
+<h2>What's the short answer?</h2>
+<p>Use <strong>ccusage</strong> for token and cost reports in a terminal on any OS. Use <strong>CodexBar</strong> for live plan limits across many providers, if you're fine with it reusing your provider logins. Use <strong>Keysrs</strong> for Claude Code, Codex and Grok limits from local files only, plus a Touch ID vault for your API keys.</p>
+
+<h2>What does each one do?</h2>
+<ul>
+<li><strong><a href="https://github.com/ccusage/ccusage">ccusage</a></strong> is a command-line tool that reports token usage and cost from local logs. It needs Node or Bun, is MIT-licensed, and covers Claude Code, Codex, Gemini CLI, Grok Build CLI and many other coding agents. Its <code>blocks</code> report groups Claude Code usage into five-hour windows worked out from the logs.</li>
+<li><strong><a href="https://github.com/steipete/CodexBar">CodexBar</a></strong> is a macOS 14+ menu bar app, with a CLI, widgets and a Linux desktop app. It is MIT-licensed and covers dozens of providers, including Codex, Claude, Cursor, Gemini and Copilot. It shows the session, weekly and monthly limits the providers report, with reset countdowns.</li>
+<li><strong><a href="/">Keysrs</a></strong> is a macOS 14+ menu bar app for Apple Silicon, MIT-licensed. It shows Claude Code, Codex and Grok plan windows, charts tokens and estimated list-price cost, and keeps API keys in the Keychain behind Touch ID with a scoped local gateway.</li>
+</ul>
+
+<h2>Where does each one get its numbers?</h2>
+<ul>
+<li><strong>ccusage</strong> reads local files. It fetches model prices from LiteLLM and models.dev unless you run it with <code>--offline</code> (<a href="https://github.com/ccusage/ccusage/blob/main/docs/guide/cost-modes.md">cost modes</a>).</li>
+<li><strong>CodexBar</strong> mostly asks the providers. For Codex it reads the OAuth token in <code>~/.codex/auth.json</code> and calls ChatGPT's usage endpoint (<a href="https://github.com/steipete/CodexBar/blob/main/docs/codex.md">Codex docs</a>). For Claude it uses Claude Code's stored OAuth credentials, the CLI, or claude.ai browser cookies (<a href="https://github.com/steipete/CodexBar/blob/main/docs/claude.md">Claude docs</a>). For Cursor it uses browser session cookies. That is why its limits are current: they come straight from the provider.</li>
+<li><strong>Keysrs</strong> reads only the files the tools write: Claude Code's usage cache, Codex session logs and Grok's logs. It never reads auth files or cookies and never visits provider websites. The limits are the ones the tools last saved, so they are only as fresh as your last session, unless you turn on Keep Claude Limits Fresh, which runs Claude Code's own <code>/usage</code>.</li>
+</ul>
+
+<h2>Which one stores API keys?</h2>
+<p>Only Keysrs has a vault. CodexBar can store provider API keys in a config file with restricted permissions, but only to query usage (<a href="https://github.com/steipete/CodexBar">README</a>). ccusage has no key storage.</p>
+
+<h2>When is ccusage the better pick?</h2>
+<p>When you want reports rather than a menu bar: daily, monthly, per-session or per-project, as JSON, on Linux or Windows, with nothing to install beyond <code>npx ccusage@latest</code>. It also covers far more coding agents than Keysrs.</p>
+
+<h2>When is CodexBar the better pick?</h2>
+<p>When you use Cursor, Copilot, Gemini or other tools Keysrs doesn't track, want limits that are always current, want widgets or Linux, and are comfortable with an app that reuses your provider logins and cookies to fetch them.</p>
+
+<h2>When is Keysrs the better pick?</h2>
+<p>When you mostly use Claude Code, Codex and Grok, want nothing read beyond the files those tools write, and also want your API keys out of <code>.env</code> files and behind Touch ID.</p>
+<p><a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download Keysrs for Mac</a></p>
+<p class="meta">Free and MIT licensed. macOS 14 or newer on Apple Silicon. Open the disk image and drag Keysrs to Applications.</p>
+<p class="meta">Versions checked: ccusage 20.0.24, CodexBar 0.67.0. If something here is out of date, email <a href="mailto:support@keysrs.com">support@keysrs.com</a>.</p>
+
+<h2>Related</h2>
+<ul>
+<li><a href="/claude-code-usage-limits">How Claude Code's usage limits work</a></li>
+<li><a href="/codex-usage-limits">Where to see your Codex usage and limits</a></li>
+<li><a href="/api-keys-out-of-env-mac">How to keep API keys out of .env files on a Mac</a></li>
+<li><a href="/">Keysrs home</a></li>
+</ul>
+</article>
+
+<footer><div class="wrap"><nav><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:support@keysrs.com">Support</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></nav><div class="legal">© 2026 Keysrs</div></div></footer>
+</body>
+</html>

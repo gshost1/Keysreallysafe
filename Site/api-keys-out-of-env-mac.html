@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keep API keys out of .env files on a Mac — Keysrs</title>
+<meta name="description" content="How to stop keeping API keys in plain-text .env files on macOS: store them in the Keychain, require Touch ID to read them, and give scripts scoped, expiring access.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="canonical" href="https://keysrs.com/api-keys-out-of-env-mac">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Keysrs">
+<meta property="og:title" content="Keep API keys out of .env files on a Mac — Keysrs">
+<meta property="og:description" content="How to stop keeping API keys in plain-text .env files on macOS: store them in the Keychain, require Touch ID to read them, and give scripts scoped, expiring access.">
+<meta property="og:url" content="https://keysrs.com/api-keys-out-of-env-mac">
+<meta property="og:image" content="https://keysrs.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="styles.css">
+<script src="posthog.js" defer></script>
+</head>
+<body>
+<header class="nav"><div class="wrap"><a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a><nav><a href="/#features">Features</a><a href="/#privacy">Privacy</a><a href="/#faq">FAQ</a><a class="btn primary" href="/#pricing">Download</a></nav></div></header>
+
+<article class="legal">
+<h1>How to keep API keys out of .env files on a Mac</h1>
+<p class="meta">Checked against the sources linked on this page on 2026-09-25.</p>
+
+<h2>Why is a .env file risky?</h2>
+<p>A <code>.env</code> file is plain text. Any program running as you can read it, and so can anything that indexes, syncs or backs up the folder, or a coding agent asked to look around the project. One stray <code>git add .</code> and it is in history.</p>
+
+<h2>Where should API keys live on a Mac?</h2>
+<p>In the macOS Keychain, which stores secrets encrypted and tied to your login. The built-in <code>security</code> command can store a key there and read it back into a single command, which is already better than a file. What it doesn't add is a check that you are the one asking each time.</p>
+
+<h2>How do I require Touch ID before a key is used?</h2>
+<p>Keysrs keeps each key in the Keychain and asks for Touch ID or your login password every time a value comes out: copy, reveal, rotate, delete, or handing it to a command. Every read goes into a per-key audit log. The value never enters its database, its logs or the dashboard.</p>
+<ul>
+<li><code>keys env openai OPENAI_API_KEY -- python run.py</code> gives the key to that one process as an environment variable, so it never touches the clipboard or a file.</li>
+<li><code>keys copy</code> puts it on the clipboard and clears it after 20 seconds.</li>
+<li><code>keys rotate</code> swaps in a new value under the same name.</li>
+</ul>
+
+<h2>How do I give a script or agent a key without handing it over?</h2>
+<p>Give it a grant instead of the key. <code>keys grant</code> asks for Touch ID once, then prints a short-lived token and a local base URL. The script uses the token where it would put the API key, and the local gateway on <code>127.0.0.1</code> swaps in the real key for that one provider host. The grant can be limited to HTTP methods, paths, a request count and a time limit, and it ends when the screen locks. The real key never leaves the Keychain and the app. For a program you keep running, <code>keys client issue</code> makes a longer-lived token with the same kind of scope.</p>
+<p>This narrows accidental and unauthorized use on your Mac. It is not a wall against a program that can already read your memory. The <a href="https://github.com/gshost1/Keysreallysafe#the-gateway">README</a> spells out the limits.</p>
+
+<p><a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download Keysrs for Mac</a></p>
+<p class="meta">Free and MIT licensed. macOS 14 or newer on Apple Silicon. Open the disk image and drag Keysrs to Applications.</p>
+
+<h2>Related</h2>
+<ul>
+<li><a href="/claude-code-usage-limits">How Claude Code's usage limits work</a></li>
+<li><a href="/codex-usage-limits">Where to see your Codex usage and limits</a></li>
+<li><a href="/keysrs-vs-ccusage-vs-codexbar">Keysrs vs ccusage vs CodexBar</a></li>
+<li><a href="/">Keysrs home</a></li>
+</ul>
+</article>
+
+<footer><div class="wrap"><nav><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:support@keysrs.com">Support</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></nav><div class="legal">© 2026 Keysrs</div></div></footer>
+</body>
+</html>

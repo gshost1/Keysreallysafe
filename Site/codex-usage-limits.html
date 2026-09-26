@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where to see your Codex usage and limits — Keysrs</title>
+<meta name="description" content="Where OpenAI Codex shows your usage and remaining limits on ChatGPT plans: /status, the usage dashboard, and the five-hour and weekly windows.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="canonical" href="https://keysrs.com/codex-usage-limits">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Keysrs">
+<meta property="og:title" content="Where to see your Codex usage and limits — Keysrs">
+<meta property="og:description" content="Where OpenAI Codex shows your usage and remaining limits on ChatGPT plans: /status, the usage dashboard, and the five-hour and weekly windows.">
+<meta property="og:url" content="https://keysrs.com/codex-usage-limits">
+<meta property="og:image" content="https://keysrs.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="styles.css">
+<script src="posthog.js" defer></script>
+</head>
+<body>
+<header class="nav"><div class="wrap"><a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a><nav><a href="/#features">Features</a><a href="/#privacy">Privacy</a><a href="/#faq">FAQ</a><a class="btn primary" href="/#pricing">Download</a></nav></div></header>
+
+<article class="legal">
+<h1>Where to see your Codex usage and limits</h1>
+<p class="meta">Checked against the sources linked on this page on 2026-09-25.</p>
+
+<h2>How do I check my Codex usage?</h2>
+<p>Type <code>/status</code> in Codex, or open the usage dashboard at <a href="https://chatgpt.com/codex/settings/usage">chatgpt.com/codex/settings/usage</a>. OpenAI's <a href="https://developers.openai.com/codex/pricing">Codex pricing page</a> points to both for remaining limits.</p>
+<p>The <a href="https://developers.openai.com/codex/cli/slash-commands">slash command reference</a> lists a few more: <code>/usage</code> with <code>daily</code>, <code>weekly</code> or <code>cumulative</code> shows your ChatGPT token activity, and <code>/statusline</code> can keep rate limits in the footer while you work.</p>
+
+<h2>What are the Codex usage limits?</h2>
+<p>On ChatGPT plans, Codex usage is counted per five-hour window, and weekly limits may apply on top. OpenAI publishes estimated local messages per five hours for each plan and model and says they are estimates, not fixed numbers. Local messages and cloud tasks share one allowance (<a href="https://developers.openai.com/codex/pricing">Codex pricing</a>).</p>
+<p>Codex is included in Free, Go, Plus, Pro, Business and Enterprise/Edu. Pro comes with 5x or 20x Plus limits. Enterprise and Edu on flexible pricing are credit-based instead of limited (<a href="https://developers.openai.com/codex/pricing">Codex pricing</a>). The figures change, so this page links to them instead of copying them.</p>
+
+<h2>What happens when Codex hits the limit?</h2>
+<p>A turn already running can finish. After that, Plus and Pro users can buy more credits, and Business, Edu and Enterprise on flexible pricing can buy workspace credits (<a href="https://developers.openai.com/codex/pricing">Codex pricing</a>). The CLI warns Plus and Team users earlier, once less than half of the roughly five-hour window is left (<a href="https://developers.openai.com/codex/changelog">Codex changelog</a>).</p>
+
+<h2>Can I see Codex limits in the Mac menu bar?</h2>
+<p>Yes, with Keysrs. Codex writes the five-hour and weekly percentages into its session logs under <code>~/.codex/sessions</code>, and Keysrs reads them from there. It does not read <code>~/.codex/auth.json</code> or sign in to anything, so the numbers are as fresh as your last Codex session. Claude Code and Grok windows sit alongside, with token totals and an estimated list-price cost for each tool.</p>
+<p><a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download Keysrs for Mac</a></p>
+<p class="meta">Free and MIT licensed. macOS 14 or newer on Apple Silicon. Open the disk image and drag Keysrs to Applications.</p>
+
+<h2>Related</h2>
+<ul>
+<li><a href="/claude-code-usage-limits">How Claude Code's usage limits work</a></li>
+<li><a href="/api-keys-out-of-env-mac">How to keep API keys out of .env files on a Mac</a></li>
+<li><a href="/keysrs-vs-ccusage-vs-codexbar">Keysrs vs ccusage vs CodexBar</a></li>
+<li><a href="/">Keysrs home</a></li>
+</ul>
+</article>
+
+<footer><div class="wrap"><nav><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:support@keysrs.com">Support</a><a href="https://github.com/gshost1/Keysreallysafe">Source</a></nav><div class="legal">© 2026 Keysrs</div></div></footer>
+</body>
+</html>
