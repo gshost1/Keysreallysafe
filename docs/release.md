@@ -106,9 +106,15 @@ The DMG is unsigned.
 These steps use the Developer ID identity and the notary profile and are not
 automated here:
 
-1. Optional volume icon: create the DMG as `-format UDRW` by hand instead,
-   attach it, copy `Assets/icon/Keysrs.icns` to `.VolumeIcon.icns`, run
-   `SetFile -a C` on the volume, detach, then `hdiutil convert -format UDZO`.
+1. Build the styled DMG instead of `--dmg`: `scripts/build-dmg.sh <staged dir>
+   <dir>/Keysrs-arm64.dmg`. It adds the volume icon, the background drawn by
+   `scripts/dmg-background.swift` (name, pitch, an arrow from Keysrs to
+   Applications) and a fixed Finder layout. Finder does the layout through
+   AppleScript, so the first run asks for permission to control Finder, and no
+   other `Keysrs` volume may be mounted. Build outside `~/Documents`: files
+   there carry attributes codesign rejects. `--verify-package` rejects the
+   extra `.VolumeIcon.icns`, `.background` and `.DS_Store`; compare the mounted
+   `Keysrs.app` with the verified build using `diff -r` instead.
 2. `codesign --sign <SHA-1> --timestamp Keysrs-arm64.dmg`, then
    `hdiutil verify`.
 3. `xcrun notarytool submit Keysrs-arm64.dmg --keychain-profile <profile> --wait`,
