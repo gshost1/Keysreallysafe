@@ -147,6 +147,8 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var updatedAt: Date?
     private let panel = MenubarPanel()
     private var claudeRefreshItem: NSMenuItem?
+    private var appOnlyItems: [NSMenuItem] = []
+    private var loginMenuItem: NSMenuItem?
     private static let tabKey = "menubar.tab"
 
     init(service: KeysService, server: LoopbackHTTPServer, url: URL) {
@@ -223,7 +225,17 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         itemController.menuIsOpen = true
         claudeRefreshItem?.state = service.preferences.claudeUsageRefresh ? .on : .off
+        // The legacy menubar CLI has no app window, login item or bundle to link to.
+        appOnlyItems.forEach { $0.isHidden = appWindow == nil }
+        loginMenuItem?.state = appWindow?.startsAtLogin == true ? .on : .off
         refresh()
+    }
+
+    @objc func toggleLogin() { appWindow?.toggleLogin() }
+    @objc func installCLI() {
+        // The confirmation alert would otherwise open behind whatever app is in front.
+        NSApp.activate(ignoringOtherApps: true)
+        appWindow?.installCLI()
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -378,6 +390,14 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         claude.state = service.preferences.claudeUsageRefresh ? .on : .off
         claudeRefreshItem = claude
         menu.addItem(claude)
+        // Also in the app menu, which is only visible while the window is frontmost.
+        let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
+        login.target = self
+        loginMenuItem = login
+        let cli = NSMenuItem(title: "Install Command Line Tool…", action: #selector(installCLI), keyEquivalent: "")
+        cli.target = self
+        appOnlyItems = [login, cli]
+        appOnlyItems.forEach { menu.addItem($0) }
         let about = NSMenuItem(title: "About Keysrs", action: #selector(showAbout), keyEquivalent: "")
         about.target = self
         menu.addItem(about)

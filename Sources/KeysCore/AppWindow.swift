@@ -87,12 +87,14 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         NSApp.mainMenu = main
     }
 
+    var startsAtLogin: Bool { SMAppService.mainApp.status == .enabled }
+
     func menuWillOpen(_ menu: NSMenu) {
-        loginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        loginItem?.state = startsAtLogin ? .on : .off
         updateItem?.state = preferences.updateChecks ? .on : .off
     }
 
-    @objc private func toggleLogin() {
+    @objc func toggleLogin() {
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
             else if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
@@ -101,7 +103,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         } catch { alert("Start at Login", error.localizedDescription) }
     }
 
-    @objc private func installCLI() {
+    @objc func installCLI() {
         let destination = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/keys")
         let existing = try? FileManager.default.destinationOfSymbolicLink(atPath: destination.path)
         let prompt = NSAlert()
