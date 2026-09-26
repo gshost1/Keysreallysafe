@@ -242,4 +242,33 @@ final class AppRuntimeTests: XCTestCase {
             XCTAssertThrowsError(try UpdateCheck.parseVersion(Data(value.utf8)))
         }
     }
+
+    func testRetiredCommandLineLinkMovesToTheAppAndOthersAreLeftAlone() throws {
+        let root = try TempDir.make()
+        defer { try? fm.removeItem(at: root) }
+        let retired = root.appendingPathComponent("support/bin/keys")
+        let binary = root.appendingPathComponent("Keysrs.app/Contents/MacOS/keys")
+        try fm.createDirectory(at: binary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("app".utf8).write(to: binary)
+        let bin = root.appendingPathComponent("bin")
+        try fm.createDirectory(at: bin, withIntermediateDirectories: true)
+
+        let link = bin.appendingPathComponent("keys")
+        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: retired.path)
+        XCTAssertTrue(CommandLineLink.repairRetired(link: link, retired: retired, binary: binary))
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: link.path), binary.path)
+        XCTAssertFalse(CommandLineLink.repairRetired(link: link, retired: retired, binary: binary))
+
+        let own = bin.appendingPathComponent("own")
+        try fm.createSymbolicLink(atPath: own.path, withDestinationPath: "/opt/somewhere/keys")
+        XCTAssertFalse(CommandLineLink.repairRetired(link: own, retired: retired, binary: binary))
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: own.path), "/opt/somewhere/keys")
+
+        // The old runtime still exists (cleanup pending): leave the link working as it is.
+        try fm.createDirectory(at: retired.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("old".utf8).write(to: retired)
+        let pending = bin.appendingPathComponent("pending")
+        try fm.createSymbolicLink(atPath: pending.path, withDestinationPath: retired.path)
+        XCTAssertFalse(CommandLineLink.repairRetired(link: pending, retired: retired, binary: binary))
+    }
 }

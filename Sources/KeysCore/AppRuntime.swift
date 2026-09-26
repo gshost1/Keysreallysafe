@@ -113,6 +113,10 @@ enum AppRuntime {
             throw error
         }
         guard let server = startedServer else { throw AppError.http("Keysrs could not start its dashboard.") }
+        let link = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/keys")
+        if CommandLineLink.repairRetired(link: link, retired: root.appendingPathComponent("bin/keys"), binary: binary) {
+            log("command line link moved from the retired runtime to Keysrs.app")
+        }
         let url = URL(string: "http://127.0.0.1:\(server.boundPort)/")!
         runOnMainActor {
             let app = NSApplication.shared
@@ -153,6 +157,18 @@ enum CommandLineLink {
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         // createSymbolicLink fails if any file or even a dangling link already occupies this path.
         try fm.createSymbolicLink(at: destination, withDestinationURL: binary)
+    }
+}
+
+extension CommandLineLink {
+    /// 0.9.x linked ~/.local/bin/keys to the runtime the migration retires. Repoint only
+    /// that exact, now-dangling link; a link to anything else is the person's own choice.
+    @discardableResult
+    static func repairRetired(link: URL, retired: URL, binary: URL) -> Bool {
+        let fm = FileManager.default
+        guard let target = try? fm.destinationOfSymbolicLink(atPath: link.path),
+              target == retired.path, !fm.fileExists(atPath: retired.path) else { return false }
+        return (try? install(binary: binary, destination: link, replacingSymbolicLink: target)) != nil
     }
 }
 
