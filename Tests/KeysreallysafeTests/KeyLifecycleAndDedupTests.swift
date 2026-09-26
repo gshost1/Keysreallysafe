@@ -391,15 +391,3 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         ))
     }
 }
-
-final class DoctorBinaryNoteTests: XCTestCase {
-    func testBinaryNoteUsesSourceHashSidecarNotResignedCopy() {
-        // The installed copy is re-signed, so its own hash never equals the debug binary.
-        XCTAssertEqual(Doctor.binaryNote(installed: "resigned", installedSource: "abc", debug: "abc"), "match")
-        XCTAssertEqual(Doctor.binaryNote(installed: "resigned", installedSource: "abc", debug: "def"), "stale")
-        XCTAssertTrue(Doctor.binaryNote(installed: "resigned", installedSource: nil, debug: "abc").hasPrefix("unknown"))
-        XCTAssertEqual(Doctor.binaryNote(installed: nil, installedSource: nil, debug: "abc"), "login item binary missing")
-        XCTAssertEqual(Doctor.binaryNote(installed: "x", installedSource: "x", debug: nil), "debug binary missing")
-        XCTAssertEqual(Doctor.binaryNote(installed: nil, installedSource: nil, debug: nil), "missing")
-    }
-}

@@ -13,10 +13,8 @@ struct DoctorReport: Equatable {
     var gatewayPort: UInt16
     var autostartPlist: Bool
     var autostartPlistPath: String
-    var loginItemBinarySHA256: String?
-    var debugBinarySHA256: String?
-    var binaryNote: String
-    var activeGrants: Int = 0
+    var installedBinarySHA256: String?
+    var runningBinarySHA256: String?
     var controlFile: String? = nil
 
     var printed: String {
@@ -38,14 +36,13 @@ struct DoctorReport: Equatable {
         lines.append(
             "gateway  127.0.0.1:\(gatewayPort)  \(gatewayListening ? "listening" : "not listening")"
         )
-        lines.append(
-            "grants  \(activeGrants) active in this process  control=\(controlFile ?? "none (no running site)")"
-        )
+        lines.append("site  control=\(controlFile ?? "none (no running site)")")
         lines.append(
             "autostart  \(autostartPlistPath)  \(autostartPlist ? "present" : "missing")"
         )
+        let same = installedBinarySHA256 != nil && installedBinarySHA256 == runningBinarySHA256
         lines.append(
-            "binary  login-item sha256=\(loginItemBinarySHA256 ?? "missing")  debug sha256=\(debugBinarySHA256 ?? "missing")  \(binaryNote)"
+            "binary  installed sha256=\(installedBinarySHA256 ?? "missing")  running sha256=\(runningBinarySHA256 ?? "missing")  \(same ? "match" : "differs")"
         )
         return lines.joined(separator: "\n")
     }
@@ -79,7 +76,7 @@ enum Doctor {
                 directory: true,
                 newestEvent: try service.catalog.newestUsage(source: "grok-local"),
                 strip: "Grok weekly $",
-                emptyReason: emptyGrokSpend(status)
+                emptyReason: nil
             )
         )
         sources.append(
@@ -104,8 +101,6 @@ enum Doctor {
                     : "missing file"
             )
         )
-        let hudExists = FileManager.default.isReadableFile(atPath: claudeHud.path)
-            || FileManager.default.isReadableFile(atPath: claudePlan.path)
         let hudPath = FileManager.default.isReadableFile(atPath: claudeHud.path) ? claudeHud : claudePlan
         let hudStatus = LiveStatus.readClaudePlan(home: service.claudeHome, extra: claudePlan)
         sources.append(
@@ -115,7 +110,7 @@ enum Doctor {
                 directory: false,
                 newestEvent: hudStatus.snapshotAt,
                 strip: "Claude 5h / weekly %",
-                emptyReason: emptyClaudeHud(LiveStatus(claude: hudStatus), exists: hudExists)
+                emptyReason: hudStatus.fiveHourPct != nil || hudStatus.weeklyPct != nil ? nil : "claude-hud not writing"
             )
         )
         let claudeCache = ClaudeUsageCache.read(home: service.claudeHome, now: Date())
@@ -143,14 +138,8 @@ enum Doctor {
         let catalogPath = service.catalog.path
         let catalogSize = fileSize(catalogPath)
         let plist = LoginItem.agentPlist
-        let debugURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(".build/debug/keys")
-        // The installed copy is re-signed, so hash the sidecar autostart wrote from the source binary.
-        let loginSHA = fileSHA256(LoginItem.installedBinary)
-        let loginSourceSHA = (try? String(contentsOf: LoginItem.installedSourceHash, encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let debugSHA = fileSHA256(debugURL)
-        let binaryNote = Self.binaryNote(installed: loginSHA, installedSource: loginSourceSHA, debug: debugSHA)
+        // Bundle.main, not argv[0]: run from PATH, argv[0] is just "keys".
+        let running = Bundle.main.executableURL.flatMap(fileSHA256)
 
         let listening = service.isGatewayRunning()
             || (probeListener && portOpen(host: BindPolicy.loopback, port: GatewayListener.port))
@@ -165,10 +154,8 @@ enum Doctor {
             gatewayPort: GatewayListener.port,
             autostartPlist: FileManager.default.fileExists(atPath: plist.path),
             autostartPlistPath: plist.path,
-            loginItemBinarySHA256: loginSHA,
-            debugBinarySHA256: debugSHA,
-            binaryNote: binaryNote,
-            activeGrants: service.listGrants().count,
+            installedBinarySHA256: fileSHA256(Installer.live.binary),
+            runningBinarySHA256: running,
             controlFile: ControlFile.live(at: ControlFile.url(beside: service.catalog.path)).map { "127.0.0.1:\($0.port) pid \($0.pid)" }
         )
     }
@@ -195,11 +182,6 @@ enum Doctor {
         )
     }
 
-    private static func emptyGrokSpend(_ status: LiveStatus) -> String? {
-        if (status.grok?.weeklyUsd ?? 0) > 0 { return nil }
-        return nil
-    }
-
     private static func emptyGrokPct(_ status: LiveStatus, path: URL) -> String? {
         if status.grok?.weeklyPct != nil { return nil }
         if !FileManager.default.isReadableFile(atPath: path.path) { return "missing file" }
@@ -209,20 +191,10 @@ enum Doctor {
         return "no rate_limits yet"
     }
 
-    private static func emptyClaudeHud(_ status: LiveStatus, exists: Bool) -> String? {
-        if status.claude?.fiveHourPct != nil || status.claude?.weeklyPct != nil { return nil }
-        if !exists { return "claude-hud not writing" }
-        return "claude-hud not writing"
-    }
-
     private static func emptyCodex(_ status: LiveStatus, path: URL) -> String? {
         let openai = status.plans.first { $0.source == "openai" }
         if openai?.weeklyPct != nil || openai?.fiveHourPct != nil { return nil }
-        if !FileManager.default.fileExists(atPath: path.path) { return "missing file" }
-        if openai?.fiveHourPct == nil && openai?.weeklyPct == nil {
-            return "no rate_limits yet"
-        }
-        return nil
+        return FileManager.default.fileExists(atPath: path.path) ? "no rate_limits yet" : "missing file"
     }
 
     private static func isoMtime(_ url: URL) -> String? {
@@ -230,14 +202,6 @@ enum Doctor {
               let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         else { return nil }
         return UTC.iso(date)
-    }
-
-    static func binaryNote(installed: String?, installedSource: String?, debug: String?) -> String {
-        if installed == nil && debug == nil { return "missing" }
-        if installed == nil { return "login item binary missing" }
-        if debug == nil { return "debug binary missing" }
-        guard let source = installedSource, !source.isEmpty else { return "unknown (re-run keys autostart to record the source hash)" }
-        return source == debug ? "match" : "stale"
     }
 
     static func fileSHA256(_ url: URL) -> String? {

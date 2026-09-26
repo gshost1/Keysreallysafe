@@ -11,73 +11,8 @@ enum LoginItem {
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
     }
 
-    static var installedBinary: URL {
-        Paths.appSupport.appendingPathComponent("bin/keys")
-    }
-
-    /// SHA-256 of the signed source binary. Installation preserves its signature and bytes.
-    static var installedSourceHash: URL {
-        Paths.appSupport.appendingPathComponent("bin/keys.sha256")
-    }
-
     static var bookmarkURL: URL {
         URL(string: "http://127.0.0.1:\(menubarPort)/")!
-    }
-
-    static func plistXML(binary: URL, webRoot: URL, logFile: URL) -> String {
-        let bin = xml(binary.path)
-        let web = xml(webRoot.path)
-        let log = xml(logFile.path)
-        return """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-          <key>Label</key>
-          <string>\(label)</string>
-          <key>ProgramArguments</key>
-          <array>
-            <string>\(bin)</string>
-            <string>menubar</string>
-          </array>
-          <key>EnvironmentVariables</key>
-          <dict>
-            <key>KEYS_WEB_ROOT</key>
-            <string>\(web)</string>
-          </dict>
-          <key>RunAtLoad</key>
-          <true/>
-          <key>KeepAlive</key>
-          <dict>
-            <key>Crashed</key>
-            <true/>
-          </dict>
-          <key>LimitLoadToSessionType</key>
-          <string>Aqua</string>
-          <key>StandardOutPath</key>
-          <string>\(log)</string>
-          <key>StandardErrorPath</key>
-          <string>\(log)</string>
-        </dict>
-        </plist>
-
-        """
-    }
-
-    static func install(fromBinary binary: URL, webRoot: URL) throws {
-        try Installer.live.install(fromBinary: binary, webRoot: webRoot)
-    }
-
-    static func uninstall() throws {
-        try Installer.live.uninstall()
-    }
-
-    static func xml(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     @discardableResult
@@ -99,7 +34,7 @@ enum LoginItem {
 
 /// Installs a version of the app under one root. The new version is staged and validated in
 /// full before the running agent is stopped; if activation fails, the previous version is put
-/// back and started again. `LoginItem.install` uses `.live`; tests give it a temp root and a
+/// back and started again. `keys autostart` uses `.live`; tests give it a temp root and a
 /// fake process runner.
 struct Installer {
     typealias Runner = (_ launchPath: String, _ arguments: [String]) throws -> (status: Int32, stdout: String, stderr: String)
@@ -120,7 +55,6 @@ struct Installer {
 
     // Live layout under `root`.
     var binary: URL { root.appendingPathComponent("bin/keys") }
-    var sourceHash: URL { root.appendingPathComponent("bin/keys.sha256") }
     var web: URL { root.appendingPathComponent("Web", isDirectory: true) }
     var fixtures: URL { root.appendingPathComponent("Fixtures", isDirectory: true) }
     var logFile: URL { root.appendingPathComponent("menubar.log") }
@@ -175,9 +109,8 @@ struct Installer {
                     installedParts.append(part)
                 }
             }
-            let xml = LoginItem.plistXML(binary: binary, webRoot: web, logFile: logFile)
             try fm.createDirectory(at: agentPlist.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data(xml.utf8).write(to: agentPlist, options: .atomic)
+            try agentPlistData().write(to: agentPlist, options: .atomic)
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: agentPlist.path)
             try bootstrap()
         } catch {
@@ -196,6 +129,22 @@ struct Installer {
         } else {
             try? fm.removeItem(at: backup)
         }
+    }
+
+    /// The launchd agent: the installed binary as a loopback menu bar, restarted only after a
+    /// crash, in the GUI session, logging beside the install.
+    func agentPlistData() throws -> Data {
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [binary.path, "menubar"],
+            "EnvironmentVariables": ["KEYS_WEB_ROOT": web.path],
+            "RunAtLoad": true,
+            "KeepAlive": ["Crashed": true],
+            "LimitLoadToSessionType": "Aqua",
+            "StandardOutPath": logFile.path,
+            "StandardErrorPath": logFile.path,
+        ]
+        return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     }
 
     func uninstall() throws {
@@ -224,9 +173,6 @@ struct Installer {
         try fm.copyItem(at: webRoot, to: staging.appendingPathComponent("Web", isDirectory: true))
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: staging.appendingPathComponent("Web").path)
         try stageFixtures(into: staging.appendingPathComponent("Fixtures", isDirectory: true), webRoot: webRoot)
-        if let hash = Doctor.fileSHA256(source) {
-            try Data((hash + "\n").utf8).write(to: bin.appendingPathComponent("keys.sha256"), options: .atomic)
-        }
         try validateSigning(stagedBinary, fm.fileExists(atPath: binary.path) ? binary : nil)
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stagedBinary.path)
         guard fm.isExecutableFile(atPath: stagedBinary.path) else {

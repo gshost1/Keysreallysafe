@@ -84,7 +84,6 @@ final class InstallerRollbackTests: XCTestCase {
         XCTAssertEqual(liveBinary(w), "v1")
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.installer.web.appendingPathComponent("index.html").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.installer.fixtures.appendingPathComponent("models.json").path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: w.installer.sourceHash.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.plist.path))
         let verbs = w.launch.calls.map { $0.contains("--verify") ? "verify" : ($0[0].hasSuffix("codesign") ? "codesign" : $0[1]) }
         XCTAssertEqual(verbs, ["validate", "bootout", "bootstrap"], "signature validation happens before the agent is stopped; installation never re-signs")

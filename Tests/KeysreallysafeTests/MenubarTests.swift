@@ -14,22 +14,24 @@ final class MenubarTests: XCTestCase {
         XCTAssertTrue(off is AutostartCommand)
     }
 
-    func testLoginItemPlistIsLoopbackMenubar() {
-        let xml = LoginItem.plistXML(
-            binary: URL(fileURLWithPath: "/tmp/keysreallysafe/bin/keys"),
-            webRoot: URL(fileURLWithPath: "/tmp/keysreallysafe/Web"),
-            logFile: URL(fileURLWithPath: "/tmp/keysreallysafe/menubar.log")
+    func testLoginItemPlistIsLoopbackMenubar() throws {
+        // An ampersand and angle brackets in the path must survive serialization intact.
+        let root = try TempDir.make().appendingPathComponent("a&b<c>", isDirectory: true)
+        let installer = Installer(
+            root: root, agentPlist: root.appendingPathComponent("agent.plist"), label: LoginItem.label,
+            run: { _, _ in (0, "", "") }
         )
-        XCTAssertTrue(xml.contains("<string>com.keysreallysafe.menubar</string>"))
-        XCTAssertTrue(xml.contains("<string>/tmp/keysreallysafe/bin/keys</string>"))
-        XCTAssertTrue(xml.contains("<string>menubar</string>"))
-        XCTAssertTrue(xml.contains("<string>/tmp/keysreallysafe/Web</string>"))
-        XCTAssertTrue(xml.contains("<key>RunAtLoad</key>"))
-        XCTAssertTrue(xml.contains("<string>Aqua</string>"))
-        XCTAssertFalse(xml.contains("0.0.0.0"))
-        XCTAssertFalse(xml.contains("vercel"))
+        let data = try installer.agentPlistData()
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        XCTAssertEqual(plist["Label"] as? String, "com.keysreallysafe.menubar")
+        XCTAssertEqual(plist["ProgramArguments"] as? [String], [root.appendingPathComponent("bin/keys").path, "menubar"])
+        XCTAssertEqual((plist["EnvironmentVariables"] as? [String: String])?["KEYS_WEB_ROOT"],
+                       root.appendingPathComponent("Web").path)
+        XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
+        XCTAssertEqual((plist["KeepAlive"] as? [String: Bool])?["Crashed"], true)
+        XCTAssertEqual(plist["LimitLoadToSessionType"] as? String, "Aqua")
+        XCTAssertEqual(plist["StandardErrorPath"] as? String, root.appendingPathComponent("menubar.log").path)
         XCTAssertEqual(LoginItem.bookmarkURL.absoluteString, "http://127.0.0.1:12766/")
-        XCTAssertEqual(LoginItem.xml("a&b<c>"), "a&amp;b&lt;c&gt;")
     }
 }
 

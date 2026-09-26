@@ -647,13 +647,13 @@ struct AutostartCommand: ParsableCommand {
 
     func run() throws {
         if remove {
-            try LoginItem.uninstall()
+            try Installer.live.uninstall()
             print("removed login item \(LoginItem.label)")
             return
         }
         let binary = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         let web = try WebRoot.find()
-        try LoginItem.install(fromBinary: binary, webRoot: web)
+        try Installer.live.install(fromBinary: binary, webRoot: web)
         print("starts at login  \(LoginItem.bookmarkURL.absoluteString)")
         print("menu bar Open Keysrs  (loopback only, not Vercel)")
     }
