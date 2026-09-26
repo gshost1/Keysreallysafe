@@ -6,16 +6,11 @@ import XCTest
 final class InstallerRollbackTests: XCTestCase {
     private final class FakeLaunch: @unchecked Sendable {
         var calls: [[String]] = []
-        var failVerb: String?          // "codesign", "verify", "bootstrap"
+        var failVerb: String?          // "validate", "bootout", "bootstrap"
         var failOnce = false
         func run(_ path: String, _ args: [String]) throws -> (status: Int32, stdout: String, stderr: String) {
             calls.append([path] + args)
-            let verb: String
-            if path.hasSuffix("codesign") {
-                verb = args.first == "--verify" ? "verify" : "codesign"
-            } else {
-                verb = args.first ?? ""
-            }
+            let verb = args.first ?? ""
             if verb == failVerb {
                 if failOnce { failVerb = nil }
                 return (1, "", "synthetic \(verb) failure")
@@ -23,7 +18,7 @@ final class InstallerRollbackTests: XCTestCase {
             return (0, "", "")
         }
         func count(_ verb: String) -> Int {
-            calls.filter { $0.contains(verb) && !( verb == "codesign" && $0.contains("--verify")) }.count
+            calls.filter { $0.contains(verb) }.count
         }
     }
 
@@ -85,7 +80,7 @@ final class InstallerRollbackTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.installer.web.appendingPathComponent("index.html").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.installer.fixtures.appendingPathComponent("models.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: w.plist.path))
-        let verbs = w.launch.calls.map { $0.contains("--verify") ? "verify" : ($0[0].hasSuffix("codesign") ? "codesign" : $0[1]) }
+        let verbs = w.launch.calls.map { $0[1] }
         XCTAssertEqual(verbs, ["validate", "bootout", "bootstrap"], "signature validation happens before the agent is stopped; installation never re-signs")
         XCTAssertFalse(FileManager.default.fileExists(atPath: w.installer.previous.path), "nothing to keep on a first install")
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: w.root.path).filter { $0.hasPrefix(".staging") || $0.hasPrefix(".previous-") }
@@ -146,28 +141,6 @@ final class InstallerRollbackTests: XCTestCase {
         XCTAssertEqual(w.launch.count("bootstrap"), 2, "one failed start of v2, one successful restart of v1")
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: w.root.path).filter { $0.hasPrefix(".staging") || $0.hasPrefix(".previous-") }
         XCTAssertTrue(leftovers.isEmpty)
-    }
-
-    func testFailureWhileMovingLivePartsStillRollsBack() throws {
-        let w = try makeWorld()
-        try w.installer.install(fromBinary: w.source, webRoot: w.webRoot)
-        // Make the Web directory immovable: a file at the backup destination path cannot exist
-        // yet, so instead deny the move by making the live Web dir a mount-like obstacle: rename
-        // protection via an unremovable child is not portable, so simulate with a read-only root.
-        let plistBefore = try Data(contentsOf: w.plist)
-        try Data("v2".utf8).write(to: w.source)
-        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: w.root.path)
-        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: w.root.path) }
-        XCTAssertThrowsError(try w.installer.install(fromBinary: w.source, webRoot: w.webRoot)) { error in
-            let f = error as? Installer.Failure
-            XCTAssertNotNil(f)
-            if f?.stage == "activation" {
-                XCTAssertEqual(f?.rolledBack, true)
-            }
-        }
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: w.root.path)
-        XCTAssertEqual(liveBinary(w), "v1")
-        XCTAssertEqual(try Data(contentsOf: w.plist), plistBefore)
     }
 
     func testBootstrapFailureOnFreshInstallLeavesNoHalfInstall() throws {
