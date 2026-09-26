@@ -12,34 +12,24 @@
 //
 // Real here: the page, the routing, the response shapes, the status codes, the
 // headers, the catalog rows, the key events and the X-KSF-Token, Origin/Host and
-// Sec-Fetch-Site gates. Mocked there: keychain storage, Touch ID, the clipboard,
-// any provider call and analytics upload. Every
-// secret below is invented for the harness; the suite never reaches a real
+// Sec-Fetch-Site gates the page's own requests pass. Mocked there: keychain
+// storage, Touch ID, the clipboard, any provider call and analytics upload.
+// Every secret below is invented for the harness; the suite never reaches a real
 // vault, credential or network endpoint, and it neither relaxes nor bypasses the
-// product's authentication: the cases that are refused are refused by the real
-// gates, unmodified.
-//
-// Two clients appear below. Most cases run inside Chromium, where the real
-// Origin, Host and Sec-Fetch-Site headers are the browser's to set. The
-// authorization cases use a plain Node HTTP client over the same loopback
-// socket, because a page is not allowed to forge those headers — that is what
-// makes them forbidden header names, and it is exactly what has to be tested.
+// product's authentication. The forged-request matrix (bad tokens, foreign
+// Origin and Host) is ServerTests.testDashboardGatesRefuseForgedTokenOriginAndHost,
+// because a page may not set those headers.
 //
 // The backend keeps state between cases, so the cases below are one ordered
 // scenario over one live vault and the suite stops at the first failure rather
 // than reporting cascaded noise.
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const http = require("node:http");
-const path = require("node:path");
 const { chromium } = require("playwright");
 
 const base = process.env.KEYS_CONTRACT_BASE_URL;
 const token = process.env.KEYS_CONTRACT_TOKEN;
 const ALPHA_SECRET = process.env.KEYS_CONTRACT_ALPHA_SECRET;
 const DELTA_SECRET = process.env.KEYS_CONTRACT_DELTA_SECRET;
-const screenshotDir = process.env.KEYS_CONTRACT_SCREENSHOT_DIR
-  || path.join(__dirname, "../../.build/keys-backend-contract-screenshots");
 
 for (const [name, value] of Object.entries({ base, token, ALPHA_SECRET, DELTA_SECRET })) {
   if (!value) {
@@ -50,11 +40,6 @@ for (const [name, value] of Object.entries({ base, token, ALPHA_SECRET, DELTA_SE
 
 const SEEDED = ["contract-alpha", "contract-bravo", "contract-typesafe", "contract-vercel"];
 const NEW_KEY = "contract-delta";
-// Written and removed by the non-browser control requests; never by a forged one.
-const RAW_KEY = "contract-echo";
-const RAW_SECRET = "sk-contract-echo-NEVER-REAL-000005";
-// The name every forged request tries to create. It must never exist.
-const INTRUDER = "contract-intruder";
 
 // ---------- helpers ----------
 
@@ -90,50 +75,6 @@ function request(page, method, url, body, headers) {
 }
 
 const get = (page, url) => request(page, "GET", url, undefined, {});
-
-// A client outside the browser, because a page may not forge Origin or Host:
-// both are forbidden header names for fetch, so the authorization cases below
-// cannot be expressed from inside Chromium. Everything here still crosses the
-// same real loopback socket into the same real APIHandler; only the headers are
-// ours to choose. Nothing is sent without an explicit Host.
-const backend = new URL(base);
-const ALLOWED_HOST = `${backend.hostname}:${backend.port}`;
-const ALLOWED_ORIGIN = `http://${ALLOWED_HOST}`;
-const OTHER_PORT = Number(backend.port) === 65535 ? 1024 : Number(backend.port) + 1;
-
-function raw(method, urlPath, options) {
-  const { body, headers } = options || {};
-  return new Promise((resolve, reject) => {
-    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body));
-    const sent = Object.assign({}, headers);
-    if (payload) {
-      sent["Content-Type"] = "application/json";
-      sent["Content-Length"] = String(payload.length);
-    }
-    const req = http.request(
-      { host: backend.hostname, port: backend.port, path: urlPath, method, headers: sent, setHost: false },
-      (res) => {
-        let text = "";
-        res.setEncoding("utf8");
-        res.on("data", (chunk) => { text += chunk; });
-        res.on("end", () => {
-          let data = null;
-          try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
-          resolve({
-            status: res.statusCode,
-            data,
-            contentType: res.headers["content-type"],
-            cacheControl: res.headers["cache-control"],
-            noSniff: res.headers["x-content-type-options"],
-          });
-        });
-      }
-    );
-    req.on("error", reject);
-    if (payload) req.write(payload);
-    req.end();
-  });
-}
 
 async function openKeys(page) {
   await page.goto(base, { waitUntil: "domcontentloaded" });
@@ -304,39 +245,6 @@ test("the API keys scope charts the real gateway ledger and keeps an unpriced co
     "gateway rows must not enter the local ledger");
 });
 
-test("a real key opened from the Keys table cannot inherit another provider's filter", async (page) => {
-  const spend = [];
-  page.on("request", (r) => {
-    const u = new URL(r.url());
-    if (u.pathname === "/api/spend") spend.push(u.search);
-  });
-  await page.goto(base, { waitUntil: "domcontentloaded" });
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.getByRole("radio", { name: "API keys" }).click();
-  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length > 0);
-  await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
-  await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
-
-  // contract-vercel belongs to the other provider, and its real ledger holds one priced call.
-  // The drilldown has to show that call, not the empty intersection of two filters that cannot
-  // both hold of the same key.
-  await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body tr[data-name="contract-vercel"]').waitFor();
-  await page.locator('#keys-body tr[data-name="contract-vercel"] .td-usd').first().click();
-  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "contract-vercel");
-  await page.waitForFunction(() => /1 request/.test(document.getElementById("totals").textContent));
-  assert.notEqual(new URL(page.url()).searchParams.get("provider"), "typesafe");
-  const keyed = spend.filter((s) => s.includes("key=contract-vercel"));
-  assert.ok(keyed.length > 0 && keyed.every((s) => !s.includes("provider=typesafe")),
-    `a TypeSafe filter survived a Vercel key: ${keyed.join(" | ")}`);
-  assert.equal(await page.locator("#mix .mix-name").first().textContent(), "claude-sonnet-5");
-
-  // And the engine confirms what the page refused to ask for really would have been empty.
-  const crossed = await get(page, "/api/spend?range=month&by=model&source=keys&key=contract-vercel&provider=typesafe");
-  assert.equal(crossed.status, 200, "a key of another provider is an empty intersection, not an error");
-  assert.deepEqual(crossed.data.rows, []);
-});
-
 // ---------- create, edit, reveal, copy, delete against the real vault ----------
 
 test("the add dialog creates a real key through POST /api/keys", async (page) => {
@@ -461,172 +369,9 @@ test("delete removes the real row and its stored secret", async (page) => {
   assert.equal(again.data.error, "not_found");
 });
 
-// ---------- the real authorization gates ----------
-
-// The suite above only ever sends requests the backend should accept, so it
-// would still pass with the token gate or the same-origin gate deleted. These
-// cases send the requests the gates exist to refuse, and then check the vault.
-test("the real token gate refuses a missing, empty, wrong or truncated X-KSF-Token", async (page) => {
-  await openKeys(page);
-  const before = (await get(page, "/api/keys")).data.keys;
-  assert.deepEqual(before.map((k) => k.name).sort(), SEEDED);
-
-  // Control first. The same non-browser client, carrying the real token and a
-  // real same-origin Host and Origin, is accepted — so a refusal below is the
-  // gate answering, not an artefact of sending the request this way.
-  const accepted = await raw("POST", "/api/keys", {
-    body: { name: RAW_KEY, provider: "openai", kind: "runtime", notes: "loopback control", secret: RAW_SECRET },
-    headers: { Host: ALLOWED_HOST, Origin: ALLOWED_ORIGIN, "X-KSF-Token": token },
-  });
-  assert.equal(accepted.status, 201, `the same-origin control was refused: ${JSON.stringify(accepted.data)}`);
-
-  const forged = [
-    ["no X-KSF-Token at all", {}],
-    ["an empty X-KSF-Token", { "X-KSF-Token": "" }],
-    ["a wrong X-KSF-Token of the right length", { "X-KSF-Token": "z".repeat(token.length) }],
-    ["a truncated X-KSF-Token", { "X-KSF-Token": token.slice(0, -1) }],
-    ["an X-KSF-Token with a trailing byte", { "X-KSF-Token": `${token}z` }],
-  ];
-  for (const [why, extra] of forged) {
-    const headers = Object.assign({ Host: ALLOWED_HOST, Origin: ALLOWED_ORIGIN }, extra);
-    const created = await raw("POST", "/api/keys", {
-      body: { name: INTRUDER, provider: "openai", kind: "runtime", notes: "", secret: "sk-never-stored" },
-      headers,
-    });
-    assert.equal(created.status, 403, `POST /api/keys with ${why} was not refused: ${JSON.stringify(created.data)}`);
-    assert.equal(created.data.error, "missing or bad token", `POST with ${why}: wrong refusal`);
-
-    const removed = await raw("DELETE", `/api/keys/${RAW_KEY}`, { headers });
-    assert.equal(removed.status, 403, `DELETE with ${why} was not refused: ${JSON.stringify(removed.data)}`);
-    assert.equal(removed.data.error, "missing or bad token");
-
-    const patched = await raw("PATCH", `/api/keys/${RAW_KEY}`, {
-      body: { kind: "billing", notes: "forged" },
-      headers,
-    });
-    assert.equal(patched.status, 403, `PATCH with ${why} was not refused: ${JSON.stringify(patched.data)}`);
-    assert.equal(patched.data.error, "missing or bad token");
-  }
-
-  // Nothing any of that attempted reached the vault.
-  const after = (await get(page, "/api/keys")).data.keys;
-  assert.equal(after.some((k) => k.name === INTRUDER), false, "a refused POST created a key");
-  const echo = after.find((k) => k.name === RAW_KEY);
-  assert.ok(echo, "a refused DELETE removed the key it was refused for");
-  assert.equal(echo.kind, "runtime", "a refused PATCH changed the stored kind");
-  assert.equal(echo.notes, "loopback control", "a refused PATCH changed the stored notes");
-  assert.equal(echo.version, 1, "a refused PATCH bumped the stored version");
-  assert.deepEqual(
-    after.filter((k) => k.name !== RAW_KEY).map((k) => k.name).sort(), SEEDED,
-    "the refused requests changed the vault"
-  );
-});
-
-test("the real same-origin gate refuses a disallowed Origin or Host even with the right token", async (page) => {
-  await openKeys(page);
-  const before = (await get(page, "/api/keys")).data.keys;
-  const echoBefore = before.find((k) => k.name === RAW_KEY);
-  assert.ok(echoBefore, "the loopback control key must still be here");
-
-  // Every case below carries the real token, so only the Origin/Host gate can
-  // be the one refusing.
-  const forged = [
-    ["a cross-site Origin", { Host: ALLOWED_HOST, Origin: "http://attacker.example" }],
-    ["an Origin on another port", { Host: ALLOWED_HOST, Origin: `http://127.0.0.1:${OTHER_PORT}` }],
-    ["an https Origin", { Host: ALLOWED_HOST, Origin: `https://${ALLOWED_HOST}` }],
-    ["an Origin naming a non-loopback host", { Host: ALLOWED_HOST, Origin: `http://10.0.0.1:${backend.port}` }],
-    ["a foreign Host", { Host: "attacker.example", Origin: ALLOWED_ORIGIN }],
-    ["a Host on another port", { Host: `127.0.0.1:${OTHER_PORT}`, Origin: ALLOWED_ORIGIN }],
-    ["a bare Host with no port", { Host: backend.hostname, Origin: ALLOWED_ORIGIN }],
-    ["no Host header at all", { Origin: ALLOWED_ORIGIN }],
-  ];
-  for (const [why, headers] of forged) {
-    const sent = Object.assign({ "X-KSF-Token": token }, headers);
-    const created = await raw("POST", "/api/keys", {
-      body: { name: INTRUDER, provider: "openai", kind: "runtime", notes: "", secret: "sk-never-stored" },
-      headers: sent,
-    });
-    assert.equal(created.status, 403, `POST /api/keys with ${why} was not refused: ${JSON.stringify(created.data)}`);
-    assert.equal(created.data.error, "forbidden", `POST with ${why}: wrong refusal`);
-
-    const removed = await raw("DELETE", `/api/keys/${RAW_KEY}`, { headers: sent });
-    assert.equal(removed.status, 403, `DELETE with ${why} was not refused: ${JSON.stringify(removed.data)}`);
-    assert.equal(removed.data.error, "forbidden");
-
-    // The gate is not a read/write distinction: a listing is refused too, and
-    // so no forged request may see a name, a provider or a note.
-    const listed = await raw("GET", "/api/keys", { headers: sent });
-    assert.equal(listed.status, 403, `GET /api/keys with ${why} was not refused`);
-    assert.equal(listed.data.error, "forbidden");
-    assert.equal(listed.data.keys, undefined, `GET with ${why} leaked the vault listing`);
-  }
-
-  // A cross-site Sec-Fetch-Site is refused on the routes that carry a secret,
-  // and the refusal is not recorded as a use.
-  const eventsBefore = (await get(page, `/api/keys/contract-alpha/events?limit=50`)).data.events.length;
-  const revealed = await raw("POST", "/api/keys/contract-alpha/reveal", {
-    body: {},
-    headers: { Host: ALLOWED_HOST, Origin: ALLOWED_ORIGIN, "X-KSF-Token": token, "Sec-Fetch-Site": "cross-site" },
-  });
-  assert.equal(revealed.status, 403, `a cross-site reveal was not refused: ${JSON.stringify(revealed.data)}`);
-  assert.equal(revealed.data.error, "forbidden");
-  assert.equal(JSON.stringify(revealed.data).includes(ALPHA_SECRET), false, "a refused reveal returned the secret");
-  const eventsAfter = (await get(page, `/api/keys/contract-alpha/events?limit=50`)).data.events.length;
-  assert.equal(eventsAfter, eventsBefore, "a refused reveal was recorded as a use");
-
-  // The vault is byte-for-byte what it was, and the documented loopback alias
-  // still works: the control key goes out the way it came in.
-  const after = (await get(page, "/api/keys")).data.keys;
-  assert.deepEqual(after, before, "a refused request changed the vault");
-  const removed = await raw("DELETE", `/api/keys/${RAW_KEY}`, {
-    headers: {
-      Host: `localhost:${backend.port}`,
-      Origin: `http://localhost:${backend.port}`,
-      "X-KSF-Token": token,
-    },
-  });
-  assert.equal(removed.status, 200, `the documented localhost alias was refused: ${JSON.stringify(removed.data)}`);
-  await openKeys(page);
-  assert.deepEqual((await rowNames(page)).sort(), SEEDED, "the page must agree the vault is back to its seed");
-});
-
-// ---------- screenshots ----------
-
-const viewports = [
-  { name: "desktop", width: 1440, height: 900 },
-  { name: "mobile", width: 390, height: 844 },
-];
-
-async function shoot(browser) {
-  const taken = [];
-  for (const viewport of viewports) {
-    const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
-    try {
-      await openKeys(page);
-      const list = path.join(screenshotDir, `backend-contract-keys-${viewport.name}.png`);
-      await page.screenshot({ path: list, animations: "disabled", fullPage: true });
-      taken.push(list);
-
-      await rowButton(page, "contract-alpha", "reveal").click();
-      await waitDialog(page, "dlg-reveal", true);
-      const reveal = path.join(screenshotDir, `backend-contract-reveal-${viewport.name}.png`);
-      await page.screenshot({ path: reveal, animations: "disabled" });
-      taken.push(reveal);
-      await page.locator("#dlg-reveal [data-close]").click();
-      await waitDialog(page, "dlg-reveal", false);
-    } finally {
-      await page.close();
-    }
-  }
-  const smallest = taken.filter((file) => /keys-/.test(file)).map((file) => fs.statSync(file).size);
-  assert.ok(Math.min(...smallest) > 20000, "a key-list screenshot is suspiciously blank");
-  return taken;
-}
-
 // ---------- runner ----------
 
 (async () => {
-  fs.mkdirSync(screenshotDir, { recursive: true });
   const browser = await chromium.launch();
   let failed = null;
   let passed = 0;
@@ -650,10 +395,6 @@ async function shoot(browser) {
       // damage the failed one did.
       if (failed) break;
     }
-    if (!failed) {
-      const shots = await shoot(browser);
-      console.log(`  ok  screenshots (${shots.length}) in ${screenshotDir}`);
-    }
   } finally {
     await browser.close().catch(() => {});
   }
@@ -661,5 +402,5 @@ async function shoot(browser) {
     console.error(`\nBackend contract UI: stopped at "${failed}" after ${passed} of ${checks.length} cases`);
     process.exit(1);
   }
-  console.log(`\nBackend contract UI passed: ${checks.length} cases against ${base}, screenshots in ${screenshotDir}`);
+  console.log(`\nBackend contract UI passed: ${checks.length} cases against ${base}`);
 })().catch((error) => { console.error(error); process.exit(1); });

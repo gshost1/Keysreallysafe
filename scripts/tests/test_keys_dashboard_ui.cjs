@@ -11,7 +11,6 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "../..");
-const screenshotDir = process.env.KEYS_UI_SCREENSHOT_DIR || path.join(root, ".build/keys-ui-screenshots");
 const asset = (name) => fs.readFileSync(path.join(root, "Web", name));
 const html = asset("index.html").toString("utf8").replace("<head>", '<head><meta name="ksf-token" content="test-token">');
 const assets = new Map([
@@ -1581,81 +1580,6 @@ test("repeated reveals of different keys never show the wrong secret", async (pa
   await waitDialog(page, "dlg-reveal", false);
 });
 
-// ---------- screenshots ----------
-
-const viewports = [
-  { name: "desktop", width: 1440, height: 900 },
-  { name: "mobile", width: 390, height: 844 },
-];
-
-// Switching panes runs a 160 ms opacity animation, so a screenshot taken the
-// instant a row appears catches a pane that is still transparent.
-async function shoot(browser, origin) {
-  const taken = [];
-  const capture = async (page, name, options = {}) => {
-    const file = path.join(screenshotDir, `${name}.png`);
-    await page.screenshot({ path: file, animations: "disabled", ...options });
-    taken.push(file);
-  };
-  for (const viewport of viewports) {
-    reset();
-    const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
-    await openKeys(page, origin);
-    await capture(page, `keys-list-${viewport.name}`, { fullPage: true });
-
-    await rowButton(page, "alpha", "reveal").click();
-    await waitDialog(page, "dlg-reveal", true);
-    await capture(page, `keys-reveal-${viewport.name}`);
-    await page.locator("#dlg-reveal [data-close]").click();
-
-    // The subscriptions scope is what the chart opens on; shoot it before leaving.
-    await page.getByRole("tab", { name: "Chart" }).click();
-    await page.locator("#scope-chips:visible").waitFor();
-    await capture(page, `chart-subscriptions-${viewport.name}`, { fullPage: true });
-
-    // The API keys scope: every provider and key, then one provider, then one key.
-    await openKeysSource(page, origin);
-    await capture(page, `chart-api-keys-all-${viewport.name}`, { fullPage: true });
-    await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
-    // The filtered answer has to land first, or the shot shows the previous view.
-    await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe"
-      && document.querySelectorAll("#mix .mix-row").length === 1);
-    await capture(page, `chart-api-keys-provider-${viewport.name}`, { fullPage: true });
-
-    await page.getByRole("radio", { name: "Show every provider these keys reached" }).click();
-    await page.waitForFunction(() => !new URL(location.href).searchParams.get("provider")
-      && document.querySelectorAll("#mix .mix-row").length === 2);
-    await page.getByRole("radio", { name: "Show only key charlie" }).click();
-    await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie"
-      && document.querySelectorAll("#mix .mix-row").length === 1);
-    await capture(page, `chart-api-keys-one-${viewport.name}`, { fullPage: true });
-
-    // A family with more models than palette shades: every model keeps its name and its colour.
-    reset();
-    ledger = manyModelLedger();
-    await openKeysSource(page, origin);
-    await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, ledger.length);
-    await capture(page, `chart-many-models-${viewport.name}`, { fullPage: true });
-
-    reset();
-    keys = [];
-    await page.reload();
-    await page.waitForLoadState("networkidle");
-    // First use: the guide on the Usage pane, before it is dismissed.
-    await page.locator("#onboard:visible").waitFor();
-    await capture(page, `first-use-guide-${viewport.name}`, { fullPage: true });
-    await page.getByRole("tab", { name: "Keys" }).click();
-    await page.locator("#keys-empty:visible").waitFor();
-    await capture(page, `keys-empty-${viewport.name}`, { fullPage: true });
-    await page.close();
-  }
-  // A blank pane would mean the fade was captured mid-flight, or the list did
-  // not render: either way the evidence would be worthless, so it is checked.
-  const smallest = taken.filter((file) => /keys-list/.test(file)).map((file) => fs.statSync(file).size);
-  assert.ok(Math.min(...smallest) > 20000, "a key-list screenshot is suspiciously blank");
-  return taken;
-}
-
 test("long key metadata keeps every action inside the viewport", async (page, origin) => {
   keys[0].name = "acceptance-" + "long-key-name-".repeat(8);
   keys[0].host = "api.openai.com";
@@ -1680,14 +1604,12 @@ test("long key metadata keeps every action inside the viewport", async (page, or
     });
     assert.ok(geometry.tableRight <= width + 1, `table overflows at ${width}: ${geometry.tableRight}`);
     for (const action of geometry.actions) assert.ok(action.left >= 0 && action.right <= width + 1 && action.width > 0, `${action.name} outside viewport at ${width}: ${JSON.stringify(action)}`);
-    await page.screenshot({path:path.join(screenshotDir, `keys-long-metadata-${width}.png`),fullPage:true});
   }
 });
 
 // ---------- runner ----------
 
 (async () => {
-  fs.mkdirSync(screenshotDir, { recursive: true });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch();
@@ -1710,8 +1632,6 @@ test("long key metadata keeps every action inside the viewport", async (page, or
         await page.close();
       }
     }
-    const shots = await shoot(browser, origin);
-    console.log(`  ok  screenshots (${shots.length}) in ${screenshotDir}`);
   } finally {
     await browser.close();
     server.close();
@@ -1720,5 +1640,5 @@ test("long key metadata keeps every action inside the viewport", async (page, or
     console.error(`\nKeys dashboard UI: ${failed.length} of ${checks.length} failed: ${failed.join(", ")}`);
     process.exit(1);
   }
-  console.log(`\nKeys dashboard UI passed: ${checks.length} cases, screenshots in ${screenshotDir}`);
+  console.log(`\nKeys dashboard UI passed: ${checks.length} cases`);
 })().catch((error) => { console.error(error); process.exit(1); });

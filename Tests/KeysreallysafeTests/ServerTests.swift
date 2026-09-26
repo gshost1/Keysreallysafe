@@ -66,6 +66,118 @@ final class ServerTests: XCTestCase {
         XCTAssertTrue(String(data: response.body, encoding: .utf8)!.contains("auth_failed"))
     }
 
+    /// The dashboard's HTTP gates, row by row, through the unmodified handler: every forged token,
+    /// Origin or Host is refused before it reaches the vault, the presence gate or the event log.
+    /// Requests are built directly, not through `handle`, so a row can leave out the Host header.
+    func testDashboardGatesRefuseForgedTokenOriginAndHost() throws {
+        let (db, dir) = try makeDB()
+        let secrets = MemorySecretStore()
+        let (service, gate) = makeGatedService(db: db, secrets: secrets)
+        let handler = APIHandler(service: service, webRoot: dir)
+        let token = handler.originToken
+        let host = "127.0.0.1:12765", origin = "http://127.0.0.1:12765"
+        let allowed = ["host": host, "origin": origin, "x-ksf-token": token]
+        func send(
+            _ method: String, _ path: String, _ headers: [String: String], body: [String: Any]? = nil
+        ) throws -> (status: Int, object: [String: Any], text: String) {
+            let data = try body.map { try JSONSerialization.data(withJSONObject: $0) } ?? Data()
+            let response = handler.handle(HTTPRequest(
+                method: method, path: path, query: [:], headers: headers, body: data, serverPort: 12765
+            ))
+            let object = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] ?? [:]
+            return (response.status, object, String(decoding: response.body, as: UTF8.self))
+        }
+        let intruder: [String: Any] = [
+            "name": "intruder", "provider": "openai", "kind": "runtime", "notes": "", "secret": "sk-never-stored",
+        ]
+
+        // Control: the same request with the real token and a same-origin Host and Origin is
+        // accepted, so every refusal below is a gate answering.
+        let control = try send("POST", "/api/keys", allowed, body: [
+            "name": "echo", "provider": "openai", "kind": "runtime", "notes": "loopback control", "secret": fixtureSecret,
+        ])
+        XCTAssertEqual(control.status, 201, control.text)
+        let before = try service.list()
+        let eventsBefore = try service.keyEvents(name: "echo")
+        let promptsBefore = gate.reasons
+
+        let tokens: [(String, String?)] = [
+            ("no X-KSF-Token", nil),
+            ("an empty X-KSF-Token", ""),
+            ("a wrong X-KSF-Token of the right length", String(repeating: "z", count: token.count)),
+            ("a truncated X-KSF-Token", String(token.dropLast())),
+            ("an X-KSF-Token with a trailing byte", token + "z"),
+        ]
+        for (why, value) in tokens {
+            var headers = ["host": host, "origin": origin]
+            headers["x-ksf-token"] = value
+            let rows: [(String, String, [String: Any]?)] = [
+                ("POST", "/api/keys", intruder),
+                ("DELETE", "/api/keys/echo", nil),
+                ("PATCH", "/api/keys/echo", ["kind": "billing", "notes": "forged"]),
+            ]
+            for (method, path, body) in rows {
+                let refused = try send(method, path, headers, body: body)
+                XCTAssertEqual(refused.status, 403, "\(method) \(path) with \(why)")
+                XCTAssertEqual(refused.object["error"] as? String, "missing or bad token", "\(method) \(path) with \(why)")
+            }
+        }
+
+        // Each of these carries the real token, so only the Origin/Host gate can refuse it.
+        let forged: [(String, [String: String])] = [
+            ("a cross-site Origin", ["host": host, "origin": "http://attacker.example"]),
+            ("an Origin on another port", ["host": host, "origin": "http://127.0.0.1:12766"]),
+            ("an https Origin", ["host": host, "origin": "https://\(host)"]),
+            ("an Origin naming a non-loopback host", ["host": host, "origin": "http://10.0.0.1:12765"]),
+            ("a foreign Host", ["host": "attacker.example", "origin": origin]),
+            ("a Host on another port", ["host": "127.0.0.1:12766", "origin": origin]),
+            ("a bare Host with no port", ["host": "127.0.0.1", "origin": origin]),
+            ("no Host header at all", ["origin": origin]),
+        ]
+        for (why, headers) in forged {
+            var sent = headers
+            sent["x-ksf-token"] = token
+            let rows: [(String, String, [String: Any]?)] = [
+                ("POST", "/api/keys", intruder),
+                ("DELETE", "/api/keys/echo", nil),
+                // Not a read/write distinction: a forged listing may not see a name either.
+                ("GET", "/api/keys", nil),
+            ]
+            for (method, path, body) in rows {
+                let refused = try send(method, path, sent, body: body)
+                XCTAssertEqual(refused.status, 403, "\(method) \(path) with \(why)")
+                XCTAssertEqual(refused.object["error"] as? String, "forbidden", "\(method) \(path) with \(why)")
+                XCTAssertNil(refused.object["keys"], "\(method) \(path) with \(why) leaked the vault listing")
+            }
+        }
+
+        // A cross-site Sec-Fetch-Site is refused on a route that carries a secret.
+        var crossSite = allowed
+        crossSite["sec-fetch-site"] = "cross-site"
+        let revealed = try send("POST", "/api/keys/echo/reveal", crossSite, body: [:])
+        XCTAssertEqual(revealed.status, 403)
+        XCTAssertEqual(revealed.object["error"] as? String, "forbidden")
+        XCTAssertFalse(revealed.text.contains(fixtureSecret), "a refused reveal returned the secret")
+
+        // None of it reached the vault, the presence gate or the audit log.
+        XCTAssertEqual(try service.list(), before, "a refused request changed the vault")
+        XCTAssertThrowsError(try secrets.get(name: "intruder"), "a refused request reached secret storage")
+        XCTAssertEqual(try secrets.get(name: "echo"), fixtureSecret)
+        XCTAssertEqual(try service.keyEvents(name: "echo"), eventsBefore, "a refused request was recorded")
+        XCTAssertEqual(gate.reasons, promptsBefore, "a refused request reached the presence gate")
+        let echo = try XCTUnwrap(try db.catalogRow(name: "echo"))
+        XCTAssertEqual(echo.kind, "runtime")
+        XCTAssertEqual(echo.notes, "loopback control")
+        XCTAssertEqual(echo.version, 1)
+
+        // The documented localhost alias is a same origin too.
+        let alias = try send("DELETE", "/api/keys/echo", [
+            "host": "localhost:12765", "origin": "http://localhost:12765", "x-ksf-token": token,
+        ])
+        XCTAssertEqual(alias.status, 200, alias.text)
+        XCTAssertTrue(try service.list().isEmpty)
+    }
+
     func testListenersBindLoopbackOnly() throws {
         let server = try LoopbackHTTPServer(port: 0) { _ in HTTPResponse.text(200, "x") }
         defer { server.stop() }
