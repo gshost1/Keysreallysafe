@@ -67,7 +67,11 @@ struct ControlClient {
         return ControlClient(info: info)
     }
 
-    func call(method: String, path: String, body: [String: Any]? = nil, timeout: TimeInterval = 180) throws -> (Int, [String: Any]) {
+    /// The response object when the site answers `expect`; any other status is thrown as the
+    /// AppError it carries.
+    func call(
+        method: String, path: String, body: [String: Any]? = nil, expect: Int, timeout: TimeInterval = 180
+    ) throws -> [String: Any] {
         let url = URL(string: "http://127.0.0.1:\(info.port)\(path)")!
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -86,22 +90,9 @@ struct ControlClient {
             throw AppError.http("could not reach the local site on 127.0.0.1:\(info.port): \(reason)")
         }
         let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object) ?? [:]
-        return (http.statusCode, obj)
-    }
-
-    /// Turn an API error body into the same errors the CLI raises locally.
-    static func raise(status: Int, body: [String: Any]) -> AppError {
-        let code = JSONValue.string(body["error"]) ?? "error"
-        let message = JSONValue.string(body["message"]) ?? code
-        switch code {
-        case "auth_failed": return .authFailed
-        case "auth_cancelled": return .authCancelled
-        case "auth_unavailable": return .authUnavailable(message)
-        case "not_found": return .notFound(message)
-        case "gateway owned by another process":
-            return .gatewayOwned(pid_t(JSONValue.int(body["gateway_owner_pid"]) ?? 0))
-        default:
-            return .usage(status == 403 ? "site refused the request (\(message)); restart the site and retry" : message)
+        guard http.statusCode == expect else {
+            throw AppError(wireCode: JSONValue.string(obj["error"]) ?? "error", status: http.statusCode, body: obj)
         }
+        return obj
     }
 }

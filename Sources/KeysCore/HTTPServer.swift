@@ -138,44 +138,20 @@ final class APIHandler: @unchecked Sendable {
                 return try spend(request)
             case ("GET", "/api/status"):
                 return try liveStatus()
-            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/gateway"):
-                return try keysGateway(request, nameFrom: p)
-            case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/clients"):
-                return try clientsList(nameFrom: p)
-            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/clients"):
-                return try clientsIssue(request, nameFrom: p)
-            case ("DELETE", let p) where p.hasPrefix("/api/keys/") && p.contains("/clients/"):
-                return try clientsRevoke(pathWith: p)
-            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/grants"):
-                return try keysGrant(request, nameFrom: p)
-            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/check"):
-                return try keysCheck(nameFrom: p)
-            case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/check"):
-                return try keysLastCheck(nameFrom: p)
             case ("GET", "/api/grants"):
                 return grantsList(request)
             case ("DELETE", "/api/grants"):
                 return grantsRevokeAll(request)
             case ("DELETE", let p) where p.hasPrefix("/api/grants/"):
                 return try grantRevoke(p)
-            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/rotate"):
-                return try keysRotate(request, nameFrom: p)
-            case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/events"):
-                return try keysEvents(request, nameFrom: p)
             case ("GET", "/api/models"):
                 return try models()
             case ("GET", "/api/keys"):
                 return try keysList()
             case ("POST", "/api/keys"):
                 return try keysAdd(request)
-            case ("PATCH", let p) where p.hasPrefix("/api/keys/"):
-                return try keysPatch(request, nameFrom: p)
-            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/copy"):
-                return try keysCopy(request, nameFrom: p)
-            case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/reveal"):
-                return try keysReveal(request, nameFrom: p)
-            case ("DELETE", let p) where p.hasPrefix("/api/keys/"):
-                return try keysDelete(nameFrom: p)
+            case (_, let p) where p.hasPrefix("/api/keys/"):
+                return try keyRequest(request, path: p)
             case ("POST", "/api/ingest"):
                 return try ingest(request)
             case ("GET", _) where !path.hasPrefix("/api/"):
@@ -289,11 +265,41 @@ final class APIHandler: @unchecked Sendable {
         HTTPResponse.json(200, ["keys": try service.listJSONObject()])
     }
 
-    private func keysGateway(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/gateway")
-        guard let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) else {
-            return HTTPResponse.json(400, ["error": "invalid json"])
+    /// Every /api/keys/<name>[/<action>[/<id>]] route: the path is split and the name validated
+    /// once, and each route matches its exact method and segment count.
+    private func keyRequest(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
+        let parts = path.dropFirst("/api/keys/".count).split(separator: "/", omittingEmptySubsequences: false)
+            .map(String.init)
+        let name = parts[0]
+        try KeyName.validate(name)
+        switch (request.method, parts.count, parts.count > 1 ? parts[1] : "") {
+        case ("PATCH", 1, _): return try keysPatch(request, name: name)
+        case ("DELETE", 1, _): return try keysDelete(name)
+        case ("POST", 2, "gateway"): return try keysGateway(request, name: name)
+        case ("GET", 2, "clients"): return try clientsList(name)
+        case ("POST", 2, "clients"): return try clientsIssue(request, name: name)
+        case ("DELETE", 3, "clients"): return try clientsRevoke(name, id: parts[2])
+        case ("POST", 2, "grants"): return try keysGrant(request, name: name)
+        case ("POST", 2, "check"): return try keysCheck(name)
+        case ("GET", 2, "check"): return try keysLastCheck(name)
+        case ("POST", 2, "rotate"): return try keysRotate(request, name: name)
+        case ("GET", 2, "events"): return try keysEvents(request, name: name)
+        case ("POST", 2, "copy"): return try keysCopy(request, name: name)
+        case ("POST", 2, "reveal"): return try keysReveal(request, name: name)
+        default: return HTTPResponse.json(405, ["error": "method_not_allowed"])
         }
+    }
+
+    /// The body of a route that requires a JSON object; anything else is a 400 "invalid json".
+    private func jsonBody(_ request: HTTPRequest) throws -> [String: Any] {
+        guard let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) else {
+            throw AppError.usage("invalid json")
+        }
+        return obj
+    }
+
+    private func keysGateway(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
         guard let enabled = JSONValue.bool(obj["enabled"]) else {
             return HTTPResponse.json(400, ["error": "enabled is required"])
         }
@@ -311,8 +317,7 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, try service.keyJSONObject(row))
     }
 
-    private func clientsList(nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/clients")
+    private func clientsList(_ name: String) throws -> HTTPResponse {
         let now = Date()
         return HTTPResponse.json(200, [
             "clients": try service.gatewayClients(name: name).map { $0.jsonObject(now: now) }
@@ -320,8 +325,7 @@ final class APIHandler: @unchecked Sendable {
     }
 
     /// The token appears in this one response and nowhere else.
-    private func clientsIssue(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/clients")
+    private func clientsIssue(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
         let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) ?? [:]
         let label = JSONValue.string(obj["label"]) ?? ""
         var days: Int?
@@ -345,23 +349,14 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(201, ["token": issued.token, "client": issued.client.jsonObject()])
     }
 
-    private func clientsRevoke(pathWith path: String) throws -> HTTPResponse {
-        let rest = String(path.dropFirst("/api/keys/".count))
-        guard let marker = rest.range(of: "/clients/") else { throw AppError.usage("bad path") }
-        let name = String(rest[..<marker.lowerBound])
-        try KeyName.validate(name)
-        guard let id = Int64(rest[marker.upperBound...]) else {
-            return HTTPResponse.json(404, ["error": "not_found"])
-        }
+    private func clientsRevoke(_ name: String, id raw: String) throws -> HTTPResponse {
+        guard let id = Int64(raw) else { throw AppError.notFound("client \(raw)") }
         let client = try service.revokeGatewayClient(name: name, id: id, caller: "dashboard")
         return HTTPResponse.json(200, ["client": client.jsonObject()])
     }
 
-    private func keysGrant(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/grants")
-        guard let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) else {
-            return HTTPResponse.json(400, ["error": "invalid json"])
-        }
+    private func keysGrant(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
         var req = GrantRequest(task: JSONValue.string(obj["task"]) ?? "")
         if let m = JSONValue.int(obj["minutes"]) { req.minutes = m }
         if let methods = obj["methods"] as? [Any] {
@@ -404,9 +399,7 @@ final class APIHandler: @unchecked Sendable {
 
     private func grantRevoke(_ path: String) throws -> HTTPResponse {
         let id = String(path.dropFirst("/api/grants/".count))
-        guard id.count == 8, id.allSatisfy({ $0.isHexDigit }) else {
-            return HTTPResponse.json(404, ["error": "not_found"])
-        }
+        guard id.count == 8, id.allSatisfy({ $0.isHexDigit }) else { throw AppError.notFound(id) }
         let g = try service.revokeGrant(id: id, caller: "dashboard")
         return HTTPResponse.json(200, g.jsonObject())
     }
@@ -417,34 +410,27 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, ["revoked": touched.map { $0.jsonObject() }])
     }
 
-    private func keysCheck(nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/check")
+    private func keysCheck(_ name: String) throws -> HTTPResponse {
         let result = try service.checkProvider(name: name, caller: "dashboard")
         return HTTPResponse.json(200, result.jsonObject())
     }
 
-    private func keysLastCheck(nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/check")
+    private func keysLastCheck(_ name: String) throws -> HTTPResponse {
         guard let result = try service.lastCheck(name: name) else {
             return HTTPResponse.json(404, ["error": "not_checked", "message": "no check recorded for \(name)"])
         }
         return HTTPResponse.json(200, result.jsonObject())
     }
 
-    private func keysRotate(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/rotate")
-        guard let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) else {
-            return HTTPResponse.json(400, ["error": "invalid json"])
-        }
-        guard let secret = JSONValue.string(obj["secret"]), !secret.isEmpty else {
+    private func keysRotate(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
+        guard let secret = JSONValue.string(try jsonBody(request)["secret"]) else {
             return HTTPResponse.json(400, ["error": "secret is required"])
         }
         let row = try service.rotate(name: name, secret: secret, caller: "dashboard")
         return HTTPResponse.json(200, try service.keyJSONObject(row))
     }
 
-    private func keysEvents(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        let name = try extractName(path, suffix: "/events")
+    private func keysEvents(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
         var limit = 50
         if let raw = request.query["limit"], let n = Int(raw) {
             limit = n
@@ -464,15 +450,8 @@ final class APIHandler: @unchecked Sendable {
         ])
     }
 
-    private func keysPatch(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        let name = String(path.dropFirst("/api/keys/".count))
-        if name.isEmpty || name.contains("/") {
-            return HTTPResponse.json(404, ["error": "not_found"])
-        }
-        try KeyName.validate(name)
-        guard let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) else {
-            return HTTPResponse.json(400, ["error": "invalid json"])
-        }
+    private func keysPatch(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
         if obj["name"] != nil || obj["secret"] != nil {
             return HTTPResponse.json(400, ["error": "name and secret are immutable"])
         }
@@ -480,48 +459,27 @@ final class APIHandler: @unchecked Sendable {
         if let unknown = obj.keys.first(where: { !allowed.contains($0) }) {
             return HTTPResponse.json(400, ["error": "unknown field \(unknown)"])
         }
-        if obj.keys.contains("provider"), JSONValue.string(obj["provider"]) == nil {
-            return HTTPResponse.json(400, ["error": "provider must be a string"])
+        /// nil when absent (or null, where `null` allows it); otherwise a string, non-empty
+        /// unless `empty` allows it.
+        func text(_ key: String, null: Bool = false, empty: Bool = false) throws -> String? {
+            guard let raw = obj[key], !(null && raw is NSNull) else { return nil }
+            guard let s = raw as? String, empty || !s.isEmpty else { throw AppError.usage("\(key) must be a string") }
+            return s
         }
-        if obj.keys.contains("kind"), JSONValue.string(obj["kind"]) == nil {
-            return HTTPResponse.json(400, ["error": "kind must be a string"])
-        }
-        if obj.keys.contains("notes"), !(obj["notes"] is String) && !(obj["notes"] is NSNull) {
-            return HTTPResponse.json(400, ["error": "notes must be a string"])
-        }
-        if obj.keys.contains("host"), obj["host"] is NSNull == false, JSONValue.string(obj["host"]) == nil {
-            return HTTPResponse.json(400, ["error": "host must be a string"])
-        }
-        let provider = JSONValue.string(obj["provider"])
-        let kind = JSONValue.string(obj["kind"])
-        let notes: String?
-        if obj.keys.contains("notes") {
-            notes = JSONValue.string(obj["notes"]) ?? ""
-        } else {
-            notes = nil
-        }
-        let host: String?
-        if obj.keys.contains("host") {
-            host = JSONValue.string(obj["host"])
-        } else {
-            host = nil
-        }
+        let provider = try text("provider")
+        let kind = try text("kind")
+        // Present notes replace the old ones; null clears them.
+        let notes = obj.keys.contains("notes") ? try text("notes", null: true, empty: true) ?? "" : nil
+        let host = try text("host", null: true)
         let row = try service.patch(
-            name: name,
-            provider: provider,
-            kind: kind,
-            notes: notes,
-            host: host,
-            updateHost: obj.keys.contains("host"),
-            caller: "dashboard"
+            name: name, provider: provider, kind: kind, notes: notes,
+            host: host, updateHost: obj.keys.contains("host"), caller: "dashboard"
         )
         return HTTPResponse.json(200, try service.keyJSONObject(row))
     }
 
     private func keysAdd(_ request: HTTPRequest) throws -> HTTPResponse {
-        guard let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) else {
-            return HTTPResponse.json(400, ["error": "invalid json"])
-        }
+        let obj = try jsonBody(request)
         guard let name = JSONValue.string(obj["name"]),
               let provider = JSONValue.string(obj["provider"]),
               let secret = JSONValue.string(obj["secret"])
@@ -534,34 +492,24 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(201, ["ok": true, "name": name])
     }
 
-    private func keysCopy(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        if !fetchSiteOK(request) {
+    private func keysCopy(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
+        // Browsers send Sec-Fetch-Site; curl does not. Origin/Host remain the primary gate.
+        guard HTTPFrame.LoopbackOrigin.fetchSiteAllowed(request.headers["sec-fetch-site"]) else {
             return HTTPResponse.json(403, ["error": "forbidden"])
         }
-        let name = try extractName(path, suffix: "/copy")
         try service.copy(name: name, holdUntilWipe: false, caller: "dashboard")
         return HTTPResponse.json(200, ["ok": true, "wipes_in_s": Int(ClipboardWipe.seconds)])
     }
 
-    private func keysReveal(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
-        if !fetchSiteOK(request) {
+    private func keysReveal(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
+        guard HTTPFrame.LoopbackOrigin.fetchSiteAllowed(request.headers["sec-fetch-site"]) else {
             return HTTPResponse.json(403, ["error": "forbidden"])
         }
-        let name = try extractName(path, suffix: "/reveal")
         let secret = try service.reveal(name: name, caller: "dashboard")
         return HTTPResponse.json(200, ["name": name, "secret": secret])
     }
 
-    /// Browsers send Sec-Fetch-Site; curl does not. Origin/Host remain the primary gate.
-    private func fetchSiteOK(_ request: HTTPRequest) -> Bool {
-        guard let site = request.headers["sec-fetch-site"] else { return true }
-        let s = site.lowercased()
-        return s == "same-origin" || s == "none"
-    }
-
-    private func keysDelete(nameFrom path: String) throws -> HTTPResponse {
-        let name = String(path.dropFirst("/api/keys/".count))
-        try KeyName.validate(name)
+    private func keysDelete(_ name: String) throws -> HTTPResponse {
         try service.remove(name: name, caller: "dashboard")
         return HTTPResponse.json(200, ["ok": true, "name": name])
     }
@@ -588,38 +536,13 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, payload)
     }
 
-    private func extractName(_ path: String, suffix: String) throws -> String {
-        let rest = String(path.dropFirst("/api/keys/".count))
-        guard rest.hasSuffix(suffix) else { throw AppError.usage("bad path") }
-        let name = String(rest.dropLast(suffix.count))
-        try KeyName.validate(name)
-        return name
-    }
-
+    /// `error` is the stable code the dashboard and the control client match on; `message` is
+    /// the readable text and `detail` the bare value (a name, a reason) for rebuilding the error.
     private func mapError(_ error: AppError) -> HTTPResponse {
-        switch error {
-        case .usage(let m):
-            return HTTPResponse.json(400, ["error": m])
-        case .notFound:
-            return HTTPResponse.json(404, ["error": "not_found"])
-        case .alreadyExists:
-            return HTTPResponse.json(409, ["error": "already_exists"])
-        case .gatewayOwned(let pid):
-            return HTTPResponse.json(409, [
-                "error": "gateway owned by another process",
-                "gateway_owner_pid": Int(pid),
-            ])
-        case .authFailed:
-            return HTTPResponse.json(403, ["error": "auth_failed", "message": error.description])
-        case .authCancelled:
-            return HTTPResponse.json(403, ["error": "auth_cancelled", "message": error.description])
-        case .authUnavailable:
-            return HTTPResponse.json(503, ["error": "auth_unavailable", "message": error.description])
-        case .keychain(let m):
-            return HTTPResponse.json(500, ["error": "keychain", "message": m])
-        default:
-            return HTTPResponse.json(400, ["error": error.description])
-        }
+        let (status, code) = error.wire
+        var body: [String: Any] = ["error": code, "message": error.description, "detail": error.detail]
+        if case .gatewayOwned(let pid) = error { body["gateway_owner_pid"] = Int(pid) }
+        return HTTPResponse.json(status, body)
     }
 
     private func normalizePath(_ path: String) -> String {

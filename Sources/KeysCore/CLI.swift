@@ -403,8 +403,7 @@ struct GrantCommand: ParsableCommand {
         if let maxRequests { body["max_requests"] = maxRequests }
         if let maxUsd { body["max_usd"] = maxUsd }
         fputs("Touch ID in the Keysrs site…\n", stderr)
-        let (status, obj) = try client.call(method: "POST", path: "/api/keys/\(name)/grants", body: body)
-        guard status == 201 else { throw ControlClient.raise(status: status, body: obj) }
+        let obj = try client.call(method: "POST", path: "/api/keys/\(name)/grants", body: body, expect: 201)
         if json {
             let data = try JSONValue.data(obj)
             FileHandle.standardOutput.write(data)
@@ -447,8 +446,7 @@ struct GrantsCommand: ParsableCommand {
 
     func run() throws {
         let client = try ControlClient.connect()
-        let (status, obj) = try client.call(method: "GET", path: "/api/grants" + (all ? "?all=1" : ""))
-        guard status == 200 else { throw ControlClient.raise(status: status, body: obj) }
+        let obj = try client.call(method: "GET", path: "/api/grants" + (all ? "?all=1" : ""), expect: 200)
         let grants = (obj["grants"] as? [Any])?.compactMap(JSONValue.object) ?? []
         if json {
             FileHandle.standardOutput.write(try JSONValue.data(grants))
@@ -492,15 +490,13 @@ struct RevokeCommand: ParsableCommand {
                 try KeyName.validate(key)
                 path += "?key=\(key)"
             }
-            let (status, obj) = try client.call(method: "DELETE", path: path)
-            guard status == 200 else { throw ControlClient.raise(status: status, body: obj) }
+            let obj = try client.call(method: "DELETE", path: path, expect: 200)
             let n = (obj["revoked"] as? [Any])?.count ?? 0
             print("revoked \(n) grant\(n == 1 ? "" : "s")")
             return
         }
         guard let id, !id.isEmpty else { throw AppError.usage("give a grant id, or --all") }
-        let (status, obj) = try client.call(method: "DELETE", path: "/api/grants/\(id)")
-        guard status == 200 else { throw ControlClient.raise(status: status, body: obj) }
+        _ = try client.call(method: "DELETE", path: "/api/grants/\(id)", expect: 200)
         print("revoked \(id)")
     }
 }

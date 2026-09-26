@@ -30,6 +30,53 @@ enum AppError: Error, CustomStringConvertible {
         }
     }
 
+    /// HTTP status and `error` code on the local API. The codes are what the dashboard's
+    /// friendly() and the control client match on, so they must not change.
+    var wire: (status: Int, code: String) {
+        switch self {
+        case .usage(let m): return (400, m)
+        case .notFound: return (404, "not_found")
+        case .alreadyExists: return (409, "already_exists")
+        case .gatewayOwned: return (409, "gateway owned by another process")
+        case .authFailed: return (403, "auth_failed")
+        case .authCancelled: return (403, "auth_cancelled")
+        case .authUnavailable: return (503, "auth_unavailable")
+        case .keychain: return (500, "keychain")
+        default: return (400, description)
+        }
+    }
+
+    /// The bare value inside the error, without the description's prefix.
+    var detail: String {
+        switch self {
+        case .usage(let m), .notFound(let m), .alreadyExists(let m), .authUnavailable(let m), .keychain(let m),
+             .ingestIO(let m), .sqlite(let m), .http(let m), .refusedBind(let m):
+            return m
+        case .gatewayOwned(let pid): return String(pid)
+        case .authFailed, .authCancelled: return description
+        }
+    }
+
+    /// Rebuilds the error an API response carries, so the CLI reports it as if raised locally.
+    init(wireCode code: String, status: Int, body: [String: Any]) {
+        let detail = JSONValue.string(body["detail"]) ?? JSONValue.string(body["message"]) ?? code
+        switch code {
+        case "auth_failed": self = .authFailed
+        case "auth_cancelled": self = .authCancelled
+        case "auth_unavailable": self = .authUnavailable(detail)
+        case "not_found": self = .notFound(detail)
+        case "already_exists": self = .alreadyExists(detail)
+        case "keychain": self = .keychain(detail)
+        case "gateway owned by another process":
+            self = .gatewayOwned(pid_t(JSONValue.int(body["gateway_owner_pid"]) ?? 0))
+        default:
+            // A 403 without an AppError behind it is the site refusing a stale launch token.
+            self = .usage(status == 403
+                ? "site refused the request (\(JSONValue.string(body["message"]) ?? code)); restart the site and retry"
+                : detail)
+        }
+    }
+
     var description: String {
         switch self {
         case .usage(let m), .ingestIO(let m), .keychain(let m), .sqlite(let m), .http(let m):

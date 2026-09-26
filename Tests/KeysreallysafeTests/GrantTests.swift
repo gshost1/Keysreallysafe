@@ -317,6 +317,11 @@ final class GrantTests: XCTestCase {
         let all = handler.handle(HTTPRequest(method: "DELETE", path: "/api/grants", query: ["key": "demo"], headers: authed, body: Data(), serverPort: 12765))
         XCTAssertEqual(all.status, 200)
         XCTAssertEqual(service.listGrants().count, 0)
+        let missing = handler.handle(HTTPRequest(method: "DELETE", path: "/api/grants/0badc0de", query: [:], headers: authed, body: Data(), serverPort: 12765))
+        XCTAssertEqual(missing.status, 404)
+        let missingObj = try JSONSerialization.jsonObject(with: missing.body) as! [String: Any]
+        XCTAssertEqual(missingObj["error"] as? String, "not_found", "the code the dashboard matches on is unchanged")
+        XCTAssertEqual(missingObj["detail"] as? String, "0badc0de")
 
         // Control file: 0600, pid-checked, removed only by its owner.
         let control = ControlFile.url(beside: service.catalog.path)
@@ -381,34 +386,38 @@ final class ControlClientTests: XCTestCase {
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
 
         let client = try ControlClient.connect(control: control)
-        let (status, obj) = try client.call(
+        let obj = try client.call(
             method: "POST", path: "/api/keys/demo/grants",
-            body: ["task": "cli", "minutes": 5, "methods": ["GET"], "paths": ["/models"], "caller": "cli"]
+            body: ["task": "cli", "minutes": 5, "methods": ["GET"], "paths": ["/models"], "caller": "cli"], expect: 201
         )
-        XCTAssertEqual(status, 201, "\(obj)")
         let token = try XCTUnwrap(obj["token"] as? String)
         XCTAssertTrue(GrantToken.looksLikeToken(token))
         let id = try XCTUnwrap(obj["id"] as? String)
         XCTAssertEqual(try service.keyEvents(name: "demo").first?.caller, "cli")
 
-        let (ls, lobj) = try client.call(method: "GET", path: "/api/grants")
-        XCTAssertEqual(ls, 200)
+        let lobj = try client.call(method: "GET", path: "/api/grants", expect: 200)
         XCTAssertEqual((lobj["grants"] as? [Any])?.count, 1)
 
-        let (rs, _) = try client.call(method: "DELETE", path: "/api/grants/\(id)")
-        XCTAssertEqual(rs, 200)
+        _ = try client.call(method: "DELETE", path: "/api/grants/\(id)", expect: 200)
         XCTAssertEqual(service.listGrants().count, 0)
+
+        // An error answer comes back as the AppError it carries, read from `detail`.
+        XCTAssertThrowsError(try client.call(method: "DELETE", path: "/api/grants/0badc0de", expect: 200)) { error in
+            guard case AppError.notFound("0badc0de") = error else { return XCTFail("\(error)") }
+            XCTAssertEqual("\(error)", "not found: 0badc0de")
+        }
 
         // A stale token from an older launch maps to a clear error, not a hang or a crash.
         try ControlFile.write(port: server.boundPort, token: "stale", to: control)
         let stale = try ControlClient.connect(control: control)
-        let (ss, sobj) = try stale.call(method: "POST", path: "/api/keys/demo/grants", body: ["task": "x"])
-        XCTAssertEqual(ss, 403)
-        if case .usage(let m) = ControlClient.raise(status: ss, body: sobj) {
+        XCTAssertThrowsError(try stale.call(method: "POST", path: "/api/keys/demo/grants", body: ["task": "x"], expect: 201)) { error in
+            guard case AppError.usage(let m) = error else { return XCTFail("expected usage error, got \(error)") }
             XCTAssertTrue(m.contains("restart the site"), m)
-        } else {
-            XCTFail("expected usage error")
         }
-        if case .authCancelled = ControlClient.raise(status: 403, body: ["error": "auth_cancelled"]) {} else { XCTFail("auth_cancelled") }
+        if case .authCancelled = AppError(wireCode: "auth_cancelled", status: 403, body: [:]) {} else { XCTFail("auth_cancelled") }
+        if case .authUnavailable("sandbox") = AppError(
+            wireCode: "auth_unavailable", status: 503,
+            body: ["message": AppError.authUnavailable("sandbox").description, "detail": "sandbox"]
+        ) {} else { XCTFail("auth_unavailable reads detail, not the prefixed message") }
     }
 }
