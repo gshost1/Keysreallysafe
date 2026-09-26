@@ -26,9 +26,8 @@ import XCTest
 /// of this test are the service-side half of that, checking the refusals left no
 /// key, no secret, no presence prompt and no event behind.
 ///
-/// The driver is launched through `BoundedChild`, so a wedged browser fails this
-/// test in bounded time and leaves no Chromium behind. That teardown has its own
-/// tests, without a browser, in `BoundedChildProcessTests`.
+/// The driver runs under a deadline, so a wedged browser fails this test in
+/// bounded time instead of holding the suite (and the CI step) open.
 final class BackendContractUITests: XCTestCase {
     /// A transport that must never be reached: sharing stays off here.
     final class RefusingAnalyticsTransport: AnalyticsTransport, @unchecked Sendable {
@@ -148,31 +147,30 @@ final class BackendContractUITests: XCTestCase {
         if environment["NODE_PATH"] == nil {
             environment["NODE_PATH"] = Self.repoRoot.appendingPathComponent("scripts/tests/node_modules").path
         }
-        // The driver names the browser it launched here before it does anything
-        // else. Playwright launches Chromium detached, in a group of its own, so
-        // teardown can only reach it if the driver says which pid it is.
-        let guardFile = directory.appendingPathComponent("contract-child-guard.json")
-        environment["KEYS_CONTRACT_GUARD_FILE"] = guardFile.path
-
-        // A hung browser must not hang the suite, and a killed driver must not
-        // leave Chromium behind: `BoundedChild` bounds every wait and escalates
-        // SIGTERM → SIGCONT → SIGKILL over the groups it started, and only those.
-        // Its own failure path is covered by `BoundedChildProcessTests`.
+        // A hung browser must not hang the suite. The driver launches Chromium over a pipe,
+        // so Chromium exits with it; SIGTERM lets Playwright close the browser politely, and
+        // SIGKILL follows because a stopped or wedged driver cannot act on SIGTERM.
         let seconds = Double(ProcessInfo.processInfo.environment["KEYS_CONTRACT_TIMEOUT_S"] ?? "") ?? 300
-        let grace = Double(ProcessInfo.processInfo.environment["KEYS_CONTRACT_GRACE_S"] ?? "") ?? 10
-        let report = try BoundedChild.run(
-            ["node", script.path],
-            directory: Self.repoRoot,
-            environment: environment,
-            timeout: seconds,
-            grace: grace,
-            guardFile: guardFile
-        )
-        XCTAssertFalse(report.timedOut,
-                       "the browser contract suite did not finish within \(Int(seconds)) s; teardown: \(report.escalations)")
-        XCTAssertEqual(report.exitCode, 0, "the browser contract suite failed; see its output above")
-        XCTAssertTrue(report.isClean,
-                      "the browser suite left processes behind in groups \(report.leakedGroups)")
+        let driver = Process()
+        driver.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        driver.arguments = ["node", script.path]
+        driver.currentDirectoryURL = Self.repoRoot
+        driver.environment = environment
+        try driver.run()
+        func finished(within limit: TimeInterval) -> Bool {
+            let deadline = Date().addingTimeInterval(limit)
+            while driver.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+            return !driver.isRunning
+        }
+        let timedOut = !finished(within: seconds)
+        if timedOut {
+            driver.terminate()
+            if !finished(within: 10) { kill(driver.processIdentifier, SIGKILL) }
+        }
+        driver.waitUntilExit()
+        XCTAssertFalse(timedOut, "the browser contract suite did not finish within \(Int(seconds)) s")
+        XCTAssertEqual(driver.terminationReason, .exit, "the browser contract suite was killed")
+        XCTAssertEqual(driver.terminationStatus, 0, "the browser contract suite failed; see its output above")
 
         XCTAssertEqual(analyticsTransport.attempts, 0, "no analytics report may be attempted")
         // The state assertions below describe the whole ordered scenario, so a

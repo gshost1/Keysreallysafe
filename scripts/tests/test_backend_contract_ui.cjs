@@ -38,7 +38,6 @@ const base = process.env.KEYS_CONTRACT_BASE_URL;
 const token = process.env.KEYS_CONTRACT_TOKEN;
 const ALPHA_SECRET = process.env.KEYS_CONTRACT_ALPHA_SECRET;
 const DELTA_SECRET = process.env.KEYS_CONTRACT_DELTA_SECRET;
-const guardFile = process.env.KEYS_CONTRACT_GUARD_FILE;
 const screenshotDir = process.env.KEYS_CONTRACT_SCREENSHOT_DIR
   || path.join(__dirname, "../../.build/keys-backend-contract-screenshots");
 
@@ -626,50 +625,9 @@ async function shoot(browser) {
 
 // ---------- runner ----------
 
-// How long a signalled run may spend closing the browser politely before the
-// browser's process group is killed outright. Kept below the host's own grace
-// window so this process, not the host, is normally the one that cleans up.
-const HARD_CLOSE_MS = Number(process.env.KEYS_CONTRACT_HARD_CLOSE_MS || 5000);
-
 (async () => {
   fs.mkdirSync(screenshotDir, { recursive: true });
-  // launchServer rather than launch, because the host needs the browser's pid.
-  // Playwright launches Chromium detached, so it leads a process group of its
-  // own: killing this process alone would leave that group running, and a host
-  // that guessed at it would be reaching for processes it did not start.
-  const server = await chromium.launchServer();
-  const browserPID = server.process().pid;
-  if (guardFile) {
-    // Process *group* ids, not pids, and the host signals them as such. Both
-    // are group leaders: the host spawned this process into a group of its own,
-    // and Playwright launches Chromium detached, which makes it the leader of
-    // one. Naming the groups rather than the leaders is what lets the host
-    // still reap a browser whose own leader has exited with children behind it.
-    // Written before any test runs, so the host can do that even if this
-    // process is killed in the next instant.
-    const owned = { node_group: process.pid, browser_group: browserPID };
-    fs.writeFileSync(guardFile, `${JSON.stringify(owned)}\n`);
-  }
-  const browser = await chromium.connect(server.wsEndpoint());
-
-  const closeAll = async () => {
-    await browser.close().catch(() => {});
-    await server.close().catch(() => {});
-  };
-  // The Swift host terminates this process if it overruns its watchdog; the
-  // browser must not outlive it, and the polite close must not be unbounded
-  // either. If it wedges, the browser's own group is killed by pid — never by
-  // name and never by pattern.
-  for (const signal of ["SIGTERM", "SIGINT"]) {
-    process.once(signal, () => {
-      const hard = setTimeout(() => {
-        try { process.kill(-browserPID, "SIGKILL"); } catch { /* already gone */ }
-        process.exit(1);
-      }, HARD_CLOSE_MS);
-      hard.unref();
-      closeAll().finally(() => process.exit(1));
-    });
-  }
+  const browser = await chromium.launch();
   let failed = null;
   let passed = 0;
   try {
@@ -697,7 +655,7 @@ const HARD_CLOSE_MS = Number(process.env.KEYS_CONTRACT_HARD_CLOSE_MS || 5000);
       console.log(`  ok  screenshots (${shots.length}) in ${screenshotDir}`);
     }
   } finally {
-    await closeAll();
+    await browser.close().catch(() => {});
   }
   if (failed) {
     console.error(`\nBackend contract UI: stopped at "${failed}" after ${passed} of ${checks.length} cases`);
