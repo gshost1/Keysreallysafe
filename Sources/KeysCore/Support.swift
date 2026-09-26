@@ -172,8 +172,12 @@ enum Paths {
 enum FixturePath {
     /// The checkout's or install's Web/ and the Fixtures/ beside it, then the installed copy
     /// under Application Support, so a `keys` found on PATH still finds its catalogs.
-    static func resolve(fileName: String, envKey: String, testURL: URL?) -> URL? {
+    static func resolve(fileName: String, envKey: String, testURL: URL?, bundle: Bundle = .main) -> URL? {
         if let testURL { return testURL }
+        if let resources = AppResources.root(in: bundle) {
+            return ["Web", "Fixtures"].map { resources.appendingPathComponent($0).appendingPathComponent(fileName) }
+                .first { FileManager.default.isReadableFile(atPath: $0.path) }
+        }
         if let override = Paths.env(envKey) { return override }
         var roots: [URL] = []
         if let web = try? WebRoot.find() {
@@ -228,12 +232,19 @@ final class FixtureCache<Value: Sendable>: @unchecked Sendable {
 }
 
 enum WebRoot {
-    static func find() throws -> URL {
-        if let override = Paths.env("KEYS_WEB_ROOT") { return override }
+    static func find(bundle: Bundle = .main, override: URL? = Paths.env("KEYS_WEB_ROOT")) throws -> URL {
         let fm = FileManager.default
+        if let resources = AppResources.root(in: bundle) {
+            let web = resources.appendingPathComponent("Web")
+            guard fm.isReadableFile(atPath: web.appendingPathComponent("index.html").path) else {
+                throw AppError.usage("Keysrs.app is missing its dashboard resources; reinstall the complete app.")
+            }
+            return web
+        }
+        if let override { return override }
         var candidates: [URL] = []
         candidates.append(URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("Web"))
-        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent()
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
         for _ in 0..<12 {
             candidates.append(dir.appendingPathComponent("Web"))
             dir.deleteLastPathComponent()

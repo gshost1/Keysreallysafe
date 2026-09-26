@@ -6,7 +6,7 @@ import Foundation
 /// `appVersion` follows the release version.
 enum ProductAnalyticsConfiguration {
     static let endpoint = URL(string: "https://analytics.keysrs.com/v1/reports")!
-    static let appVersion = "0.9.2"
+    static let appVersion = "0.10.0"
 }
 
 // The view_optimizer, optimizer_* and context_* cases have no producer since the
