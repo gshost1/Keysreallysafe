@@ -216,7 +216,7 @@ final class GatewayListener: @unchecked Sendable {
 
     /// Headers a caller may put a grant token in, where its SDK would put the provider key.
     /// `dropIncoming` strips every one of them, so a token never reaches the provider.
-    static let grantHeaders = ["authorization", "x-api-key", "x-goog-api-key", "api-key", "x-ksf-grant"]
+    static let grantHeaders = ["authorization", "x-api-key", "x-goog-api-key", "api-key"]
 
     /// Grant token from any auth-style header, or Gemini's `?key=`. Every token-bearing `key` is
     /// removed from the returned query, even when a header carried the grant, so none reaches the
@@ -252,6 +252,8 @@ final class GatewayListener: @unchecked Sendable {
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailers", "transfer-encoding", "upgrade", "proxy-connection",
         "host", "content-length", "accept-encoding", "x-ksf-token", "x-ksf-client",
+        // Retired grant alias: no longer read, still never forwarded.
+        "x-ksf-grant",
     ])
 
     /// Split on the first `?` in the raw target. Path/query bytes are not decoded.

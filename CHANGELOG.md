@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The gateway no longer accepts a grant token in the undocumented `X-KSF-Grant` header; send it where the SDK puts the provider key (`Authorization`, `x-api-key`, `x-goog-api-key` or `api-key`). The header is still stripped before forwarding.
 - **Removed the experimental optimizer.** The Optimizer pane and its `⌘4` shortcut, the per-key Optimizer button, `keys optimizer`, `keys grant --jev-provider`, the `/api/optimizer/*` routes, the Jev context-compaction plugin, its MCP server and launcher, and the research and benchmark scripts are gone. The dashboard has three panes again (`⌘1`–`⌘3`). The vault, the gateway (including metering direct TypeSafe and Vercel evaluation traffic through ordinary grants) and the usage meter are unchanged.
 - Upgrading moves the `Plugins` and `scripts` directories that 0.9.0 and 0.9.1 installed aside with the previous version, and `keys autostart --remove` deletes them. `keys purge` still deletes the optimizer's encrypted archive next to the catalog and its Keychain key (service `keysreallysafe.optimizer`).
 - Share to compare: the dashboard no longer sends an Optimizer pane visit, and no optimizer or context-pack counter is recorded. Reports and consent from 0.9.0 and 0.9.1 keep decoding; the collector accepts the same event names.

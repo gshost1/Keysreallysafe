@@ -335,6 +335,9 @@ final class GatewayTests: XCTestCase {
         XCTAssertNotNil(encoded)
         XCTAssertEqual(stripped, "alt=sse")
 
+        let (retired, _) = GatewayListener.extractGrantToken(headers: ["x-ksf-grant": header], rawQuery: "")
+        XCTAssertNil(retired, "the X-KSF-Grant alias is retired")
+
         let (none, untouched) = GatewayListener.extractGrantToken(headers: [:], rawQuery: "alt=sse")
         XCTAssertNil(none)
         XCTAssertEqual(untouched, "alt=sse")
