@@ -16,8 +16,7 @@ built-in `/usage` command refreshes subscription limits through its existing log
 
 Free and MIT-licensed. Download the signed, notarized disk image from
 https://keysrs.com or the [latest release](https://github.com/gshost1/Keysreallysafe/releases/latest).
-There is no trial, license key or account. Versions 0.6 to 0.8 had a 14-day
-trial; 0.9.0 removed it, so a lapsed trial clears by updating.
+There is no trial, license key or account.
 
 Open the disk image, copy the `Keysrs-arm64` folder somewhere permanent, and
 run it from inside that folder:
