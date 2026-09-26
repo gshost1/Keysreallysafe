@@ -64,22 +64,24 @@ final class MenubarRecoveryTests: XCTestCase {
         _ = NSApplication.shared
         let center = NotificationCenter()
         let controller = MenubarItemController(workspaceCenter: center, appCenter: center,
-                                               recoveryDelay: .milliseconds(80))
+                                               recoveryDelay: .milliseconds(400))
         let original = controller.item
+        // The delay is generous next to the 10 ms steps: a busy CI runner can
+        // oversleep by tens of milliseconds, which fired recovery mid-burst at 80 ms.
         for _ in 0..<5 {
             controller.requestRecovery(reason: "test transition")
             try await Task.sleep(for: .milliseconds(10))
             XCTAssertTrue(controller.item === original)
         }
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(700))
         XCTAssertFalse(controller.item === original)
         let recovered = controller.item
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(700))
         XCTAssertTrue(controller.item === recovered)
         controller.requestRecovery(reason: "pending at shutdown")
         controller.stop()
         center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(700))
         XCTAssertTrue(controller.item === recovered)
     }
 }
