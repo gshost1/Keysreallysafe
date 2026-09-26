@@ -7,7 +7,7 @@ A local spend meter and API-key vault for the AI command-line tools on your Mac.
 
 It reads the usage numbers that Claude Code, Grok and Codex already write to
 your home folder, prices them from a checked-in list-price table, and shows the
-result on a loopback web page and in the menu bar. Secrets live in the macOS
+result in the Keysrs window and in the menu bar. Secrets live in the macOS
 Keychain, and the app asks for Touch ID before it reads one out. The dashboard
 stays local. If you turn on Keep Claude Limits Fresh (off by default), Claude's
 built-in `/usage` command refreshes subscription limits through its existing login.
@@ -18,24 +18,49 @@ Free and MIT-licensed. Download the signed, notarized disk image from
 https://keysrs.com or the [latest release](https://github.com/gshost1/Keysreallysafe/releases/latest).
 There is no trial, license key or account.
 
-Open the disk image, copy the `Keysrs-arm64` folder somewhere permanent, and
-run it from inside that folder:
+macOS 14 or newer on Apple Silicon; there is no Intel build.
 
-```sh
-./bin/keys autostart
-```
+Open `Keysrs-arm64.dmg`, drag Keysrs to Applications, and open it from
+Applications. Keysrs is an ordinary Mac app: a Dock icon, a window with the
+dashboard, and the usage meter in the menu bar. Closing the window keeps it
+running, so the menu bar meter, usage tracking and the gateway carry on;
+click the Dock icon or choose Open Keysrs from the menu bar to bring the
+window back. `⌘Q` quits all of it.
 
-That installs a per-user login item serving `http://127.0.0.1:12766/` and the
-menu bar item from a snapshot, so run `./bin/keys autostart` again after
-replacing the folder with a newer release. Keep `bin/keys` beside its `Web/`
-folder, or name moved assets with `KEYS_WEB_ROOT=/path/to/Web`.
-`./bin/keys autostart --remove` uninstalls; it also deletes the retained
-`~/Library/Application Support/Keysreallysafe/.previous/`, so copy that first
-if you might roll back (see `ROLLBACK.md` in the folder).
+On first launch Keysrs adds itself as a login item. Turn that off or on again
+with Start at Login in the Keysrs menu, or in System Settings > General >
+Login Items.
+
+The `keys` command line is inside the app. Choose Install Command Line
+Tool… in the Keysrs menu to link it as `~/.local/bin/keys`, and add
+`~/.local/bin` to your `PATH` if it is not there already. If you move the
+app, install the link again.
+
+**Updates.** Keysrs never updates itself. Check for Updates… in the Keysrs
+menu asks GitHub's latest-release API for the newest version number and
+nothing else. Automatically Check for Updates does the same at launch and
+once a day, and is off until you turn it on. To update, download the new
+disk image and replace Keysrs in Applications.
+
+**Upgrading from 0.9.x.** Open the new app once. It stops the old background
+agent (`com.keysreallysafe.menubar`), deletes its launchd plist and the old
+program files under `~/Library/Application Support/Keysreallysafe/` (`bin/`,
+`Web/`, `Fixtures/`, `Plugins/`, `scripts/`), and keeps everything else: the
+catalog, preferences, logs, the retained `.previous/` copy, and every key in
+the Keychain. The folder you copied out of the old disk image is no longer
+used and can go in the Trash.
+
+**Uninstalling.** Quit Keysrs and drag it from Applications to the Trash;
+macOS drops its login item once the app is gone. Your data stays. To delete
+it as well, run `keys purge` first (catalog and every Keychain item, after
+Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
+--remove` removes the old agent, its program files and `.previous/`.
 
 ## Privacy boundaries
 
-- The dashboard and its API bind to `127.0.0.1` only. Optional product analytics
+- The dashboard and its API bind to `127.0.0.1` only; the Keysrs window loads
+  the dashboard from there, and nothing off this Mac can reach it.
+  Optional product analytics
   ("share to compare") is off until the user opts in. Then, once a day, it
   sends one aggregate report to `analytics.keysrs.com`: feature counters, token
   totals per tool, provider and public model name, gateway totals per provider,
@@ -49,6 +74,10 @@ if you might roll back (see `ROLLBACK.md` in the folder).
   traffic, and neither happens without opting in.
   See [product analytics](docs/product-analytics.md) and the
   [self-hosted collector](Analytics/README.md).
+- Update checks are off by default. Check for Updates…, and Automatically
+  Check for Updates once turned on, send one cookieless request to GitHub's
+  public latest-release API and read only the version number. Nothing from
+  the catalog goes with it, and nothing is downloaded or installed.
 - No scraping. It does not open provider websites, cookies or browser sessions.
 - The usage catalog stores only counters and metadata. Gateway request bodies
   never reach that catalog.
@@ -70,16 +99,20 @@ Application certificate and never fall back to ad-hoc signing; setup,
 
 ```sh
 git clone <this repo> && cd Keysreallysafe
-make build
-./.build/debug/keys autostart
+make build                     # signed debug command line, .build/debug/keys
+python3 scripts/build-app.py   # signed Keysrs.app from the release build
 ```
 
-`keys autostart` installs a per-user login item that serves the site at
-`http://127.0.0.1:12766/` and puts Claude's Fable percentage and the other tools'
-weekly percentages in the menu bar (`C 39%  X 46%  G 8%`). Missing Fable usage
-shows `C —`. All plan windows are in the dropdown. Re-run it
-after every build; the login item serves a snapshot. Put `.build/debug/keys`
-on your `PATH` as `keys` for the commands below.
+`scripts/build-app.py` assembles `Keysrs.app` around the one release `keys`
+binary, with the dashboard, fixtures and licence files in
+`Contents/Resources`; [docs/release.md](docs/release.md) has the details.
+Copy the app to `/Applications` and open it as in [Install](#install). The
+binary starts the app when it is opened with no arguments and is the command
+line otherwise, so `.build/debug/keys` works directly for the commands below.
+
+The menu bar shows Claude's Fable percentage and the other tools' weekly
+percentages (`C 39%  X 46%  G 8%`). Missing Fable usage shows `C —`. All plan
+windows are in the dropdown.
 
 Claude's Fable quota comes from Claude Code's account-matched `/usage` cache in
 `~/.claude.json`. With Keep Claude Limits Fresh on (menu bar or welcome window; off
@@ -88,12 +121,12 @@ Claude's built-in `/usage` command (no model request), using the existing Claude
 login. Otherwise the limits are as fresh as Claude Code last left them. Readings
 older than one hour or past their reset are ignored.
 
-Remove everything with `keys autostart --remove` (login item and snapshot) and
-`keys purge` (catalog and every Keychain item, after Touch ID).
+Remove everything with `keys purge` (catalog and every Keychain item, after
+Touch ID), then move the app to the Trash.
 
-## The site
+## The dashboard
 
-Three panes, switched with the segmented control or `⌘1` through `⌘3`.
+The Keysrs window has three panes, switched with the segmented control or `⌘1` through `⌘3`.
 
 **Usage** is the first thing you see: the plan windows each tool reports
 locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
@@ -182,7 +215,7 @@ app, not by a per-item biometric access-control attribute. Treat this as
 app-level presence prompting:
 
 - `keys copy` puts it on the clipboard and wipes the clipboard 20 seconds
-  later. Reveal on the site hides it again after 15 seconds.
+  later. Reveal in the dashboard hides it again after 15 seconds.
 - `keys env <name> VAR -- <command>` hands it to one child process as an
   environment variable, so it never touches the clipboard at all.
 - `keys rotate` swaps in a new value under the same name and bumps a version.
@@ -226,7 +259,7 @@ closed with a named reason: `grant_required`, `grant_expired`,
 `grant_request_limit`, `grant_usd_limit`, `grant_target_changed`. A grant is
 bound to one key and the host recorded when it was issued; editing the
 provider or host revokes it. Screen lock, `keys revoke`, gateway off and a
-site restart all revoke. Grants live only in the site's memory; the audit log
+restart of the app all revoke. Grants live only in the app's memory; the audit log
 keeps the id, task and scope, never the token. `--max-requests` is a hard cap.
 `--max-usd` is an estimate from list prices checked after each call, so one
 call can overshoot it.
@@ -236,10 +269,10 @@ single prompt. `keys grants` lists what is active, `keys revoke <id>` or
 `keys revoke --all [--key name]` ends it. The dashboard has the same three
 under Grant (`A`).
 
-`keys grant` talks to the running site (menubar or dashboard) through a
-0600 file under Application Support; without one it says so and stops. The
-token in that file only lets a local process *ask*; the grant itself still
-needs Touch ID in the site.
+`keys grant` talks to the running app (or a `keys dashboard` dev copy)
+through a 0600 file under Application Support; without one it says so and
+stops. The token in that file only lets a local process *ask*; the grant
+itself still needs Touch ID in the app.
 
 **A client** is for a program you keep: a capability that lives in the
 catalog as a hash, expires in days (default 30, at most 365), and is scoped
@@ -316,7 +349,7 @@ keys status
 keys doctor
 keys dashboard [--month|--week]
 keys menubar
-keys autostart [--remove]
+keys autostart --remove
 keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path-prefix <prefix>]
 keys client list <name>
 keys client revoke <name> <id>
@@ -327,7 +360,7 @@ keys purge
 the clipboard. It prints the provider and host the key belongs to before the
 prompt, so a similarly named key for a different provider is caught early.
 Prefer `keys grant` when the child only needs to call that provider. `keys doctor` prints every local source it looked for, whether
-it was found, when it last changed, which row on the site it feeds, and why a
+it was found, when it last changed, which row in the dashboard it feeds, and why a
 row is empty. Start there when a number is missing.
 
 ## Local sources
@@ -355,10 +388,10 @@ writes one log line per content block. Prices come from `Fixtures/models.json`
 (OpenRouter's list, refreshed by hand with `scripts/refresh-models.sh`) with a
 few hand-maintained rows that win on exact match.
 
-Everything lives under `~/Library/Application Support/Keysreallysafe/`
-(SQLite catalog, snapshot of the site) and in the Keychain service
-`keysreallysafe`. `keys autostart` stages a new version beside the old one
-and puts the old one back if signing or launch fails.
+The program is `/Applications/Keysrs.app`. Your data lives under
+`~/Library/Application Support/Keysreallysafe/` (SQLite catalog, preferences,
+`menubar.log`) and in the Keychain service `keysreallysafe`; replacing or
+deleting the app leaves both alone.
 
 ## Development
 

@@ -46,7 +46,16 @@ swift test                      # synthetic fixtures only, no network
 swift test --filter Menubar     # one area
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
+python3 scripts/build-app.py    # release build assembled and signed as Keysrs.app
 ```
+
+One binary: `keys` with no arguments (or launched by LaunchServices) is the
+app, with arguments it is the CLI. App mode refuses to run outside a `.app`
+bundle, so test the window, login item and migration from a built
+`Keysrs.app`, not `.build/*/keys`. The bundle layout, Info.plist values and
+signing command are fixed in `docs/release.md`; keep the bundle's code
+signing identifier `keysreallysafe` (`codesign -d -r-` must print the 0.9.2
+designated requirement) or the Keychain stops trusting it.
 
 Dashboard browser tests need Playwright, pinned in `scripts/tests/package.json`:
 `cd scripts/tests && npm ci && npx --no-install playwright install chromium`,
@@ -60,15 +69,30 @@ real credentials. Use `CLAUDE_CONFIG_DIR=Fixtures/claude-home` and
 
 ## Installed copy vs checkout
 
-The running app is the launchd agent `com.keysreallysafe.menubar`, executable
-`~/Library/Application Support/Keysreallysafe/bin/keys` with sibling `Web/`,
-`Fixtures/` and `menubar.log`. Dashboard `http://127.0.0.1:12766/`, gateway
-`:12767`. There is no `.app` bundle. Building the checkout does not change it;
-installing means `scripts/sign-local.py` on the release binary, then
-`keys autostart` with `KEYS_WEB_ROOT` pointing at the installed `Web/` so
-installed assets survive. Compare SHA-256 of `.build/release/keys` and the
-installed binary to confirm. Don't restart the agent to "test" a menu bar fix
-without collecting evidence first (`menubar.log`, a process sample).
+From 0.10.0 the running app is `/Applications/Keysrs.app` (bundle id
+`com.keysreallysafe.keysrs`, signing identifier `keysreallysafe`),
+executable `Contents/MacOS/keys`, with `Web/` and `Fixtures/` under
+`Contents/Resources`. It starts at login through `SMAppService.mainApp`
+(Start at Login in the Keysrs menu), not a launchd agent. The window loads
+the dashboard from `http://127.0.0.1:12766/`, the gateway is `:12767`, and
+data plus `menubar.log` stay in `~/Library/Application Support/Keysreallysafe/`.
+`keys` on PATH is normally the `~/.local/bin/keys` symlink into the bundle
+(Install Command Line Tool…).
+
+Building the checkout does not change it; installing means
+`scripts/build-app.py`, then replacing `/Applications/Keysrs.app` and
+opening it. Compare SHA-256 of the built bundle's `Contents/MacOS/keys` and
+the installed one to confirm. Don't quit and relaunch the app to "test" a
+menu bar fix without collecting evidence first (`menubar.log`, a process
+sample).
+
+0.9.x ran as the launchd agent `com.keysreallysafe.menubar` from
+`Application Support/Keysreallysafe/bin/keys`. That label and the plist path
+stay frozen because the app's first-launch migration and
+`keys autostart --remove` look for them to boot the agent out and delete
+`bin/`, `Web/`, `Fixtures/`, `Plugins/` and `scripts/`. The migration leaves
+the catalog, preferences, logs and `.previous/` alone; `--remove` also
+deletes `.previous/`.
 
 Signing uses a stable local team identity (`StableSigning.swift`,
 `SIGNING.md`); a locally signed install is not a notarized release. Don't
