@@ -173,6 +173,9 @@ def load_sign_local():
 
 def sign_bundle(app: Path, identity: str) -> None:
     """Sign the bundle once; the only Mach-O is Contents/MacOS/keys, so no --deep."""
+    # Files copied from a synced or downloaded folder carry Finder and provenance
+    # attributes, which codesign rejects as "detritus".
+    run_tool(["/usr/bin/xattr", "-cr", str(app)])
     if identity == "-":
         run_tool(["/usr/bin/codesign", "--force", "--options", "runtime", "--identifier", SIGNING_IDENTIFIER,
                   "--sign", "-", str(app)])
