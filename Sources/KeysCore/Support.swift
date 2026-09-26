@@ -356,6 +356,13 @@ enum JSONValue {
         }
     }
 
+    /// One JSON value and a newline on stdout, for `--json` output.
+    static func printLine(_ value: Any) throws {
+        var line = try data(value)
+        line.append(0x0a)
+        FileHandle.standardOutput.write(line)
+    }
+
     static func string(_ any: Any?) -> String? {
         if let s = any as? String, !s.isEmpty { return s }
         return nil

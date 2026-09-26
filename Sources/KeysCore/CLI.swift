@@ -41,20 +41,11 @@ public enum KeysMain {
             var command = try KeysCLI.parseAsRoot()
             try command.run()
         } catch let error as AppError {
-            let msg = error.description + "\n"
-            FileHandle.standardError.write(Data(msg.utf8))
+            // Own exit codes: 2 not found, 3 presence or Keychain, 4 ingest or catalog.
+            FileHandle.standardError.write(Data((error.description + "\n").utf8))
             Darwin.exit(error.exitCode)
         } catch {
-            let message = KeysCLI.message(for: error)
-            if !message.isEmpty {
-                FileHandle.standardError.write(Data(message.utf8))
-            }
-            switch KeysCLI.exitCode(for: error) {
-            case .success:
-                Darwin.exit(0)
-            default:
-                Darwin.exit(1)
-            }
+            KeysCLI.exit(withError: error)
         }
     }
 }
@@ -85,9 +76,7 @@ struct ListCommand: ParsableCommand {
         let service = try AppFactory.makeService()
         let rows = try service.list()
         if json {
-            let data = try JSONValue.data(service.listJSONObject())
-            FileHandle.standardOutput.write(data)
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            try JSONValue.printLine(service.listJSONObject())
             return
         }
         if rows.isEmpty {
@@ -204,9 +193,7 @@ struct SpendCommand: ParsableCommand {
         let source: SourceFilter = group == .project ? .claude : .all
         let report = try service.spend(range: range, by: group, source: source)
         if json {
-            let data = try JSONValue.data(report.jsonObject())
-            FileHandle.standardOutput.write(data)
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            try JSONValue.printLine(report.jsonObject())
             return
         }
         printTable(report)
@@ -216,46 +203,32 @@ struct SpendCommand: ParsableCommand {
         }
     }
 
+    /// A reported cost, else an estimate marked "est …*", else "-" for unknown.
+    private func usdCell(_ row: SpendRow) -> String {
+        if let v = row.usd { return String(format: "%.4f", v) }
+        if let e = row.usdEstimate { return String(format: "est %.4f*", e) }
+        return "-"
+    }
+
     private func printTable(_ report: SpendReport) {
         switch report.by {
         case .model, .hour:
             print("MODEL\tIN\tOUT\tCACHE_READ\tREASONING\tUSD\tCALLS")
             for row in report.rows {
-                let usd: String
-                if let v = row.usd {
-                    usd = String(format: "%.4f", v)
-                } else if let e = row.usdEstimate {
-                    usd = String(format: "est %.4f*", e)
-                } else {
-                    usd = "-"
-                }
+                let usd = usdCell(row)
                 print("\(row.model ?? "")\t\(row.inputTokens)\t\(row.outputTokens)\t\(row.cachedReadTokens)\t\(row.reasoningTokens)\t\(usd)\t\(row.modelCalls)")
             }
         case .session:
             print("SESSION\tCWD\tTITLE\tMODELS\tUSD")
             for row in report.rows {
-                let usd: String
-                if let v = row.usd {
-                    usd = String(format: "%.4f", v)
-                } else if let e = row.usdEstimate {
-                    usd = String(format: "est %.4f*", e)
-                } else {
-                    usd = "-"
-                }
+                let usd = usdCell(row)
                 let models = row.models.joined(separator: ",")
                 print("\(row.sessionId ?? "")\t\(row.cwd ?? "")\t\(row.title ?? "")\t\(models)\t\(usd)")
             }
         case .project:
             print("PROJECT\tCWD\tIN\tOUT\tUSD")
             for row in report.rows {
-                let usd: String
-                if let v = row.usd {
-                    usd = String(format: "%.4f", v)
-                } else if let e = row.usdEstimate {
-                    usd = String(format: "est %.4f*", e)
-                } else {
-                    usd = "-"
-                }
+                let usd = usdCell(row)
                 print("\(row.project ?? "")\t\(row.cwd ?? "")\t\(row.inputTokens)\t\(row.outputTokens)\t\(usd)")
             }
         }
@@ -341,18 +314,8 @@ struct EnvCommand: ParsableCommand {
     var command: [String]
 
     func run() throws {
-        do {
-            let service = try AppFactory.makeService()
-            let code = try service.env(name: name, variable: variable, command: command, caller: "env")
-            Darwin.exit(code)
-        } catch let error as AppError {
-            if case .usage = error {
-                let dump =
-                    "parsed name=\(name.debugDescription) variable=\(variable.debugDescription) command=\(command)\n"
-                FileHandle.standardError.write(Data(dump.utf8))
-            }
-            throw error
-        }
+        let service = try AppFactory.makeService()
+        Darwin.exit(try service.env(name: name, variable: variable, command: command, caller: "env"))
     }
 }
 
@@ -405,9 +368,7 @@ struct GrantCommand: ParsableCommand {
         fputs("Touch ID in the Keysrs site…\n", stderr)
         let obj = try client.call(method: "POST", path: "/api/keys/\(name)/grants", body: body, expect: 201)
         if json {
-            let data = try JSONValue.data(obj)
-            FileHandle.standardOutput.write(data)
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            try JSONValue.printLine(obj)
             return
         }
         let token = JSONValue.string(obj["token"]) ?? ""
@@ -449,8 +410,7 @@ struct GrantsCommand: ParsableCommand {
         let obj = try client.call(method: "GET", path: "/api/grants" + (all ? "?all=1" : ""), expect: 200)
         let grants = (obj["grants"] as? [Any])?.compactMap(JSONValue.object) ?? []
         if json {
-            FileHandle.standardOutput.write(try JSONValue.data(grants))
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            try JSONValue.printLine(grants)
             return
         }
         if grants.isEmpty {
@@ -514,8 +474,7 @@ struct TestCommand: ParsableCommand {
         let service = try AppFactory.makeService()
         let result = try service.checkProvider(name: name, caller: "test")
         if json {
-            FileHandle.standardOutput.write(try JSONValue.data(result.jsonObject()))
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            try JSONValue.printLine(result.jsonObject())
         } else {
             let providerName = Providers.provider(id: result.provider)?.name ?? result.provider
             print("\(result.ok ? "ok" : "FAIL")  \(name) -> \(providerName) (\(result.host))  \(result.summary)")
@@ -558,8 +517,7 @@ struct ModelsCommand: ParsableCommand {
             var obj = result.jsonObject()
             obj["models"] = ids
             obj["model_count"] = ids.count
-            FileHandle.standardOutput.write(try JSONValue.data(obj))
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            try JSONValue.printLine(obj)
             if !result.ok { Darwin.exit(5) }
             return
         }
