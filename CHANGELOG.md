@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.9.2 — 2026-09-25
 
+- **Security fixes.** The gateway forwarded a grant token sent in `X-KSF-Grant`, and a token in `?key=` (including `%6Bey=` or `KEY=`) whenever a header also carried one, to the provider; every token is now stripped. A chunked request with a chunk size near the integer limit crashed the app before authentication; it now gets 413.
+- `keys get` is written to the key's audit log like every other read. `keys purge` empties every catalog table, including provider checks and the license rows 0.6 to 0.8 left behind. A 401 from the gateway sends one `WWW-Authenticate` header. The model name a gateway caller sends is capped at 128 characters before it is stored.
 - The gateway no longer accepts a grant token in the undocumented `X-KSF-Grant` header; send it where the SDK puts the provider key (`Authorization`, `x-api-key`, `x-goog-api-key` or `api-key`). The header is still stripped before forwarding.
 - **Removed the experimental optimizer.** The Optimizer pane and its `⌘4` shortcut, the per-key Optimizer button, `keys optimizer`, `keys grant --jev-provider`, the `/api/optimizer/*` routes, the Jev context-compaction plugin, its MCP server and launcher, and the research and benchmark scripts are gone. The dashboard has three panes again (`⌘1`–`⌘3`). The vault, the gateway (including metering direct TypeSafe and Vercel evaluation traffic through ordinary grants) and the usage meter are unchanged.
 - Upgrading moves the `Plugins` and `scripts` directories that 0.9.0 and 0.9.1 installed aside with the previous version, and `keys autostart --remove` deletes them. `keys purge` still deletes the optimizer's encrypted archive next to the catalog and its Keychain key (service `keysreallysafe.optimizer`).
