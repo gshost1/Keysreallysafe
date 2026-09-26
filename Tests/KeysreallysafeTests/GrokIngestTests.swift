@@ -3,9 +3,7 @@ import XCTest
 
 final class GrokIngestTests: XCTestCase {
     func testTurnCompletedPerModelBucketsAndTicks() throws {
-        let line = try String(contentsOf: Fixtures.turnCompleted, encoding: .utf8)
-            .split(whereSeparator: \.isNewline)
-            .joined()
+        let line = try Fixtures.grokTurnLine("sess-1")
         let events = try GrokIngest.parseLine(line, sessionDirName: "sess-1", summary: nil)
         XCTAssertEqual(events.count, 1)
         let event = try XCTUnwrap(events.first)
@@ -23,9 +21,7 @@ final class GrokIngestTests: XCTestCase {
     }
 
     func testTwoModelsTwoRowsNoDoubleCountOfTopLevel() throws {
-        let line = try String(contentsOf: Fixtures.twoModels, encoding: .utf8)
-            .split(whereSeparator: \.isNewline)
-            .joined()
+        let line = try Fixtures.grokTurnLine("sess-2")
         let events = try GrokIngest.parseLine(line, sessionDirName: "sess-2", summary: nil)
         XCTAssertEqual(events.count, 2)
         let models = Set(events.map(\.model))
@@ -39,19 +35,7 @@ final class GrokIngestTests: XCTestCase {
     }
 
     func testIngestStructHasNoContentOrRawInput() throws {
-        let event = UsageEvent(
-            source: "grok-local",
-            sessionId: "s",
-            promptId: "p",
-            model: "grok-4.6-build",
-            occurredAt: "2026-01-15T12:00:00Z",
-            provider: "xai",
-            modelCalls: 1,
-            inputTokens: 1,
-            outputTokens: 1,
-            costUsdTicks: 1
-        )
-        let names = fieldNames(event)
+        let names = fieldNames(UsageEvent.fixture(ticks: 1))
         XCTAssertFalse(names.contains("content"))
         XCTAssertFalse(names.contains("rawInput"))
         XCTAssertFalse(names.contains("secret"))
@@ -85,9 +69,7 @@ final class GrokIngestTests: XCTestCase {
     }
 
     func testCancelledTurnStillCounts() throws {
-        let line = try String(contentsOf: Fixtures.twoModels, encoding: .utf8)
-            .split(whereSeparator: \.isNewline)
-            .joined()
+        let line = try Fixtures.grokTurnLine("sess-2")
         let events = try GrokIngest.parseLine(line, sessionDirName: "sess-2", summary: nil)
         XCTAssertFalse(events.isEmpty)
     }

@@ -54,20 +54,10 @@ final class CatalogTests: XCTestCase {
     func testModelColorSlotsStableAndWrapAfter24() throws {
         let (db, _) = try makeDB()
         for i in 0..<25 {
-            _ = try db.insertUsage(
-                UsageEvent(
-                    source: "grok-local",
-                    sessionId: "colors",
-                    promptId: "p\(i)",
-                    model: "m-\(i)",
-                    occurredAt: String(format: "2026-01-01T00:%02d:00Z", i),
-                    provider: "xai",
-                    modelCalls: 1,
-                    inputTokens: 1,
-                    outputTokens: 1,
-                    costUsdTicks: 1
-                )
-            )
+            _ = try db.insertUsage(.fixture(
+                session: "colors", prompt: "p\(i)", model: "m-\(i)",
+                at: String(format: "2026-01-01T00:%02d:00Z", i), ticks: 1
+            ))
         }
         try db.ensureModelColors()
         let first = try db.listModelColors()

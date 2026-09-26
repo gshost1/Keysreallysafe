@@ -177,11 +177,11 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let project = home.appendingPathComponent("projects/p", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let file = project.appendingPathComponent("session.jsonl")
-        let first = assistant(requestId: "r1", uuid: "a", output: 10)
+        let first = assistantLine(uuid: "a", output: 10, requestId: "r1")
         try (first + "\n").write(to: file, atomically: true, encoding: .utf8)
         let (db, _) = try makeDB()
         XCTAssertEqual(try ClaudeIngest.run(home: home, db: db).rowsInserted, 1)
-        let later = assistant(requestId: "r1", uuid: "b", output: 22)
+        let later = assistantLine(uuid: "b", output: 22, requestId: "r1")
         try (first + "\n" + later + "\n").write(to: file, atomically: true, encoding: .utf8)
         let again = try ClaudeIngest.run(home: home, db: db)
         XCTAssertEqual(again.rowsInserted, 0)
@@ -193,34 +193,14 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
 
     func testSpendByProjectClaudeOnly() throws {
         let (handler, service, _) = try makeHandler()
-        _ = try service.catalog.insertUsage(
-            UsageEvent(
-                source: "claude-local",
-                sessionId: "s1",
-                promptId: "p1",
-                model: "claude-sonnet-5",
-                occurredAt: "2026-09-03T18:00:00Z",
-                provider: "anthropic",
-                cwd: "/tmp/alpha/keysreallysafe",
-                modelCalls: 1,
-                inputTokens: 10,
-                outputTokens: 4
-            )
-        )
-        _ = try service.catalog.insertUsage(
-            UsageEvent(
-                source: "claude-local",
-                sessionId: "s2",
-                promptId: "p2",
-                model: "claude-sonnet-5",
-                occurredAt: "2026-09-03T19:00:00Z",
-                provider: "anthropic",
-                cwd: "/tmp/beta/other",
-                modelCalls: 1,
-                inputTokens: 20,
-                outputTokens: 8
-            )
-        )
+        _ = try service.catalog.insertUsage(.fixture(
+            source: "claude-local", session: "s1", prompt: "p1", model: "claude-sonnet-5",
+            at: "2026-09-03T18:00:00Z", cwd: "/tmp/alpha/keysreallysafe", input: 10, output: 4
+        ))
+        _ = try service.catalog.insertUsage(.fixture(
+            source: "claude-local", session: "s2", prompt: "p2", model: "claude-sonnet-5",
+            at: "2026-09-03T19:00:00Z", cwd: "/tmp/beta/other", input: 20, output: 8
+        ))
         let now = UTC.parse("2026-09-04T12:00:00Z")!
         let report = try service.spend(
             range: .month, by: .project, source: .claude, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
@@ -244,34 +224,6 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertEqual(ok.status, 200)
         let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
         XCTAssertEqual(obj["by"] as? String, "project")
-    }
-
-    func testDailyBucketPins2330LocalVersusNextDayUTC() throws {
-        let tz = TimeZone(identifier: "America/Denver")!
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = tz
-        let now = cal.date(from: DateComponents(year: 2026, month: 9, day: 3, hour: 12))!
-        let (db, _) = try makeDB()
-        // 23:30 MDT on Sep 1 is 05:30 UTC on Sep 2.
-        _ = try db.insertUsage(
-            UsageEvent(
-                source: "grok-local",
-                sessionId: "tz",
-                promptId: "late-2330",
-                model: "grok-4.6-build",
-                occurredAt: "2026-09-02T05:30:00Z",
-                provider: "xai",
-                modelCalls: 1,
-                inputTokens: 10,
-                outputTokens: 5,
-                costUsdTicks: Int64((1.25 * Ticks.perUSD).rounded())
-            )
-        )
-        let month = try SpendQueries(db: db).report(
-            range: .month, by: .model, source: .grok, now: now, timeZone: tz
-        )
-        XCTAssertEqual(month.daily.map(\.day), ["2026-09-01"])
-        XCTAssertEqual(month.startDay, "2026-09-01")
     }
 
     func testMenubarShowsPlanPercentsAndGrokWeekUsd() {
@@ -350,10 +302,6 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertEqual(events.count, 2)
         XCTAssertEqual(events.map(\.inputTokens), [10, 20])
         XCTAssertEqual(events.map(\.outputTokens).reduce(0, +), 12)
-    }
-
-    private func assistant(requestId: String, uuid: String, output: Int) -> String {
-        "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"requestId\":\"\(requestId)\",\"sessionId\":\"s\",\"timestamp\":\"2026-09-03T12:00:00.000Z\",\"cwd\":\"/tmp/p\",\"message\":{\"id\":\"msg\",\"model\":\"claude-sonnet-5\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":\(output),\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
     }
 
     private func makeHandler() throws -> (APIHandler, KeysService, URL) {

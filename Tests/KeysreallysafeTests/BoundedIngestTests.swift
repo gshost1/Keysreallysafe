@@ -4,10 +4,6 @@ import XCTest
 
 /// Large logs are read in bounded chunks and committed in batches, off the UI run loop.
 final class BoundedIngestTests: XCTestCase {
-    private func assistantLine(uuid: String, model: String, input: Int, output: Int) -> String {
-        "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"requestId\":\"\(uuid)\",\"sessionId\":\"bounded-sess\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"cwd\":\"/tmp/keysreallysafe-fixture\",\"message\":{\"id\":\"msg-\(uuid)\",\"model\":\"\(model)\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":\(input),\"output_tokens\":\(output),\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
-    }
-
     private func writeLines(_ n: Int, to url: URL, width: Int = 40) throws {
         var out = Data()
         for i in 0..<n {

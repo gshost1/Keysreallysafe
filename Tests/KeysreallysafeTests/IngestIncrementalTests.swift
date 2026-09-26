@@ -95,8 +95,4 @@ final class IngestIncrementalTests: XCTestCase {
         XCTAssertEqual(try db.catalogVersion(), version)
         XCTAssertEqual(try db.lastIngestAt(), stamp)
     }
-
-    private func assistantLine(uuid: String, model: String, input: Int, output: Int) -> String {
-        "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"requestId\":\"\(uuid)\",\"sessionId\":\"inc-sess\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"cwd\":\"/tmp/keysreallysafe-fixture\",\"message\":{\"id\":\"msg-\(uuid)\",\"model\":\"\(model)\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":\(input),\"output_tokens\":\(output),\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
-    }
 }

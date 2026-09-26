@@ -44,19 +44,10 @@ final class PriceTableTests: XCTestCase {
         XCTAssertEqual(hand.outputPerMTok, 10, accuracy: 1e-12)
 
         let (db, _) = try makeDB()
-        _ = try db.insertUsage(
-            UsageEvent(
-                source: "claude-local",
-                sessionId: "price",
-                promptId: "only",
-                model: "priced-only",
-                occurredAt: "2026-01-15T12:00:00Z",
-                provider: "anthropic",
-                modelCalls: 1,
-                inputTokens: 1_000_000,
-                outputTokens: 0
-            )
-        )
+        _ = try db.insertUsage(.fixture(
+            source: "claude-local", session: "price", prompt: "only", model: "priced-only",
+            input: 1_000_000, output: 0
+        ))
         let report = try SpendQueries(db: db).report(
             range: .month,
             by: .model,

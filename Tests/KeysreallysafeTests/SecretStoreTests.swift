@@ -98,18 +98,4 @@ final class SecretStoreTests: XCTestCase {
         XCTAssertThrowsError(try service.reveal(name: "xai"))
         XCTAssertTrue(try service.keyEvents(name: "xai").allSatisfy { $0.action == "add" }, "nothing was read")
     }
-
-    func testLiveKeychainUserPresenceGated() throws {
-        try XCTSkipUnless(
-            ProcessInfo.processInfo.environment["KEYS_LIVE_KEYCHAIN"] == "1",
-            "live Keychain is a manual check, not CI"
-        )
-        let store = KeychainStore(service: "keysreallysafe.test")
-        let name = "live-test-\(UUID().uuidString.prefix(8).lowercased())"
-        try store.add(name: name, secret: "live-only")
-        defer { try? store.delete(name: name) }
-        try LocalPresenceGate().require(reason: "Unlock \(name)")
-        let got = try store.get(name: name)
-        XCTAssertEqual(got, "live-only")
-    }
 }

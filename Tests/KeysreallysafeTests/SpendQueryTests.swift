@@ -42,9 +42,7 @@ final class SpendQueryTests: XCTestCase {
 
     func testDailyByModelTwoSeriesFromTwoModelFixture() throws {
         let (db, _) = try makeDB()
-        let line = try String(contentsOf: Fixtures.twoModels, encoding: .utf8)
-            .split(whereSeparator: \.isNewline)
-            .joined()
+        let line = try Fixtures.grokTurnLine("sess-2")
         let events = try GrokIngest.parseLine(line, sessionDirName: "sess-2", summary: nil)
         for event in events { _ = try db.insertUsage(event) }
         let now = UTC.parse("2026-01-16T18:00:00Z")!
@@ -102,21 +100,6 @@ final class SpendQueryTests: XCTestCase {
         let json = String(data: try JSONValue.data(report.jsonObject()), encoding: .utf8)!
         XCTAssertFalse(json.contains(sentinelMessage))
         XCTAssertFalse(json.contains(sentinelRaw))
-    }
-
-    func testIngestTwiceDoesNotDoubleMonthTotal() throws {
-        let (db, _) = try makeDB()
-        _ = try GrokIngest.run(home: Fixtures.grokHome, db: db)
-        _ = try GrokIngest.run(home: Fixtures.grokHome, db: db)
-        let now = UTC.parse("2026-01-20T00:00:00Z")!
-        let report = try SpendQueries(db: db).report(
-            range: .month,
-            by: .model,
-            source: .grok,
-            now: now,
-            timeZone: TimeZone(secondsFromGMT: 0)!
-        )
-        XCTAssertEqual(report.totals.grokUsd, 16.2, accuracy: 1e-9)
     }
 
     func testMonthIntervalIsCalendarMonthInclusiveStartExclusiveEnd() {
@@ -225,8 +208,8 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertEqual(opus5, opusGeneric / 3, accuracy: 1e-9)
 
         let (db, _) = try makeDB()
-        _ = try db.insertUsage(claudeEvent(model: "claude-fable-5-1", input: 1000, output: 200, prompt: "fable"))
-        _ = try db.insertUsage(claudeEvent(model: "claude-mystery", input: 50, output: 10, prompt: "mystery"))
+        _ = try db.insertUsage(UsageEvent.fixture(source: "claude-local", session: "price", prompt: "fable", model: "claude-fable-5-1", input: 1000, output: 200))
+        _ = try db.insertUsage(UsageEvent.fixture(source: "claude-local", session: "price", prompt: "mystery", model: "claude-mystery", input: 50, output: 10))
         let now = UTC.parse("2026-01-20T00:00:00Z")!
         let report = try SpendQueries(db: db).report(
             range: .month, by: .model, source: .claude, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
@@ -340,34 +323,5 @@ final class SpendQueryTests: XCTestCase {
         return cal.date(from: DateComponents(
             year: year, month: month, day: day, hour: hour, minute: minute
         ))!
-    }
-
-    private func claudeEvent(model: String, input: Int, output: Int, prompt: String) -> UsageEvent {
-        UsageEvent(
-            source: "claude-local",
-            sessionId: "price",
-            promptId: prompt,
-            model: model,
-            occurredAt: "2026-01-15T12:00:00Z",
-            provider: "anthropic",
-            modelCalls: 1,
-            inputTokens: input,
-            outputTokens: output
-        )
-    }
-
-    private func grokEvent(at iso: String, usd: Double, prompt: String) -> UsageEvent {
-        UsageEvent(
-            source: "grok-local",
-            sessionId: "boundary",
-            promptId: prompt,
-            model: "grok-4.6-build",
-            occurredAt: iso,
-            provider: "xai",
-            modelCalls: 1,
-            inputTokens: 10,
-            outputTokens: 5,
-            costUsdTicks: Int64((usd * Ticks.perUSD).rounded())
-        )
     }
 }

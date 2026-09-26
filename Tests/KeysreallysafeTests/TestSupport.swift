@@ -16,8 +16,16 @@ enum Fixtures {
     static var codexHome: URL { root.appendingPathComponent("codex-home") }
     static var grokQuotaHome: URL { root.appendingPathComponent("grok-quota") }
     static var codexQuotaHome: URL { root.appendingPathComponent("codex-quota") }
-    static var turnCompleted: URL { root.appendingPathComponent("turn_completed.json") }
-    static var twoModels: URL { root.appendingPathComponent("two_models.json") }
+
+    /// The one turn_completed line of a synthetic Grok session in grok-home.
+    static func grokTurnLine(_ session: String) throws -> String {
+        let url = grokHome.appendingPathComponent("sessions/synth/\(session)/updates.jsonl")
+        let text = try String(contentsOf: url, encoding: .utf8)
+        guard let line = text.split(separator: "\n").first(where: { $0.contains("\"turn_completed\"") }) else {
+            throw AppError.notFound(session)
+        }
+        return String(line)
+    }
 }
 
 enum TempDir {
@@ -169,6 +177,40 @@ final class RecordingPresenceGate: PresenceGate, @unchecked Sendable {
         lock.unlock()
         if let err { throw err }
     }
+}
+
+extension UsageEvent {
+    /// One local usage row; the provider follows from the source.
+    static func fixture(
+        source: String = "grok-local", session: String = "s", prompt: String = "p",
+        model: String = "grok-4.6-build", at: String = "2026-01-15T12:00:00Z", cwd: String? = nil,
+        input: Int = 1, output: Int = 1, ticks: Int64? = nil
+    ) -> UsageEvent {
+        let provider = ["claude-local": "anthropic", "codex-local": "openai"][source] ?? "xai"
+        return UsageEvent(
+            source: source, sessionId: session, promptId: prompt, model: model, occurredAt: at,
+            provider: provider, cwd: cwd, modelCalls: 1, inputTokens: input, outputTokens: output,
+            costUsdTicks: ticks
+        )
+    }
+}
+
+/// A priced Grok turn of 10 input and 5 output tokens.
+func grokEvent(at iso: String, usd: Double, prompt: String, model: String = "grok-4.6-build") -> UsageEvent {
+    .fixture(
+        session: "boundary", prompt: prompt, model: model, at: iso, input: 10, output: 5,
+        ticks: Int64((usd * Ticks.perUSD).rounded())
+    )
+}
+
+/// One Claude Code assistant line; the request id defaults to the uuid.
+func assistantLine(
+    uuid: String, model: String = "claude-sonnet-5", input: Int = 10, output: Int,
+    requestId: String? = nil, session: String = "inc-sess",
+    cwd: String = "/tmp/keysreallysafe-fixture", at: String = "2026-01-15T12:00:00.000Z"
+) -> String {
+    let request = requestId ?? uuid
+    return "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"requestId\":\"\(request)\",\"sessionId\":\"\(session)\",\"timestamp\":\"\(at)\",\"cwd\":\"\(cwd)\",\"message\":{\"id\":\"msg-\(request)\",\"model\":\"\(model)\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":\(input),\"output_tokens\":\(output),\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
 }
 
 func fieldNames(_ value: Any) -> Set<String> {

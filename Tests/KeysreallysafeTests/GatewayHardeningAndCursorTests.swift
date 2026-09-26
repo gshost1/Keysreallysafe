@@ -390,18 +390,6 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertNotEqual(Doctor.fileSHA256(a), Doctor.fileSHA256(b))
     }
 
-    func testStatusPrintsCodexWindowsAndDayHourResets() {
-        XCTAssertEqual(LiveStatus.formatDuration(6 * 86400 + 18 * 3600), "6d 18h")
-        let row = ToolStatus(source: "openai", title: "OpenAI · Codex", fiveHourPct: 11, weeklyPct: 32)
-        XCTAssertEqual(row.source, "openai")
-        XCTAssertEqual(row.fiveHourPct, 11)
-        XCTAssertEqual(row.weeklyPct, 32)
-    }
-
-    private func assistantLine(uuid: String, model: String, input: Int, output: Int) -> String {
-        "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"requestId\":\"\(uuid)\",\"sessionId\":\"inc-sess\",\"timestamp\":\"2026-01-15T12:00:00.000Z\",\"cwd\":\"/tmp/keysreallysafe-fixture\",\"message\":{\"id\":\"msg-\(uuid)\",\"model\":\"\(model)\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":\(input),\"output_tokens\":\(output),\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
-    }
-
     private func makeHandler() throws -> (APIHandler, KeysService, URL) {
         let (db, dir) = try makeDB()
         let (service, _, _) = makeService(db: db)

@@ -526,23 +526,6 @@ final class ServerTests: XCTestCase {
         ))!
     }
 
-    private func grokEvent(
-        at iso: String, usd: Double, prompt: String, model: String = "grok-4.6-build"
-    ) -> UsageEvent {
-        UsageEvent(
-            source: "grok-local",
-            sessionId: "boundary",
-            promptId: prompt,
-            model: model,
-            occurredAt: iso,
-            provider: "xai",
-            modelCalls: 1,
-            inputTokens: 10,
-            outputTokens: 5,
-            costUsdTicks: Int64((usd * Ticks.perUSD).rounded())
-        )
-    }
-
     private func fetch(
         _ url: URL,
         method: String = "GET",
