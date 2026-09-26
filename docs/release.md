@@ -21,7 +21,7 @@ Keysrs.app/Contents/
   MacOS/keys                  the one release binary: app with no arguments, CLI with arguments
   Resources/Web/              the dashboard allowlist (same files the installer used to stage)
   Resources/Fixtures/models.json
-  Resources/Keysrs.icns       built from Web/icon.png with sips and iconutil
+  Resources/Keysrs.icns       Assets/icon/Keysrs.icns (built from Web/icon.png only if missing)
   Resources/LICENSE, THIRD_PARTY_NOTICES.md, licenses/*.txt
   _CodeSignature/CodeResources
 ```
@@ -47,7 +47,7 @@ Application (or Apple Development) certificate, the script signs the bundle
 once with the hardened runtime and a secure timestamp, reads the team, and
 signs again pinning the designated requirement to that team. It never uses
 `--deep`: `MacOS/keys` is the only Mach-O. Use `--icns` to supply a prebuilt
-icon instead of building one from `Web/icon.png`.
+icon instead of `Assets/icon/Keysrs.icns`.
 
 The script refuses symlinked or missing inputs, a non-executable binary and
 anything outside the Web and fixture allowlists. It does not replace an

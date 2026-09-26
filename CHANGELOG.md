@@ -1,11 +1,12 @@
 # Changelog
 
-## 0.10.0 — unreleased
+## 0.10.0 — 2026-09-25
 
 - **Keysrs.app.** The disk image now holds `Keysrs.app` and an Applications shortcut: drag it to Applications and open it. No folder to keep and no Terminal step. It is a regular Mac app with a Dock icon, a main menu and a window showing the dashboard; the menu bar meter stays. Closing the window keeps the meter, usage tracking and the gateway running, the Dock icon or Open Keysrs brings the window back, and `⌘Q` quits.
 - The app adds itself as a login item on first launch through macOS's own login-item service; Start at Login in the Keysrs menu turns it off and on, as does System Settings > General > Login Items. The launchd agent that `keys autostart` installed is no longer how Keysrs starts.
 - **Upgrading from 0.9.x:** open the new app once. It stops the `com.keysreallysafe.menubar` agent, deletes its plist and the old `bin/`, `Web/`, `Fixtures/`, `Plugins/` and `scripts/` under `~/Library/Application Support/Keysreallysafe/`, and writes what it did to `menubar.log`. The catalog, preferences, logs, `.previous/` and every Keychain item stay. The app keeps the signing identifier `keysreallysafe` and the 0.9.2 designated requirement, so Keychain items stored by 0.9.x keep trusting it.
 - The `keys` command line lives inside the app (`Keysrs.app/Contents/MacOS/keys`). Install Command Line Tool… in the Keysrs menu links it as `~/.local/bin/keys`; it asks for no administrator access and does not replace an existing file. `keys autostart` now only accepts `--remove`, which still cleans up a 0.9.x install.
+- The menu bar title shows Claude's weekly usage, like Codex and Grok; the Fable window stays on the Claude tab. Start at Login and Install Command Line Tool… are also in the meter's dropdown, and an existing `~/.local/bin/keys` link to the 0.9.x runtime is moved to the app automatically.
 - **Update check, off by default.** Check for Updates… asks GitHub's latest-release API for the newest version number and says whether it is newer; Automatically Check for Updates repeats that at launch and daily once turned on. Nothing is downloaded or installed, and no cookies are sent. It is the only network request 0.10.0 adds.
 - Unchanged: the gateway on `127.0.0.1:12767`, the dashboard API bound to `127.0.0.1`, the Keychain service, the catalog and its location. Apple Silicon only, macOS 14 or newer.
 - Development: `scripts/build-app.py` assembles and signs `Keysrs.app` from the release build, and the release packager puts it in `Keysrs-arm64.dmg`.
