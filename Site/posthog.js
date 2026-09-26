@@ -12,8 +12,12 @@ posthog.init("phc_sjUPiZsiJoN6asBQyAXsnteDMAgnsqi6FjqLXj49FvCb", {
   capture_pageview: true,
   capture_pageleave: true
 });
+// A link we post elsewhere carries ?ref=<label> so downloads can be told apart
+// by channel. Only a short lowercase label is kept; anything else is dropped.
+var ref = (new URLSearchParams(location.search).get("ref") || "").toLowerCase();
+if (!/^[a-z0-9_-]{1,32}$/.test(ref)) ref = "";
 document.addEventListener("click", function (e) {
   var a = e.target.closest("a[href]"); if (!a) return;
   var h = a.getAttribute("href") || "";
-  if (h.indexOf("/releases/") !== -1) posthog.capture("download_click");
+  if (h.indexOf("/releases/") !== -1) posthog.capture("download_click", ref ? { ref: ref } : {});
 });
