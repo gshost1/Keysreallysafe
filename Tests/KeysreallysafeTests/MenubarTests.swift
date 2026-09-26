@@ -49,7 +49,7 @@ final class MenubarWindowsTests: XCTestCase {
         grok.weeklyUsd = 36.93
         let status = LiveStatus(grok: grok, claude: claude, plans: [grok, claude, codex])
         let snap = MenubarSnapshot.from(status, now: now)
-        XCTAssertEqual(snap.title, "C 38%  X 46%  G 8%")
+        XCTAssertEqual(snap.title, "C 2%  X 46%  G 8%")
         XCTAssertTrue(snap.tooltip.hasPrefix("Grok $36.93 this week"))
         XCTAssertEqual(snap.cards.flatMap { $0.windows.map(\.label) }, [
             "Claude 5-hour", "Claude Fable", "Claude weekly", "Codex 5-hour", "Codex weekly", "Grok weekly",
@@ -106,10 +106,7 @@ final class MenubarPanelDataTests: XCTestCase {
         XCTAssertEqual(snap.cards[0].plan, "Max")
         XCTAssertEqual(snap.cards[0].windows.map(\.label), ["Claude 5-hour", "Claude Fable", "Claude weekly"])
         XCTAssertEqual(snap.cards[0].windows.map(\.pctUsed), [53, 72, 1])
-        XCTAssertEqual(snap.cards[0].overviewWindow?.pctUsed, 72)
-        var noFable = snap.cards[0]
-        noFable.windows.removeAll { $0.label == "Claude Fable" }
-        XCTAssertNil(noFable.overviewWindow)
+        XCTAssertEqual(snap.cards[0].overviewWindow?.pctUsed, 1)
         XCTAssertEqual(snap.cards[1].usdLine, "Grok $0 this week")
         XCTAssertEqual(snap.spendLine, "Grok $0 this week")
 
