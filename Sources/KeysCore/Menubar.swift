@@ -23,12 +23,11 @@ struct MenubarSnapshot: Equatable {
         var usdLine: String?
 
         var overviewWindow: Window? {
-            if id == "claude" { return windows.first { $0.label == "Claude Fable" } }
             return windows.last { $0.label.hasSuffix("weekly") } ?? windows.first
         }
     }
 
-    /// Title: Claude's Fable percentage, other tools' weekly percentages.
+    /// Title: each tool's weekly percentage; Claude's Fable window stays in the dropdown.
     /// Percentages are used quota, directly from local snapshots. Grok's dollars are the
     /// week's local spend the Grok status row already carries.
     static func from(_ status: LiveStatus?, now: Date = Date()) -> MenubarSnapshot {
@@ -43,7 +42,7 @@ struct MenubarSnapshot: Equatable {
             for (letter, name, tool) in [("C", "Claude", claude), ("X", "Codex", codex), ("G", "Grok", grok)] {
                 guard let tool else { continue }
                 if tool.source == "claude" {
-                    parts.append(tool.fablePct.map { "\(letter) \($0)%" } ?? "\(letter) —")
+                    parts.append(tool.weeklyPct.map { "\(letter) \($0)%" } ?? "\(letter) —")
                 } else if let week = tool.weeklyPct {
                     parts.append("\(letter) \(week)%")
                 }

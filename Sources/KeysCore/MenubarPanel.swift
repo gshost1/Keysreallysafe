@@ -1,7 +1,7 @@
 import AppKit
 
 /// The top of the dropdown: a tab strip (Overview, then one tab per subscription) over a
-/// card. Overview shows Claude Fable and other tools' weekly rows; a subscription tab
+/// card. Overview shows each tool's weekly row; a subscription tab
 /// shows every window as a bar with percentage used and the reset time.
 @MainActor
 final class MenubarPanel: NSView {

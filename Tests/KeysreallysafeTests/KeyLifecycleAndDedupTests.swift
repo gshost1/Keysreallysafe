@@ -216,7 +216,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
             ToolStatus(source: "openai", title: "OpenAI · Codex", weeklyPct: 32)
         ]
         let snap = MenubarSnapshot.from(status)
-        XCTAssertEqual(snap.title, "C —  X 32%  G 3%") // Never substitute weekly usage for missing Fable usage.
+        XCTAssertEqual(snap.title, "C —  X 32%  G 3%") // Never substitute 5-hour usage for missing weekly usage.
         XCTAssertTrue(snap.tooltip.hasPrefix("Grok $2.81"))
         XCTAssertTrue(snap.tooltip.contains("Claude 5-hour 22%"))
         XCTAssertTrue(snap.tooltip.contains("Codex weekly 32%"))
