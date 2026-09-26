@@ -1,148 +1,220 @@
 #!/usr/bin/env python3
 """Offline fixtures for scripts/prepare-release.py."""
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import plistlib
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "prepare-release.py"
+HERE = Path(__file__).resolve().parent
+SCRIPT = HERE.parent / "prepare-release.py"
 SPEC = importlib.util.spec_from_file_location("prepare_release", SCRIPT)
 release = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(release)
+build_app = release.build_app
+
+sys.path.insert(0, str(HERE))
+from test_build_app import FakeTools, make_repo  # noqa: E402
+
+APP = "Keysrs.app"
 
 
 class ReleaseTests(unittest.TestCase):
-    def make_repo(self, directory: Path) -> Path:
-        repo = directory / "repo"
-        for relative in release.WEB_FILES:
-            target = repo / "Web" / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(relative, encoding="utf-8")
-        for relative in release.FIXTURE_FILES:
-            target = repo / "Fixtures" / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(relative, encoding="utf-8")
-        for name in release.DOC_FILES:
-            target = repo / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(name, encoding="utf-8")
-        binary = repo / "build" / "keys"
-        binary.parent.mkdir(parents=True)
-        binary.write_bytes(b"fixture executable")
-        os.chmod(binary, 0o755)
-        return repo
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.repo = make_repo(self.root)
+        # Private files and optimizer leftovers in the checkout must never travel.
+        (self.repo / "local-config.json").write_text("credential", encoding="utf-8")
+        (self.repo / "Plugins" / "jev-optimizer").mkdir(parents=True)
+        (self.repo / "Plugins" / "jev-optimizer" / "optimizer-cli.js").write_text("stale", encoding="utf-8")
+        with mock.patch.object(build_app, "run_tool", FakeTools()):
+            self.app = build_app.build(self.repo, self.repo / "build" / "keys", self.repo / "dist")
 
-    def test_packages_allowlisted_runtime_and_manifest(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = self.make_repo(root)
-            # Files outside the allowlist never travel: a private local file, or optimizer
-            # build output and scripts left over in an older checkout.
-            (repo / "local-config.json").write_text("credential", encoding="utf-8")
-            (repo / "Plugins" / "jev-optimizer" / "dist").mkdir(parents=True)
-            (repo / "Plugins" / "jev-optimizer" / "dist" / "optimizer-cli.js").write_text("stale", encoding="utf-8")
-            (repo / "scripts").mkdir(exist_ok=True)
-            (repo / "scripts" / "optimizer-mcp.py").write_text("stale", encoding="utf-8")
-            (repo / "docs" / "private-notes.md").write_text("private", encoding="utf-8")
-            output = root / "release"
-            release.prepare(repo, repo / "build" / "keys", output, check_codesign=False)
-            self.assertTrue((output / "bin" / "keys").is_file())
-            self.assertFalse((output / "Plugins").exists())
-            self.assertFalse((output / "scripts").exists())
-            self.assertFalse((output / "local-config.json").exists())
-            self.assertTrue((output / "ROLLBACK.md").is_file())
-            manifest = json.loads((output / "release-manifest.json").read_text(encoding="utf-8"))
-            manifest_text = (output / "release-manifest.json").read_text(encoding="utf-8")
-            paths = {item["path"] for item in manifest["checksums"]}
-            self.assertIn("bin/keys", paths)
-            self.assertTrue(set(release.DOC_FILES).issubset(paths))
-            # Legal notices must survive packaging independently of the allowlist definition.
-            for notice in ("LICENSE", "THIRD_PARTY_NOTICES.md",
-                           "licenses/Keysreallysafe-legacy-MIT.txt",
-                           "licenses/swift-argument-parser.txt"):
-                self.assertIn(notice, paths)
-                self.assertEqual((output / notice).read_bytes(), (repo / notice).read_bytes())
-            self.assertFalse((output / "docs" / "private-notes.md").exists())
-            self.assertTrue((output / "README.md").is_file())
-            self.assertEqual({p.split("/", 1)[0] for p in paths},
-                             {"bin", "Web", "Fixtures", "docs", "licenses", "Analytics", "LICENSE",
-                              "THIRD_PARTY_NOTICES.md", "README.md", "SIGNING.md", "ROLLBACK.md"})
-            self.assertNotIn("release-manifest.json", paths)
-            self.assertNotIn("fixture executable", manifest_text)
-            self.assertNotIn("credential", manifest_text)
-            self.assertEqual(manifest["release_status"]["live_installation"],
-                             "unvalidated; this tool did not inspect or modify a live installation")
-            self.assertEqual(manifest["codesign_verification"]["requested"], "false")
+    def prepare(self, name="release", **kwargs):
+        output = self.root / name
+        release.prepare(self.repo, self.app, output, check_codesign=False, **kwargs)
+        return output
 
-    def test_rejects_binary_and_runtime_symlink_ancestors(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = self.make_repo(root)
-            linked_binary = repo / "linked-keys"
-            linked_binary.symlink_to(repo / "build" / "keys")
-            with self.assertRaisesRegex(release.ReleaseError, "symlink ancestor"):
-                release.prepare(repo, linked_binary, root / "release", check_codesign=False)
-            linked_web = root / "linked-web"
-            linked_web.symlink_to(repo / "Web", target_is_directory=True)
-            original_web = repo / "Web"
-            original_web.rename(repo / "Web-real")
-            linked_web.rename(original_web)
-            with self.assertRaisesRegex(release.ReleaseError, "symlink ancestor"):
-                release.prepare(repo, repo / "build" / "keys", root / "release", check_codesign=False)
+    def test_package_holds_the_app_and_applications_link(self):
+        output = self.prepare()
+        self.assertEqual(sorted(p.name for p in output.iterdir()),
+                         [".release-manifest.json", "Applications", APP])
+        self.assertTrue((output / "Applications").is_symlink())
+        self.assertEqual(os.readlink(output / "Applications"), "/Applications")
+        packaged = output / APP / "Contents" / "MacOS" / "keys"
+        self.assertEqual(packaged.read_bytes(), b"fixture executable")
+        self.assertTrue(os.access(packaged, os.X_OK))
+        manifest_text = (output / ".release-manifest.json").read_text(encoding="utf-8")
+        manifest = json.loads(manifest_text)
+        paths = {item["path"] for item in manifest["checksums"]}
+        self.assertEqual({p.split("/", 1)[0] for p in paths}, {APP})
+        self.assertEqual(manifest["symlinks"], {"Applications": "/Applications"})
+        self.assertNotIn("fixture executable", manifest_text)
+        self.assertNotIn("credential", manifest_text)
+        self.assertNotIn("optimizer", manifest_text)
+        self.assertEqual(manifest["release_status"]["live_installation"],
+                         "unvalidated; this tool did not inspect or modify a live installation")
+        self.assertEqual(manifest["codesign_verification"]["requested"], "false")
+        release.verify_package(output)
+
+    def test_licence_files_ship_inside_the_app(self):
+        output = self.prepare()
+        # Legal notices must survive packaging independently of the allowlist definition.
+        for notice in ("LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/Keysreallysafe-legacy-MIT.txt",
+                       "licenses/swift-argument-parser.txt"):
+            packaged = output / APP / "Contents" / "Resources" / notice
+            self.assertEqual(packaged.read_bytes(), (self.repo / notice).read_bytes())
+
+    def test_rejects_app_whose_licence_differs_from_the_checkout(self):
+        (self.app / "Contents" / "Resources" / "licenses" / "Keysreallysafe-legacy-MIT.txt").write_text(
+            "edited", encoding="utf-8")
+        with self.assertRaisesRegex(release.ReleaseError, "differs from the checkout"):
+            self.prepare()
+
+    def test_rejects_app_missing_a_licence(self):
+        (self.app / "Contents" / "Resources" / "THIRD_PARTY_NOTICES.md").unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "missing required file"):
+            self.prepare()
+
+    def test_rejects_unsigned_app(self):
+        (self.app / "Contents" / "_CodeSignature" / "CodeResources").unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "not signed"):
+            self.prepare()
+
+    def test_rejects_unexpected_or_symlinked_app_content(self):
+        stray = self.app / "Contents" / "Resources" / "local-config.json"
+        stray.write_text("credential", encoding="utf-8")
+        with self.assertRaisesRegex(release.ReleaseError, "unexpected file"):
+            self.prepare()
+        stray.unlink()
+        index = self.app / "Contents" / "Resources" / "Web" / "index.html"
+        index.unlink()
+        index.symlink_to(self.repo / "Web" / "index.html")
+        with self.assertRaisesRegex(release.ReleaseError, "symlink"):
+            self.prepare()
+
+    def test_rejects_wrong_bundle_identifier_or_version(self):
+        plist = self.app / "Contents" / "Info.plist"
+        with plist.open("rb") as handle:
+            info = plistlib.load(handle)
+        info["CFBundleIdentifier"] = "com.example.other"
+        with plist.open("wb") as handle:
+            plistlib.dump(info, handle)
+        with self.assertRaisesRegex(release.ReleaseError, "CFBundleIdentifier"):
+            self.prepare()
+        info["CFBundleIdentifier"] = "com.keysreallysafe.keysrs"
+        info["CFBundleVersion"] = "0.9.2"
+        with plist.open("wb") as handle:
+            plistlib.dump(info, handle)
+        with self.assertRaisesRegex(release.ReleaseError, "CFBundleVersion"):
+            self.prepare()
+
+    def test_rejects_symlinked_app(self):
+        linked = self.root / APP
+        linked.symlink_to(self.app, target_is_directory=True)
+        with self.assertRaisesRegex(release.ReleaseError, "non-symlink"):
+            release.prepare(self.repo, linked, self.root / "release", check_codesign=False)
 
     def test_refuses_existing_output_without_overwriting_it(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = self.make_repo(root)
-            output = root / "release"
-            output.mkdir()
-            marker = output / "keep.txt"
-            marker.write_text("keep", encoding="utf-8")
-            with self.assertRaisesRegex(release.ReleaseError, "must not already exist"):
-                release.prepare(repo, repo / "build" / "keys", output, check_codesign=False)
-            self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
+        output = self.root / "release"
+        output.mkdir()
+        marker = output / "keep.txt"
+        marker.write_text("keep", encoding="utf-8")
+        with self.assertRaisesRegex(release.ReleaseError, "must not already exist"):
+            self.prepare()
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep")
 
     def test_refuses_dangling_output_symlink(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = self.make_repo(root)
-            output = root / "release"
-            output.symlink_to(root / "missing-release", target_is_directory=True)
-            with self.assertRaisesRegex(release.ReleaseError, "must not already exist"):
-                release.prepare(repo, repo / "build" / "keys", output, check_codesign=False)
+        (self.root / "release").symlink_to(self.root / "missing-release", target_is_directory=True)
+        with self.assertRaisesRegex(release.ReleaseError, "must not already exist"):
+            self.prepare()
 
     def test_dry_run_validates_without_creating_output(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = self.make_repo(root)
-            output = root / "release"
-            release.prepare(repo, repo / "build" / "keys", output, check_codesign=False, dry_run=True)
-            self.assertFalse(output.exists())
+        self.prepare(dry_run=True)
+        self.assertFalse((self.root / "release").exists())
 
     def test_verify_package_rejects_tampering_missing_and_unexpected_files(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            repo = self.make_repo(root)
-            output = root / "release"
-            release.prepare(repo, repo / "build" / "keys", output, check_codesign=False)
-            target = output / "Web" / "index.html"
-            target.write_text("changed", encoding="utf-8")
-            with self.assertRaisesRegex(release.ReleaseError, "checksum mismatch"):
-                release.verify_package(output)
-            release.prepare(repo, repo / "build" / "keys", root / "fresh", check_codesign=False)
-            fresh = root / "fresh"
-            (fresh / "Web" / "index.html").unlink()
-            with self.assertRaisesRegex(release.ReleaseError, "missing manifest file"):
-                release.verify_package(fresh)
-            release.prepare(repo, repo / "build" / "keys", root / "extra", check_codesign=False)
-            extra = root / "extra"
-            (extra / "extra.txt").write_text("unexpected", encoding="utf-8")
-            with self.assertRaisesRegex(release.ReleaseError, "unexpected file"):
-                release.verify_package(extra)
+        output = self.prepare()
+        (output / APP / "Contents" / "Resources" / "Web" / "index.html").write_text("changed", encoding="utf-8")
+        with self.assertRaisesRegex(release.ReleaseError, "checksum mismatch"):
+            release.verify_package(output)
+        fresh = self.prepare("fresh")
+        (fresh / APP / "Contents" / "Resources" / "Web" / "index.html").unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "missing manifest file"):
+            release.verify_package(fresh)
+        extra = self.prepare("extra")
+        (extra / "extra.txt").write_text("unexpected", encoding="utf-8")
+        with self.assertRaisesRegex(release.ReleaseError, "unexpected file"):
+            release.verify_package(extra)
+
+    def test_verify_package_accepts_only_the_applications_link(self):
+        output = self.prepare()
+        (output / "Applications").unlink()
+        (output / "Applications").symlink_to("/tmp")
+        with self.assertRaisesRegex(release.ReleaseError, "unexpected symlink"):
+            release.verify_package(output)
+        (output / "Applications").unlink()
+        with self.assertRaisesRegex(release.ReleaseError, "Applications symlink"):
+            release.verify_package(output)
+        other = self.prepare("other")
+        (other / "Docs").symlink_to("/Applications")
+        with self.assertRaisesRegex(release.ReleaseError, "unexpected symlink"):
+            release.verify_package(other)
+
+    def test_codesign_check_reports_identifier(self):
+        def fake_run(command, **kwargs):
+            stderr = "Executable=x\nIdentifier=keysreallysafe\nTeamIdentifier=ABCDE12345\n"
+            return subprocess.CompletedProcess(command, 0, "", stderr if "--display" in command else "")
+
+        with mock.patch("subprocess.run", fake_run):
+            result = release.verify_codesign(self.app)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["identifier"], "passed")
+
+        def other_identifier(command, **kwargs):
+            return subprocess.CompletedProcess(command, 0, "", "Identifier=keys\n")
+
+        with mock.patch("subprocess.run", other_identifier):
+            result = release.verify_codesign(self.app)
+        self.assertEqual(result["identifier"], "failed")
+        self.assertEqual(result["status"], "not_verified")
+
+    def test_dmg_uses_the_keysrs_volume_and_download_name(self):
+        output = self.prepare()
+        with self.assertRaisesRegex(release.ReleaseError, "Keysrs-arm64.dmg"):
+            release.make_dmg(output, self.root / "Keysreallysafe-arm64.dmg")
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch("subprocess.run", fake_run):
+            release.make_dmg(output, self.root / "Keysrs-arm64.dmg")
+        self.assertEqual(len(calls), 1)
+        command = calls[0]
+        self.assertEqual(command[:2], ["/usr/bin/hdiutil", "create"])
+        self.assertEqual(command[command.index("-volname") + 1], "Keysrs")
+        self.assertEqual(command[command.index("-srcfolder") + 1], str(output))
+        self.assertEqual(command[-1], str(self.root / "Keysrs-arm64.dmg"))
+        self.assertNotIn("codesign", " ".join(command))
+
+    def test_cli_requires_app_and_output(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            release.parse_args(["--output", str(self.root / "release")])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            release.parse_args(["--app", str(self.app), "--output", "x", "--dry-run", "--dmg", "Keysrs-arm64.dmg"])
 
 
 if __name__ == "__main__":
