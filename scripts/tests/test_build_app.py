@@ -240,6 +240,13 @@ class BuildAppTests(unittest.TestCase):
         self.assertNotIn("icon_512x512@2x.png", names)
         self.assertTrue(any(Path(c[0]).name == "iconutil" for c in self.tools.commands))
 
+    def test_designed_icon_set_is_the_default(self):
+        designed = self.repo / "Assets" / "icon" / "Keysrs.icns"
+        designed.parent.mkdir(parents=True)
+        designed.write_bytes(b"designed icns")
+        app = self.build()
+        self.assertEqual((app / "Contents" / "Resources" / "Keysrs.icns").read_bytes(), b"designed icns")
+
     def test_prebuilt_icns_skips_icon_tools(self):
         app = self.build(icns=self.repo / "Assets" / "Keysrs.icns")
         self.assertEqual((app / "Contents" / "Resources" / "Keysrs.icns").read_bytes(), b"icns fixture")

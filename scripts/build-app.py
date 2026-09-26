@@ -131,6 +131,11 @@ def run_tool(command: list[str]) -> subprocess.CompletedProcess:
         raise BuildError(f"{Path(command[0]).name} unavailable: {error}") from None
 
 
+# The designed icon set carries hand-tuned 16-32 px glyphs and a 1024 px size;
+# Web/icon.png is only 512 px, so it is the fallback.
+DEFAULT_ICNS = Path("Assets/icon/Keysrs.icns")
+
+
 def build_icns(source_png: Path, destination: Path, workdir: Path) -> None:
     """Scale the PNG with sips into an iconset, then pack it with iconutil.
 
@@ -203,6 +208,8 @@ def build(repo: Path, binary: Path, output: Path, identity: str = "-", version: 
         require_regular(repo / "Fixtures" / name, f"fixture {name}", repo)
     for name in LICENSE_FILES:
         require_regular(repo / name, f"licence file {name}", repo)
+    if icns is None and (repo / DEFAULT_ICNS).is_file():
+        icns = repo / DEFAULT_ICNS
     if icns is not None:
         icns = absolute_path(icns)
         require_regular(icns, "icon file", repo)
@@ -262,7 +269,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="40-character SHA-1 of a Developer ID / Apple Development identity; "
                              "default - signs ad hoc for local runs only")
     parser.add_argument("--version", help=f"bundle version (default: appVersion in {VERSION_SOURCE})")
-    parser.add_argument("--icns", type=Path, help="prebuilt .icns inside the checkout instead of building one from Web/icon.png")
+    parser.add_argument("--icns", type=Path, help="prebuilt .icns inside the checkout (default Assets/icon/Keysrs.icns, else built from Web/icon.png)")
     parser.add_argument("--replace", action="store_true", help="replace an existing Keysrs.app in --output")
     return parser.parse_args(argv)
 
