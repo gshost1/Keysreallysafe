@@ -202,6 +202,13 @@ class BuildAppTests(unittest.TestCase):
         with self.assertRaisesRegex(build_app.BuildError, "symlink"):
             self.build()
 
+    def test_rejects_web_files_missing_from_the_allowlist(self):
+        (self.repo / "Web" / ".DS_Store").write_bytes(b"finder")
+        self.build()  # hidden files are ignored
+        (self.repo / "Web" / "window.js").write_text("new", encoding="utf-8")
+        with self.assertRaisesRegex(build_app.BuildError, "window.js is not in WEB_FILES"):
+            self.build(replace=True)
+
     def test_rejects_non_executable_binary(self):
         os.chmod(self.binary, 0o644)
         with self.assertRaisesRegex(build_app.BuildError, "not executable"):

@@ -193,6 +193,12 @@ def build(repo: Path, binary: Path, output: Path, identity: str = "-", version: 
     require_regular(binary, "built keys binary", repo, executable=True)
     for name in WEB_FILES:
         require_regular(repo / "Web" / name, f"Web runtime file {name}", repo)
+    # The app serves Web/ as a whole; a new dashboard file left off the allowlist would
+    # ship a broken window, so stop instead of dropping it silently.
+    unlisted = sorted(p.name for p in (repo / "Web").iterdir()
+                      if not p.name.startswith(".") and p.name not in WEB_FILES)
+    if unlisted:
+        raise BuildError(f"Web/{unlisted[0]} is not in WEB_FILES in scripts/build-app.py; add it or remove it")
     for name in FIXTURE_FILES:
         require_regular(repo / "Fixtures" / name, f"fixture {name}", repo)
     for name in LICENSE_FILES:
