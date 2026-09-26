@@ -61,7 +61,7 @@ struct ControlClient {
     static func connect(control: URL = ControlFile.url()) throws -> ControlClient {
         guard let info = ControlFile.live(at: control) else {
             throw AppError.usage(
-                "no running Keysrs site owns the gateway; start one with keys autostart (login item) or keys dashboard, then retry"
+                "no running Keysrs site owns the gateway; open Keysrs.app or run keys dashboard, then retry"
             )
         }
         return ControlClient(info: info)

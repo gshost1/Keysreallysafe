@@ -109,7 +109,7 @@ enum MenubarRuntime {
 }
 
 enum LoopbackSite {
-    static func bind(service: KeysService, preferredPort: UInt16 = LoginItem.dashboardPort) throws -> LoopbackHTTPServer {
+    static func bind(service: KeysService, preferredPort: UInt16 = LoginItem.dashboardPort, requireGateway: Bool = false) throws -> LoopbackHTTPServer {
         let web = try WebRoot.find()
         let handler = APIHandler(service: service, webRoot: web)
         let server = try LoopbackHTTPServer(port: preferredPort) { request in
@@ -123,6 +123,11 @@ enum LoopbackSite {
             )
             atexit { ControlFile.remove() }
         } catch {
+            if requireGateway {
+                service.stopGateway()
+                server.stop()
+                throw error
+            }
             let line = "gateway not started: \(error)\n"
             FileHandle.standardError.write(Data(line.utf8))
         }
@@ -132,6 +137,7 @@ enum LoopbackSite {
 
 @MainActor
 final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    var appWindow: AppWindowController?
     private let service: KeysService
     private let server: LoopbackHTTPServer
     private let url: URL
@@ -168,11 +174,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // There is no app bundle to carry an icon, so the About panel
-        // would show the generic executable one; borrow the dashboard's copy.
+        // The legacy menubar CLI also borrows the dashboard icon.
         if let web = try? WebRoot.find(), let icon = NSImage(contentsOf: web.appendingPathComponent("icon.png")) {
             NSApp.applicationIconImage = icon
         }
+        appWindow?.didLaunch()
         // After the run loop starts, so the status item is already in the menu bar.
         DispatchQueue.main.async { [weak self] in self?.showWelcomeIfNeeded() }
     }
@@ -184,8 +190,15 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.stop()
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openDashboard()
+        return true
+    }
+
     @objc func openDashboard() {
-        NSWorkspace.shared.open(url)
+        if let appWindow { appWindow.show() } else { NSWorkspace.shared.open(url) }
     }
 
     @objc func ingestNow() {
@@ -283,7 +296,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.alertStyle = .informational
         alert.messageText = plan.firstRun ? "Welcome to Keysrs" : "A quick question from Keysrs"
         alert.informativeText = plan.firstRun
-            ? "Keysrs lives in your menu bar. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain. Nothing is ticked below; choose what you are comfortable with. You can change it later."
+            ? "Keysrs keeps running when you close its window. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain. Nothing is ticked below; choose what you are comfortable with. You can change it later."
             : "This version can compare your usage with other Keysrs users who share theirs. It is off unless you tick the box."
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -339,7 +352,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         let plan = NSMenuItem(title: "Plan Usage", action: #selector(openDashboard), keyEquivalent: "")
         plan.target = self
-        plan.toolTip = "Open the Usage pane on the local site"
+        plan.toolTip = "Open the Usage pane in Keysrs"
         menu.addItem(plan)
         let status = NSMenuItem(title: "Status Page", action: nil, keyEquivalent: "")
         let statusMenu = NSMenu()

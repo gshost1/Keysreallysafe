@@ -38,6 +38,21 @@ public struct KeysCLI: ParsableCommand {
 public enum KeysMain {
     public static func main() {
         do {
+            if CommandLine.arguments.count == 1 || CommandLine.arguments.dropFirst().allSatisfy({ $0.hasPrefix("-psn_") }) {
+                do { try AppRuntime.run() }
+                catch {
+                    runOnMainActor {
+                        NSApplication.shared.setActivationPolicy(.regular)
+                        NSApp.activate(ignoringOtherApps: true)
+                        let alert = NSAlert()
+                        alert.messageText = "Keysrs Could Not Start"
+                        alert.informativeText = String(describing: error)
+                        alert.runModal()
+                    }
+                    throw error
+                }
+                return
+            }
             var command = try KeysCLI.parseAsRoot()
             try command.run()
         } catch let error as AppError {
@@ -593,7 +608,7 @@ struct MenubarCommand: ParsableCommand {
 struct AutostartCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "autostart",
-        abstract: "Start the local site at login (loopback menubar, not a public host)."
+        abstract: "Remove a legacy login item; configure Start at Login inside Keysrs.app."
     )
 
     @Flag(name: [.customLong("remove"), .customLong("uninstall")], help: "Unload and delete the login item and its snapshot.")
@@ -605,11 +620,7 @@ struct AutostartCommand: ParsableCommand {
             print("removed login item \(LoginItem.label)")
             return
         }
-        let binary = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let web = try WebRoot.find()
-        try Installer.live.install(fromBinary: binary, webRoot: web)
-        print("starts at login  \(LoginItem.bookmarkURL.absoluteString)")
-        print("menu bar Open Keysrs  (loopback only, not Vercel)")
+        throw AppError.usage("Open Keysrs.app and choose Start at Login from the Keysrs menu. Use autostart --remove only to remove a legacy installation.")
     }
 }
 

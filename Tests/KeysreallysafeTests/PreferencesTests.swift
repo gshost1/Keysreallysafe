@@ -5,6 +5,21 @@ import XCTest
 /// The background Claude /usage refresh is opt-in, and the welcome window asks
 /// each question once: an unticked box is an answer.
 final class PreferencesTests: XCTestCase {
+    func testAppSettingsDefaultToNoUpdateTrafficAndRememberLoginRegistration() throws {
+        let (db, directory) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let prefs = AppPreferences(catalog: db)
+        XCTAssertFalse(prefs.updateChecks)
+        XCTAssertFalse(prefs.loginRegistrationAttempted)
+        try prefs.setUpdateChecks(true)
+        try prefs.recordLoginRegistration()
+        let reopened = AppPreferences(catalog: db)
+        XCTAssertTrue(reopened.updateChecks)
+        XCTAssertTrue(reopened.loginRegistrationAttempted)
+        try reopened.setUpdateChecks(false)
+        XCTAssertFalse(prefs.updateChecks)
+    }
+
     func testClaudeRefreshIsOffUntilTurnedOn() throws {
         let (db, _) = try makeDB()
         let prefs = AppPreferences(catalog: db)

@@ -24,6 +24,18 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta(Self.claudeRefreshKey, on ? "on" : "off") }
     }
 
+    var updateChecks: Bool { (try? catalog.metaValue("pref_update_checks")) == "on" }
+
+    func setUpdateChecks(_ on: Bool) throws {
+        try catalog.withTransaction { try catalog.setMeta("pref_update_checks", on ? "on" : "off") }
+    }
+
+    var loginRegistrationAttempted: Bool { (try? catalog.metaValue("app_login_registered")) == "yes" }
+
+    func recordLoginRegistration() throws {
+        try catalog.withTransaction { try catalog.setMeta("app_login_registered", "yes") }
+    }
+
     /// What the welcome window still has to ask. The analytics question appears
     /// once per consent version, unless sharing is already on: an unticked box is
     /// an answer and is not asked again.
