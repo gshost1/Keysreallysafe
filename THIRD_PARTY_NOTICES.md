@@ -28,8 +28,6 @@ remains in `scripts/tests/package-lock.json` and the release packager never
 includes it. If dependencies are bundled in a later release, review and
 include their actual license texts before distribution.
 macOS frameworks and the system SQLite library are linked, not copied into
-the release. The app has no Node or Python runtime prerequisite. Container
-images used for the optional collector retain their own licenses and need a
-separate image audit when pinned/deployed. Model-price/catalog data is not
+the release. The app has no Node or Python runtime prerequisite. Model-price/catalog data is not
 made exclusively owned by this notice; provider data terms need review if
 redistributed commercially.

@@ -29,8 +29,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check analytics collector (synthetic loopback requests only)
         run: |
-          python3 -m unittest Analytics/test_collector.py Analytics/test_deployment.py
-          python3 Analytics/validate_deployment.py
+          python3 -m unittest Analytics/test_collector.py
       - name: Install the pinned browser
         working-directory: scripts/tests
         run: npx --no-install playwright install chromium

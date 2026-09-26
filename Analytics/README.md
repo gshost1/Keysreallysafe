@@ -28,28 +28,9 @@ The output has `counts` (summed event counts by day, app version, OS major versi
 
 Restrict the database directory and exported summaries to the collector owner at the filesystem level. The collector publishes no administrative endpoint or authentication secret; anyone with local database-file access can read the aggregate rows.
 
-## Container deployment preparation
+## Backups
 
-`compose.yaml` runs the collector as numeric uid/gid 10001 with no capabilities, a read-only root filesystem, bounded CPU/memory/PIDs, an internal network, and a persistent `analytics-data` volume. Caddy is the only published service. Its template enables automatic TLS only after `ANALYTICS_DOMAIN` is deliberately set, routes only the report and content-free health paths, caps request bodies, and contains no access-log directive. The collector retains its independent rate, concurrency, row, and body limits.
-
-Before deployment, pin the Python and Caddy images to digests verified on the target registry, run the validator and tests, then run Docker Compose configuration/build checks on the actual host. Docker pulls/builds are intentionally absent from the offline validator.
-
-The Caddy global logger excludes both `http.log.access` and `http.log.error`:
-proxy failures otherwise log peer addresses and request headers even without
-access logging. Header size and read/write/idle deadlines bound slow requests.
-These directives were checked against the pinned Caddy source; Compose syntax
-validation does not replace a container test on the chosen host.
-
-Back up the private SQLite volume with a SQLite-consistent snapshot, such as the SQLite backup API or `sqlite3 reports.sqlite '.backup ...'`, rather than copying an active database file. Encrypt backups, restrict their access, and expire them within the same 30-day policy. Restore tests should use an isolated volume and must not send reports to a live endpoint.
-
-```sh
-python3 Analytics/validate_deployment.py
-ANALYTICS_DOMAIN="$ANALYTICS_DOMAIN" docker compose -f Analytics/compose.yaml config --quiet
-# Run only on the selected deployment host after image/digest review:
-ANALYTICS_DOMAIN="$ANALYTICS_DOMAIN" docker compose -f Analytics/compose.yaml build
-```
-
-The hostname above is illustrative syntax, not a selected service endpoint. Keep the product endpoint unset until hosting and TLS are verified.
+Back up the private SQLite database with a SQLite-consistent snapshot, such as the SQLite backup API or `sqlite3 reports.sqlite '.backup ...'`, rather than copying an active database file. Encrypt backups, restrict their access, and expire them within the same 30-day policy. Restore tests should use an isolated volume and must not send reports to a live endpoint.
 
 ## Live deployment (2026-09-23)
 
