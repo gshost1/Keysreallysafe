@@ -151,7 +151,7 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         let (service, _, _) = makeService(db: db)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         let other = getppid()
-        try db.setMeta("gateway_owner_pid", String(other))
+        try ControlFile.write(port: 1, token: "other", pid: other, to: ControlFile.url(beside: db.path))
         XCTAssertThrowsError(try service.setGateway(name: "demo", enabled: true, host: nil)) { error in
             guard let app = error as? AppError, case .gatewayOwned(let pid) = app else {
                 return XCTFail("expected gatewayOwned, got \(error)")
@@ -164,7 +164,7 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
 
         let (handler, svc, _) = try makeHandler()
         try svc.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        try svc.catalog.setMeta("gateway_owner_pid", String(other))
+        try ControlFile.write(port: 1, token: "other", pid: other, to: ControlFile.url(beside: svc.catalog.path))
         let enable = handle(
             handler,
             method: "POST",
@@ -175,27 +175,6 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         let obj = try JSONSerialization.jsonObject(with: enable.body) as! [String: Any]
         XCTAssertEqual(obj["error"] as? String, "gateway owned by another process")
         XCTAssertEqual(obj["gateway_owner_pid"] as? Int, Int(other))
-    }
-
-    func testStartGatewayWritesOwnerAndKeysDoctorReportIt() throws {
-        let (handler, service, _) = try makeHandler()
-        let listener = try service.startGateway(port: 0)
-        defer { service.stopGateway() }
-        XCTAssertEqual(
-            try service.catalog.metaValue("gateway_owner_pid"),
-            String(ProcessInfo.processInfo.processIdentifier)
-        )
-        XCTAssertTrue(service.thisProcessOwnsGateway())
-        let listed = handle(handler, method: "GET", path: "/api/keys")
-        let listObj = try JSONSerialization.jsonObject(with: listed.body) as! [String: Any]
-        XCTAssertEqual(listObj["gateway_owned"] as? Bool, true)
-        XCTAssertEqual(listObj["gateway_owner_pid"] as? Int, Int(ProcessInfo.processInfo.processIdentifier))
-        let doctor = handle(handler, method: "GET", path: "/api/doctor")
-        let doc = try JSONSerialization.jsonObject(with: doctor.body) as! [String: Any]
-        XCTAssertEqual(doc["gateway_owned"] as? Bool, true)
-        _ = listener
-        service.stopGateway()
-        XCTAssertNil(try service.catalog.metaValue("gateway_owner_pid"))
     }
 
     func testDisableNeverChangesHostAndMismatchDisables() throws {

@@ -147,20 +147,6 @@ final class KeysService: @unchecked Sendable {
         gatewayLock.withLock { gatewayListener != nil }
     }
 
-    func gatewayOwnerPid() -> pid_t? {
-        guard let raw = try? catalog.metaValue("gateway_owner_pid"),
-              let pid = pid_t(raw), pid > 0
-        else { return nil }
-        if !Self.pidIsAlive(pid) { return nil }
-        return pid
-    }
-
-    func thisProcessOwnsGateway() -> Bool {
-        let us = ProcessInfo.processInfo.processIdentifier
-        if isGatewayRunning() { return true }
-        return gatewayOwnerPid() == us
-    }
-
     func lookupGateway(name: String) -> GatewayTarget? {
         guard let cached = gatewayLock.withLock({ gatewayCache[name] }) else { return nil }
         guard let row = try? catalog.catalogRow(name: name) else {
@@ -368,15 +354,6 @@ final class KeysService: @unchecked Sendable {
             return running
         }
         let listener = try GatewayListener(service: self, port: port)
-        do {
-            try catalog.setMeta(
-                "gateway_owner_pid",
-                String(ProcessInfo.processInfo.processIdentifier)
-            )
-        } catch {
-            listener.stop()
-            throw error
-        }
         // Another thread may have started one meanwhile; keep the first and drop ours.
         let winner: GatewayListener = gatewayLock.withLock {
             if let existing = gatewayListener { return existing }
@@ -399,10 +376,6 @@ final class KeysService: @unchecked Sendable {
             return gatewayListener
         }
         listener?.stop()
-        let us = ProcessInfo.processInfo.processIdentifier
-        if let raw = try? catalog.metaValue("gateway_owner_pid"), pid_t(raw) == us {
-            try? catalog.clearMeta("gateway_owner_pid")
-        }
     }
 
     // MARK: gateway clients
@@ -790,10 +763,13 @@ final class KeysService: @unchecked Sendable {
         return reports
     }
 
+    /// Key mutations belong to the process serving the gateway, named by the control file
+    /// beside this service's catalog; a Terminal `keys rm` must not pull a key out from under it.
     func requireGatewayOwner() throws {
-        let us = ProcessInfo.processInfo.processIdentifier
-        if let owner = gatewayOwnerPid(), owner != us {
-            throw AppError.gatewayOwned(owner)
+        if let owner = ControlFile.live(at: ControlFile.url(beside: catalog.path)),
+           owner.pid != ProcessInfo.processInfo.processIdentifier
+        {
+            throw AppError.gatewayOwned(owner.pid)
         }
     }
 
@@ -813,12 +789,6 @@ final class KeysService: @unchecked Sendable {
             caller: "dashboard",
             detail: reason
         )
-    }
-
-    private static func pidIsAlive(_ pid: pid_t) -> Bool {
-        if pid <= 0 { return false }
-        if kill(pid, 0) == 0 { return true }
-        return errno != ESRCH
     }
 
     func env(

@@ -319,16 +319,21 @@ final class GrantTests: XCTestCase {
         XCTAssertEqual(service.listGrants().count, 0)
 
         // Control file: 0600, pid-checked, removed only by its owner.
-        setenv("KEYS_CONTROL", dir.appendingPathComponent("control.json").path, 1)
-        defer { unsetenv("KEYS_CONTROL") }
-        try ControlFile.write(port: 12765, token: handler.originToken)
-        let attrs = try FileManager.default.attributesOfItem(atPath: ControlFile.url.path)
+        let control = ControlFile.url(beside: service.catalog.path)
+        XCTAssertEqual(control, dir.appendingPathComponent("control.json"))
+        try ControlFile.write(port: 12765, token: handler.originToken, to: control)
+        let attrs = try FileManager.default.attributesOfItem(atPath: control.path)
         XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        XCTAssertEqual(ControlFile.live()?.token, handler.originToken)
-        try ControlFile.write(port: 1, token: "stale", pid: 2_147_483_000)
-        XCTAssertNil(ControlFile.live())
-        ControlFile.remove()
-        XCTAssertTrue(FileManager.default.fileExists(atPath: ControlFile.url.path), "another pid's file is left alone")
+        XCTAssertEqual(ControlFile.live(at: control)?.token, handler.originToken)
+        XCTAssertNoThrow(try service.rotate(name: "demo", secret: "rotated-synthetic"), "our own control file does not block us")
+        try ControlFile.write(port: 1, token: "stale", pid: 2_147_483_000, to: control)
+        XCTAssertNil(ControlFile.live(at: control))
+        ControlFile.remove(at: control)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: control.path), "another pid's file is left alone")
+        for pid in [0, -1] {
+            try ControlFile.write(port: 1, token: "group", pid: pid_t(pid), to: control)
+            XCTAssertNil(ControlFile.live(at: control), "pid \(pid) would signal a process group")
+        }
     }
 
     func testRedactScrubsSecretsBearerAndGrantTokens() {
@@ -371,12 +376,11 @@ final class ControlClientTests: XCTestCase {
         server.start()
         defer { server.stop() }
 
-        setenv("KEYS_CONTROL", dir.appendingPathComponent("control.json").path, 1)
-        defer { unsetenv("KEYS_CONTROL") }
-        XCTAssertThrowsError(try ControlClient.connect(), "no control file: clear error, no hang")
-        try ControlFile.write(port: server.boundPort, token: handler.originToken)
+        let control = ControlFile.url(beside: db.path)
+        XCTAssertThrowsError(try ControlClient.connect(control: control), "no control file: clear error, no hang")
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
 
-        let client = try ControlClient.connect()
+        let client = try ControlClient.connect(control: control)
         let (status, obj) = try client.call(
             method: "POST", path: "/api/keys/demo/grants",
             body: ["task": "cli", "minutes": 5, "methods": ["GET"], "paths": ["/models"], "caller": "cli"]
@@ -396,8 +400,8 @@ final class ControlClientTests: XCTestCase {
         XCTAssertEqual(service.listGrants().count, 0)
 
         // A stale token from an older launch maps to a clear error, not a hang or a crash.
-        try ControlFile.write(port: server.boundPort, token: "stale")
-        let stale = try ControlClient.connect()
+        try ControlFile.write(port: server.boundPort, token: "stale", to: control)
+        let stale = try ControlClient.connect(control: control)
         let (ss, sobj) = try stale.call(method: "POST", path: "/api/keys/demo/grants", body: ["task": "x"])
         XCTAssertEqual(ss, 403)
         if case .usage(let m) = ControlClient.raise(status: ss, body: sobj) {

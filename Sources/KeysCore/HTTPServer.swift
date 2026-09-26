@@ -132,16 +132,12 @@ final class APIHandler: @unchecked Sendable {
             switch (request.method, path) {
             case ("GET", "/api/analytics"):
                 return try analyticsStatus()
-            case ("POST", "/api/analytics"), ("POST", "/api/analytics/clear"), ("POST", "/api/analytics/event"):
+            case ("POST", "/api/analytics"), ("POST", "/api/analytics/event"):
                 return try analyticsRequest(request, path: path)
             case ("GET", "/api/spend"):
                 return try spend(request)
             case ("GET", "/api/status"):
                 return try liveStatus()
-            case ("GET", "/api/doctor"):
-                return try doctor()
-            case ("GET", "/api/providers"):
-                return providers()
             case ("POST", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/gateway"):
                 return try keysGateway(request, nameFrom: p)
             case ("GET", let p) where p.hasPrefix("/api/keys/") && p.hasSuffix("/clients"):
@@ -229,9 +225,6 @@ final class APIHandler: @unchecked Sendable {
                 return HTTPResponse.json(400, ["error": "invalid_analytics_consent"])
             }
             try analytics.setEnabled(enabled.boolValue, consentVersion: version.intValue)
-        case "/api/analytics/clear":
-            guard object.isEmpty else { return HTTPResponse.json(400, ["error": "invalid_analytics_request"]) }
-            try analytics.clear()
         case "/api/analytics/event":
             guard Set(object.keys) == ["event"], let value = object["event"] as? String,
                   ["view_usage", "view_chart", "view_keys"].contains(value),
@@ -258,10 +251,6 @@ final class APIHandler: @unchecked Sendable {
 
     private func liveStatus() throws -> HTTPResponse {
         HTTPResponse.json(200, try service.liveStatus().jsonObject())
-    }
-
-    private func doctor() throws -> HTTPResponse {
-        HTTPResponse.json(200, try Doctor.report(service: service).jsonObject())
     }
 
     private func spend(_ request: HTTPRequest) throws -> HTTPResponse {
@@ -292,23 +281,12 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, report.jsonObject())
     }
 
-    private func providers() -> HTTPResponse {
-        HTTPResponse.data(200, Providers.rawJSON(), type: "application/json")
-    }
-
     private func models() throws -> HTTPResponse {
         HTTPResponse.json(200, try service.modelsJSONObject())
     }
 
     private func keysList() throws -> HTTPResponse {
-        let rows = try service.listJSONObject()
-        let owner = service.gatewayOwnerPid()
-        return HTTPResponse.json(200, [
-            "keys": rows,
-            "gateway_resets_on_restart": true,
-            "gateway_owner_pid": owner.map { Int($0) } as Any? ?? NSNull(),
-            "gateway_owned": service.thisProcessOwnsGateway(),
-        ])
+        HTTPResponse.json(200, ["keys": try service.listJSONObject()])
     }
 
     private func keysGateway(_ request: HTTPRequest, nameFrom path: String) throws -> HTTPResponse {
@@ -421,10 +399,7 @@ final class APIHandler: @unchecked Sendable {
         if let key = request.query["key"], !key.isEmpty {
             grants = grants.filter { $0.key == key }
         }
-        return HTTPResponse.json(200, [
-            "grants": grants.map { $0.jsonObject() },
-            "gateway_owned": service.thisProcessOwnsGateway(),
-        ])
+        return HTTPResponse.json(200, ["grants": grants.map { $0.jsonObject() }])
     }
 
     private func grantRevoke(_ path: String) throws -> HTTPResponse {

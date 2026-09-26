@@ -270,10 +270,6 @@ final class CatalogDB: @unchecked Sendable {
             """, key, value)
     }
 
-    func clearMeta(_ key: String) throws {
-        try run("DELETE FROM meta WHERE key = ?;", key)
-    }
-
     private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version"
 
     func insertCatalog(_ row: CatalogRow) throws {

@@ -30,7 +30,7 @@ enum Providers {
         cache.value.byID[id]
     }
 
-    /// Bytes of `providers.json` as loaded. GET /api/providers returns this verbatim.
+    /// Bytes of `providers.json` as loaded; the dashboard fetches the same file from Web/.
     static func rawJSON() -> Data {
         cache.value.raw
     }

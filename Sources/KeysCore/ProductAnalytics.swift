@@ -214,20 +214,6 @@ final class ProductAnalytics: @unchecked Sendable {
         }
     }
 
-    func clear() throws {
-        operationLock.lock(); defer { operationLock.unlock() }
-        try update { state in
-            state.reports = []
-            state.sealed = []
-            state.readings = []
-            state.collectFrom = now().timeIntervalSince1970
-            state.retryAfter = 0
-        }
-        let previous = upload
-        upload = nil; uploading = nil
-        previous?.cancel()
-    }
-
     /// Closed enum only: arbitrary properties, strings and identifiers cannot
     /// enter a report. Analytics failures never fail the user's actual action.
     func record(_ event: ProductAnalyticsEvent, durationMS: Int? = nil) {

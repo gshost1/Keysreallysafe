@@ -13,38 +13,11 @@ struct DoctorReport: Equatable {
     var gatewayPort: UInt16
     var autostartPlist: Bool
     var autostartPlistPath: String
-    var loginItemBinaryMtime: String?
-    var debugBinaryMtime: String?
     var loginItemBinarySHA256: String?
     var debugBinarySHA256: String?
     var binaryNote: String
-    var gatewayOwnerPid: pid_t? = nil
-    var gatewayOwned: Bool = false
     var activeGrants: Int = 0
     var controlFile: String? = nil
-
-    func jsonObject() -> [String: Any] {
-        [
-            "sources": sources.map { $0.jsonObject() },
-            "catalog_path": catalogPath,
-            "catalog_size": catalogSize as Any? ?? NSNull(),
-            "keychain_service": keychainService,
-            "keychain_reachable": keychainReachable,
-            "gateway_listening": gatewayListening,
-            "gateway_port": Int(gatewayPort),
-            "autostart_plist": autostartPlist,
-            "autostart_plist_path": autostartPlistPath,
-            "login_item_binary_mtime": loginItemBinaryMtime as Any? ?? NSNull(),
-            "debug_binary_mtime": debugBinaryMtime as Any? ?? NSNull(),
-            "login_item_binary_sha256": loginItemBinarySHA256 as Any? ?? NSNull(),
-            "debug_binary_sha256": debugBinarySHA256 as Any? ?? NSNull(),
-            "binary": binaryNote,
-            "gateway_owner_pid": gatewayOwnerPid.map { Int($0) } as Any? ?? NSNull(),
-            "gateway_owned": gatewayOwned,
-            "active_grants": activeGrants,
-            "control_file": controlFile as Any? ?? NSNull(),
-        ]
-    }
 
     var printed: String {
         var lines: [String] = []
@@ -86,18 +59,6 @@ struct DoctorSource: Equatable {
     var newestEvent: String?
     var strip: String
     var emptyReason: String?
-
-    func jsonObject() -> [String: Any] {
-        [
-            "id": id,
-            "path": path,
-            "state": state,
-            "mtime": mtime as Any? ?? NSNull(),
-            "newest_event": newestEvent as Any? ?? NSNull(),
-            "strip": strip,
-            "empty_reason": emptyReason as Any? ?? NSNull(),
-        ]
-    }
 }
 
 enum Doctor {
@@ -182,10 +143,8 @@ enum Doctor {
         let catalogPath = service.catalog.path
         let catalogSize = fileSize(catalogPath)
         let plist = LoginItem.agentPlist
-        let loginMtime = isoMtime(LoginItem.installedBinary)
         let debugURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(".build/debug/keys")
-        let debugMtime = isoMtime(debugURL)
         // The installed copy is re-signed, so hash the sidecar autostart wrote from the source binary.
         let loginSHA = fileSHA256(LoginItem.installedBinary)
         let loginSourceSHA = (try? String(contentsOf: LoginItem.installedSourceHash, encoding: .utf8))?
@@ -206,15 +165,11 @@ enum Doctor {
             gatewayPort: GatewayListener.port,
             autostartPlist: FileManager.default.fileExists(atPath: plist.path),
             autostartPlistPath: plist.path,
-            loginItemBinaryMtime: loginMtime,
-            debugBinaryMtime: debugMtime,
             loginItemBinarySHA256: loginSHA,
             debugBinarySHA256: debugSHA,
             binaryNote: binaryNote,
-            gatewayOwnerPid: service.gatewayOwnerPid(),
-            gatewayOwned: service.thisProcessOwnsGateway(),
             activeGrants: service.listGrants().count,
-            controlFile: ControlFile.live().map { "127.0.0.1:\($0.port) pid \($0.pid)" }
+            controlFile: ControlFile.live(at: ControlFile.url(beside: service.catalog.path)).map { "127.0.0.1:\($0.port) pid \($0.pid)" }
         )
     }
 

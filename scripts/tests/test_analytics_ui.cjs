@@ -124,7 +124,6 @@ async function open(page) {
     await page.waitForFunction(() => document.getElementById("analytics-state").textContent.startsWith("Off."));
     assert.equal(status.enabled, false);
     assert.equal(status.pending_events, 0);
-    assert.equal(requests.some((item) => item.path === "/api/analytics/clear"), false);
 
     await page.locator("#dlg-privacy").evaluate((element) => element.close());
     status = { ...status, enabled: false, pending_events: 1,

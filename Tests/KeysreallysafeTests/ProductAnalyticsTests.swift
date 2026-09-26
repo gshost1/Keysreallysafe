@@ -128,18 +128,6 @@ final class ProductAnalyticsTests: XCTestCase {
         XCTAssertTrue(try reports(analytics).isEmpty)
     }
 
-    func testClearKeepsConsentButDiscardsDataAndChangesNextReportIdentity() throws {
-        let (_, _, _, analytics) = try harness()
-        try analytics.setEnabled(true, consentVersion: 2)
-        analytics.record(.keyAdd)
-        let firstID = try reports(analytics).first?["report_id"] as? String
-        try analytics.clear()
-        XCTAssertEqual(try analytics.status()["enabled"] as? Bool, true)
-        XCTAssertTrue(try reports(analytics).isEmpty)
-        analytics.record(.viewUsage)
-        XCTAssertNotEqual(try reports(analytics).first?["report_id"] as? String, firstID)
-    }
-
     func testRetentionAndDestinationChangeRequireFreshConsent() throws {
         let (db, clock, transport, analytics) = try harness()
         try analytics.setEnabled(true, consentVersion: 2)

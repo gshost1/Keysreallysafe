@@ -157,13 +157,6 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertTrue(report.printed.contains("catalog"))
         XCTAssertTrue(report.printed.contains("keychain"))
         XCTAssertFalse(report.printed.contains(fixtureSecret))
-        let (handler, _, _) = try makeHandler()
-        let response = handle(handler, method: "GET", path: "/api/doctor")
-        XCTAssertEqual(response.status, 200)
-        let obj = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
-        XCTAssertNotNil(obj["sources"])
-        XCTAssertNotNil(obj["catalog_path"])
-        XCTAssertNotNil(obj["gateway_listening"])
     }
 
     func testClaudeDedupKeepsLastLineOfTurn() throws {

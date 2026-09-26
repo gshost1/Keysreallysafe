@@ -346,7 +346,6 @@ final class GatewayTests: XCTestCase {
         ))
         XCTAssertEqual(listed.status, 200)
         let listObj = try JSONSerialization.jsonObject(with: listed.body) as! [String: Any]
-        XCTAssertEqual(listObj["gateway_resets_on_restart"] as? Bool, true)
         let keys = listObj["keys"] as! [[String: Any]]
         XCTAssertEqual(keys[0]["gateway_enabled"] as? Bool, true)
         XCTAssertEqual(keys[0]["gateway_url"] as? String, "http://127.0.0.1:12767/demo")
@@ -453,18 +452,6 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(http.statusCode, 413)
         XCTAssertTrue(String(data: data, encoding: .utf8)!.contains("payload too large"))
         XCTAssertEqual(hits.count, 0)
-    }
-
-    func testGetProvidersReturnsFixtureVerbatim() throws {
-        let (handler, _, _) = try makeAPIHandler()
-        let response = handler.handle(HTTPRequest(
-            method: "GET", path: "/api/providers", query: [:],
-            headers: ["host": "127.0.0.1:12765"], body: Data(), serverPort: 12765
-        ))
-        XCTAssertEqual(response.status, 200)
-        XCTAssertEqual(response.body, Providers.rawJSON())
-        let root = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
-        XCTAssertEqual((root["providers"] as? [Any])?.count, 55)
     }
 
     func testGatewayEnableRouteNeedsTokenAndTouchID() throws {

@@ -11,9 +11,15 @@ enum ControlFile {
         var token: String
     }
 
-    static var url: URL { Paths.env("KEYS_CONTROL") ?? Paths.appSupport.appendingPathComponent("control.json") }
+    /// Beside the catalog, so a service reads the owner of its own catalog. The default is
+    /// the installed catalog's sibling, which keeps the atexit cleanup capture-free.
+    static func url(beside catalog: URL = Paths.catalogDB) -> URL {
+        catalog.deletingLastPathComponent().appendingPathComponent("control.json")
+    }
 
-    static func write(port: UInt16, token: String, pid: pid_t = ProcessInfo.processInfo.processIdentifier) throws {
+    static func write(
+        port: UInt16, token: String, pid: pid_t = ProcessInfo.processInfo.processIdentifier, to url: URL = url()
+    ) throws {
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
@@ -23,24 +29,26 @@ enum ControlFile {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    static func remove(ifOwnedBy pid: pid_t = ProcessInfo.processInfo.processIdentifier) {
-        guard let info = try? read(), info.pid == pid else { return }
+    static func remove(ifOwnedBy pid: pid_t = ProcessInfo.processInfo.processIdentifier, at url: URL = url()) {
+        guard let info = try? read(at: url), info.pid == pid else { return }
         try? FileManager.default.removeItem(at: url)
     }
 
-    static func read() throws -> Info? {
+    static func read(at url: URL = url()) throws -> Info? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let data = try Data(contentsOf: url)
         guard let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
               let port = JSONValue.int(obj["port"]), let pid = JSONValue.int(obj["pid"]),
-              let token = JSONValue.string(obj["token"]), port > 0, port <= 65_535
+              let token = JSONValue.string(obj["token"]), port > 0, port <= 65_535,
+              // kill(0 or negative) signals a process group, so such a pid is never "alive".
+              pid > 0, pid <= Int(Int32.max)
         else { return nil }
         return Info(port: UInt16(port), pid: pid_t(pid), token: token)
     }
 
     /// A live owner, or nil when the file is missing or its process is gone.
-    static func live() -> Info? {
-        guard let info = try? read() else { return nil }
+    static func live(at url: URL = url()) -> Info? {
+        guard let info = try? read(at: url) else { return nil }
         if kill(info.pid, 0) != 0 && errno == ESRCH { return nil }
         return info
     }
@@ -50,8 +58,8 @@ enum ControlFile {
 struct ControlClient {
     var info: ControlFile.Info
 
-    static func connect() throws -> ControlClient {
-        guard let info = ControlFile.live() else {
+    static func connect(control: URL = ControlFile.url()) throws -> ControlClient {
+        guard let info = ControlFile.live(at: control) else {
             throw AppError.usage(
                 "no running Keysrs site owns the gateway; start one with keys autostart (login item) or keys dashboard, then retry"
             )
