@@ -313,7 +313,7 @@
           <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download for Mac</a>
           <a class="btn" href="https://github.com/gshost1/Keysreallysafe">View the source</a>
         </div>
-        <p class="sub-cta">macOS 14+ on Apple Silicon. Signed and notarized by Apple.</p>
+        <p class="sub-cta">macOS 14+ on Apple Silicon. Signed and notarized by Apple. Open the disk image and drag Keysrs to Applications.</p>
       </div>
       <div class="r">
         <ul class="checks">
@@ -338,7 +338,9 @@
       <details><summary>Is the dollar figure real?</summary><p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table, hidden until you choose USD. Anything unpriced reads as unknown, not $0.</p></details>
       <details><summary>Is it really free?</summary><p>Yes. Keysrs is MIT-licensed open source with no trial, license key or paid tier.</p></details>
       <details><summary>What Macs does it run on?</summary><p>macOS 14 Sonoma or newer on Apple Silicon. The download is Developer ID signed and notarized by Apple. No Intel build yet.</p></details>
-      <details><summary>How do I uninstall?</summary><p><code>keys autostart --remove</code> removes the login item and its snapshot; <code>keys purge</code> deletes the local catalog and every Keychain item the app created, after Touch ID. Nothing is left behind.</p></details>
+      <details><summary>How do I install it?</summary><p>Open the disk image, drag Keysrs to Applications and open it. It adds itself to your login items (Start at Login in the Keysrs menu turns that off) and puts the meter in the menu bar. Closing the window keeps the meter running; ⌘Q quits. Coming from 0.9? Open the new app once: it removes the old background agent and keeps your keys and history.</p></details>
+      <details><summary>How does it update?</summary><p>It never updates itself. Check for Updates in the Keysrs menu asks GitHub for the latest version number, and the automatic daily check is off until you turn it on. To update, download the new disk image and replace the app.</p></details>
+      <details><summary>How do I uninstall?</summary><p>Quit Keysrs and drag it to the Trash. To delete your data too, first run <code>keys purge</code>: it deletes the local catalog and every Keychain item the app created, after Touch ID. Nothing is left behind.</p></details>
     </div>
   </div>
 </section>
