@@ -6,42 +6,12 @@ enum ClipboardWipe {
 }
 
 protocol ClipboardClient: Sendable {
-    func copy(_ value: String)
     func copyAndHoldUntilWipe(_ value: String)
     func copyAndWipeInBackground(_ value: String)
 }
 
-final class FakeClipboard: ClipboardClient, @unchecked Sendable {
-    private let lock = NSLock()
-    private(set) var value: String?
-    private(set) var lastBackgroundWipe: TimeInterval?
-
-    func copy(_ value: String) {
-        lock.lock()
-        self.value = value
-        lock.unlock()
-    }
-
-    func copyAndHoldUntilWipe(_ value: String) {
-        copy(value)
-    }
-
-    func copyAndWipeInBackground(_ value: String) {
-        copy(value)
-        lock.lock()
-        lastBackgroundWipe = ClipboardWipe.seconds
-        lock.unlock()
-    }
-
-    func wipe() {
-        lock.lock()
-        value = nil
-        lock.unlock()
-    }
-}
-
 struct AppKitClipboard: ClipboardClient {
-    func copy(_ value: String) {
+    private func copy(_ value: String) {
         runOnMain {
             let pb = NSPasteboard.general
             pb.clearContents()
@@ -89,13 +59,6 @@ func runOnMain(_ body: () -> Void) {
     } else {
         DispatchQueue.main.sync(execute: body)
     }
-}
-
-func onMain<T>(_ body: () throws -> T) throws -> T {
-    if Thread.isMainThread {
-        return try body()
-    }
-    return try DispatchQueue.main.sync(execute: body)
 }
 
 func runOnMainActor(_ body: @MainActor () -> Void) {

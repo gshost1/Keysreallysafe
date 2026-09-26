@@ -54,6 +54,72 @@ func makeService(db: CatalogDB) -> (KeysService, MemorySecretStore, FakeClipboar
     return (service, secrets, clipboard)
 }
 
+final class MemorySecretStore: SecretStore, @unchecked Sendable {
+    private var items: [String: String] = [:]
+    private let lock = NSLock()
+
+    func add(name: String, secret: String) throws {
+        try KeyName.validate(name)
+        lock.lock()
+        defer { lock.unlock() }
+        if items[name] != nil { throw AppError.alreadyExists(name) }
+        items[name] = secret
+    }
+
+    func get(name: String) throws -> String {
+        try KeyName.validate(name)
+        lock.lock()
+        defer { lock.unlock() }
+        guard let value = items[name] else { throw AppError.notFound(name) }
+        return value
+    }
+
+    func delete(name: String) throws {
+        try KeyName.validate(name)
+        lock.lock()
+        defer { lock.unlock() }
+        items.removeValue(forKey: name)
+    }
+
+    func replace(name: String, secret: String) throws {
+        try KeyName.validate(name)
+        guard !secret.isEmpty else { throw AppError.usage("empty secret") }
+        lock.lock()
+        defer { lock.unlock() }
+        guard items[name] != nil else { throw AppError.notFound(name) }
+        items[name] = secret
+    }
+
+    func deleteAll() throws {
+        lock.lock()
+        items.removeAll()
+        lock.unlock()
+    }
+}
+
+final class FakeClipboard: ClipboardClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var value: String?
+    private(set) var lastBackgroundWipe: TimeInterval?
+
+    func copy(_ value: String) {
+        lock.lock()
+        self.value = value
+        lock.unlock()
+    }
+
+    func copyAndHoldUntilWipe(_ value: String) {
+        copy(value)
+    }
+
+    func copyAndWipeInBackground(_ value: String) {
+        copy(value)
+        lock.lock()
+        lastBackgroundWipe = ClipboardWipe.seconds
+        lock.unlock()
+    }
+}
+
 final class ThrowingSecretStore: SecretStore, @unchecked Sendable {
     var error: AppError
     init(_ error: AppError) { self.error = error }

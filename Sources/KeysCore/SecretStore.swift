@@ -12,49 +12,6 @@ protocol SecretStore: Sendable {
     func deleteAll() throws
 }
 
-final class MemorySecretStore: SecretStore, @unchecked Sendable {
-    private var items: [String: String] = [:]
-    private let lock = NSLock()
-
-    func add(name: String, secret: String) throws {
-        try KeyName.validate(name)
-        lock.lock()
-        defer { lock.unlock() }
-        if items[name] != nil { throw AppError.alreadyExists(name) }
-        items[name] = secret
-    }
-
-    func get(name: String) throws -> String {
-        try KeyName.validate(name)
-        lock.lock()
-        defer { lock.unlock() }
-        guard let value = items[name] else { throw AppError.notFound(name) }
-        return value
-    }
-
-    func delete(name: String) throws {
-        try KeyName.validate(name)
-        lock.lock()
-        defer { lock.unlock() }
-        items.removeValue(forKey: name)
-    }
-
-    func replace(name: String, secret: String) throws {
-        try KeyName.validate(name)
-        guard !secret.isEmpty else { throw AppError.usage("empty secret") }
-        lock.lock()
-        defer { lock.unlock() }
-        guard items[name] != nil else { throw AppError.notFound(name) }
-        items[name] = secret
-    }
-
-    func deleteAll() throws {
-        lock.lock()
-        items.removeAll()
-        lock.unlock()
-    }
-}
-
 /// File-based generic-password query. An ad-hoc CLI cannot use the
 /// data-protection keychain (`errSecMissingEntitlement` / -34018) and the
 /// file-based keychain does not honor `kSecAttrAccessControl` (add then
