@@ -198,8 +198,7 @@ final class ProductAnalyticsTests: XCTestCase {
 
     func testAPIEnforcesOriginCSRFExplicitBooleanAndClosedEventShapeWithoutPresence() throws {
         let (db, _, _, analytics) = try harness()
-        let presence = RecordingPresenceGate()
-        let service = KeysService(catalog: db, secrets: MemorySecretStore(), presence: presence, clipboard: FakeClipboard())
+        let (service, presence) = makeGatedService(db: db)
         service.analytics = analytics
         let handler = APIHandler(service: service, webRoot: db.path.deletingLastPathComponent())
         func request(_ path: String, _ body: [String: Any], csrf: Bool = true, origin: String? = nil) throws -> Int {
@@ -227,7 +226,7 @@ final class ProductAnalyticsTests: XCTestCase {
 
     func testAuditHooksOnlyExportFixedEventNamesAndPurgeRemovesConsent() throws {
         let (db, _, _, analytics) = try harness()
-        let service = KeysService(catalog: db, secrets: MemorySecretStore(), presence: RecordingPresenceGate(), clipboard: FakeClipboard())
+        let (service, _) = makeGatedService(db: db)
         service.analytics = analytics
         try analytics.setEnabled(true, consentVersion: 2)
         try service.add(name: "private-key-name", provider: "anthropic", kind: "runtime", notes: "private-notes", secret: "private-secret")

@@ -70,6 +70,17 @@ final class ApiKeyUsageTests: XCTestCase {
         XCTAssertEqual(local.totals.gatewayCalls, 1)
         XCTAssertEqual(local.totals.tokens, 150, "gateway tokens must not enter the local headline")
         XCTAssertTrue(local.rows.allSatisfy { $0.key == nil }, "an unkeyed local report charts local rows only")
+        XCTAssertEqual(local.rows.reduce(0) { $0 + $1.inputTokens + $1.outputTokens }, local.totals.tokens, "rows agree with the headline")
+        XCTAssertEqual(local.daily.reduce(0) { $0 + $1.tokens }, local.totals.tokens)
+
+        // A keyed report is the gateway's own ledger even from the local scope, and a proxy that
+        // repeats request ids must not collapse two calls into one.
+        try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "req_other"))
+        let keyed = try report(db, source: .all, key: "alpha")
+        XCTAssertEqual(keyed.totals.gatewayCalls, 3)
+        XCTAssertEqual(keyed.totals.gatewayCorrelatedCalls, 0)
+        XCTAssertEqual(keyed.totals.gatewayTokens, 450)
+        XCTAssertEqual(keyed.rows.first?.key, "alpha", "a keyed report is the gateway ledger and still charts")
     }
 
     /// Switching to the API keys source must not quietly add the gateway to the local ledger,
@@ -80,10 +91,49 @@ final class ApiKeyUsageTests: XCTestCase {
         _ = try db.insertUsage(try XCTUnwrap(ClaudeIngest.parseLine(claudeLine)))
         let before = try report(db, source: .all)
         try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "req_unrelated"))
+        // The same call seen with no request id cannot be proved a duplicate, so it never correlates.
+        try service.recordGatewayUsage(gatewayRow(key: "alpha"))
         let after = try report(db, source: .all)
         XCTAssertEqual(after.totals.tokens, before.totals.tokens)
         XCTAssertEqual(after.totals.usdEstimate ?? -1, before.totals.usdEstimate ?? -1, accuracy: 1e-12)
         XCTAssertEqual(after.rows.count, before.rows.count, "a gateway call adds no row to the local ledger")
+        XCTAssertEqual(after.totals.gatewayCalls, 2)
+        XCTAssertEqual(after.totals.gatewayCorrelatedCalls, 0)
+        XCTAssertEqual(after.totals.gatewayTokens, 300)
+        XCTAssertNotNil(after.totals.gatewayUsdEstimate)
+        XCTAssertEqual((after.jsonObject()["totals"] as? [String: Any])?["gateway_calls"] as? Int, 2)
+    }
+
+    /// A key's month is "none" before any call, "unknown" (null, never $0) when no call could be
+    /// priced, and "partial" once some can.
+    func testKeyMonthIsNoneThenUnknownThenPartial() throws {
+        let (db, _) = try makeDB()
+        let service = try service(db, keys: [("probe", "anthropic")])
+        let row = try XCTUnwrap(db.catalogRow(name: "probe"))
+        let idle = try service.keyJSONObject(row)
+        XCTAssertEqual(idle["usd_month_kind"] as? String, "none")
+        XCTAssertTrue(idle["usd_month"] is NSNull)
+        XCTAssertEqual(idle["gateway_month_calls"] as? Int, 0)
+
+        try service.recordGatewayUsage(gatewayRow(key: "probe", model: nil, requestId: "r1"))
+        let month = try XCTUnwrap(try service.monthGatewayByKey(now: now, timeZone: utc)["probe"])
+        XCTAssertNil(month.usd)
+        XCTAssertEqual(month.kind, "unknown")
+        XCTAssertEqual(month.unpricedCalls, 1)
+        let obj = service.keyJSONObject(row, month: month)
+        XCTAssertTrue(obj["usd_month"] is NSNull)
+        XCTAssertEqual(obj["usd_month_kind"] as? String, "unknown")
+        XCTAssertEqual(obj["gateway_month_unpriced_calls"] as? Int, 1)
+
+        try service.recordGatewayUsage(gatewayRow(key: "probe", requestId: "r2"))
+        let partial = try XCTUnwrap(try service.monthGatewayByKey(now: now, timeZone: utc)["probe"])
+        XCTAssertEqual(partial.kind, "partial")
+        XCTAssertNotNil(partial.usd)
+        XCTAssertEqual(partial.calls, 2)
+        let totals = try report(db, source: .all, key: "probe").totals
+        XCTAssertEqual(totals.gatewayUnpricedCalls, 1)
+        XCTAssertEqual(totals.gatewayUnpricedTokens, 150)
+        XCTAssertEqual(totals.gatewayUnpricedModels, ["unknown"])
     }
 
     func testKeyFilterNarrowsToOneKeyAndAllKeysIsTheirSum() throws {

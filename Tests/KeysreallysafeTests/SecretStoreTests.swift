@@ -42,14 +42,7 @@ final class SecretStoreTests: XCTestCase {
         let (db, _) = try makeDB()
         let secrets = MemorySecretStore()
         try secrets.add(name: "xai", secret: "already")
-        let service = KeysService(
-            catalog: db,
-            secrets: secrets,
-            presence: RecordingPresenceGate(),
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome
-        )
+        let (service, _) = makeGatedService(db: db, secrets: secrets)
         XCTAssertThrowsError(
             try service.add(name: "xai", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
         )
@@ -71,9 +64,8 @@ final class SecretStoreTests: XCTestCase {
 
     func testCopyAndRevealRequirePresenceAddDoesNot() throws {
         let (db, _) = try makeDB()
-        let gate = RecordingPresenceGate()
         let clipboard = FakeClipboard()
-        let service = KeysService(catalog: db, secrets: MemorySecretStore(), presence: gate, clipboard: clipboard)
+        let (service, gate) = makeGatedService(db: db, clipboard: clipboard)
         try service.add(name: "xai", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
         XCTAssertEqual(gate.reasons, [])
         try service.copy(name: "xai", holdUntilWipe: false)
@@ -84,9 +76,8 @@ final class SecretStoreTests: XCTestCase {
 
     func testFailedPresenceReadsNothing() throws {
         let (db, _) = try makeDB()
-        let gate = RecordingPresenceGate()
         let clipboard = FakeClipboard()
-        let service = KeysService(catalog: db, secrets: MemorySecretStore(), presence: gate, clipboard: clipboard)
+        let (service, gate) = makeGatedService(db: db, clipboard: clipboard)
         try service.add(name: "xai", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
         gate.error = .authFailed
         XCTAssertThrowsError(try service.copy(name: "xai", holdUntilWipe: false)) { error in

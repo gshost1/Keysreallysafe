@@ -5,48 +5,14 @@ import XCTest
 /// Loopback headers are not authentication. Every gateway call needs a client capability
 /// issued for that key; the dashboard's CSRF token is never accepted.
 final class GatewayClientTests: XCTestCase {
-    private final class Counter: @unchecked Sendable {
-        private let lock = NSLock()
-        private var n = 0
-        var count: Int { lock.lock(); defer { lock.unlock() }; return n }
-        func bump() { lock.lock(); n += 1; lock.unlock() }
-    }
-
-    private struct Rig {
-        let db: CatalogDB
-        let service: KeysService
-        let gate: RecordingPresenceGate
-        let stub: LoopbackHTTPServer
-        let hits: Counter
-        let gateway: GatewayListener
-        func url(_ rest: String, key: String = "demo") -> URL {
-            URL(string: "http://127.0.0.1:\(gateway.boundPort)/\(key)/\(rest)")!
-        }
-    }
-
-    private func makeRig() throws -> Rig {
-        let hits = Counter()
-        let stub = try LoopbackHTTPServer(port: 0) { _ in
-            hits.bump()
+    private func makeRig() throws -> (GatewayRig, RequestLog) {
+        let hits = RequestLog()
+        let rig = try GatewayRig { request in
+            hits.record(request)
             return HTTPResponse.json(200, ["ok": true])
         }
-        stub.start()
-        let (db, _) = try makeDB()
-        let gate = RecordingPresenceGate()
-        let service = KeysService(
-            catalog: db,
-            secrets: MemorySecretStore(),
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
-        )
-        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        return Rig(db: db, service: service, gate: gate, stub: stub, hits: hits, gateway: gateway)
+        try rig.key()
+        return (rig, hits)
     }
 
     private func send(_ url: URL, method: String = "POST", headers: [String: String] = [:]) async throws -> Int {
@@ -60,8 +26,8 @@ final class GatewayClientTests: XCTestCase {
     }
 
     func testIssueRequiresPresenceAndStoresOnlyAHash() throws {
-        let rig = try makeRig()
-        defer { rig.gateway.stop(); rig.stub.stop() }
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
         rig.gate.error = .authFailed
         XCTAssertThrowsError(try rig.service.issueGatewayClient(name: "demo", label: "cli"))
         rig.gate.error = nil
@@ -85,8 +51,8 @@ final class GatewayClientTests: XCTestCase {
     }
 
     func testNativeCallerWithoutClientIs401AndNeverReachesUpstream() async throws {
-        let rig = try makeRig()
-        defer { rig.gateway.stop(); rig.stub.stop() }
+        let (rig, hits) = try makeRig()
+        defer { rig.stop() }
         // Valid Host, no browser headers: exactly what a local process can send.
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions")), 401)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer sk-anything"]), 401)
@@ -95,27 +61,27 @@ final class GatewayClientTests: XCTestCase {
         let handler = APIHandler(service: rig.service, webRoot: web)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["X-KSF-Token": handler.originToken]), 401)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + handler.originToken]), 401)
-        XCTAssertEqual(rig.hits.count, 0)
+        XCTAssertEqual(hits.count, 0)
         let denied = try rig.service.keyEvents(name: "demo").filter { $0.action == "gateway_denied" }
         XCTAssertEqual(denied.count, 4)
         XCTAssertEqual(denied.first?.detail, "no_client_token")
     }
 
     func testClientTokenIsAcceptedWhereTheSDKPutsTheProviderKey() async throws {
-        let rig = try makeRig()
-        defer { rig.gateway.stop(); rig.stub.stop() }
+        let (rig, hits) = try makeRig()
+        defer { rig.stop() }
         let issued = try rig.service.issueGatewayClient(name: "demo", label: "sdk")
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + issued.token]), 200)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["x-api-key": issued.token]), 200)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["X-KSF-Client": issued.token]), 200)
-        XCTAssertEqual(rig.hits.count, 3)
+        XCTAssertEqual(hits.count, 3)
         let after = try XCTUnwrap(rig.service.gatewayClients(name: "demo").first)
         XCTAssertNotNil(after.lastUsedAt)
     }
 
     func testScopeExpiryRevocationAndKeyBinding() async throws {
-        let rig = try makeRig()
-        defer { rig.gateway.stop(); rig.stub.stop() }
+        let (rig, hits) = try makeRig()
+        defer { rig.stop() }
         try rig.service.add(name: "other", provider: "openai", kind: "runtime", notes: "", secret: "other-secret")
         _ = try rig.service.setGateway(name: "other", enabled: true, host: "127.0.0.1:\(rig.stub.boundPort)")
 
@@ -128,7 +94,7 @@ final class GatewayClientTests: XCTestCase {
         await AsyncAssert.equal(try await send(rig.url("v1/models"), headers: auth), 401)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), method: "GET", headers: auth), 401)
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions", key: "other"), headers: auth), 401, "a client is bound to one key")
-        XCTAssertEqual(rig.hits.count, 1)
+        XCTAssertEqual(hits.count, 1)
 
         let expired = try rig.service.issueGatewayClient(name: "demo", label: "old", days: 1, now: Date().addingTimeInterval(-3 * 86_400))
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + expired.token]), 401)
@@ -140,7 +106,7 @@ final class GatewayClientTests: XCTestCase {
         await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + revoked.token]), 401)
         XCTAssertThrowsError(try rig.service.revokeGatewayClient(name: "demo", id: revoked.client.id), "revoking twice is not found")
         XCTAssertThrowsError(try rig.service.revokeGatewayClient(name: "other", id: scoped.client.id), "cannot revoke through another key")
-        XCTAssertEqual(rig.hits.count, 2)
+        XCTAssertEqual(hits.count, 2)
 
         let reasons = try rig.service.keyEvents(name: "demo").filter { $0.action == "gateway_denied" }.compactMap(\.detail)
         XCTAssertTrue(reasons.contains("out_of_scope"))
@@ -162,8 +128,8 @@ final class GatewayClientTests: XCTestCase {
     }
 
     func testUnknownKeyNamesDoNotGrowTheAuditLogAndUseIsStampedOnlyOnForward() async throws {
-        let rig = try makeRig()
-        defer { rig.gateway.stop(); rig.stub.stop() }
+        let (rig, hits) = try makeRig()
+        defer { rig.stop() }
         for i in 0..<5 {
             await AsyncAssert.equal(try await send(rig.url("v1/x", key: "junk\(i)")), 401)
         }
@@ -174,12 +140,12 @@ final class GatewayClientTests: XCTestCase {
         let issued = try rig.service.issueGatewayClient(name: "off", label: "t")
         await AsyncAssert.equal(try await send(rig.url("v1/x", key: "off"), headers: ["Authorization": "Bearer " + issued.token]), 404)
         XCTAssertNil(try rig.service.gatewayClients(name: "off").first?.lastUsedAt)
-        XCTAssertEqual(rig.hits.count, 0)
+        XCTAssertEqual(hits.count, 0)
     }
 
     func testDeletingTheKeyDeletesItsClients() throws {
-        let rig = try makeRig()
-        defer { rig.gateway.stop(); rig.stub.stop() }
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
         let issued = try rig.service.issueGatewayClient(name: "demo", label: "x")
         try rig.service.remove(name: "demo")
         XCTAssertNil(try rig.db.gatewayClient(tokenHash: GatewayClientToken.hash(issued.token)))
@@ -188,8 +154,8 @@ final class GatewayClientTests: XCTestCase {
     }
 
     func testDashboardRoutesNeedTheCSRFTokenAndNeverEchoTokensInLists() throws {
-        let rig = try makeRig()
-        defer { rig.gateway.stop(); rig.stub.stop() }
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
         let web = try TempDir.make()
         let handler = APIHandler(service: rig.service, webRoot: web)
         func call(_ method: String, _ path: String, token: Bool, body: [String: Any] = [:]) -> HTTPResponse {

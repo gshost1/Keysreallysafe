@@ -43,16 +43,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
     func testRemoveAndRotateRequirePresenceAndBumpVersion() throws {
         let (db, _) = try makeDB()
         let inner = MemorySecretStore()
-        let gate = RecordingPresenceGate()
-        let service = KeysService(
-            catalog: db,
-            secrets: inner,
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
-        )
+        let (service, gate) = makeGatedService(db: db, secrets: inner)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         XCTAssertEqual(gate.reasons, [])
         let rotated = try service.rotate(name: "demo", secret: "new-secret-value", caller: "rotate")
@@ -113,16 +104,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
                 rawKind: "monthly"
             )
         )
-        let service = KeysService(
-            catalog: db,
-            secrets: MemorySecretStore(),
-            presence: RecordingPresenceGate(),
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome,
-            openRouter: fake
-        )
+        let (service, _) = makeGatedService(db: db, openRouter: fake)
         try service.add(name: "or-bill", provider: "openrouter", kind: "billing", notes: "", secret: fixtureSecret)
         try service.pollOpenRouter()
         XCTAssertEqual(fake.calls, [])
@@ -251,16 +233,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
     func testPurgeRequiresLiteralWordAndPresence() throws {
         let (db, _) = try makeDB()
         let inner = MemorySecretStore()
-        let gate = RecordingPresenceGate()
-        let service = KeysService(
-            catalog: db,
-            secrets: inner,
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
-        )
+        let (service, gate) = makeGatedService(db: db, secrets: inner)
         try service.add(name: "demo", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
         try db.upsertProviderCheck(ProviderCheck.Result(
             key: "demo", provider: "xai", host: "api.x.ai", checkedAt: "2026-09-25T00:00:00Z",
@@ -302,40 +275,5 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertEqual(events.count, 2)
         XCTAssertEqual(events.map(\.inputTokens), [10, 20])
         XCTAssertEqual(events.map(\.outputTokens).reduce(0, +), 12)
-    }
-
-    private func makeHandler() throws -> (APIHandler, KeysService, URL) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        let web = dir.appendingPathComponent("Web", isDirectory: true)
-        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
-        try "<html><head></head><title>Keysreallysafe</title></html>".write(
-            to: web.appendingPathComponent("index.html"),
-            atomically: true,
-            encoding: .utf8
-        )
-        return (APIHandler(service: service, webRoot: web), service, dir)
-    }
-
-    private func handle(
-        _ handler: APIHandler,
-        method: String,
-        path: String,
-        query: [String: String] = [:],
-        body: Data = Data(),
-        token: Bool = true
-    ) -> HTTPResponse {
-        var headers = ["host": "127.0.0.1:12765"]
-        if token, method != "GET", method != "HEAD" {
-            headers["x-ksf-token"] = handler.originToken
-        }
-        return handler.handle(HTTPRequest(
-            method: method,
-            path: path,
-            query: query,
-            headers: headers,
-            body: body,
-            serverPort: 12765
-        ))
     }
 }

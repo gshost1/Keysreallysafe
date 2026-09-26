@@ -6,23 +6,8 @@ import XCTest
 final class GrantTests: XCTestCase {
     private func gatedService() throws -> (KeysService, RecordingPresenceGate, CatalogDB) {
         let (db, _) = try makeDB()
-        let gate = RecordingPresenceGate()
-        let service = KeysService(
-            catalog: db,
-            secrets: MemorySecretStore(),
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
-        )
+        let (service, gate) = makeGatedService(db: db)
         return (service, gate, db)
-    }
-
-    private func stub(_ handler: @escaping @Sendable (HTTPRequest) -> HTTPResponse) throws -> LoopbackHTTPServer {
-        let s = try LoopbackHTTPServer(port: 0, handler: handler)
-        s.start()
-        return s
     }
 
     private func call(
@@ -139,13 +124,13 @@ final class GrantTests: XCTestCase {
     }
 
     func testOneApprovalServesManyReadsAndUnrelatedCallsStayBlocked() async throws {
-        let hits = HitBox()
-        let stub = try stub { request in
+        let hits = RequestLog()
+        let rig = try GatewayRig { request in
             hits.record(request)
             return HTTPResponse.json(200, ["data": [["id": "gpt-4.1"]]])
         }
-        defer { stub.stop() }
-        let (service, gate, db) = try gatedService()
+        defer { rig.stop() }
+        let (service, gate, stub, gateway) = (rig.service, rig.gate, rig.stub, rig.gateway)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-real")
         _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:\(stub.boundPort)", updateHost: true)
         XCTAssertEqual(gate.reasons, [])
@@ -160,22 +145,18 @@ final class GrantTests: XCTestCase {
         XCTAssertEqual(gate.reasons[0], "Grant \"list models\" the key demo for OpenAI at 127.0.0.1:\(stub.boundPort), 15 min")
         XCTAssertTrue(service.isGatewayEnabled("demo"))
 
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
-
         for header in ["Authorization", "x-api-key", "x-goog-api-key", "api-key"] {
             let (status, _) = try await call(gateway, "/demo/v1/models", token: issued.token, header: header)
             XCTAssertEqual(status, 200, header)
         }
         XCTAssertEqual(gate.reasons.count, 1, "no further prompts inside the approved scope")
         XCTAssertEqual(hits.count, 4)
-        XCTAssertEqual(hits.lastAuth, "Bearer sk-real")
+        XCTAssertEqual(hits.last?.headers["authorization"], "Bearer sk-real")
 
         // Gemini style: ?key=<grant> is accepted and stripped before forwarding.
         let (qStatus, _) = try await call(gateway, "/demo/v1/models", token: nil, query: "?key=\(issued.token)&pageSize=5")
         XCTAssertEqual(qStatus, 200)
-        XCTAssertEqual(hits.lastQuery, ["pageSize": "5"])
+        XCTAssertEqual(hits.last?.query, ["pageSize": "5"])
 
         // Outside the scope: no upstream call.
         let before = hits.count
@@ -203,18 +184,14 @@ final class GrantTests: XCTestCase {
         XCTAssertEqual(listed.count, 1)
         XCTAssertGreaterThanOrEqual(listed[0].requests, 5)
         XCTAssertNil(listed[0].jsonObject()["token"])
-        _ = db
     }
 
     func testRevokeGatewayOffScreenLockAndRestartFailClosed() async throws {
-        let stub = try stub { _ in HTTPResponse.json(200, ["ok": true]) }
-        defer { stub.stop() }
-        let (service, gate, _) = try gatedService()
+        let rig = try GatewayRig { _ in HTTPResponse.json(200, ["ok": true]) }
+        defer { rig.stop() }
+        let (service, gate, gateway) = (rig.service, rig.gate, rig.gateway)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-real")
-        _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:\(stub.boundPort)", updateHost: true)
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
+        _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:\(rig.stub.boundPort)", updateHost: true)
 
         let a = try service.issueGrant(name: "demo", request: GrantRequest(task: "a"), caller: "cli")
         let okA = try await call(gateway, "/demo/v1/models", token: a.token).0
@@ -261,20 +238,14 @@ final class GrantTests: XCTestCase {
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         let handler = APIHandler(service: service, webRoot: web)
-        let host = ["host": "127.0.0.1:12765"]
-        let authed = ["host": "127.0.0.1:12765", "x-ksf-token": handler.originToken]
 
-        let denied = handler.handle(HTTPRequest(
-            method: "POST", path: "/api/keys/demo/grants", query: [:], headers: host,
-            body: try JSONValue.data(["task": "t"]), serverPort: 12765
-        ))
+        let denied = handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data(["task": "t"]), token: false)
         XCTAssertEqual(denied.status, 403)
 
-        let created = handler.handle(HTTPRequest(
-            method: "POST", path: "/api/keys/demo/grants", query: [:], headers: authed,
-            body: try JSONValue.data(["task": "t", "minutes": 5, "methods": ["GET"], "paths": ["/models"], "max_requests": 3]),
-            serverPort: 12765
-        ))
+        let created = handle(
+            handler, method: "POST", path: "/api/keys/demo/grants",
+            body: try JSONValue.data(["task": "t", "minutes": 5, "methods": ["GET"], "paths": ["/models"], "max_requests": 3])
+        )
         XCTAssertEqual(created.status, 201, String(data: created.body, encoding: .utf8)!)
         let obj = try JSONSerialization.jsonObject(with: created.body) as! [String: Any]
         let token = obj["token"] as! String
@@ -283,41 +254,35 @@ final class GrantTests: XCTestCase {
         XCTAssertEqual(obj["host"] as? String, "api.openai.com")
         XCTAssertEqual(obj["max_requests"] as? Int, 3)
 
-        let list = handler.handle(HTTPRequest(method: "GET", path: "/api/grants", query: [:], headers: host, body: Data(), serverPort: 12765))
+        let list = handle(handler, method: "GET", path: "/api/grants")
         let listObj = try JSONSerialization.jsonObject(with: list.body) as! [String: Any]
         let grants = listObj["grants"] as! [[String: Any]]
         XCTAssertEqual(grants.count, 1)
         XCTAssertFalse(String(data: list.body, encoding: .utf8)!.contains(token), "list never carries tokens")
 
-        let keys = handler.handle(HTTPRequest(method: "GET", path: "/api/keys", query: [:], headers: host, body: Data(), serverPort: 12765))
+        let keys = handle(handler, method: "GET", path: "/api/keys")
         let keysObj = try JSONSerialization.jsonObject(with: keys.body) as! [String: Any]
         let row = (keysObj["keys"] as! [[String: Any]])[0]
         XCTAssertEqual(row["active_grants"] as? Int, 1)
         XCTAssertEqual(row["host"] as? String, "api.openai.com")
         XCTAssertEqual(row["checkable"] as? Bool, true)
 
-        let bad = handler.handle(HTTPRequest(
-            method: "POST", path: "/api/keys/demo/grants", query: [:], headers: authed,
-            body: try JSONValue.data(["task": "t", "minutes": 0]), serverPort: 12765
-        ))
+        let bad = handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data(["task": "t", "minutes": 0]))
         XCTAssertEqual(bad.status, 400)
 
         let id = obj["id"] as! String
-        let revoked = handler.handle(HTTPRequest(method: "DELETE", path: "/api/grants/\(id)", query: [:], headers: authed, body: Data(), serverPort: 12765))
+        let revoked = handle(handler, method: "DELETE", path: "/api/grants/\(id)")
         XCTAssertEqual(revoked.status, 200)
         XCTAssertEqual(service.listGrants().count, 0)
-        let twice = handler.handle(HTTPRequest(method: "DELETE", path: "/api/grants/\(id)", query: [:], headers: authed, body: Data(), serverPort: 12765))
+        let twice = handle(handler, method: "DELETE", path: "/api/grants/\(id)")
         XCTAssertEqual(twice.status, 200, "revoke is idempotent")
-        let gone = handler.handle(HTTPRequest(method: "DELETE", path: "/api/grants/deadbeef", query: [:], headers: authed, body: Data(), serverPort: 12765))
+        let gone = handle(handler, method: "DELETE", path: "/api/grants/deadbeef")
         XCTAssertEqual(gone.status, 404)
-        _ = handler.handle(HTTPRequest(
-            method: "POST", path: "/api/keys/demo/grants", query: [:], headers: authed,
-            body: try JSONValue.data(["task": "again"]), serverPort: 12765
-        ))
-        let all = handler.handle(HTTPRequest(method: "DELETE", path: "/api/grants", query: ["key": "demo"], headers: authed, body: Data(), serverPort: 12765))
+        _ = handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data(["task": "again"]))
+        let all = handle(handler, method: "DELETE", path: "/api/grants", query: ["key": "demo"])
         XCTAssertEqual(all.status, 200)
         XCTAssertEqual(service.listGrants().count, 0)
-        let missing = handler.handle(HTTPRequest(method: "DELETE", path: "/api/grants/0badc0de", query: [:], headers: authed, body: Data(), serverPort: 12765))
+        let missing = handle(handler, method: "DELETE", path: "/api/grants/0badc0de")
         XCTAssertEqual(missing.status, 404)
         let missingObj = try JSONSerialization.jsonObject(with: missing.body) as! [String: Any]
         XCTAssertEqual(missingObj["error"] as? String, "not_found", "the code the dashboard matches on is unchanged")
@@ -350,21 +315,6 @@ final class GrantTests: XCTestCase {
         XCTAssertFalse(s.contains("ksf_0a1b2c3d_QUJD"))
         XCTAssertFalse(s.contains("zzz-1234"))
         XCTAssertTrue(s.contains("[redacted]"))
-    }
-}
-
-private final class HitBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var n = 0
-    private(set) var lastAuth: String?
-    private(set) var lastQuery: [String: String] = [:]
-    var count: Int { lock.lock(); defer { lock.unlock() }; return n }
-    func record(_ r: HTTPRequest) {
-        lock.lock()
-        n += 1
-        lastAuth = r.headers["authorization"]
-        lastQuery = r.query
-        lock.unlock()
     }
 }
 

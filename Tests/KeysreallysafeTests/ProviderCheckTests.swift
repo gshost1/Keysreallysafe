@@ -19,16 +19,7 @@ final class ProviderCheckTests: XCTestCase {
 
     private func service(with fetcher: FakeFetcher) throws -> (KeysService, RecordingPresenceGate, CatalogDB) {
         let (db, _) = try makeDB()
-        let gate = RecordingPresenceGate()
-        let service = KeysService(
-            catalog: db,
-            secrets: MemorySecretStore(),
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
-        )
+        let (service, gate) = makeGatedService(db: db)
         service.checker = fetcher
         return (service, gate, db)
     }
@@ -174,16 +165,10 @@ final class ProviderCheckTests: XCTestCase {
             (AppError.authUnavailable("sandbox"), 503, "auth_unavailable"),
             (AppError.authFailed, 403, "auth_failed"),
         ] {
-            let service = KeysService(
-                catalog: db, secrets: MemorySecretStore(), presence: RecordingPresenceGate(error: error), clipboard: FakeClipboard(),
-                grokHome: Fixtures.grokHome, claudeHome: Fixtures.claudeHome, codexHome: Fixtures.codexHome
-            )
+            let (service, _) = makeGatedService(db: db, gate: RecordingPresenceGate(error: error))
             try? db.insertCatalog(CatalogRow(name: "demo", provider: "openai", kind: "runtime", notes: "", createdAt: "2026-01-01T00:00:00Z", lastUsedAt: nil))
             let handler = APIHandler(service: service, webRoot: web)
-            let r = handler.handle(HTTPRequest(
-                method: "POST", path: "/api/keys/demo/reveal", query: [:],
-                headers: ["host": "127.0.0.1:12765", "x-ksf-token": handler.originToken], body: Data(), serverPort: 12765
-            ))
+            let r = handle(handler, method: "POST", path: "/api/keys/demo/reveal")
             XCTAssertEqual(r.status, status, code)
             let obj = try JSONSerialization.jsonObject(with: r.body) as! [String: Any]
             XCTAssertEqual(obj["error"] as? String, code)
@@ -198,21 +183,19 @@ final class ProviderCheckTests: XCTestCase {
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-secret-value")
         let web = try TempDir.make()
         let handler = APIHandler(service: service, webRoot: web)
-        let host = ["host": "127.0.0.1:12765"]
-        let authed = ["host": "127.0.0.1:12765", "x-ksf-token": handler.originToken]
 
-        let none = handler.handle(HTTPRequest(method: "GET", path: "/api/keys/demo/check", query: [:], headers: host, body: Data(), serverPort: 12765))
+        let none = handle(handler, method: "GET", path: "/api/keys/demo/check")
         XCTAssertEqual(none.status, 404)
-        let run = handler.handle(HTTPRequest(method: "POST", path: "/api/keys/demo/check", query: [:], headers: authed, body: Data(), serverPort: 12765))
+        let run = handle(handler, method: "POST", path: "/api/keys/demo/check")
         XCTAssertEqual(run.status, 200)
         let obj = try JSONSerialization.jsonObject(with: run.body) as! [String: Any]
         XCTAssertEqual(obj["outcome"] as? String, "ok")
         XCTAssertEqual(obj["models"] as? [String], ["gpt-4.1"])
         XCTAssertFalse(String(data: run.body, encoding: .utf8)!.contains("sk-secret-value"))
-        let again = handler.handle(HTTPRequest(method: "GET", path: "/api/keys/demo/check", query: [:], headers: host, body: Data(), serverPort: 12765))
+        let again = handle(handler, method: "GET", path: "/api/keys/demo/check")
         XCTAssertEqual(again.status, 200)
         XCTAssertEqual(fetcher.requests.count, 1)
-        let keys = handler.handle(HTTPRequest(method: "GET", path: "/api/keys", query: [:], headers: host, body: Data(), serverPort: 12765))
+        let keys = handle(handler, method: "GET", path: "/api/keys")
         let row = ((try JSONSerialization.jsonObject(with: keys.body) as! [String: Any])["keys"] as! [[String: Any]])[0]
         XCTAssertEqual((row["last_check"] as? [String: Any])?["model_count"] as? Int, 1)
     }

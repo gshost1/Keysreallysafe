@@ -97,31 +97,20 @@ final class GatewayEvaluationTests: XCTestCase {
     }
 
     func testFailedEvaluationDoesNotRecordReportedCost() async throws {
-        let stub = try LoopbackHTTPServer(port: 0) { _ in
+        let rig = try GatewayRig { _ in
             HTTPResponse.json(503, ["error": "unavailable", "providerMetadata": ["gateway": ["cost": "1.25"]]])
         }
-        stub.start()
-        defer { stub.stop() }
-        let (db, _) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        try service.add(name: "evaluation", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic")
-        _ = try service.setGateway(name: "evaluation", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
-        let token = try grantFor(service, "evaluation")
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/evaluation/v4/ai/evaluation-model")!)
+        defer { rig.stop() }
+        try rig.key("evaluation", provider: "vercel-ai-gateway", secret: "synthetic")
+        let token = try grantFor(rig.service, "evaluation")
+        var request = URLRequest(url: rig.url("v4/ai/evaluation-model", key: "evaluation"))
         request.httpMethod = "POST"
         request.httpBody = Data("{}".utf8)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("typesafe-ai/jev", forHTTPHeaderField: "ai-model-id")
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 503)
-        var rows: [UsageEvent] = []
-        for _ in 0..<200 where rows.isEmpty {
-            rows = try db.gatewayEvents()
-            if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
-        }
+        let rows = try await rig.usageRows()
         let row = try XCTUnwrap(rows.first)
         XCTAssertEqual(row.httpStatus, 503)
         XCTAssertNil(row.costUsdTicks)
@@ -130,13 +119,13 @@ final class GatewayEvaluationTests: XCTestCase {
 
     func testEvaluationRoundTripRemainsScopedAndStoresOnlyUsage() async throws {
         let sentinel = "PRIVATE-EVAL-CONTEXT-bc7683"
-        let capture = EvaluationCapture()
+        let capture = RequestLog()
         let responseBody = Data("""
             {"answers":{"keep":{"type":"boolean","probability":0.8}},
             "usage":{"inputTokens":1234,"outputTokens":0},"private":"\(sentinel)",
             "providerMetadata":{"gateway":{"cost":"0.000051828"}}}
             """.utf8)
-        let stub = try LoopbackHTTPServer(port: 0) { request in
+        let rig = try GatewayRig { request in
             capture.record(request)
             return HTTPResponse(
                 status: 200,
@@ -144,23 +133,16 @@ final class GatewayEvaluationTests: XCTestCase {
                 body: responseBody
             )
         }
-        stub.start()
-        defer { stub.stop() }
-
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        try service.add(name: "evaluation", provider: "vercel-ai-gateway", kind: "runtime", notes: "", secret: "synthetic-upstream-key")
-        _ = try service.setGateway(name: "evaluation", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+        defer { rig.stop() }
+        let (db, service) = (rig.db, rig.service)
+        try rig.key("evaluation", provider: "vercel-ai-gateway", secret: "synthetic-upstream-key")
         let token = try service.issueGrant(
             name: "evaluation",
             request: GrantRequest(task: "compact context", methods: ["POST"], paths: ["/v4/ai/evaluation-model"], maxRequests: 1)
         ).token
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
 
         func request(_ path: String, method: String = "POST", credential: String? = nil) -> URLRequest {
-            var r = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/evaluation/\(path)")!)
+            var r = URLRequest(url: rig.url(path, key: "evaluation"))
             r.httpMethod = method
             r.setValue("Bearer \(credential ?? token)", forHTTPHeaderField: "Authorization")
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -206,11 +188,7 @@ final class GatewayEvaluationTests: XCTestCase {
         XCTAssertEqual((exhausted as? HTTPURLResponse)?.statusCode, 429)
         XCTAssertEqual(capture.count, 1)
 
-        var rows: [UsageEvent] = []
-        for _ in 0..<200 where rows.isEmpty {
-            rows = try db.gatewayEvents()
-            if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
-        }
+        let rows = try await rig.usageRows()
         let row = try XCTUnwrap(rows.first)
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(row.provider, "vercel-ai-gateway")
@@ -237,13 +215,7 @@ final class GatewayEvaluationTests: XCTestCase {
         XCTAssertNil(report.daily.first?.usd, "gateway cost must not also enter the local reported-cost ledger")
         XCTAssertEqual(try XCTUnwrap(report.daily.first?.usdEstimate), 0.000051828, accuracy: 1e-12)
 
-        let needle = Data(sentinel.utf8)
-        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
-        while let url = files?.nextObject() as? URL {
-            if let contents = try? Data(contentsOf: url) {
-                XCTAssertNil(contents.range(of: needle), "evaluation content persisted in \(url.path)")
-            }
-        }
+        assertNoSentinel(sentinel, in: rig.dir)
     }
 }
 
@@ -251,25 +223,19 @@ final class GatewayEvaluationTests: XCTestCase {
 // forwards only the granted route and stores usage, never the request context.
 extension GatewayEvaluationTests {
     func testDirectGatewayRoundTripKeepsGrantScopedAndStoresOnlyUsage() async throws {
-        let capture = EvaluationCapture()
+        let capture = RequestLog()
         let sentinel = "synthetic-private-context-4e8a"
-        let stub = try LoopbackHTTPServer(port: 0) { request in
+        let rig = try GatewayRig { request in
             capture.record(request)
             return HTTPResponse.json(200, ["model": "jev-1.13.0", "answers": ["keep": ["type": "noul", "noul": 0.9]],
                 "usage": ["input_tokens": 55, "output_tokens": 0], "private": sentinel])
         }
-        stub.start()
-        defer { stub.stop() }
-        let (db, directory) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        try service.add(name: "direct", provider: "typesafe", kind: "runtime", notes: "", secret: "synthetic-upstream-secret")
-        _ = try service.setGateway(name: "direct", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+        defer { rig.stop() }
+        let service = rig.service
+        try rig.key("direct", provider: "typesafe", secret: "synthetic-upstream-secret")
         let grant = try service.issueGrant(name: "direct", request: GrantRequest(task: "fixture", methods: ["POST"], paths: ["/v1/systemone"], maxRequests: 1))
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
         func request(_ path: String, method: String = "POST") -> URLRequest {
-            var value = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/direct\(path)")!)
+            var value = URLRequest(url: rig.url(String(path.dropFirst()), key: "direct"))
             value.httpMethod = method
             value.setValue("Bearer \(grant.token)", forHTTPHeaderField: "Authorization")
             if method == "POST" { value.httpBody = try? JSONValue.data(["model": "jev-latest", "state": sentinel, "questions": [:]]) }
@@ -288,21 +254,14 @@ extension GatewayEvaluationTests {
         XCTAssertFalse(upstream.headers.values.contains { $0.contains(grant.token) })
         let (_, exhausted) = try await URLSession.shared.data(for: request("/v1/systemone"))
         XCTAssertEqual((exhausted as? HTTPURLResponse)?.statusCode, 429)
-        var rows: [UsageEvent] = []
-        for _ in 0..<200 where rows.isEmpty {
-            rows = try db.gatewayEvents()
-            if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
-        }
+        let rows = try await rig.usageRows()
         let row = try XCTUnwrap(rows.first)
         XCTAssertEqual(row.model, "jev-1.13.0")
         XCTAssertEqual(row.inputTokens, 55)
         XCTAssertEqual(row.outputTokens, 0)
         XCTAssertNil(SpendQueries.gatewayUsd(row))
         XCTAssertEqual(try service.monthGatewayByKey()["direct"]?.kind, "unknown")
-        let files = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)
-        while let url = files?.nextObject() as? URL {
-            if let bytes = try? Data(contentsOf: url) { XCTAssertNil(bytes.range(of: Data(sentinel.utf8))) }
-        }
+        assertNoSentinel(sentinel, in: rig.dir)
     }
 
     func testDirectUsageUsesSnakeCaseAndNeverAssumesVercelCost() throws {
@@ -321,28 +280,5 @@ extension GatewayEvaluationTests {
             XCTAssertNil(invalid.outputTokens)
             XCTAssertEqual(invalid.model, "jev-latest")
         }
-    }
-}
-
-private final class EvaluationCapture: @unchecked Sendable {
-    private let lock = NSLock()
-    private var requests: [HTTPRequest] = []
-
-    var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return requests.count
-    }
-
-    var last: HTTPRequest? {
-        lock.lock()
-        defer { lock.unlock() }
-        return requests.last
-    }
-
-    func record(_ request: HTTPRequest) {
-        lock.lock()
-        requests.append(request)
-        lock.unlock()
     }
 }

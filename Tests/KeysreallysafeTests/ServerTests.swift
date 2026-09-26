@@ -478,43 +478,6 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(c["slot"] as? Int, 2)
     }
 
-    private func makeHandler() throws -> (APIHandler, KeysService, URL) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        let web = dir.appendingPathComponent("Web", isDirectory: true)
-        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
-        try "<html><head></head><title>Keysreallysafe</title></html>".write(
-            to: web.appendingPathComponent("index.html"),
-            atomically: true,
-            encoding: .utf8
-        )
-        return (APIHandler(service: service, webRoot: web), service, dir)
-    }
-
-    private func handle(
-        _ handler: APIHandler,
-        method: String,
-        path: String,
-        query: [String: String] = [:],
-        headers: [String: String] = [:],
-        body: Data = Data(),
-        token: Bool = true
-    ) -> HTTPResponse {
-        var headers = headers
-        headers["host"] = headers["host"] ?? "127.0.0.1:12765"
-        if token, method != "GET", method != "HEAD" {
-            headers["x-ksf-token"] = headers["x-ksf-token"] ?? handler.originToken
-        }
-        return handler.handle(HTTPRequest(
-            method: method,
-            path: path,
-            query: query,
-            headers: headers,
-            body: body,
-            serverPort: 12765
-        ))
-    }
-
     private func localDate(
         _ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int,
         timeZone: TimeZone

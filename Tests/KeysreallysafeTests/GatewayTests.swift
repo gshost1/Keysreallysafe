@@ -145,17 +145,7 @@ final class GatewayTests: XCTestCase {
 
     func testEnableRequiresPresenceAndRejectsNoGatewayProvider() throws {
         let (db, _) = try makeDB()
-        let inner = MemorySecretStore()
-        let gate = RecordingPresenceGate()
-        let service = KeysService(
-            catalog: db,
-            secrets: inner,
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
-        )
+        let (service, gate) = makeGatedService(db: db)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         XCTAssertEqual(gate.reasons, [])
         _ = try service.setGateway(name: "demo", enabled: true, host: nil)
@@ -198,19 +188,13 @@ final class GatewayTests: XCTestCase {
     }
 
     func testUnknownKeyIs401WithoutClientAndDoesNotCallUpstream() async throws {
-        let hits = HitCounter()
-        let stub = try LoopbackHTTPServer(port: 0) { _ in
-            hits.bump()
+        let hits = RequestLog()
+        let rig = try GatewayRig { request in
+            hits.record(request)
             return HTTPResponse.json(200, ["ok": true])
         }
-        stub.start()
-        defer { stub.stop() }
-
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
+        defer { rig.stop() }
+        let (service, gateway) = (rig.service, rig.gateway)
 
         // Authentication comes before key lookup, so an unauthenticated caller cannot learn
         // which names have the gateway on.
@@ -234,7 +218,6 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual((third as? HTTPURLResponse)?.statusCode, 404)
         XCTAssertTrue(String(data: body, encoding: .utf8)!.contains("not_found"))
         XCTAssertEqual(hits.count, 0)
-        _ = dir
     }
 
     /// A caller's own copy of a non-Authorization auth header must not replace the vault secret.
@@ -259,31 +242,15 @@ final class GatewayTests: XCTestCase {
     }
 
     func testRoundTripStripsClientAuthInjectsSecretAndOmitsSentinelFromCatalog() async throws {
-        let captured = HeaderBox()
+        let captured = RequestLog()
         let stubBody = try Data(contentsOf: Fixtures.root.appendingPathComponent("gateway/openai-chat.json"))
-        let stub = try LoopbackHTTPServer(port: 0) { request in
-            captured.headers = request.headers
-            captured.body = request.body
-            captured.path = request.path
+        let rig = try GatewayRig { request in
+            captured.record(request)
             return HTTPResponse.data(200, stubBody, type: "application/json")
         }
-        stub.start()
-        defer { stub.stop() }
-
-        let (db, dir) = try makeDB()
-        let inner = MemorySecretStore()
-        let gate = RecordingPresenceGate()
-        let service = KeysService(
-            catalog: db,
-            secrets: inner,
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
-        )
-        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-test-secret")
-        _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+        defer { rig.stop() }
+        let (dir, service, gate, stub) = (rig.dir, rig.service, rig.gate, rig.stub)
+        try rig.key(secret: "sk-test-secret")
         XCTAssertEqual(gate.reasons, ["Unlock demo"])
         // Gateway already on: the grant costs one more prompt, naming task, provider and host.
         let token = try grantFor(service, "demo", task: "unit round trip")
@@ -292,11 +259,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertTrue(gate.reasons[1].contains("OpenAI"), gate.reasons[1])
         XCTAssertTrue(gate.reasons[1].contains("127.0.0.1:\(stub.boundPort)"), gate.reasons[1])
 
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
-
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/chat/completions")!)
+        var req = URLRequest(url: rig.url("v1/chat/completions"))
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(token, forHTTPHeaderField: "X-KSF-Grant")
@@ -309,22 +272,18 @@ final class GatewayTests: XCTestCase {
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 200)
         XCTAssertEqual(data, stubBody)
-        XCTAssertEqual(captured.headers["authorization"], "Bearer sk-test-secret")
-        XCTAssertNil(captured.headers["x-ksf-client"])
-        XCTAssertNil(captured.headers["x-ksf-grant"])
-        XCTAssertFalse(captured.headers.values.contains { $0.contains(token) }, "the grant token never reaches upstream")
-        XCTAssertNotEqual(captured.headers["x-api-key"], "leaked-api-key")
-        XCTAssertNil(captured.headers["x-api-key"])
-        XCTAssertNil(captured.headers["x-goog-api-key"])
-        XCTAssertNil(captured.headers["api-key"])
-        XCTAssertEqual(captured.path, "/v1/chat/completions")
+        let upstream = try XCTUnwrap(captured.last)
+        XCTAssertEqual(upstream.headers["authorization"], "Bearer sk-test-secret")
+        XCTAssertNil(upstream.headers["x-ksf-client"])
+        XCTAssertNil(upstream.headers["x-ksf-grant"])
+        XCTAssertFalse(upstream.headers.values.contains { $0.contains(token) }, "the grant token never reaches upstream")
+        XCTAssertNotEqual(upstream.headers["x-api-key"], "leaked-api-key")
+        XCTAssertNil(upstream.headers["x-api-key"])
+        XCTAssertNil(upstream.headers["x-goog-api-key"])
+        XCTAssertNil(upstream.headers["api-key"])
+        XCTAssertEqual(upstream.path, "/v1/chat/completions")
 
-        // The gateway finishes the client response before it records usage; wait for the row.
-        var usage: [UsageEvent] = []
-        for _ in 0..<200 where usage.isEmpty {
-            usage = try db.gatewayEvents()
-            if usage.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
-        }
+        let usage = try await rig.usageRows()
         XCTAssertEqual(usage.count, 1)
         let row = try XCTUnwrap(usage.first)
         XCTAssertEqual(row.keyName, "demo")
@@ -335,15 +294,12 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(row.cachedReadTokens, 3)
         XCTAssertEqual(row.httpStatus, 200)
 
-        try assertNoSentinel(in: dir, catalog: db.path)
+        assertNoSentinel(pelican, in: dir)
 
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         let handler = APIHandler(service: service, webRoot: web)
-        let listed = handler.handle(HTTPRequest(
-            method: "GET", path: "/api/keys", query: [:],
-            headers: ["host": "127.0.0.1:12765"], body: Data(), serverPort: 12765
-        ))
+        let listed = handle(handler, method: "GET", path: "/api/keys")
         XCTAssertEqual(listed.status, 200)
         let listObj = try JSONSerialization.jsonObject(with: listed.body) as! [String: Any]
         let keys = listObj["keys"] as! [[String: Any]]
@@ -353,10 +309,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertFalse(String(data: listed.body, encoding: .utf8)!.contains("sk-test-secret"))
         XCTAssertFalse(String(data: listed.body, encoding: .utf8)!.contains(pelican))
 
-        let spend = handler.handle(HTTPRequest(
-            method: "GET", path: "/api/spend", query: ["key": "demo", "range": "month"],
-            headers: ["host": "127.0.0.1:12765"], body: Data(), serverPort: 12765
-        ))
+        let spend = handle(handler, method: "GET", path: "/api/spend", query: ["key": "demo", "range": "month"])
         XCTAssertEqual(spend.status, 200)
         let spendObj = try JSONSerialization.jsonObject(with: spend.body) as! [String: Any]
         let rows = spendObj["rows"] as! [[String: Any]]
@@ -388,15 +341,15 @@ final class GatewayTests: XCTestCase {
     }
 
     func testDoesNotFollowRedirects() async throws {
-        let secondHits = HitCounter()
-        let second = try LoopbackHTTPServer(port: 0) { _ in
-            secondHits.bump()
+        let secondHits = RequestLog()
+        let second = try LoopbackHTTPServer(port: 0) { request in
+            secondHits.record(request)
             return HTTPResponse.json(200, ["should": "not"])
         }
         second.start()
         defer { second.stop() }
 
-        let stub = try LoopbackHTTPServer(port: 0) { _ in
+        let rig = try GatewayRig { _ in
             HTTPResponse(
                 status: 302,
                 headers: [
@@ -406,19 +359,11 @@ final class GatewayTests: XCTestCase {
                 body: Data("moved".utf8)
             )
         }
-        stub.start()
-        defer { stub.stop() }
+        defer { rig.stop() }
+        try rig.key()
+        let token = try grantFor(rig.service, "demo")
 
-        let (db, _) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
-        let token = try grantFor(service, "demo")
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
-
-        var redirected = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/models")!)
+        var redirected = URLRequest(url: rig.url("v1/models"))
         redirected.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await noRedirectSession.data(for: redirected)
         let http = try XCTUnwrap(response as? HTTPURLResponse)
@@ -428,22 +373,15 @@ final class GatewayTests: XCTestCase {
     }
 
     func testBodyOver8MBIs413() async throws {
-        let hits = HitCounter()
-        let stub = try LoopbackHTTPServer(port: 0) { _ in
-            hits.bump()
+        let hits = RequestLog()
+        let rig = try GatewayRig { request in
+            hits.record(request)
             return HTTPResponse.json(200, ["ok": true])
         }
-        stub.start()
-        defer { stub.stop() }
-        let (db, _) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
+        defer { rig.stop() }
+        try rig.key()
 
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(gateway.boundPort)/demo/v1/chat/completions")!)
+        var req = URLRequest(url: rig.url("v1/chat/completions"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = Data(repeating: UInt8(ascii: "x"), count: GatewayListener.bodyCap + 1)
@@ -455,79 +393,19 @@ final class GatewayTests: XCTestCase {
     }
 
     func testGatewayEnableRouteNeedsTokenAndTouchID() throws {
-        let (handler, service, _) = try makeAPIHandler()
+        let (handler, service, _) = try makeHandler()
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        let without = handler.handle(HTTPRequest(
-            method: "POST",
-            path: "/api/keys/demo/gateway",
-            query: [:],
-            headers: ["host": "127.0.0.1:12765"],
-            body: try JSONValue.data(["enabled": true]),
-            serverPort: 12765
-        ))
+        let without = handle(
+            handler, method: "POST", path: "/api/keys/demo/gateway", body: try JSONValue.data(["enabled": true]), token: false
+        )
         XCTAssertEqual(without.status, 403)
 
-        let with = handler.handle(HTTPRequest(
-            method: "POST",
-            path: "/api/keys/demo/gateway",
-            query: [:],
-            headers: ["host": "127.0.0.1:12765", "x-ksf-token": handler.originToken],
-            body: try JSONValue.data(["enabled": true]),
-            serverPort: 12765
-        ))
+        let with = handle(handler, method: "POST", path: "/api/keys/demo/gateway", body: try JSONValue.data(["enabled": true]))
         XCTAssertEqual(with.status, 200)
         let obj = try JSONSerialization.jsonObject(with: with.body) as! [String: Any]
         XCTAssertEqual(obj["gateway_enabled"] as? Bool, true)
         XCTAssertEqual(obj["gateway_url"] as? String, "http://127.0.0.1:12767/demo")
     }
-
-    private func makeAPIHandler() throws -> (APIHandler, KeysService, URL) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        let web = dir.appendingPathComponent("Web", isDirectory: true)
-        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
-        try "<html></html>".write(to: web.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
-        return (APIHandler(service: service, webRoot: web), service, dir)
-    }
-
-    private func assertNoSentinel(in dir: URL, catalog: URL) throws {
-        let needle = Data(pelican.utf8)
-        var urls = [catalog]
-        urls.append(URL(fileURLWithPath: catalog.path + "-wal"))
-        urls.append(URL(fileURLWithPath: catalog.path + "-shm"))
-        if let enumerator = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) {
-            while let url = enumerator.nextObject() as? URL {
-                urls.append(url)
-            }
-        }
-        for url in urls {
-            guard FileManager.default.fileExists(atPath: url.path),
-                  let data = try? Data(contentsOf: url)
-            else { continue }
-            XCTAssertNil(data.range(of: needle), "sentinel found in \(url.path)")
-        }
-    }
-}
-
-private final class HitCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var n = 0
-    var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return n
-    }
-    func bump() {
-        lock.lock()
-        n += 1
-        lock.unlock()
-    }
-}
-
-private final class HeaderBox: @unchecked Sendable {
-    var headers: [String: String] = [:]
-    var body: Data = Data()
-    var path: String = ""
 }
 
 private let noRedirectSession: URLSession = {

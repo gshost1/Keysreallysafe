@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 @testable import KeysCore
 
 enum Fixtures {
@@ -50,16 +51,135 @@ func makeDB() throws -> (CatalogDB, URL) {
 func makeService(db: CatalogDB) -> (KeysService, MemorySecretStore, FakeClipboard) {
     let secrets = MemorySecretStore()
     let clipboard = FakeClipboard()
+    let (service, _) = makeGatedService(db: db, secrets: secrets, clipboard: clipboard)
+    return (service, secrets, clipboard)
+}
+
+/// A service over the fixture homes whose presence gate records every prompt it would show.
+func makeGatedService(
+    db: CatalogDB,
+    secrets: any SecretStore = MemorySecretStore(),
+    gate: RecordingPresenceGate = RecordingPresenceGate(),
+    clipboard: any ClipboardClient = FakeClipboard(),
+    runner: any CommandRunner = FoundationCommandRunner(),
+    openRouter: any OpenRouterFetching = OpenRouterHTTP()
+) -> (KeysService, RecordingPresenceGate) {
     let service = KeysService(
         catalog: db,
         secrets: secrets,
-        presence: RecordingPresenceGate(),
+        presence: gate,
         clipboard: clipboard,
         grokHome: Fixtures.grokHome,
         claudeHome: Fixtures.claudeHome,
-        codexHome: Fixtures.codexHome
+        codexHome: Fixtures.codexHome,
+        runner: runner,
+        openRouter: openRouter
     )
-    return (service, secrets, clipboard)
+    return (service, gate)
+}
+
+/// A dashboard handler over a fresh catalog, serving a stub Web/index.html.
+func makeHandler() throws -> (APIHandler, KeysService, URL) {
+    let (db, dir) = try makeDB()
+    let (service, _, _) = makeService(db: db)
+    let web = dir.appendingPathComponent("Web", isDirectory: true)
+    try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+    try "<html><head></head><title>Keysreallysafe</title></html>".write(
+        to: web.appendingPathComponent("index.html"),
+        atomically: true,
+        encoding: .utf8
+    )
+    return (APIHandler(service: service, webRoot: web), service, dir)
+}
+
+/// One dashboard request from the loopback origin. Mutations carry the CSRF token unless
+/// `token` is false; caller headers win over both defaults.
+func handle(
+    _ handler: APIHandler,
+    method: String,
+    path: String,
+    query: [String: String] = [:],
+    headers: [String: String] = [:],
+    body: Data = Data(),
+    token: Bool = true
+) -> HTTPResponse {
+    var headers = headers
+    headers["host"] = headers["host"] ?? "127.0.0.1:12765"
+    if token, method != "GET", method != "HEAD" {
+        headers["x-ksf-token"] = headers["x-ksf-token"] ?? handler.originToken
+    }
+    return handler.handle(HTTPRequest(
+        method: method,
+        path: path,
+        query: query,
+        headers: headers,
+        body: body,
+        serverPort: 12765
+    ))
+}
+
+/// Requests a stub upstream received, in arrival order.
+final class RequestLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests: [HTTPRequest] = []
+    var count: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
+    var last: HTTPRequest? { lock.lock(); defer { lock.unlock() }; return requests.last }
+    func record(_ request: HTTPRequest) { lock.lock(); requests.append(request); lock.unlock() }
+}
+
+/// A stub upstream, a service with a recording presence gate and a gateway listener in front,
+/// all started. The rig adds no key: `key(_:)` adds one and points its gateway at the stub.
+final class GatewayRig {
+    let db: CatalogDB
+    let dir: URL
+    let service: KeysService
+    let gate: RecordingPresenceGate
+    let stub: LoopbackHTTPServer
+    let gateway: GatewayListener
+
+    init(upstream: @escaping @Sendable (HTTPRequest) -> HTTPResponse) throws {
+        (db, dir) = try makeDB()
+        (service, gate) = makeGatedService(db: db)
+        stub = try LoopbackHTTPServer(port: 0, handler: upstream)
+        gateway = try GatewayListener(service: service, port: 0)
+        stub.start()
+        gateway.start()
+    }
+
+    func stop() {
+        gateway.stop()
+        stub.stop()
+    }
+
+    func key(_ name: String = "demo", provider: String = "openai", secret: String = fixtureSecret) throws {
+        try service.add(name: name, provider: provider, kind: "runtime", notes: "", secret: secret)
+        _ = try service.setGateway(name: name, enabled: true, host: "127.0.0.1:\(stub.boundPort)")
+    }
+
+    func url(_ rest: String, key: String = "demo") -> URL {
+        URL(string: "http://127.0.0.1:\(gateway.boundPort)/\(key)/\(rest)")!
+    }
+
+    /// The gateway answers the client before it records usage, so wait (boundedly) for the rows.
+    func usageRows() async throws -> [UsageEvent] {
+        var rows: [UsageEvent] = []
+        for _ in 0..<200 where rows.isEmpty {
+            rows = try db.gatewayEvents()
+            if rows.isEmpty { try await Task.sleep(nanoseconds: 25_000_000) }
+        }
+        return rows
+    }
+}
+
+/// Fails if any file under `dir` (the catalog and its WAL included) holds `needle`.
+func assertNoSentinel(_ needle: String, in dir: URL, file: StaticString = #filePath, line: UInt = #line) {
+    let bytes = Data(needle.utf8)
+    let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+    while let url = files?.nextObject() as? URL {
+        if let data = try? Data(contentsOf: url) {
+            XCTAssertNil(data.range(of: bytes), "sentinel found in \(url.path)", file: file, line: line)
+        }
+    }
 }
 
 final class MemorySecretStore: SecretStore, @unchecked Sendable {

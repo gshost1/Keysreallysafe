@@ -5,20 +5,14 @@ import XCTest
 /// Gateway request hardening, owner pid, framing limits, cursor replay, gateway estimates.
 final class GatewayHardeningAndCursorTests: XCTestCase {
     func testGatewayRejectsBadHostOriginAndCrossSiteBeforeLookup() async throws {
-        let hits = HitCounter()
-        let stub = try LoopbackHTTPServer(port: 0) { _ in
-            hits.bump()
+        let hits = RequestLog()
+        let rig = try GatewayRig { request in
+            hits.record(request)
             return HTTPResponse.json(200, ["ok": true])
         }
-        stub.start()
-        defer { stub.stop() }
-        let (db, _) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
+        defer { rig.stop() }
+        try rig.key()
+        let gateway = rig.gateway
 
         let evilHost = try sendRaw(
             port: gateway.boundPort,
@@ -42,50 +36,23 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
 
     func testDashboardRequiresLoopbackHostWithPort() throws {
         let (handler, _, _) = try makeHandler()
-        let bad = handler.handle(HTTPRequest(
-            method: "GET",
-            path: "/api/keys",
-            query: [:],
-            headers: ["host": "evil.example:12765"],
-            body: Data(),
-            serverPort: 12765
-        ))
+        let bad = handle(handler, method: "GET", path: "/api/keys", headers: ["host": "evil.example:12765"])
         XCTAssertEqual(bad.status, 403)
-        let noPort = handler.handle(HTTPRequest(
-            method: "GET",
-            path: "/api/keys",
-            query: [:],
-            headers: ["host": "127.0.0.1"],
-            body: Data(),
-            serverPort: 12765
-        ))
+        let noPort = handle(handler, method: "GET", path: "/api/keys", headers: ["host": "127.0.0.1"])
         XCTAssertEqual(noPort.status, 403)
-        let ok = handler.handle(HTTPRequest(
-            method: "GET",
-            path: "/api/keys",
-            query: [:],
-            headers: ["host": "127.0.0.1:12765"],
-            body: Data(),
-            serverPort: 12765
-        ))
+        let ok = handle(handler, method: "GET", path: "/api/keys")
         XCTAssertEqual(ok.status, 200)
     }
 
     func testContentLengthNegativeDuplicateShortAndChunked() async throws {
-        let captured = HeaderBox()
-        let stub = try LoopbackHTTPServer(port: 0) { request in
-            captured.body = request.body
+        let captured = RequestLog()
+        let rig = try GatewayRig { request in
+            captured.record(request)
             return HTTPResponse.json(200, ["ok": true])
         }
-        stub.start()
-        defer { stub.stop() }
-        let (db, _) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(stub.boundPort)")
-        let gateway = try GatewayListener(service: service, port: 0)
-        gateway.start()
-        defer { gateway.stop() }
+        defer { rig.stop() }
+        try rig.key()
+        let (service, gateway) = (rig.service, rig.gateway)
 
         let negative = try sendRaw(
             port: gateway.boundPort,
@@ -117,7 +84,7 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
             request: "POST /demo/v1/x HTTP/1.1\r\nHost: 127.0.0.1:\(gateway.boundPort)\r\nAuthorization: Bearer \(token)\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
         )
         XCTAssertEqual(chunked.status, 200)
-        XCTAssertEqual(String(data: captured.body, encoding: .utf8), "hello")
+        XCTAssertEqual(String(data: try XCTUnwrap(captured.last).body, encoding: .utf8), "hello")
 
         // A chunk size near Int.max after a non-empty chunk used to overflow the size check and
         // trap, taking down the whole app before auth.
@@ -211,9 +178,9 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
     }
 
     func testOpenRouterPollDeniesRedirects() async throws {
-        let secondHits = HitCounter()
-        let second = try LoopbackHTTPServer(port: 0) { _ in
-            secondHits.bump()
+        let secondHits = RequestLog()
+        let second = try LoopbackHTTPServer(port: 0) { request in
+            secondHits.record(request)
             return HTTPResponse.json(200, ["data": ["limit": 1]])
         }
         second.start()
@@ -389,37 +356,6 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         try Data("beta".utf8).write(to: b)
         XCTAssertNotEqual(Doctor.fileSHA256(a), Doctor.fileSHA256(b))
     }
-
-    private func makeHandler() throws -> (APIHandler, KeysService, URL) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
-        let web = dir.appendingPathComponent("Web", isDirectory: true)
-        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
-        try "<html></html>".write(to: web.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
-        return (APIHandler(service: service, webRoot: web), service, dir)
-    }
-
-    private func handle(
-        _ handler: APIHandler,
-        method: String,
-        path: String,
-        query: [String: String] = [:],
-        body: Data = Data(),
-        token: Bool = true
-    ) -> HTTPResponse {
-        var headers = ["host": "127.0.0.1:12765"]
-        if token, method != "GET", method != "HEAD" {
-            headers["x-ksf-token"] = handler.originToken
-        }
-        return handler.handle(HTTPRequest(
-            method: method,
-            path: path,
-            query: query,
-            headers: headers,
-            body: body,
-            serverPort: 12765
-        ))
-    }
 }
 
 private func sendRaw(port: UInt16, request: String) throws -> (status: Int, body: Data) {
@@ -471,23 +407,4 @@ private func sendRaw(port: UInt16, request: String) throws -> (status: Int, body
         body = Data(data[range.upperBound...])
     }
     return (status, body)
-}
-
-private final class HitCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var n = 0
-    var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return n
-    }
-    func bump() {
-        lock.lock()
-        n += 1
-        lock.unlock()
-    }
-}
-
-private final class HeaderBox: @unchecked Sendable {
-    var body = Data()
 }

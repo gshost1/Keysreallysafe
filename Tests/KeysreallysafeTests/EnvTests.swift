@@ -78,17 +78,8 @@ final class EnvTests: XCTestCase {
 
     func testUnknownKeyDoesNotPromptPresence() throws {
         let (db, _) = try makeDB()
-        let gate = RecordingPresenceGate()
         let runner = FakeCommandRunner()
-        let service = KeysService(
-            catalog: db,
-            secrets: MemorySecretStore(),
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            runner: runner
-        )
+        let (service, gate) = makeGatedService(db: db, runner: runner)
         XCTAssertThrowsError(try service.env(name: "nosuch", variable: "OPENAI_API_KEY", command: ["true"])) { error in
             guard let app = error as? AppError, case .notFound = app else {
                 return XCTFail("expected notFound, got \(error)")
@@ -120,17 +111,9 @@ final class EnvTests: XCTestCase {
             createdAt: "2026-01-01T00:00:00Z",
             lastUsedAt: nil
         ))
-        let gate = RecordingPresenceGate()
-        gate.error = .authFailed
         let runner = FakeCommandRunner()
-        let service = KeysService(
-            catalog: db,
-            secrets: inner,
-            presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            runner: runner
+        let (service, _) = makeGatedService(
+            db: db, secrets: inner, gate: RecordingPresenceGate(error: .authFailed), runner: runner
         )
         XCTAssertThrowsError(try service.env(name: "xai", variable: "FOO", command: ["true"])) { error in
             guard let app = error as? AppError, case .authFailed = app else {
@@ -173,15 +156,7 @@ final class EnvTests: XCTestCase {
         let secrets = MemorySecretStore()
         let clipboard = FakeClipboard()
         let runner = FakeCommandRunner()
-        let service = KeysService(
-            catalog: db,
-            secrets: secrets,
-            presence: RecordingPresenceGate(),
-            clipboard: clipboard,
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            runner: runner
-        )
+        let (service, _) = makeGatedService(db: db, secrets: secrets, clipboard: clipboard, runner: runner)
         return (service, runner, clipboard)
     }
 }
