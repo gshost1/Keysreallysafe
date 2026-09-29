@@ -77,10 +77,7 @@ enum GatewayUsageParser {
     /// sends it in `ai-model-id`, not in its state/questions body; other APIs must not trust
     /// that header.
     static func requestedModel(api: String, requestBody: Data, requestModel: String?) -> String? {
-        if api == "vercel-evaluation" {
-            let model = requestModel?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return model?.isEmpty == false ? model : nil
-        }
+        if api == "vercel-evaluation" { return boundedModelId(requestModel) }
         return modelFromRequest(requestBody)
     }
 
@@ -98,7 +95,29 @@ enum GatewayUsageParser {
         guard let obj = (try? JSONSerialization.jsonObject(with: body)).flatMap(JSONValue.object) else {
             return nil
         }
-        return JSONValue.string(obj["model"])
+        return boundedModelId(JSONValue.string(obj["model"]))
+    }
+
+    /// A request-supplied model is the caller's own text, stored in the usage catalog and
+    /// shown on the dashboard, so it is held to what a model id looks like: at most 128
+    /// printable ASCII characters from the set real ids use (as `Gateway.requestId` caps the
+    /// upstream id). Anything else is recorded as no model rather than truncated, so a
+    /// shortened string can't pass for a real id or pick up its price.
+    static let maxModelIdLength = 128
+
+    static func boundedModelId(_ raw: String?) -> String? {
+        guard let model = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !model.isEmpty, model.utf8.count <= maxModelIdLength,
+              model.unicodeScalars.allSatisfy(isModelIdScalar)
+        else { return nil }
+        return model
+    }
+
+    private static func isModelIdScalar(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar {
+        case "a"..."z", "A"..."Z", "0"..."9", ".", "-", "_", ":", "/", "@", "+": return true
+        default: return false
+        }
     }
 
     private static func vercelEvaluation(from obj: [String: Any]) -> GatewayParsedUsage {
