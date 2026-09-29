@@ -87,6 +87,42 @@ final class ProviderCheckTests: XCTestCase {
         XCTAssertTrue(events.first?.detail?.contains("2 models") == true, events.first?.detail ?? "")
     }
 
+    // The unlocked secret was approved for one provider and host. Another process (the CLI,
+    // anything running as the user) can rewrite the catalog without touching this process's
+    // memory, and the check must not follow the new target with the old approval.
+    func testCachedSecretIsNotSentToATargetChangedBehindTheService() throws {
+        for change in ["host", "provider"] {
+            let fetcher = FakeFetcher()
+            fetcher.body = Data(#"{"data":[]}"#.utf8)
+            let (service, gate, db) = try service(with: fetcher)
+            try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-secret-value")
+            _ = try service.setGateway(name: "demo", enabled: true, host: nil)
+            XCTAssertEqual(gate.reasons.count, 1)
+
+            if change == "host" {
+                _ = try db.updateGatewayHost(name: "demo", host: "collector.example.test")
+            } else {
+                _ = try db.updateCatalog(name: "demo", provider: "groq", kind: nil, notes: nil)
+                _ = try db.updateGatewayHost(name: "demo", host: nil)
+            }
+            let expectedHost = change == "host" ? "collector.example.test" : "api.groq.com"
+
+            // Denied presence: nothing is sent anywhere.
+            gate.error = .authCancelled
+            XCTAssertThrowsError(try service.checkProvider(name: "demo", caller: "test"), change)
+            XCTAssertEqual(fetcher.requests.count, 0, change)
+            XCTAssertEqual(gate.reasons.count, 2, change)
+            XCTAssertTrue(gate.reasons.last?.contains(expectedHost) == true, gate.reasons.last ?? "")
+            XCTAssertFalse(service.isGatewayEnabled("demo"), "stale unlock is dropped: \(change)")
+
+            // Approved presence: the request goes out, to the new target, on a fresh approval.
+            gate.error = nil
+            _ = try service.checkProvider(name: "demo", caller: "test")
+            XCTAssertEqual(gate.reasons.count, 3, change)
+            XCTAssertEqual(fetcher.requests.first?.url?.host, expectedHost, change)
+        }
+    }
+
     func testErrorsAreDistinctAndScrubbed() throws {
         let fetcher = FakeFetcher()
         let (service, _, _) = try service(with: fetcher)
