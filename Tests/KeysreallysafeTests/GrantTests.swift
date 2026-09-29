@@ -52,6 +52,32 @@ final class GrantTests: XCTestCase {
         XCTAssertTrue(GrantPath.matches(rest: "anything", prefix: "/v1", allowed: []))
     }
 
+    // `/models/../responses` passes a prefix check and is forwarded as-is; an upstream that
+    // collapses dot segments would then serve a scope the grant never named.
+    func testPathScopeRejectsDotSegments() {
+        for rest in [
+            "models/../responses", "v1/models/../responses", "models/./x", "models/..",
+            "models/%2e%2e/responses", "models/%2E%2E/responses", "models/.%2e/responses",
+        ] {
+            XCTAssertFalse(GrantPath.matches(rest: rest, prefix: "/v1", allowed: ["/models"]), rest)
+            XCTAssertFalse(GrantPath.matches(rest: rest, prefix: "/v1", allowed: []), "unscoped: \(rest)")
+            XCTAssertNil(GrantPath.suggestion(rest: "api/" + rest, prefix: "", allowed: ["/models"]), rest)
+        }
+        // Dots inside a segment are ordinary path text.
+        XCTAssertTrue(GrantPath.matches(rest: "models/gpt-4.1", prefix: "/v1", allowed: ["/models"]))
+        XCTAssertTrue(GrantPath.matches(rest: "models/..x", prefix: "/v1", allowed: ["/models"]))
+
+        let store = GrantStore()
+        let issued = store.issue(
+            key: "k", provider: "openai", host: "h",
+            request: try! GrantRequest(task: "x", methods: ["GET"], paths: ["/models"]).validated()
+        )
+        guard case .failure(.path) = store.authorize(
+            token: issued.token, key: "k", host: "h", method: "GET",
+            rest: "v1/models/../responses", providerPrefix: "/v1"
+        ) else { return XCTFail("dot-segment path was authorized") }
+    }
+
     // Seen live: a provider with an empty catalog prefix serves /v1/models, the agent
     // scoped the grant to /models, and the denial gave it nothing to correct.
     func testPathDenialSuggestsTheScopeTheCallerMeant() {
