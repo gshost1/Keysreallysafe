@@ -455,6 +455,45 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(openai.weeklyPct, 31)
     }
 
+    // `Int(_: Double)` traps past Int's range, so one bad percentage in a file Codex wrote
+    // used to end the menu bar process on the next refresh. It now reads as unknown.
+    func testOutOfRangeCodexPercentIsUnknownNotACrash() throws {
+        let home = try TempDir.make()
+        let now = UTC.parse("2026-09-04T18:50:00Z")!
+        let reset5h = Int64(now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let resetWeek = Int64(now.addingTimeInterval(604_800).timeIntervalSince1970)
+        _ = try writeRollout(
+            home,
+            day: "2026/09/04",
+            name: "rollout-2026-09-04T18-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl",
+            lines: [
+                try jsonLine([
+                    "timestamp": "2026-09-04T18:48:59.248Z",
+                    "type": "event_msg",
+                    "payload": [
+                        "type": "token_count",
+                        "rate_limits": [
+                            "plan_type": "plus",
+                            "primary": ["used_percent": 1e100, "window_minutes": 300, "resets_at": reset5h],
+                            "secondary": ["used_percent": -1e300, "window_minutes": 10080, "resets_at": resetWeek],
+                        ],
+                    ],
+                ] as [String: Any]),
+            ],
+            mtime: now
+        )
+        let openai = try XCTUnwrap(LiveStatus.scan(
+            grokHome: home,
+            claudeHome: home,
+            grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home,
+            now: now
+        ).plans.first { $0.source == "openai" })
+        XCTAssertNil(openai.fiveHourPct)
+        XCTAssertNil(openai.weeklyPct)
+    }
+
     func testCodexSkipsTrailingEmptyPremiumLimits() throws {
         let home = try TempDir.make()
         let now = UTC.parse("2026-09-04T18:50:00Z")!
