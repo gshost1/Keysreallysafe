@@ -64,8 +64,8 @@ then `NODE_PATH=scripts/tests/node_modules node scripts/tests/test_keys_dashboar
 is the full list CI runs; match it before claiming a change is verified.
 
 Tests must stay offline: no keychain, Touch ID, clipboard, provider calls or
-real credentials. Use `CLAUDE_CONFIG_DIR=Fixtures/claude-home` and
-`GROK_HOME=Fixtures/grok-home` as CI does.
+real credentials. Use `CLAUDE_CONFIG_DIR=Fixtures/claude-home`, `GROK_HOME=Fixtures/grok-home`
+and `GROK_BOT_HOME=Fixtures/grok-bot-home` as CI does.
 
 ## Installed copy vs checkout
 

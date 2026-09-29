@@ -19,6 +19,8 @@ struct ToolStatus: Equatable {
     var usageWeekly: Double? = nil
     var fablePct: Int? = nil
     var fableResetsAt: String? = nil
+    /// Prompts counted from local chat history, for tools that keep no token or limit figures.
+    var weeklyPrompts: Int? = nil
 
     func jsonObject() -> [String: Any] {
         var obj: [String: Any] = [
@@ -39,8 +41,9 @@ struct ToolStatus: Equatable {
             "limit": limit as Any? ?? NSNull(),
             "limit_remaining": limitRemaining as Any? ?? NSNull(),
             "usage_weekly": usageWeekly as Any? ?? NSNull(),
+            "weekly_prompts": weeklyPrompts as Any? ?? NSNull(),
         ]
-        if weeklyUsd != nil || weeklyTokens != nil, let period {
+        if weeklyUsd != nil || weeklyTokens != nil || weeklyPrompts != nil, let period {
             obj["period"] = period.jsonObject()
         }
         return obj
@@ -152,6 +155,7 @@ struct LiveStatus: Equatable {
         openaiWeekUsdEstimate: Double? = nil,
         codexHome: URL,
         weekPeriod: SpendPeriod? = nil,
+        grokBotHome: URL? = nil,
         now: Date = Date()
     ) -> LiveStatus {
         let grok = grokRow(weekUsd: grokWeekUsd, period: weekPeriod, home: grokHome, now: now)
@@ -159,19 +163,19 @@ struct LiveStatus: Equatable {
             ClaudeUsageCache.read(home: claudeHome, now: now),
             into: readClaudePlan(home: claudeHome, extra: claudePlan)
         )
-        return LiveStatus(
+        var plans = PlanCatalog.rows(
             grok: grok,
             claude: claude,
-            plans: PlanCatalog.rows(
-                grok: grok,
-                claude: claude,
-                openaiWeekTokens: openaiWeekTokens,
-                openaiWeekUsdEstimate: openaiWeekUsdEstimate,
-                codexHome: codexHome,
-                weekPeriod: weekPeriod,
-                now: now
-            )
+            openaiWeekTokens: openaiWeekTokens,
+            openaiWeekUsdEstimate: openaiWeekUsdEstimate,
+            codexHome: codexHome,
+            weekPeriod: weekPeriod,
+            now: now
         )
+        if let grokBotHome {
+            plans.insert(GrokBotActivity.row(home: grokBotHome, period: weekPeriod, now: now), at: 1)
+        }
+        return LiveStatus(grok: grok, claude: claude, plans: plans)
     }
 
     static func formatDuration(_ seconds: Int) -> String {

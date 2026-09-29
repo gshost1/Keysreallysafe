@@ -13,6 +13,7 @@ jobs:
     env:
       CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
       GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
+      GROK_BOT_HOME: ${{ github.workspace }}/Fixtures/grok-bot-home
     steps:
       - uses: actions/checkout@v4
       - name: Test with synthetic fixtures

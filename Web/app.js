@@ -2475,6 +2475,7 @@
     if (row.source === "claude" || row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null) return true;
     if (row.source === "grok" && row.weekly_usd != null) return true;
     if (typeof row.weekly_tokens === "number" && row.weekly_tokens > 0) return true;
+    if (typeof row.weekly_prompts === "number" && row.weekly_prompts > 0) return true;
     if (typeof row.weekly_usd === "number" && row.weekly_usd > 0) return true;
     return false;
   }
@@ -2514,6 +2515,7 @@
       if (usdMode() && row.weekly_usd != null) meters.push(meter(weekly, null, fmtUsd(row.weekly_usd) + (tokens ? " · " + tokens : "") + " · local logs"));
       else if (tokens) meters.push(meter(weekly, null, tokens + " · local logs"));
       else if (row.weekly_usd != null) meters.push(meter(weekly, null, "cost recorded in the local logs" + forUsd));
+      else if (row.weekly_prompts != null) meters.push(meter(weekly, null, plural(row.weekly_prompts, "prompt", "prompts") + " · local chats"));
     }
     if (row.source === "openrouter" && (row.limit_remaining != null || row.usage_weekly != null)) {
       if (row.limit != null && row.limit > 0 && row.limit_remaining != null) {

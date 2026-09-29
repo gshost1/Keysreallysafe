@@ -1250,6 +1250,29 @@ test("the plan cards hide local dollars and OpenRouter credit until USD is chose
   assert.match(priced, /\$3\.50 billed by OpenRouter/);
 });
 
+// Grok Bot keeps no usage figures on disk, only chats. A week with prompts gets a card that says
+// what was counted; an idle week falls into "not tracked" rather than showing a zero as a measure.
+test("Grok Bot shows this week's prompt count, and an idle week is not tracked", async (page, origin) => {
+  plans = [
+    { source: "grok-bot", title: "Grok Bot", kind: "subscription", weekly_prompts: 12, period: { label: "This week" },
+      usage_note: "12 prompts in 3 chats this week, counted from the chats Grok Bot keeps on this Mac. Grok Bot's plan is separate from SuperGrok; its credits and limits are not in local files." },
+  ];
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const card = page.locator('#live-status .live-row[data-source="grok-bot"]');
+  await card.waitFor();
+  assert.match(await card.textContent(), /12 prompts · local chats/);
+  assert.match(await card.textContent(), /plan is separate from SuperGrok/);
+
+  plans = [{ source: "grok-bot", title: "Grok Bot", kind: "subscription", weekly_prompts: 0, usage_note: "No Grok Bot prompts this week." }];
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await page.locator("#live-status .live-more").waitFor();
+  assert.equal(await page.locator('#live-status .live-row[data-source="grok-bot"]').count(), 0);
+  assert.match(await page.locator("#live-status .live-absent").textContent(), /Grok Bot/);
+});
+
 // The engine's token rule counts reasoning tokens for Codex, OpenAI and Grok. A headline that
 // dropped them would disagree with the bars the same payload drew.
 test("token headlines count reasoning tokens exactly as the engine's buckets do", async (page, origin) => {

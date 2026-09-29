@@ -82,7 +82,9 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
 - The usage catalog stores only counters and metadata. Gateway request bodies
   never reach that catalog.
 - No credentials from other tools. `~/.codex/auth.json` and
-  `~/.grok/auth.json` are never read.
+  `~/.grok/auth.json` are never read, and from Grok Bot's folder only the chat
+  replicas in `sand-client-persistence/` are opened, never its cookies or
+  `sand-secrets.json`. Message text is not kept; only prompts are counted.
 - No fake numbers. A provider whose remaining quota is not in a local file is
   listed as "not tracked" with a link to its own dashboard.
 - No secret on screen by default. The key list shows names, never values.
@@ -130,7 +132,10 @@ The Keysrs window has three panes, switched with the segmented control or `⌘1`
 
 **Usage** is the first thing you see: the plan windows each tool reports
 locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
-windows; Codex has five-hour and weekly windows; Grok has a weekly one. Tools whose quota is not in any local file
+windows; Codex has five-hour and weekly windows; Grok has a weekly one. Grok Bot
+is a separate plan from SuperGrok and keeps no usage figures on disk, so its row
+counts this week's prompts from the chats it stores locally and says its limits
+are not tracked. Tools whose quota is not in any local file
 sit in a collapsed "not tracked" group with a link to their own dashboard. One
 quiet line underneath gives this month from the local logs, in tokens by
 default, with a switch on the line itself for USD. A first run with an empty
@@ -372,6 +377,7 @@ row is empty. Start there when a number is missing.
 | Claude Code usage cache | `~/.claude.json` → `cachedUsageUtilization` | Claude Fable, five-hour, and weekly %; refreshed every five minutes when Keep Claude Limits Fresh is on |
 | Grok sessions | `~/.grok/sessions` | Grok dollars |
 | Grok billing log | `~/.grok/logs/unified.jsonl` | Grok weekly % |
+| Grok Bot chats | `~/Library/Application Support/Grok Bot/sand-client-persistence/*.blob` | Grok Bot prompt count (kind, role and timestamp only) |
 | Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate, 5-hour and weekly % |
 | Gateway | in-process | dollars per key |
 
@@ -396,7 +402,7 @@ deleting the app leaves both alone.
 ## Development
 
 ```sh
-CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home swift test
+CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home GROK_BOT_HOME=Fixtures/grok-bot-home swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```

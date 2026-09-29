@@ -287,6 +287,71 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertNil(try XCTUnwrap(status.grok).weeklyPct)
     }
 
+    func testGrokBotCountsThisWeeksPrompts() throws {
+        let home = try TempDir.make()
+        let tz = TimeZone(identifier: "UTC")!
+        let now = UTC.parse("2026-09-29T15:00:00Z")!
+        try writeGrokBotBlob(home, name: "chat-a", entries: [
+            ["kind": "message", "role": "user", "content": "hi", "timestampMs": ms("2026-09-29T10:00:00Z")],
+            ["kind": "message", "role": "assistant", "content": "hello", "timestampMs": ms("2026-09-29T10:00:05Z")],
+            ["kind": "send-message", "message": ["type": "text", "content": "x"], "timestampMs": ms("2026-09-29T10:00:06Z")],
+            ["kind": "message", "role": "user", "content": "again", "timestampMs": ms("2026-09-28T09:00:00Z")],
+            ["kind": "message", "role": "user", "content": "old", "timestampMs": ms("2026-09-20T09:00:00Z")],
+        ])
+        try writeGrokBotBlob(home, name: "chat-b", entries: [
+            ["kind": "message", "role": "user", "content": "b", "timestampMs": ms("2026-09-29T11:00:00Z")],
+        ])
+        try writeGrokBotBlob(home, name: "chat-old", entries: [
+            ["kind": "message", "role": "user", "content": "c", "timestampMs": ms("2026-09-10T11:00:00Z")],
+        ])
+        let dir = home.appendingPathComponent("sand-client-persistence", isDirectory: true)
+        try Data("not json".utf8).write(to: dir.appendingPathComponent("broken.blob"))
+        try Data(#"{"schemaVersion":1,"value":{"x":1}}"#.utf8).write(to: dir.appendingPathComponent("layout.blob"))
+
+        let row = GrokBotActivity.row(
+            home: home,
+            period: SpendPeriod.calendarWeek(now: now, timeZone: tz),
+            now: now,
+            timeZone: tz
+        )
+        XCTAssertEqual(row.source, "grok-bot")
+        XCTAssertEqual(row.title, "Grok Bot")
+        XCTAssertEqual(row.weeklyPrompts, 3)
+        XCTAssertNil(row.weeklyPct)
+        XCTAssertNil(row.weeklyUsd)
+        XCTAssertEqual(row.usageNote, "3 prompts in 2 chats this week, counted from the chats Grok Bot keeps on this Mac. Grok Bot's plan is separate from SuperGrok; its credits and limits are not in local files.")
+        let json = row.jsonObject()
+        XCTAssertEqual(json["weekly_prompts"] as? Int, 3)
+        XCTAssertNotNil(json["period"])
+    }
+
+    func testGrokBotAbsentOrIdle() throws {
+        let missing = GrokBotActivity.row(home: try TempDir.make().appendingPathComponent("nope"), period: nil, now: Date())
+        XCTAssertNil(missing.weeklyPrompts)
+        XCTAssertEqual(missing.usageNote, "No Grok Bot data on this Mac.")
+
+        let home = try TempDir.make()
+        let now = UTC.parse("2026-09-29T15:00:00Z")!
+        try writeGrokBotBlob(home, name: "chat", entries: [
+            ["kind": "message", "role": "user", "content": "old", "timestampMs": ms("2026-09-10T11:00:00Z")],
+        ])
+        let idle = GrokBotActivity.row(home: home, period: nil, now: now, timeZone: TimeZone(identifier: "UTC")!)
+        XCTAssertEqual(idle.weeklyPrompts, 0)
+        XCTAssertEqual(idle.usageNote, "No Grok Bot prompts this week. Grok Bot's plan is separate from SuperGrok; its credits and limits are not in local files.")
+    }
+
+    func testScanPlacesGrokBotAfterGrok() throws {
+        let status = LiveStatus.scan(
+            grokHome: try TempDir.make(),
+            claudeHome: try TempDir.make(),
+            grokWeekUsd: 0,
+            claudePlan: try TempDir.make().appendingPathComponent("missing-plan.json"),
+            codexHome: try TempDir.make(),
+            grokBotHome: try TempDir.make()
+        )
+        XCTAssertEqual(status.plans.prefix(2).map(\.source), ["grok", "grok-bot"])
+    }
+
     func testGrokTailDoesNotReadWholeFile() throws {
         let home = try TempDir.make()
         let now = UTC.parse("2026-09-04T19:00:00Z")!
@@ -640,6 +705,18 @@ private func grokBilling(
             "subscriptionTier": tier,
         ],
     ] as [String: Any])
+}
+
+/// One Grok Bot transcript blob as the app persists it: a schema version and the replica's entries.
+private func writeGrokBotBlob(_ home: URL, name: String, entries: [[String: Any]]) throws {
+    let dir = home.appendingPathComponent("sand-client-persistence", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let obj: [String: Any] = ["schemaVersion": 1, "value": ["entries": entries, "persistedAt": 0]]
+    try JSONValue.data(obj).write(to: dir.appendingPathComponent(name + ".blob"))
+}
+
+private func ms(_ iso: String) -> Int64 {
+    Int64(UTC.parse(iso)!.timeIntervalSince1970 * 1000)
 }
 
 private func writeGrokLog(_ home: URL, lines: [String]) throws {

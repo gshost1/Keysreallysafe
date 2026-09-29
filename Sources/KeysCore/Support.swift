@@ -160,6 +160,12 @@ enum Paths {
         env("GROK_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
     }
 
+    /// The Grok Bot desktop app's Electron data folder.
+    static var grokBotHome: URL {
+        env("GROK_BOT_HOME") ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!.appendingPathComponent("Grok Bot", isDirectory: true)
+    }
+
     static var claudeHome: URL {
         env("CLAUDE_CONFIG_DIR") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
     }

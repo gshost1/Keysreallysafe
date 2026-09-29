@@ -273,6 +273,8 @@ struct StatusCommand: ParsableCommand {
             print("  weekly  \(String(format: "$%.2f", usd))  local spend")
         } else if row.weeklyTokens != nil {
             print("  weekly  \(row.weeklyTokens ?? 0) tokens")
+        } else if let prompts = row.weeklyPrompts {
+            print("  weekly  \(prompts) prompts")
         }
         if row.fiveHourPct != nil || row.source == "claude" || row.source == "openai" {
             print("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt))")
