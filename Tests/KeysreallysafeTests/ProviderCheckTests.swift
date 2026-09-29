@@ -146,6 +146,28 @@ final class ProviderCheckTests: XCTestCase {
         XCTAssertThrowsError(try service.checkProvider(name: "az", caller: "test"))
     }
 
+    // A long provider message used to be cut at 200 characters before scrubbing, so a
+    // secret echoed across the cut survived as a prefix the whole-secret match missed.
+    func testSecretCrossingTheLengthCutIsScrubbedNotTruncated() {
+        let secret = "QZ7-synthetic-placeholder-0123456789"
+        // Leads that put the old 200-character (JSON) and 160-character (plain) cuts inside it.
+        for lead in [150, 155, 180, 195] {
+            let padding = String(repeating: "x", count: lead)
+            let json = Data(#"{"error":{"message":"\#(padding) \#(secret) trailing"}}"#.utf8)
+            let plain = Data("\(padding) \(secret) trailing".utf8)
+            for body in [json, plain] {
+                let message = ProviderCheck.safeMessage(body, secret: secret) ?? ""
+                XCTAssertFalse(message.contains("QZ7"), "lead \(lead): \(message)")
+            }
+        }
+        let jsonMessage = ProviderCheck.safeMessage(
+            Data(#"{"error":{"message":"\#(String(repeating: "y", count: 300))"}}"#.utf8), secret: secret
+        )
+        XCTAssertEqual(jsonMessage?.count, 201)
+        let plainMessage = ProviderCheck.safeMessage(Data(String(repeating: "y", count: 300).utf8), secret: secret)
+        XCTAssertEqual(plainMessage?.count, 161)
+    }
+
     func testAuthErrorsAreDistinctInCLIAndAPI() throws {
         XCTAssertEqual(AppError.authCancelled.exitCode, 3)
         XCTAssertEqual(AppError.authUnavailable("x").exitCode, 3)
