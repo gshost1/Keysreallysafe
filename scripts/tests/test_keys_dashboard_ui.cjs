@@ -1262,7 +1262,7 @@ test("Grok Bot shows this week's prompt count, and an idle week is not tracked",
   await page.waitForLoadState("networkidle");
   const card = page.locator('#live-status .live-row[data-source="grok-bot"]');
   await card.waitFor();
-  assert.match(await card.textContent(), /12 prompts · local chats/);
+  assert.match(await card.textContent(), /12 prompts sent · limit not tracked/);
   assert.match(await card.textContent(), /plan is separate from SuperGrok/);
 
   plans = [{ source: "grok-bot", title: "Grok Bot", kind: "subscription", weekly_prompts: 0, usage_note: "No Grok Bot prompts this week." }];

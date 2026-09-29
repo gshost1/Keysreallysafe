@@ -274,7 +274,7 @@ struct StatusCommand: ParsableCommand {
         } else if row.weeklyTokens != nil {
             print("  weekly  \(row.weeklyTokens ?? 0) tokens")
         } else if let prompts = row.weeklyPrompts {
-            print("  weekly  \(prompts) prompts")
+            print("  weekly  \(prompts) prompts sent · limit not tracked")
         }
         if row.fiveHourPct != nil || row.source == "claude" || row.source == "openai" {
             print("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt))")

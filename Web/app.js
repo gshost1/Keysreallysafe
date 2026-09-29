@@ -2515,7 +2515,7 @@
       if (usdMode() && row.weekly_usd != null) meters.push(meter(weekly, null, fmtUsd(row.weekly_usd) + (tokens ? " · " + tokens : "") + " · local logs"));
       else if (tokens) meters.push(meter(weekly, null, tokens + " · local logs"));
       else if (row.weekly_usd != null) meters.push(meter(weekly, null, "cost recorded in the local logs" + forUsd));
-      else if (row.weekly_prompts != null) meters.push(meter(weekly, null, plural(row.weekly_prompts, "prompt", "prompts") + " · local chats"));
+      else if (row.weekly_prompts != null) meters.push(meter(weekly, null, plural(row.weekly_prompts, "prompt", "prompts") + " sent · limit not tracked"));
     }
     if (row.source === "openrouter" && (row.limit_remaining != null || row.usage_weekly != null)) {
       if (row.limit != null && row.limit > 0 && row.limit_remaining != null) {
