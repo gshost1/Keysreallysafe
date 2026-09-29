@@ -395,13 +395,15 @@ extension LiveStatus {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// `Int(_: Double)` traps on NaN, infinity and anything past Int's range, and these values
+    /// come from files other tools write; a bad one must read as unknown, not end the process.
     private static func percent(_ any: Any?) -> Int? {
         if any == nil || any is NSNull { return nil }
         if let n = any as? NSNumber {
-            return Int(n.doubleValue.rounded())
+            return Int(exactly: n.doubleValue.rounded())
         }
         if let d = any as? Double {
-            return Int(d.rounded())
+            return d.isFinite ? Int(exactly: d.rounded()) : nil
         }
         return JSONValue.int(any)
     }

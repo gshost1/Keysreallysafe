@@ -326,8 +326,11 @@ final class KeysService: @unchecked Sendable {
             throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
         }
         let secret: String
-        if let cached = gatewayLock.withLock({ gatewayCache[name]?.secret }) {
-            secret = cached
+        // The unlocked secret was approved for one provider and host. lookupGateway drops it
+        // if the catalog changed since (another process can rewrite it), so a changed target
+        // needs a fresh approval instead of inheriting the old one.
+        if let target = lookupGateway(name: name), target.provider.id == provider.id, target.host == host {
+            secret = target.secret
         } else {
             try presence.require(reason: "Check \(name) against \(provider.name) at \(host) (read-only)")
             secret = try secrets.get(name: name)
@@ -712,9 +715,11 @@ final class KeysService: @unchecked Sendable {
         let rows = try catalog.listCatalog()
         for row in rows {
             guard row.provider == "openrouter", row.kind == "billing" else { continue }
-            guard let secret = gatewayLock.withLock({ gatewayCache[row.name]?.secret }) else { continue }
+            // The unlock must still be for this OpenRouter key; a catalog rewritten by another
+            // process must not send a different provider's secret to openrouter.ai.
+            guard let target = lookupGateway(name: row.name), target.provider.id == "openrouter" else { continue }
             do {
-                var snap = try openRouter.fetch(secret: secret)
+                var snap = try openRouter.fetch(secret: target.secret)
                 snap.keyName = row.name
                 snap.provider = "openrouter"
                 if snap.ts.isEmpty { snap.ts = UTC.iso(Date()) }

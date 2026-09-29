@@ -102,6 +102,9 @@ enum GrantPath {
 
     /// `rest` is the client's path after `/<key>`; may or may not repeat the provider prefix.
     static func matches(rest: String, prefix providerPrefix: String, allowed: [String]) -> Bool {
+        // The path is forwarded as-is, and an upstream that collapses `/models/../responses`
+        // would serve a scope the grant never named. Long-lived clients refuse these too.
+        if GatewayClientToken.hasDotSegment(rest) { return false }
         if allowed.isEmpty { return true }
         let path = relative(rest: rest, prefix: providerPrefix)
         for a in allowed {
@@ -114,6 +117,7 @@ enum GrantPath {
     /// `/models`), the caller almost always meant that longer scope: the provider serves
     /// under a segment the catalog prefix doesn't cover. Only suggested, never widened.
     static func suggestion(rest: String, prefix providerPrefix: String, allowed: [String]) -> String? {
+        if GatewayClientToken.hasDotSegment(rest) { return nil }
         let segments = relative(rest: rest, prefix: providerPrefix).split(separator: "/").map(String.init)
         for a in allowed {
             let scope = a.split(separator: "/").map(String.init)
