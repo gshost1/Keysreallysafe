@@ -230,7 +230,9 @@ struct LiveStatus: Equatable {
             row.usageNote = "Quota resets happened since the last Grok prompt; run a Grok prompt to refresh."
             return row
         }
-        row.weeklyPct = percent(config["creditUsagePercent"])
+        // Grok drops the field while the week is at 0% (it appears as 1.0 on the first spend),
+        // so inside a current weekly period a missing percent is a measured zero.
+        row.weeklyPct = percent(config["creditUsagePercent"]) ?? 0
         return row
     }
 

@@ -250,6 +250,43 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(grok.snapshotAt, "2026-09-04T18:43:52.216Z")
     }
 
+    func testGrokMissingPercentInCurrentWeekIsZero() throws {
+        // Grok leaves creditUsagePercent out of the log line while the week is at 0%.
+        let home = try TempDir.make()
+        let now = UTC.parse("2026-09-04T19:00:00Z")!
+        try writeGrokLog(home, lines: [
+            try grokBilling(ts: "2026-09-04T18:10:00.000Z", pct: nil, end: "2026-09-11T18:04:26.160272+00:00"),
+        ])
+        let status = LiveStatus.scan(
+            grokHome: home,
+            claudeHome: home,
+            grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home,
+            now: now
+        )
+        let grok = try XCTUnwrap(status.grok)
+        XCTAssertEqual(grok.weeklyPct, 0)
+        XCTAssertNil(grok.usageNote)
+    }
+
+    func testGrokMissingPercentAfterResetStaysUnknown() throws {
+        let home = try TempDir.make()
+        let now = UTC.parse("2026-09-12T19:00:00Z")!
+        try writeGrokLog(home, lines: [
+            try grokBilling(ts: "2026-09-04T18:10:00.000Z", pct: nil, end: "2026-09-11T18:04:26.160272+00:00"),
+        ])
+        let status = LiveStatus.scan(
+            grokHome: home,
+            claudeHome: home,
+            grokWeekUsd: 0,
+            claudePlan: home.appendingPathComponent("missing-plan.json"),
+            codexHome: home,
+            now: now
+        )
+        XCTAssertNil(try XCTUnwrap(status.grok).weeklyPct)
+    }
+
     func testGrokTailDoesNotReadWholeFile() throws {
         let home = try TempDir.make()
         let now = UTC.parse("2026-09-04T19:00:00Z")!
@@ -582,23 +619,24 @@ private func jsonLine(_ obj: [String: Any]) throws -> String {
 
 private func grokBilling(
     ts: String,
-    pct: Int,
+    pct: Int?,
     periodType: String = "USAGE_PERIOD_TYPE_WEEKLY",
     end: String,
     tier: String = "SuperGrok Plus"
 ) throws -> String {
-    try jsonLine([
+    var config: [String: Any] = [
+        "currentPeriod": [
+            "type": periodType,
+            "start": "2026-09-04T18:04:26.160272+00:00",
+            "end": end,
+        ],
+    ]
+    if let pct { config["creditUsagePercent"] = Double(pct) }
+    return try jsonLine([
         "ts": ts,
         "msg": "billing: fetched credits config",
         "ctx": [
-            "config": [
-                "creditUsagePercent": Double(pct),
-                "currentPeriod": [
-                    "type": periodType,
-                    "start": "2026-09-04T18:04:26.160272+00:00",
-                    "end": end,
-                ],
-            ],
+            "config": config,
             "subscriptionTier": tier,
         ],
     ] as [String: Any])
