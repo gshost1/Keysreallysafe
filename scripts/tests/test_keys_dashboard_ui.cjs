@@ -51,10 +51,12 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, plans, failures, delays, requests, unexpected;
+let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations;
 
 function reset() {
   keys = baseKeys();
+  fixtureSecrets = new Map(keys.map(k => [k.name, SECRET]));
+  rotations = [];
   ledger = baseLedger();
   localRows = [];
   // The plan cards. Empty unless a test fills it, as most of this suite expects.
@@ -161,6 +163,7 @@ function handle(method, pathname, body, params) {
   if (pathname === "/api/keys" && method === "GET") return [200, { keys }];
   if (pathname === "/api/keys" && method === "POST") {
     if (keys.some((k) => k.name === body.name)) return [409, { error: "already_exists" }];
+    fixtureSecrets.set(body.name, body.secret);
     keys.push({ name: body.name, provider: body.provider, kind: body.kind, notes: body.notes,
                 created_at: "2026-09-20T12:00:00Z", last_used_at: null, checkable: false });
     return [200, { ok: true }];
@@ -168,6 +171,7 @@ function handle(method, pathname, body, params) {
   if (keyMatch && leaf === "" && method === "DELETE") {
     if (!found()) return [404, { error: "not_found" }];
     keys = keys.filter((k) => k.name !== name);
+    fixtureSecrets.delete(name);
     return [200, { ok: true }];
   }
   if (keyMatch && leaf === "" && method === "PATCH") {
@@ -184,10 +188,13 @@ function handle(method, pathname, body, params) {
   if (keyMatch && leaf === "/reveal") {
     if (!found()) return [404, { error: "not_found" }];
     found().last_used_at = "2026-09-20T12:30:00Z";
-    return [200, { secret: SECRET }];
+    return [200, { secret: fixtureSecrets.get(name) }];
   }
   if (keyMatch && leaf === "/rotate") {
     if (!found()) return [404, { error: "not_found" }];
+    if (typeof body.secret !== "string" || !body.secret) return [400, { error: "secret_required" }];
+    rotations.push({ name, body });
+    fixtureSecrets.set(name, body.secret);
     return [200, { version: 2 }];
   }
   if (keyMatch && leaf === "/events") return [200, { events: [] }];
@@ -218,6 +225,9 @@ const server = http.createServer((request, response) => {
     if (process.env.KEYS_FIXTURE_PORT && url.pathname === "/__fixture/reset" && method === "POST") {
       reset();
       return json(response, 200, { ok: true });
+    }
+    if (process.env.KEYS_FIXTURE_PORT && url.pathname === "/__fixture/rotations" && method === "GET") {
+      return json(response, 200, { rotations });
     }
     const failure = failures.get(key);
     if (failure === "drop") return request.socket.destroy();

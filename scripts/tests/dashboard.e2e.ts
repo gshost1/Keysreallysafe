@@ -31,7 +31,7 @@ test('vault creation, metadata edit and confirmed deletion round trip', async ({
   await expect(browser.locator('#keys-count')).toHaveText('3 keys');
 });
 
-test('reveal close clears the synthetic value and rotation finishes', async ({ app, browser, screen }) => {
+test('rotation submits a replacement and fresh reveals keep it', async ({ app, browser, screen }) => {
   await reset(app);
   await screen.getByRole('tab', 'Keys').click();
   await browser.locator('#keys-body tr[data-name="alpha"] [data-act=reveal]').first().click();
@@ -39,10 +39,22 @@ test('reveal close clears the synthetic value and rotation finishes', async ({ a
   await browser.locator('#dlg-reveal [data-close]').click();
   await expect(browser.locator('#reveal-secret')).toHaveText('');
   await browser.locator('#keys-body tr[data-name="alpha"] [data-act=rotate]').first().click();
-  await browser.locator('#rotate-form [name=secret]').fill('sk-fixture-NEVER-REAL-0000000000');
+  const replacement = 'sk-fixture-ROTATED-NEVER-REAL-1111111111';
+  await browser.locator('#rotate-form [name=secret]').fill(replacement);
   await browser.locator('#rotate-form [type=submit]').click();
   await expect(browser.locator('#status')).toContainText('Rotated alpha');
   await expect(browser.locator('#dlg-rotate')).not.toBeVisible();
+  const audit = await (await fetch(new URL('/__fixture/rotations', app.baseUrl))).json();
+  await expect(audit.rotations).toEqual([{ name: 'alpha', body: { secret: replacement } }]);
+  // A full reload discards page state; only the fixture's stored replacement can answer.
+  await app.open('/');
+  await screen.getByRole('tab', 'Keys').click();
+  for (let i = 0; i < 2; i++) {
+    await browser.locator('#keys-body tr[data-name="alpha"] [data-act=reveal]').first().click();
+    await expect(browser.locator('#reveal-secret')).toHaveText(replacement);
+    await browser.locator('#dlg-reveal [data-close]').click();
+    await expect(browser.locator('#reveal-secret')).toHaveText('');
+  }
 });
 
 test('gateway spend preserves unknown costs through source filtering', async ({ app, browser, screen }) => {
