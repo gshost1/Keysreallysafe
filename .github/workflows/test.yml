@@ -23,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: scripts/tests/package-lock.json
-      - name: Install the browser test dependency (Playwright only)
+      - name: Install the pinned browser test dependencies
         working-directory: scripts/tests
         run: npm ci
       - name: Check release packaging scripts (no credentials)
@@ -40,6 +40,9 @@ jobs:
         run: |
           node scripts/tests/test_keys_dashboard_ui.cjs
           node scripts/tests/test_analytics_ui.cjs
+      - name: Check tester-army dashboard flows (synthetic fixture server only)
+        working-directory: scripts/tests
+        run: npm run test:e2e
       # The same real assets against the real Swift backend on a temporary
       # synthetic vault: no keychain, Touch ID, clipboard or provider call.
       # KEYS_CONTRACT_TIMEOUT_S bounds the browser half inside the test; the step

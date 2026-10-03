@@ -30,3 +30,6 @@ scripts/tests/node_modules/
 .wrangler
 .dev.vars*
 !.dev.vars.example
+
+# tester-army browser reports contain synthetic screenshots and traces.
+scripts/tests/.e2e/

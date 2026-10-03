@@ -215,6 +215,10 @@ const server = http.createServer((request, response) => {
     const key = rule(method, url.pathname);
     requests.push({ method, pathname: url.pathname, search: url.search, token: request.headers["x-ksf-token"] || null });
 
+    if (process.env.KEYS_FIXTURE_PORT && url.pathname === "/__fixture/reset" && method === "POST") {
+      reset();
+      return json(response, 200, { ok: true });
+    }
     const failure = failures.get(key);
     if (failure === "drop") return request.socket.destroy();
     if (failure && failure.raw !== undefined) {
@@ -1656,6 +1660,13 @@ test("long key metadata keeps every action inside the viewport", async (page, or
 
 // ---------- runner ----------
 
+// The tester-army runner reuses this synthetic fixture, never the installed app.
+module.exports = { server, reset };
+if (require.main === module && process.env.KEYS_FIXTURE_PORT) {
+  reset();
+  server.listen(Number(process.env.KEYS_FIXTURE_PORT), "127.0.0.1");
+} else if (require.main === module) {
+
 (async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
@@ -1689,3 +1700,5 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   }
   console.log(`\nKeys dashboard UI passed: ${checks.length} cases`);
 })().catch((error) => { console.error(error); process.exit(1); });
+
+}
