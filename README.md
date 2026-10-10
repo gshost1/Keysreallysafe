@@ -296,11 +296,12 @@ is never accepted as either. Both narrow accidental or unauthorized local
 use; neither is a boundary against a process that can already read your
 files or memory.
 
-The gateway forwards to the provider host from `Web/providers.json` or the
-host you set, replaces the token with the secret in the right header, never
-follows a redirect, streams the response back, and records the `usage`
-object from OpenAI chat-completions and responses, Anthropic messages and
-Gemini bodies, plus Vercel evaluation-model responses and the upstream `request-id`.
+The gateway forwards to the provider host from `Web/providers.json`, from a
+provider you added yourself, or the host you set, replaces the token with the
+secret in the right header, never follows a redirect, streams the response
+back, and records the `usage` object from OpenAI chat-completions and
+responses, Anthropic messages and Gemini bodies, plus Vercel evaluation-model
+responses and the upstream `request-id`.
 For evaluation requests the model comes from the `ai-model-id` header. Valid
 provider-reported Vercel evaluation cost is preferred over a list-price estimate;
 missing cost with no price remains unpriced. Those calls show up as a "Via
@@ -333,6 +334,74 @@ with the key scrubbed. The result (status, model ids, time) is stored so
 another unlock; `keys models <name> --grep sonnet` narrows the list. With the
 gateway on the check uses the in-memory secret and prompts for nothing.
 
+## Providers
+
+`keys providers` lists the catalog: the shipped entries plus yours. Add one
+with `keys provider add` (the dashboard's **Providers** button does the same):
+
+```sh
+keys provider add acme --name "Acme" --host api.acme.dev --api openai --path-prefix v1
+```
+
+A provider is routing metadata (host, auth header, usage parser), never a
+secret; it lives in the catalog beside your keys and survives restarts. An id
+that matches a shipped entry wins over it, so a wrong host in the shipped file
+can be fixed locally. `keys provider rm <id>` removes yours — it refuses while
+a key still uses it. A built-in provider you do not want in the Add dialog is
+taken out with `keys provider hide <id>` and brought back with `unhide`; keys
+that already use it keep their gateway, checks and name. OpenAI is retired
+from the catalog (2026-10-10): it is no longer offered for new keys, but keys
+that already name it keep working exactly as before. Adding it back as a
+custom provider is a one-liner if you want it offered again.
+
+## Coding agents
+
+`keys setup <agent> --key <name>` writes the agent's own config so it talks to
+the local gateway, and `keys agent <agent> <name>` launches it on one Touch ID.
+Nothing the setup writes holds a secret: each agent's config names an
+environment variable, and the launcher fills it with a fresh grant whose
+lifetime matches the session (revoked when the agent exits, and dead on screen
+lock or expiry). Agents supported: **Claude Code**, **Codex**, **Grok**,
+**Droid**.
+
+```sh
+keys setup droid --key work-anthropic            # ~/.factory/settings.json customModels
+keys agent droid work-anthropic                  # one Touch ID, then droid with /model
+keys setup codex --key router --model vendor/x   # ~/.codex/config.toml model_providers
+keys setup grok --key router --model grok-4.6    # ~/.grok/config.toml [model.keysrs]
+keys agent claude work-anthropic                 # no setup needed; env vars at launch
+```
+
+A backup of the file sits beside it after the first edit, and each edit is
+owner-only. `--client` on the launcher (or `keys client issue` by hand) gives
+an unattended setup a token that lives for days instead of a session. Droid
+calls through the gateway are metered like any other API-key call (Chart →
+API keys); a Droid session run outside the gateway is not observable on this
+Mac. Claude Code needs an Anthropic-wire provider key; Codex and Grok need an
+OpenAI-compatible one; Droid takes either. The dashboard's **Agents** button
+shows the same recipes personalized to your key names, with copy buttons.
+
+## Cloud agents
+
+An agent on another machine — a server, a VM, a self-hosted CI runner, a
+container you can SSH to — uses the same vault through an SSH reverse forward.
+Nothing new listens on this Mac: the gateway keeps binding `127.0.0.1:12767`
+only, and the ssh session carries it to the remote loopback.
+
+```sh
+keys client issue router --label "cloud agent" --days 30   # one Touch ID, revocable
+keys tunnel user@server.example.com                        # Ctrl-C stops it
+# on the server: http://127.0.0.1:12767/router is the gateway, token as the API key
+```
+
+`keys tunnel --print` shows the ssh command instead of running it. The remote
+side sees a plain localhost port and still needs the client token, so ssh is
+the trust boundary: anyone who can open that port on the server can spend
+through your key until the token expires or you revoke it. GitHub-hosted
+runners cannot reach your Mac; run the agent on a machine you can SSH to
+(Tailscale hosts work with the same command). [docs/cloud-agents.md](docs/cloud-agents.md)
+has the details and the per-agent remote snippets.
+
 ## Commands
 
 ```text
@@ -358,6 +427,14 @@ keys autostart --remove
 keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path-prefix <prefix>]
 keys client list <name>
 keys client revoke <name> <id>
+keys providers [--json]
+keys provider add <id> --name <name> [--host <host>] [--api openai|anthropic|gemini|other] [--auth-header <header>] [--auth-prefix <prefix>] [--path-prefix <path>] [--key-prefix <hint>] [--note <text>] [--no-gateway]
+keys provider rm <id>
+keys provider hide <id>
+keys provider unhide <id>
+keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]
+keys agent <agent> <key> [--minutes N] [--client] [--label <text>] [--] [args...]
+keys tunnel <user@host> [--remote-port N] [--key <name>] [--print]
 keys purge
 ```
 

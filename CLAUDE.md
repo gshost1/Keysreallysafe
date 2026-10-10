@@ -27,7 +27,7 @@ Swift 6 package, macOS 14+. Executable `keys`, core in `Sources/KeysCore`,
 tests in `Tests/KeysreallysafeTests`. `Web/` is the local dashboard (plain
 HTML/CSS/JS, no build step, no external resources), not a marketing site.
 `Analytics/` is the self-hosted aggregate collector.
-`Fixtures/` holds synthetic session logs and the price table; the provider catalog is `Web/providers.json`.
+`Fixtures/` holds synthetic session logs and the price table; the provider catalog is `Web/providers.json`, and providers the user adds are rows in the catalog DB that merge on top of it (`Providers.setOverlay`), so the shipped file and `ProductAnalytics.providers`/`collector.py PROVIDERS` stay pinned to each other by tests on both sides.
 `Site/` is the public marketing site at https://keysrs.com (static; the only script is `Site/posthog.js`, and Google Fonts is the only external resource). It is served by a
 Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
 custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
@@ -105,7 +105,11 @@ The README's "Privacy boundaries" section is the contract. In short:
 - Everything binds to `127.0.0.1`. No scraping, no provider websites, never
   read `~/.codex/auth.json` or `~/.grok/auth.json`.
 - Key values never appear on screen, in logs, in tests or in fixtures. Copy,
-  reveal, env and rotate require user presence every time.
+  reveal, env and rotate require user presence every time. `keys setup` and
+  `keys agent` are part of that contract: the agent config files they write
+  (Droid `settings.json`, Codex and Grok `config.toml`) hold the gateway URL
+  and an environment-variable name, never a secret, and every test that
+  touches them writes to a temp home.
 - Gateway requests need a grant: one Touch ID, one key, one host, method/path
   scope, expiry. Request bodies never reach the usage catalog.
 - Product analytics (v2, "share to compare") is opt-in and aggregate: daily
