@@ -13,6 +13,7 @@ final class KeysService: @unchecked Sendable {
     var claudeHome: URL
     var codexHome: URL
     var grokBotHome: URL
+    var droidHome: URL
     /// Serialises ingest passes only. A five-minute log scan must never hold up a gateway lookup.
     private let ingestLock = NSLock()
     /// Guards `gatewayCache` and `gatewayListener`; held for dictionary access only.
@@ -36,6 +37,7 @@ final class KeysService: @unchecked Sendable {
         claudeHome: URL = Paths.claudeHome,
         codexHome: URL = Paths.codexHome,
         grokBotHome: URL = Paths.grokBotHome,
+        droidHome: URL = Paths.droidHome,
         runner: any CommandRunner = FoundationCommandRunner(),
         openRouter: any OpenRouterFetching = OpenRouterHTTP()
     ) {
@@ -47,6 +49,7 @@ final class KeysService: @unchecked Sendable {
         self.claudeHome = claudeHome
         self.codexHome = codexHome
         self.grokBotHome = grokBotHome
+        self.droidHome = droidHome
         self.runner = runner
         self.openRouter = openRouter
         self.preferences = AppPreferences(catalog: catalog)
@@ -974,7 +977,8 @@ final class KeysService: @unchecked Sendable {
             openaiWeekUsdEstimate: openaiWeek.totals.openaiUsdEstimate,
             codexHome: codexHome,
             weekPeriod: period,
-            grokBotHome: grokBotHome
+            grokBotHome: grokBotHome,
+            droidHome: droidHome
         )
         status.lastIngestAt = try catalog.lastIngestAt()
         status.catalogVersion = try catalog.catalogVersion()

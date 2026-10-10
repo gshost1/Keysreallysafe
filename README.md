@@ -90,6 +90,9 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   `~/.grok/auth.json` are never read, and from Grok Bot's folder only the chat
   replicas in `sand-client-persistence/` are opened, never its cookies or
   `sand-secrets.json`. Message text is not kept; only prompts are counted.
+  From `~/.factory/sessions/` only the per-session `*.settings.json` files
+  are opened, for their `tokenUsage` totals; Droid's transcripts (`*.jsonl`)
+  and its auth files are never read.
 - No fake numbers. A provider whose remaining quota is not in a local file is
   listed as "not tracked" with a link to its own dashboard.
 - No secret on screen by default. The key list shows names, never values.
@@ -140,7 +143,9 @@ locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and week
 windows; Codex has five-hour and weekly windows; Grok has a weekly one. Grok Bot
 is a separate plan from SuperGrok and keeps no usage figures on disk, so its row
 counts this week's prompts from the chats it stores locally and says its limits
-are not tracked. Tools whose quota is not in any local file
+are not tracked. Droid's row adds up this week's token totals from the
+per-session settings files Droid keeps in `~/.factory/sessions/`; Factory
+plan limits and credits are not in local files. Tools whose quota is not in any local file
 sit in a collapsed "not tracked" group with a link to their own dashboard. One
 quiet line underneath gives this month from the local logs, in tokens by
 default, with a switch on the line itself for USD. A first run with an empty
@@ -460,6 +465,7 @@ row is empty. Start there when a number is missing.
 | Grok sessions | `~/.grok/sessions` | Grok dollars |
 | Grok billing log | `~/.grok/logs/unified.jsonl` | Grok weekly % |
 | Grok Bot chats | `~/Library/Application Support/Grok Bot/sand-client-persistence/*.blob` | Grok Bot prompt count (kind, role and timestamp only) |
+| Droid sessions | `~/.factory/sessions/*/*.settings.json` | Droid weekly tokens (the `tokenUsage` block only; transcripts are not opened) |
 | Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate, 5-hour and weekly % |
 | Gateway | in-process | dollars per key |
 

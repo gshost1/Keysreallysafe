@@ -156,6 +156,7 @@ struct LiveStatus: Equatable {
         codexHome: URL,
         weekPeriod: SpendPeriod? = nil,
         grokBotHome: URL? = nil,
+        droidHome: URL? = nil,
         now: Date = Date()
     ) -> LiveStatus {
         let grok = grokRow(weekUsd: grokWeekUsd, period: weekPeriod, home: grokHome, now: now)
@@ -174,6 +175,10 @@ struct LiveStatus: Equatable {
         )
         if let grokBotHome {
             plans.insert(GrokBotActivity.row(home: grokBotHome, period: weekPeriod, now: now), at: 1)
+        }
+        if let droidHome {
+            let after = (plans.firstIndex { $0.source == "openai" } ?? plans.count - 1) + 1
+            plans.insert(DroidActivity.row(home: droidHome, period: weekPeriod, now: now), at: after)
         }
         return LiveStatus(grok: grok, claude: claude, plans: plans)
     }

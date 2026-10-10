@@ -352,6 +352,57 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(status.plans.prefix(2).map(\.source), ["grok", "grok-bot"])
     }
 
+    func testDroidSumsThisWeeksSessionTotalsWithoutThinkingOrTranscripts() throws {
+        let home = try TempDir.make()
+        let tz = TimeZone(identifier: "UTC")!
+        let now = UTC.parse("2026-09-29T15:00:00Z")!
+        let project = home.appendingPathComponent("sessions/-Users-me-app", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        func session(_ name: String, _ usage: [String: Any]?, modified: String) throws {
+            var obj: [String: Any] = ["model": "claude-sonnet-4-5"]
+            if let usage { obj["tokenUsage"] = usage }
+            let url = project.appendingPathComponent("\(name).settings.json")
+            try JSONSerialization.data(withJSONObject: obj).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: UTC.parse(modified)!], ofItemAtPath: url.path)
+        }
+        try session("a", ["inputTokens": 100, "outputTokens": 50, "cacheCreationTokens": 10, "cacheReadTokens": 1000,
+                          "thinkingTokens": 40, "factoryCredits": 9999], modified: "2026-09-29T10:00:00Z")
+        try session("b", ["inputTokens": 5, "outputTokens": 5], modified: "2026-09-28T09:00:00Z")
+        try session("old", ["inputTokens": 7000], modified: "2026-09-20T09:00:00Z")
+        try session("empty", nil, modified: "2026-09-29T11:00:00Z")
+        // A transcript is never opened, so even a huge token-looking one changes nothing.
+        try Data(#"{"tokenUsage":{"inputTokens":99999999}}"#.utf8).write(to: project.appendingPathComponent("a.jsonl"))
+        try Data("not json".utf8).write(to: project.appendingPathComponent("broken.settings.json"))
+
+        let row = DroidActivity.row(home: home, period: SpendPeriod.calendarWeek(now: now, timeZone: tz), now: now, timeZone: tz)
+        XCTAssertEqual(row.source, "droid")
+        XCTAssertEqual(row.title, "Droid")
+        XCTAssertEqual(row.weeklyTokens, 1170)
+        XCTAssertEqual(row.usageNote, "2 Droid sessions active this week, from the token totals Droid keeps on this Mac. Factory plan limits and credits are not in local files.")
+        XCTAssertNotNil(row.jsonObject()["period"])
+    }
+
+    func testDroidAbsentOrIdleAndPlacedAfterCodex() throws {
+        let missing = DroidActivity.row(home: try TempDir.make().appendingPathComponent("nope"), period: nil, now: Date())
+        XCTAssertNil(missing.weeklyTokens)
+        XCTAssertEqual(missing.usageNote, "No Droid sessions on this Mac.")
+        let empty = try TempDir.make()
+        try FileManager.default.createDirectory(at: empty.appendingPathComponent("sessions"), withIntermediateDirectories: true)
+        XCTAssertEqual(DroidActivity.row(home: empty, period: nil, now: Date()).weeklyTokens, 0)
+
+        let status = LiveStatus.scan(
+            grokHome: try TempDir.make(),
+            claudeHome: try TempDir.make(),
+            grokWeekUsd: 0,
+            claudePlan: try TempDir.make().appendingPathComponent("missing-plan.json"),
+            codexHome: try TempDir.make(),
+            grokBotHome: try TempDir.make(),
+            droidHome: empty
+        )
+        let sources = status.plans.map(\.source)
+        XCTAssertEqual(sources.firstIndex(of: "droid"), sources.firstIndex(of: "openai").map { $0 + 1 })
+    }
+
     func testGrokTailDoesNotReadWholeFile() throws {
         let home = try TempDir.make()
         let now = UTC.parse("2026-09-04T19:00:00Z")!

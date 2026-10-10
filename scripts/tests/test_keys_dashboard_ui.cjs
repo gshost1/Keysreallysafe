@@ -1337,6 +1337,28 @@ test("Grok Bot shows this week's prompt count, and an idle week is not tracked",
   assert.match(await page.locator("#live-status .live-absent").textContent(), /Grok Bot/);
 });
 
+// Droid's session totals are tokens, so its card reads like the Codex one; an idle week links out.
+test("Droid shows this week's tokens, and an idle week links to Factory", async (page, origin) => {
+  plans = [
+    { source: "droid", title: "Droid", kind: "subscription", weekly_tokens: 2500000, period: { label: "This week" },
+      usage_note: "4 Droid sessions active this week, from the token totals Droid keeps on this Mac. Factory plan limits and credits are not in local files." },
+  ];
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const card = page.locator('#live-status .live-row[data-source="droid"]');
+  await card.waitFor();
+  assert.match(await card.textContent(), /tokens · local logs/);
+  assert.match(await card.textContent(), /4 Droid sessions active this week/);
+
+  plans = [{ source: "droid", title: "Droid", kind: "subscription", weekly_tokens: 0, usage_note: "No Droid usage this week." }];
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await page.locator("#live-status .live-more").waitFor();
+  assert.equal(await page.locator('#live-status .live-row[data-source="droid"]').count(), 0);
+  assert.equal(await page.locator('#live-status .live-absent a[href="https://app.factory.ai"]').count(), 1);
+});
+
 // The engine's token rule counts reasoning tokens for Codex, OpenAI and Grok. A headline that
 // dropped them would disagree with the bars the same payload drew.
 test("token headlines count reasoning tokens exactly as the engine's buckets do", async (page, origin) => {

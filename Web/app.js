@@ -2692,6 +2692,7 @@
     perplexity: "https://www.perplexity.ai/settings/account",
     openrouter: "https://openrouter.ai/activity",
     "xai-api": "https://console.x.ai",
+    droid: "https://app.factory.ai",
   };
 
   function renderLiveRow(row) {
