@@ -52,6 +52,11 @@ final class KeysService: @unchecked Sendable {
         self.preferences = AppPreferences(catalog: catalog)
         ModelPrices.loadAtStartup()
         Providers.loadAtStartup()
+        // Custom providers are catalog rows like keys are, so they survive restarts. The overlay
+        // is process-wide because gateway lookups and checks go through the static Providers
+        // resolver; reinstalling it here is what keeps it in step with this catalog.
+        let custom = (try? catalog.listCustomProviders()) ?? []
+        Providers.setOverlay(Dictionary(custom.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
     }
 
     func add(
@@ -90,6 +95,149 @@ final class KeysService: @unchecked Sendable {
 
     func list() throws -> [CatalogRow] {
         try catalog.listCatalog()
+    }
+
+    // MARK: - Providers (the catalog entries keys point at)
+
+    /// Adds a user-owned provider to the catalog. No presence prompt: a provider is routing
+    /// metadata, not a secret. A custom id that matches a shipped one wins over it, which is
+    /// how a wrong host in the shipped file gets fixed without waiting for a release.
+    @discardableResult
+    func addProvider(
+        id: String,
+        name: String,
+        host: String? = nil,
+        api: String = "other",
+        authHeader: String = "Authorization",
+        authPrefix: String = "Bearer ",
+        pathPrefix: String = "",
+        keyPrefix: String? = nil,
+        note: String? = nil,
+        gateway: Bool = true
+    ) throws -> Providers.Record {
+        let trimmedID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        try ProviderID.validate(trimmedID)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, trimmedName.count <= 64,
+              !trimmedName.contains(where: { $0.isNewline }) else {
+            throw AppError.usage("provider name is required (at most one line, 64 characters)")
+        }
+        let trimmedAPI = api.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ["openai", "anthropic", "gemini", "other"].contains(trimmedAPI) else {
+            throw AppError.usage("api must be openai, anthropic, gemini or other")
+        }
+        let trimmedHeader = authHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedHeader.wholeMatch(of: /^[A-Za-z0-9-]{1,64}$/) != nil else {
+            throw AppError.usage("auth header must be a plain header name, e.g. x-api-key")
+        }
+        // Not trimmed: "Bearer " and "Token " carry the space that separates the scheme from
+        // the secret on the wire. Only newlines and length are refused here.
+        guard authPrefix.count <= 32, !authPrefix.contains(where: { $0.isNewline }) else {
+            throw AppError.usage("auth prefix must be at most 32 characters on one line")
+        }
+        var trimmedPath = pathPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedPath.hasPrefix("/") { trimmedPath = String(trimmedPath.dropFirst()) }
+        guard trimmedPath.count <= 200,
+              !trimmedPath.contains(where: { $0.isNewline || $0 == "\0" }),
+              !GatewayClientToken.hasDotSegment(trimmedPath) else {
+            throw AppError.usage("path prefix must be a clean path, e.g. v1")
+        }
+        let trimmedHost = try host.map { try GatewayHost.validate($0) }
+        let trimmedKeyPrefix = keyPrefix.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        if let trimmedKeyPrefix, trimmedKeyPrefix.count > 64 || trimmedKeyPrefix.contains(where: { $0.isNewline }) {
+            throw AppError.usage("key prefix hint must be at most 64 characters on one line")
+        }
+        let trimmedNote = note.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        if let trimmedNote, trimmedNote.count > 200 || trimmedNote.contains(where: { $0.isNewline }) {
+            throw AppError.usage("note must be at most 200 characters on one line")
+        }
+        let record = Providers.Record(
+            id: trimmedID,
+            name: trimmedName,
+            host: trimmedHost,
+            api: trimmedAPI,
+            authHeader: trimmedHeader,
+            authPrefix: authPrefix,
+            pathPrefix: trimmedPath.isEmpty ? "" : "/" + trimmedPath,
+            gateway: gateway,
+            group: "yours",
+            keyPrefix: trimmedKeyPrefix,
+            note: trimmedNote,
+            custom: true
+        )
+        try catalog.insertCustomProvider(record)
+        reinstallOverlay()
+        return record
+    }
+
+    /// Removes a user-added provider. A built-in one is refused: hiding it is the supported
+    /// way to take it out of the Add dialog, and deleting a provider a key still points at
+    /// would silently turn that key's gateway off.
+    func removeProvider(id: String) throws {
+        try ProviderID.validate(id)
+        guard try catalog.customProviderExists(id: id) else {
+            if Providers.cache.value.byID[id] != nil {
+                throw AppError.usage("\(id) is a built-in provider; hide it instead: keys provider hide \(id)")
+            }
+            throw AppError.notFound(id)
+        }
+        let referring = try catalog.listCatalog().filter { $0.provider == id }.map(\.name)
+        guard referring.isEmpty else {
+            throw AppError.usage(
+                "\(id) is used by \(referring.joined(separator: ", ")); "
+                    + "delete or edit those keys first, or hide the provider instead"
+            )
+        }
+        guard try catalog.deleteCustomProvider(id: id) else { throw AppError.notFound(id) }
+        reinstallOverlay()
+    }
+
+    /// Hides or unhides a built-in provider in this catalog only; the record still resolves,
+    /// so keys that already use it keep their gateway, checks and name. A user-added provider
+    /// is removed instead; hiding exists so the shipped list can be slimmed without a fork.
+    func setProviderHidden(id: String, hidden: Bool) throws {
+        try ProviderID.validate(id)
+        if try catalog.customProviderExists(id: id) {
+            throw AppError.usage("\(id) is a provider you added; remove it with keys provider rm \(id)")
+        }
+        guard Providers.cache.value.byID[id] != nil else { throw AppError.notFound(id) }
+        var ids = try catalog.hiddenProviderIds()
+        if hidden {
+            ids.insert(id)
+        } else {
+            ids.remove(id)
+        }
+        try catalog.setHiddenProviderIds(ids)
+    }
+
+    private func reinstallOverlay() {
+        let custom = (try? catalog.listCustomProviders()) ?? []
+        Providers.setOverlay(Dictionary(custom.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
+    }
+
+    /// The catalog the dashboard uses: the user's providers first, then the shipped ones, with
+    /// hidden entries still present (flagged) so the key table can render their names.
+    func providersJSONObject() throws -> [String: Any] {
+        let hiddenIDs = try catalog.hiddenProviderIds()
+        var groups: [[String: Any]] = [["id": "yours", "name": "Yours"]]
+        groups += Providers.builtinGroups().map { group in
+            [
+                "id": group["id"] ?? "",
+                "name": group["name"] ?? group["id"] ?? "",
+            ] as [String: Any]
+        }
+        let custom = (try? catalog.listCustomProviders()) ?? []
+        let customIDs = Set(custom.map(\.id))
+        var providers: [[String: Any]] = custom.map { $0.jsonObject(hiddenReason: nil) }
+        for record in Providers.builtinList() {
+            // A custom record with the same id has already replaced it above.
+            if customIDs.contains(record.id) { continue }
+            let reason = record.hidden ? "app" : hiddenIDs.contains(record.id) ? "user" : nil
+            providers.append(record.jsonObject(hiddenReason: reason))
+        }
+        return ["groups": groups, "providers": providers]
     }
 
     func listJSONObject() throws -> [[String: Any]] {

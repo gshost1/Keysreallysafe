@@ -57,11 +57,13 @@ WINDOWS = frozenset({("claude_code", "5h"), ("claude_code", "weekly"), ("claude_
 # (a custom provider id is user-chosen text). test_collector pins the match.
 PROVIDERS = frozenset(
     "openai typesafe anthropic google xai mistral cohere deepseek moonshot zhipu dashscope minimax meta "
-    "perplexity openrouter haimaker ramp-router requesty portkey helicone kilo vercel-ai-gateway "
-    "cloudflare-ai-gateway groq together fireworks deepinfra cerebras sambanova novita hyperbolic nebius "
-    "baseten replicate huggingface lambda featherless azure-openai bedrock vertex cloudflare-workers-ai "
-    "watsonx nvidia elevenlabs deepgram assemblyai voyage jina tavily exa firecrawl brave-search fal "
-    "stability experiential-labs other".split()
+    "perplexity ai21 reka upstage stepfun baichuan hunyuan ernie spark doubao lingyi friendli "
+    "openrouter haimaker ramp-router requesty portkey helicone kilo vercel-ai-gateway kluster aimlapi "
+    "nano-gpt braintrust litellm cloudflare-ai-gateway groq together fireworks deepinfra cerebras sambanova "
+    "novita hyperbolic nebius baseten replicate huggingface lambda featherless databricks azure-openai "
+    "bedrock vertex cloudflare-workers-ai watsonx nvidia factory ollama lmstudio elevenlabs deepgram "
+    "assemblyai voyage jina tavily exa firecrawl brave-search fal stability nomic serper pinecone qdrant "
+    "algolia resend postmark github stripe experiential-labs other".split()
 )
 # Model ids are free text a provider or deployment can choose (fine-tunes and
 # Azure deployments carry organisation names, often after a public prefix like

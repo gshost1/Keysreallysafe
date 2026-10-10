@@ -10,24 +10,59 @@ enum Providers {
         var authPrefix: String
         var pathPrefix: String
         var gateway: Bool
+        /// Group the picker shows the record under (labs, routers, …). Nil only for a broken entry.
+        var group: String? = nil
+        /// Secret prefix hint the Add dialog guesses the provider from (e.g. "sk-ant-").
+        var keyPrefix: String? = nil
+        /// Shown when the provider asks for a per-account host.
+        var note: String? = nil
+        /// Not offered in the Add dialog any more, but still resolves so existing keys keep working.
+        var hidden: Bool = false
+        /// Added by the user rather than shipped; removable, and it wins over a built-in id.
+        var custom: Bool = false
     }
 
     struct Catalog: Sendable {
         var raw: Data
+        var groups: [[String: String]]
+        var list: [Record]
         var byID: [String: Record]
     }
 
     static let cache = FixtureCache<Catalog>(
         fileName: "providers.json", envKey: "KEYS_PROVIDERS_JSON", missing: "providers.json missing or empty",
-        fallback: Catalog(raw: Data("{}".utf8), byID: [:]), parse: parse
+        fallback: Catalog(raw: Data("{}".utf8), groups: [], list: [], byID: [:]), parse: parse
     )
+
+    /// Providers the user added, keyed by id. Takes precedence over the shipped file, so a
+    /// custom record can extend the catalog or deliberately override a built-in entry. Guarded
+    /// like the fixture cache because both are process-wide and read from any queue.
+    private static let overlayLock = NSLock()
+    nonisolated(unsafe) private static var overlay: [String: Record] = [:]
+
+    static func setOverlay(_ records: [String: Record]) {
+        overlayLock.lock()
+        overlay = records
+        overlayLock.unlock()
+    }
 
     static func loadAtStartup() {
         _ = cache.value
     }
 
     static func provider(id: String) -> Record? {
-        cache.value.byID[id]
+        if let custom = overlayLock.withLock({ overlay[id] }) { return custom }
+        return cache.value.byID[id]
+    }
+
+    /// Shipped records in file order, for the merged listing. Hidden ones stay in; the listing
+    /// flags them and the callers that must not show them skip the flag.
+    static func builtinList() -> [Record] {
+        cache.value.list
+    }
+
+    static func builtinGroups() -> [[String: String]] {
+        cache.value.groups
     }
 
     /// Bytes of `providers.json` as loaded; the dashboard fetches the same file from Web/.
@@ -39,12 +74,18 @@ enum Providers {
         guard let root = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
               let list = root["providers"] as? [Any]
         else { return nil }
+        let groups = (root["groups"] as? [Any])?.compactMap { group -> [String: String]? in
+            guard let obj = JSONValue.object(group),
+                  let id = JSONValue.string(obj["id"]) else { return nil }
+            return ["id": id, "name": JSONValue.string(obj["name"]) ?? id]
+        } ?? []
         var byID: [String: Record] = [:]
+        var ordered: [Record] = []
         for item in list {
             guard let obj = JSONValue.object(item),
                   let id = JSONValue.string(obj["id"])
             else { continue }
-            byID[id] = Record(
+            let record = Record(
                 id: id,
                 name: JSONValue.string(obj["name"]) ?? id,
                 host: JSONValue.string(obj["host"]),
@@ -52,10 +93,16 @@ enum Providers {
                 authHeader: JSONValue.string(obj["auth_header"]) ?? "Authorization",
                 authPrefix: stringAllowEmpty(obj["auth_prefix"]) ?? "Bearer ",
                 pathPrefix: stringAllowEmpty(obj["path_prefix"]) ?? "",
-                gateway: JSONValue.bool(obj["gateway"]) ?? true
+                gateway: JSONValue.bool(obj["gateway"]) ?? true,
+                group: JSONValue.string(obj["group"]),
+                keyPrefix: JSONValue.string(obj["key_prefix"]),
+                note: JSONValue.string(obj["note"]),
+                hidden: JSONValue.bool(obj["hidden"]) ?? false
             )
+            byID[id] = record
+            ordered.append(record)
         }
-        return Catalog(raw: data, byID: byID)
+        return Catalog(raw: data, groups: groups, list: ordered, byID: byID)
     }
 
     private static func stringAllowEmpty(_ any: Any?) -> String? {
@@ -65,7 +112,42 @@ enum Providers {
     }
 }
 
+enum ProviderID {
+    /// Same shape as the shipped ids (anthropic, azure-openai, …): one word the user can also
+    /// type free-hand into the Add dialog, so it must survive as a catalog row's `provider`.
+    static func validate(_ id: String) throws {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= 40, trimmed.wholeMatch(of: /^[a-z0-9][a-z0-9-]*$/) != nil else {
+            throw AppError.usage(
+                "invalid provider id \(trimmed.debugDescription) (lowercase letters, digits and dashes, e.g. my-gateway)"
+            )
+        }
+    }
+}
+
 extension Providers.Record {
+    /// The dashboard's catalog shape (`/api/providers`), one record. `hiddenReason` is
+    /// "app" when the shipped catalog retired it and "user" when it was hidden here; the
+    /// picker skips either, while the key table still resolves names from them.
+    func jsonObject(group: String? = nil, hiddenReason: String? = nil) -> [String: Any] {
+        var out: [String: Any] = [
+            "id": id,
+            "name": name,
+            "api": api,
+            "auth_header": authHeader,
+            "auth_prefix": authPrefix,
+            "path_prefix": pathPrefix,
+            "gateway": gateway,
+            "custom": custom,
+        ]
+        out["group"] = (group ?? self.group) as Any? ?? NSNull()
+        out["host"] = host as Any? ?? NSNull()
+        out["key_prefix"] = keyPrefix as Any? ?? NSNull()
+        out["note"] = note as Any? ?? NSNull()
+        out["hidden"] = hiddenReason as Any? ?? NSNull()
+        return out
+    }
+
     /// The authenticated request to this provider. Caller headers go on first, then identity
     /// encoding, then the provider's auth header, so a caller's own copy of that header
     /// (xi-api-key, x-portkey-api-key, X-Subscription-Token, ...) never replaces the vault

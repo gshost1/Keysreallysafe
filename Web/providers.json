@@ -17,6 +17,10 @@
       "name": "Clouds"
     },
     {
+      "id": "local",
+      "name": "Local"
+    },
+    {
       "id": "non-chat",
       "name": "Non-chat"
     }
@@ -29,6 +33,7 @@
     "host": "omitted when the host is per account; the key row must carry it",
     "key_prefix": "secret prefix hint for the Add dialog, omitted if none",
     "gateway": "false when the vendor needs request signing or OAuth, so it cannot be proxied; omitted means true",
+    "hidden": "true when the entry is no longer offered for new keys but still resolves, so keys that already use it keep their gateway, checks and name; omitted means offered",
     "note": "shown when asking for a per-account host; omitted if none"
   },
   "providers": [
@@ -39,7 +44,8 @@
       "host": "api.openai.com",
       "api": "openai",
       "path_prefix": "/v1",
-      "key_prefix": "sk-"
+      "key_prefix": "sk-",
+      "hidden": true
     },
     {
       "id": "typesafe",
@@ -153,6 +159,96 @@
       "host": "api.perplexity.ai",
       "api": "openai",
       "key_prefix": "pplx-"
+    },
+    {
+      "id": "ai21",
+      "name": "AI21 Labs",
+      "group": "labs",
+      "host": "api.ai21.com",
+      "api": "openai",
+      "path_prefix": "/studio/v1"
+    },
+    {
+      "id": "reka",
+      "name": "Reka",
+      "group": "labs",
+      "host": "api.reka.ai",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "upstage",
+      "name": "Upstage",
+      "group": "labs",
+      "host": "api.upstageai.com",
+      "api": "openai",
+      "path_prefix": "/solar/v1"
+    },
+    {
+      "id": "stepfun",
+      "name": "StepFun",
+      "group": "labs",
+      "host": "api.stepfun.com",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "baichuan",
+      "name": "Baichuan",
+      "group": "labs",
+      "host": "api.baichuan-ai.com",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "hunyuan",
+      "name": "Tencent Hunyuan",
+      "group": "labs",
+      "host": "api.hunyuan.cloud.tencent.com",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "ernie",
+      "name": "Baidu ERNIE",
+      "group": "labs",
+      "host": "qianfan.baidubce.com",
+      "api": "openai",
+      "path_prefix": "/v2"
+    },
+    {
+      "id": "spark",
+      "name": "iFlytek Spark",
+      "group": "labs",
+      "host": "spark-api-open.xf-yun.com",
+      "api": "openai",
+      "path_prefix": "/v1",
+      "note": "OpenAI-style endpoint; the secret is the Spark APIPassword."
+    },
+    {
+      "id": "doubao",
+      "name": "Volcengine Doubao",
+      "group": "labs",
+      "host": "ark.cn-beijing.volces.com",
+      "api": "openai",
+      "path_prefix": "/api/v3",
+      "note": "Volcengine Ark, cn-beijing; set the host per key for another region."
+    },
+    {
+      "id": "lingyi",
+      "name": "01.AI (Yi)",
+      "group": "labs",
+      "host": "api.lingyiwanwu.com",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "friendli",
+      "name": "FriendliAI",
+      "group": "labs",
+      "host": "inference.friendli.ai",
+      "api": "openai",
+      "path_prefix": "/v1"
     },
     {
       "id": "openrouter",
@@ -350,6 +446,14 @@
       "path_prefix": "/v1"
     },
     {
+      "id": "databricks",
+      "name": "Databricks",
+      "group": "hosts",
+      "api": "openai",
+      "path_prefix": "/serving-endpoints",
+      "note": "Host is per workspace: <name>.databricks.com. Set per key; the model is the endpoint name."
+    },
+    {
       "id": "azure-openai",
       "name": "Azure OpenAI",
       "group": "clouds",
@@ -397,6 +501,31 @@
       "api": "openai",
       "path_prefix": "/v1",
       "key_prefix": "nvapi-"
+    },
+    {
+      "id": "factory",
+      "name": "Factory (Droid)",
+      "group": "clouds",
+      "host": "api.factory.ai",
+      "note": "The Factory platform API behind Droid: sessions, exec, wiki."
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "group": "local",
+      "host": "127.0.0.1:11434",
+      "api": "openai",
+      "path_prefix": "/v1",
+      "note": "Local server; any placeholder secret works unless OLLAMA_API_KEY is set on it."
+    },
+    {
+      "id": "lmstudio",
+      "name": "LM Studio",
+      "group": "local",
+      "host": "127.0.0.1:1234",
+      "api": "openai",
+      "path_prefix": "/v1",
+      "note": "Local server; any placeholder secret works."
     },
     {
       "id": "elevenlabs",
@@ -490,6 +619,75 @@
       "key_prefix": "sk-"
     },
     {
+      "id": "nomic",
+      "name": "Nomic (embeddings)",
+      "group": "non-chat",
+      "host": "api.nomic.ai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "serper",
+      "name": "Serper (search)",
+      "group": "non-chat",
+      "host": "google.serper.dev",
+      "auth_header": "X-API-KEY",
+      "auth_prefix": ""
+    },
+    {
+      "id": "pinecone",
+      "name": "Pinecone",
+      "group": "non-chat",
+      "host": "api.pinecone.io",
+      "auth_header": "Api-Key",
+      "auth_prefix": "",
+      "note": "Control-plane host. An index's data plane is per-index; set the host per key for it."
+    },
+    {
+      "id": "qdrant",
+      "name": "Qdrant Cloud",
+      "group": "non-chat",
+      "auth_header": "api-key",
+      "auth_prefix": "",
+      "note": "Host is per cluster: <cluster>.qdrant.io. Set per key."
+    },
+    {
+      "id": "algolia",
+      "name": "Algolia",
+      "group": "non-chat",
+      "auth_header": "X-Algolia-API-Key",
+      "auth_prefix": "",
+      "note": "Host is per application: <app-id>.algolia.net. Set per key, and send X-Algolia-Application-Id as a caller header; the gateway adds the key header."
+    },
+    {
+      "id": "resend",
+      "name": "Resend (email)",
+      "group": "non-chat",
+      "host": "api.resend.com",
+      "key_prefix": "re_"
+    },
+    {
+      "id": "postmark",
+      "name": "Postmark (email)",
+      "group": "non-chat",
+      "host": "api.postmarkapp.com",
+      "auth_header": "X-Postmark-Server-Token",
+      "auth_prefix": ""
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "group": "non-chat",
+      "host": "api.github.com",
+      "note": "A fine-grained PAT scoped to what the agent needs."
+    },
+    {
+      "id": "stripe",
+      "name": "Stripe",
+      "group": "non-chat",
+      "host": "api.stripe.com",
+      "key_prefix": "sk_"
+    },
+    {
       "id": "experiential-labs",
       "name": "Experiential Labs",
       "group": "routers",
@@ -497,6 +695,45 @@
       "api": "openai",
       "path_prefix": "/v1",
       "note": "Gateway with virtual keys; OpenAI-shaped, /v1/models answers (checked 2026-09-06)."
+    },
+    {
+      "id": "kluster",
+      "name": "Kluster",
+      "group": "routers",
+      "host": "api.kluster.ai",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "aimlapi",
+      "name": "AI/ML API",
+      "group": "routers",
+      "host": "api.aimlapi.com",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "nano-gpt",
+      "name": "NanoGPT",
+      "group": "routers",
+      "host": "nano-gpt.com",
+      "api": "openai",
+      "path_prefix": "/api/v1"
+    },
+    {
+      "id": "braintrust",
+      "name": "Braintrust",
+      "group": "routers",
+      "host": "api.braintrust.dev",
+      "api": "openai",
+      "path_prefix": "/v1"
+    },
+    {
+      "id": "litellm",
+      "name": "LiteLLM (self-hosted)",
+      "group": "routers",
+      "api": "openai",
+      "note": "Your own LiteLLM proxy; set the host per key (commonly 127.0.0.1:4000)."
     }
   ]
 }

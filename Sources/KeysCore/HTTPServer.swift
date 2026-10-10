@@ -152,6 +152,12 @@ final class APIHandler: @unchecked Sendable {
                 return try keysAdd(request)
             case (_, let p) where p.hasPrefix("/api/keys/"):
                 return try keyRequest(request, path: p)
+            case ("GET", "/api/providers"):
+                return HTTPResponse.json(200, try service.providersJSONObject())
+            case ("POST", "/api/providers"):
+                return try providersAdd(request)
+            case (_, let p) where p.hasPrefix("/api/providers/"):
+                return try providersItem(request, path: p)
             case ("POST", "/api/ingest"):
                 return try ingest(request)
             case ("GET", _) where !path.hasPrefix("/api/"):
@@ -296,6 +302,54 @@ final class APIHandler: @unchecked Sendable {
             throw AppError.usage("invalid json")
         }
         return obj
+    }
+
+    private func providersAdd(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        func field(_ key: String) -> String? {
+            guard obj.keys.contains(key), !(obj[key] is NSNull) else { return nil }
+            return (obj[key] as? String).map { $0 }
+        }
+        guard let id = field("id"), let name = field("name") else {
+            return HTTPResponse.json(400, ["error": "id and name are required"])
+        }
+        let record = try service.addProvider(
+            id: id,
+            name: name,
+            host: field("host"),
+            api: field("api") ?? "other",
+            authHeader: field("auth_header") ?? "Authorization",
+            authPrefix: field("auth_prefix") ?? "Bearer ",
+            pathPrefix: field("path_prefix") ?? "",
+            keyPrefix: field("key_prefix"),
+            note: field("note"),
+            gateway: JSONValue.bool(obj["gateway"]) ?? true
+        )
+        return HTTPResponse.json(201, record.jsonObject())
+    }
+
+    /// DELETE removes a user-added provider; PATCH hides or unhides a built-in one.
+    private func providersItem(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
+        let id = String(path.dropFirst("/api/providers/".count))
+        try ProviderID.validate(id)
+        switch request.method {
+        case "DELETE":
+            try service.removeProvider(id: id)
+            return HTTPResponse.json(200, ["removed": id])
+        case "PATCH":
+            let obj = try jsonBody(request)
+            guard let hidden = JSONValue.bool(obj["hidden"]) else {
+                return HTTPResponse.json(400, ["error": "hidden is required"])
+            }
+            try service.setProviderHidden(id: id, hidden: hidden)
+            let listing = (try service.providersJSONObject())["providers"] as? [[String: Any]] ?? []
+            guard let record = listing.first(where: { $0["id"] as? String == id }) else {
+                return HTTPResponse.json(404, ["error": "not_found"])
+            }
+            return HTTPResponse.json(200, record)
+        default:
+            return HTTPResponse.json(405, ["error": "method_not_allowed"])
+        }
     }
 
     private func keysGateway(_ request: HTTPRequest, name: String) throws -> HTTPResponse {

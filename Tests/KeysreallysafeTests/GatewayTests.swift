@@ -13,7 +13,10 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(Providers.provider(id: "bedrock")?.gateway, false)
         let root = try JSONSerialization.jsonObject(with: Providers.rawJSON()) as! [String: Any]
         let list = root["providers"] as! [Any]
-        XCTAssertEqual(list.count, 55)
+        XCTAssertEqual(list.count, 84)
+        // Removed from the Add dialog, but still resolvable so existing keys keep working.
+        XCTAssertEqual(Providers.provider(id: "openai")?.hidden, true)
+        XCTAssertEqual(Providers.builtinList().filter { !$0.hidden }.count, 83)
         XCTAssertEqual(Providers.provider(id: "typesafe")?.host, "api.typesafe.ai")
         XCTAssertEqual(Providers.provider(id: "typesafe")?.pathPrefix, "")
     }

@@ -166,6 +166,21 @@ final class CatalogDB: @unchecked Sendable {
             );
             """)
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
+        try exec("""
+            CREATE TABLE IF NOT EXISTS custom_providers (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              host TEXT,
+              api TEXT NOT NULL DEFAULT 'other',
+              auth_header TEXT NOT NULL DEFAULT 'Authorization',
+              auth_prefix TEXT NOT NULL DEFAULT 'Bearer ',
+              path_prefix TEXT NOT NULL DEFAULT '',
+              key_prefix TEXT,
+              note TEXT,
+              gateway INTEGER NOT NULL DEFAULT 1,
+              created_at TEXT NOT NULL
+            );
+            """)
         // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
         // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
         // the main file nor the WAL keeps the old page images. The vacuum is best effort.
@@ -268,6 +283,75 @@ final class CatalogDB: @unchecked Sendable {
             INSERT INTO meta (key, value) VALUES (?, ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value;
             """, key, value)
+    }
+
+    // MARK: - Custom providers (user-added catalog entries)
+
+    /// Built-in provider ids the user hid from the Add dialog, as a JSON array under meta.
+    static let hiddenProvidersKey = "hidden_providers"
+
+    func hiddenProviderIds() throws -> Set<String> {
+        guard let raw = try metaValue(Self.hiddenProvidersKey),
+              let ids = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String] else {
+            return []
+        }
+        return Set(ids)
+    }
+
+    func setHiddenProviderIds(_ ids: Set<String>) throws {
+        let sorted = ids.sorted()
+        let data = try JSONSerialization.data(withJSONObject: sorted.isEmpty ? [] : sorted)
+        try setMeta(Self.hiddenProvidersKey, String(decoding: data, as: UTF8.self))
+    }
+
+    func listCustomProviders() throws -> [Providers.Record] {
+        try query(
+            "SELECT id, name, host, api, auth_header, auth_prefix, path_prefix, key_prefix, note, gateway "
+                + "FROM custom_providers ORDER BY created_at, id;"
+        ) { stmt in
+            Providers.Record(
+                id: columnText(stmt, 0) ?? "",
+                name: columnText(stmt, 1) ?? "",
+                host: columnText(stmt, 2),
+                api: columnText(stmt, 3) ?? "other",
+                authHeader: columnText(stmt, 4) ?? "Authorization",
+                authPrefix: columnText(stmt, 5) ?? "Bearer ",
+                pathPrefix: columnText(stmt, 6) ?? "",
+                gateway: sqlite3_column_int64(stmt, 9) != 0,
+                group: "yours",
+                keyPrefix: columnText(stmt, 7),
+                note: columnText(stmt, 8),
+                custom: true
+            )
+        }
+    }
+
+    func customProviderExists(id: String) throws -> Bool {
+        try one("SELECT 1 FROM custom_providers WHERE id = ?;", id) { _ in true } ?? false
+    }
+
+    func insertCustomProvider(_ record: Providers.Record) throws {
+        try withLock {
+            do {
+                try run(
+                    """
+                    INSERT INTO custom_providers
+                      (id, name, host, api, auth_header, auth_prefix, path_prefix, key_prefix, note, gateway, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    record.id, record.name, record.host, record.api, record.authHeader, record.authPrefix,
+                    record.pathPrefix, record.keyPrefix, record.note, record.gateway ? 1 : 0, UTC.iso(Date())
+                )
+            } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
+                throw AppError.alreadyExists(record.id)
+            }
+        }
+    }
+
+    /// True when the row existed; false means it was never there.
+    @discardableResult
+    func deleteCustomProvider(id: String) throws -> Bool {
+        try withLock { try run("DELETE FROM custom_providers WHERE id = ?;", id) > 0 }
     }
 
     private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version"

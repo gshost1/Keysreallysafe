@@ -30,6 +30,8 @@ public struct KeysCLI: ParsableCommand {
             MenubarCommand.self,
             AutostartCommand.self,
             ClientCommand.self,
+            ProvidersCommand.self,
+            ProviderCommand.self,
             PurgeCommand.self,
         ]
     )
@@ -706,5 +708,170 @@ struct PurgeCommand: ParsableCommand {
         let service = try AppFactory.makeService()
         try service.purge(confirmation: answer)
         print("purged catalog and keychain service keysreallysafe")
+    }
+}
+
+// MARK: - Providers (the catalog keys point at)
+
+struct ProvidersCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "providers",
+        abstract: "List the provider catalog: the shipped entries plus yours."
+    )
+
+    @Flag var json = false
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let listing = try service.providersJSONObject()
+        if json {
+            try JSONValue.printLine(listing)
+            return
+        }
+        let providers = (listing["providers"] as? [Any])?.compactMap { JSONValue.object($0) } ?? []
+        if providers.isEmpty {
+            print("no providers loaded")
+            return
+        }
+        print("ID\tNAME\tGROUP\tHOST\tGATEWAY\tSTATE")
+        for p in providers {
+            let id = JSONValue.string(p["id"]) ?? ""
+            let name = JSONValue.string(p["name"]) ?? id
+            let group = JSONValue.string(p["group"]) ?? "-"
+            let host = JSONValue.string(p["host"]) ?? "-"
+            let gateway = (JSONValue.bool(p["gateway"]) ?? true) ? "yes" : "no"
+            let custom = JSONValue.bool(p["custom"]) ?? false
+            let hidden = JSONValue.string(p["hidden"]) ?? ""
+            let state = custom ? "yours" : (hidden.isEmpty ? "built-in" : hidden == "app" ? "retired" : "hidden")
+            print("\(id)\t\(name)\t\(group)\t\(host)\t\(gateway)\t\(state)")
+        }
+    }
+}
+
+struct ProviderCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "provider",
+        abstract: "Add, remove or hide a provider.",
+        subcommands: [
+            ProviderAddCommand.self,
+            ProviderRmCommand.self,
+            ProviderHideCommand.self,
+            ProviderUnhideCommand.self,
+        ]
+    )
+}
+
+struct ProviderAddCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "add",
+        abstract: "Add a provider to the catalog (routing metadata, never a secret).",
+        usage: "keys provider add <id> --name <name> [--host <host>] [options]",
+        discussion: """
+            A provider is how the gateway forwards and prices a key. Yours live in the catalog \
+            beside your keys and survive restarts; an id that matches a shipped entry wins over \
+            it, which is how a wrong host gets fixed without waiting for a release. `api` picks \
+            the usage parser: openai (chat-completions and responses), anthropic (messages), \
+            gemini (generateContent) or other (requests are counted, tokens are not).
+            """
+    )
+
+    @Argument(help: "Provider id: lowercase letters, digits and dashes, e.g. my-gateway.") var id: String
+    @Option(help: "Display name.") var name: String
+    @Option(help: "API host, e.g. api.example.com. Omit when each account has its own.") var host: String?
+    @Option(help: "Usage parser: openai, anthropic, gemini or other. Default other.") var api: String = "other"
+    @Option(name: .customLong("auth-header"), help: "Header the secret goes into. Default Authorization.") var authHeader: String = "Authorization"
+    @Option(name: .customLong("auth-prefix"), help: "Prefix in front of the secret, e.g. \"Bearer \". Default \"Bearer \".") var authPrefix: String = "Bearer "
+    @Option(name: .customLong("path-prefix"), help: "Prefix added to the client's path, e.g. v1.") var pathPrefix: String = ""
+    @Option(name: .customLong("key-prefix"), help: "Secret prefix hint for the Add dialog, e.g. sk-.") var keyPrefix: String?
+    @Option(help: "Shown when the provider asks for a per-account host.") var note: String?
+    @Flag(name: .customLong("no-gateway"), help: "The vendor needs request signing or OAuth, so it cannot be proxied.") var noGateway = false
+
+    func run() throws {
+        let payload: [String: Any] = [
+            "id": id,
+            "name": name,
+            "host": host as Any? ?? NSNull(),
+            "api": api,
+            "auth_header": authHeader,
+            "auth_prefix": authPrefix,
+            "path_prefix": pathPrefix,
+            "key_prefix": keyPrefix as Any? ?? NSNull(),
+            "note": note as Any? ?? NSNull(),
+            "gateway": !noGateway,
+        ]
+        let service = try AppFactory.makeService()
+        if let client = try? ControlClient.connect(),
+           (try? client.call(method: "POST", path: "/api/providers", body: payload, expect: 201)) != nil {
+            print("added provider \(id)")
+            return
+        }
+        // A live site that answered with an error would have thrown above; either way the
+        // direct write reports the real problem.
+        _ = try service.addProvider(
+            id: id, name: name, host: host, api: api, authHeader: authHeader, authPrefix: authPrefix,
+            pathPrefix: pathPrefix, keyPrefix: keyPrefix, note: note, gateway: !noGateway
+        )
+        print("added provider \(id)")
+        fputs("no Keysrs site is running; it takes effect when one next starts\n", stderr)
+    }
+}
+
+struct ProviderRmCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "rm",
+        abstract: "Remove a provider you added. Built-in ones are hidden instead."
+    )
+
+    @Argument(help: "Provider id.") var id: String
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        if let client = try? ControlClient.connect(),
+           (try? client.call(method: "DELETE", path: "/api/providers/\(id)", expect: 200)) != nil {
+            print("removed provider \(id)")
+            return
+        }
+        try service.removeProvider(id: id)
+        print("removed provider \(id)")
+        fputs("no Keysrs site is running; it takes effect when one next starts\n", stderr)
+    }
+}
+
+struct ProviderHideCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "hide",
+        abstract: "Take a built-in provider out of the Add dialog. Keys using it keep working."
+    )
+
+    @Argument(help: "Provider id.") var id: String
+
+    func run() throws {
+        try ProviderHideCommand.setHidden(true, id: id)
+    }
+
+    /// A hide change goes through the running site when one is up, the same way grants do,
+    /// so its view of the catalog changes with the database.
+    static func setHidden(_ hidden: Bool, id: String) throws {
+        let service = try AppFactory.makeService()
+        if let client = try? ControlClient.connect(),
+           (try? client.call(method: "PATCH", path: "/api/providers/\(id)", body: ["hidden": hidden], expect: 200)) != nil {
+            print(hidden ? "hid provider \(id)" : "unhid provider \(id)")
+            return
+        }
+        try service.setProviderHidden(id: id, hidden: hidden)
+        print(hidden ? "hid provider \(id)" : "unhid provider \(id)")
+    }
+}
+
+struct ProviderUnhideCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "unhide",
+        abstract: "Put a hidden built-in provider back into the Add dialog."
+    )
+
+    @Argument(help: "Provider id.") var id: String
+
+    func run() throws {
+        try ProviderHideCommand.setHidden(false, id: id)
     }
 }

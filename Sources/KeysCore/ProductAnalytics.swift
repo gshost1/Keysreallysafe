@@ -443,11 +443,13 @@ final class ProductAnalytics: @unchecked Sendable {
     /// the same list and a test on each side pins it to the fixture.
     static let providers: Set<String> = Set((
         "openai typesafe anthropic google xai mistral cohere deepseek moonshot zhipu dashscope minimax meta "
-        + "perplexity openrouter haimaker ramp-router requesty portkey helicone kilo vercel-ai-gateway "
-        + "cloudflare-ai-gateway groq together fireworks deepinfra cerebras sambanova novita hyperbolic nebius "
-        + "baseten replicate huggingface lambda featherless azure-openai bedrock vertex cloudflare-workers-ai "
-        + "watsonx nvidia elevenlabs deepgram assemblyai voyage jina tavily exa firecrawl brave-search fal "
-        + "stability experiential-labs"
+        + "perplexity ai21 reka upstage stepfun baichuan hunyuan ernie spark doubao lingyi friendli "
+        + "openrouter haimaker ramp-router requesty portkey helicone kilo vercel-ai-gateway kluster aimlapi "
+        + "nano-gpt braintrust litellm cloudflare-ai-gateway groq together fireworks deepinfra cerebras sambanova "
+        + "novita hyperbolic nebius baseten replicate huggingface lambda featherless databricks azure-openai "
+        + "bedrock vertex cloudflare-workers-ai watsonx nvidia factory ollama lmstudio elevenlabs deepgram "
+        + "assemblyai voyage jina tavily exa firecrawl brave-search fal stability nomic serper pinecone qdrant "
+        + "algolia resend postmark github stripe experiential-labs"
     ).split(separator: " ").map(String.init))
     /// Model ids are free text a provider or deployment can choose (fine-tunes
     /// and Azure deployments carry organisation names, often after a public
