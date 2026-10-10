@@ -84,7 +84,12 @@ Building the checkout does not change it; installing means
 opening it. Compare SHA-256 of the built bundle's `Contents/MacOS/keys` and
 the installed one to confirm. Don't quit and relaunch the app to "test" a
 menu bar fix without collecting evidence first (`menubar.log`, a process
-sample).
+sample). From 0.11.0 the app can also update itself in place: Check for
+Updates → Update Now downloads `Keysrs-arm64.dmg` from the latest GitHub
+release, verifies the checksum and the stable signing identity, swaps the
+bundle beside the old one and relaunches (`AppUpdater.swift`; the old bundle
+is removed by a helper after the process exits, and stale leftovers are
+swept on the next launch).
 
 0.9.x ran as the launchd agent `com.keysreallysafe.menubar` from
 `Application Support/Keysreallysafe/bin/keys`. That label and the plist path

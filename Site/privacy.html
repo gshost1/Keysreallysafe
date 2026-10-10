@@ -43,7 +43,7 @@
 <p>The app never reads other tools' authentication files (for example <code>~/.codex/auth.json</code> or <code>~/.grok/auth.json</code>), never opens provider websites, and never uses browser cookies or sessions.</p>
 
 <h2>Update check</h2>
-<p>From version 0.10, the app can check GitHub for a newer release. It is off by default: it runs when you choose Check for Updates, or at launch and once a day if you turn on Automatically Check for Updates. It asks GitHub's public releases API for the latest version number, sends no cookies and nothing from your data, and downloads nothing. GitHub, not us, receives that request under <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>.</p>
+<p>From version 0.10, the app can check GitHub for a newer release. It is off by default: it runs when you choose Check for Updates, or at launch and once a day if you turn on Automatically Check for Updates. It asks GitHub's public releases API for the latest version number and download address, sends no cookies and nothing from your data, and downloads nothing. From version 0.11, choosing Update Now downloads the release's disk image from GitHub and installs it in place after checking its checksum and Apple signature; the download happens only when you click Update Now. GitHub, not us, receives the request and the download under <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>.</p>
 
 <h2>What stays on your Mac</h2>
 <ul>

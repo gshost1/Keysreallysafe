@@ -12,6 +12,10 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     private var updateItem: NSMenuItem?
     private var updateTimer: Timer?
     private var checking = false
+    private weak var menubar: MenubarExtra?
+    private var installer: UpdateInstaller?
+    private var updateWindow: UpdateProgressWindow?
+    private var updating = false
 
     init(url: URL, preferences: AppPreferences) {
         self.url = url
@@ -52,6 +56,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     }
 
     func installMenu(extra: MenubarExtra) {
+        menubar = extra
         let main = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: "Keysrs")
@@ -142,11 +147,58 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         Task {
             defer { checking = false }
             do {
-                let latest = try await UpdateCheck.latestVersion()
-                if manual || UpdateCheck.isNewer(latest, than: ProductAnalyticsConfiguration.appVersion) {
-                    alert("Keysrs Updates", "Installed: \(ProductAnalyticsConfiguration.appVersion)\nLatest release: \(latest)\nDownloads are available at github.com/gshost1/Keysreallysafe/releases. Keysrs does not download or install updates.")
+                let release = try await UpdateCheck.latestRelease()
+                if UpdateCheck.isNewer(release.version, than: ProductAnalyticsConfiguration.appVersion) {
+                    offerUpdate(release)
+                } else if manual {
+                    alert("Keysrs Is Up to Date", "Keysrs \(ProductAnalyticsConfiguration.appVersion) is the newest release.")
                 }
             } catch { if manual { alert("Could Not Check for Updates", error.localizedDescription) } }
+        }
+    }
+
+    /// The one-click update. Update Now does the whole install from GitHub inside the app.
+    private func offerUpdate(_ release: ReleaseInfo) {
+        let prompt = NSAlert()
+        prompt.messageText = "Keysrs \(release.version) is available"
+        prompt.informativeText = "You have \(ProductAnalyticsConfiguration.appVersion). Update Now downloads the new version from GitHub, checks its checksum and Apple signature, replaces this copy and restarts. Keys and history are untouched."
+        prompt.addButton(withTitle: "Update Now")
+        prompt.addButton(withTitle: "Release Notes")
+        prompt.addButton(withTitle: "Later")
+        while true {
+            switch prompt.runModal() {
+            case .alertFirstButtonReturn:
+                startUpdate(release)
+                return
+            case .alertSecondButtonReturn:
+                if let notes = release.notes { NSWorkspace.shared.open(notes) }
+            default:
+                return
+            }
+        }
+    }
+
+    private func startUpdate(_ release: ReleaseInfo) {
+        guard !updating else { return }
+        updating = true
+        let pending = UpdateInstaller(release: release, app: Bundle.main.bundleURL)
+        pending.report = { [weak self] phase in self?.updateWindow?.update(phase) }
+        pending.quit = { [weak self] in
+            if let extra = self?.menubar { extra.quit() } else { NSApp.terminate(nil) }
+        }
+        installer = pending
+        updateWindow = UpdateProgressWindow { [weak self] in self?.installer?.cancel() }
+        updateWindow?.show()
+        Task {
+            do { try await pending.run() }
+            catch {
+                updateWindow?.close()
+                updateWindow = nil
+                installer = nil
+                updating = false
+                if error is CancellationError { return }
+                alert("Could Not Update", error.localizedDescription)
+            }
         }
     }
 

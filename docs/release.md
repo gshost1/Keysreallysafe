@@ -124,6 +124,17 @@ automated here:
 4. Only after those pass: tag and publish the GitHub release with the DMG
    under the same name.
 
+## In-app updates
+
+From 0.11.0 the app can update itself from the latest published release. It
+reads the latest-release API, so a release becomes visible to it only once
+published (not a draft, not a prerelease). It downloads the asset named
+`Keysrs-arm64.dmg`, verifies SHA-256 against the asset's `digest` (or a
+`Keysrs-arm64.dmg.sha256` sidecar asset, if one is uploaded), and requires
+the bundle's signing identity to match the installed copy exactly, so a
+release must be signed with the same persistent identity as the build it
+replaces or the updater refuses it with a clear message and changes nothing.
+
 ## Upgrading from 0.9.x
 
 0.9.x installed a launchd agent and a runtime under

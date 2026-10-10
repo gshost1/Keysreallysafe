@@ -36,11 +36,15 @@ Tool… in the Keysrs menu to link it as `~/.local/bin/keys`, and add
 `~/.local/bin` to your `PATH` if it is not there already. If you move the
 app, install the link again.
 
-**Updates.** Keysrs never updates itself. Check for Updates… in the Keysrs
-menu asks GitHub's latest-release API for the newest version number and
-nothing else. Automatically Check for Updates does the same at launch and
-once a day, and is off until you turn it on. To update, download the new
-disk image and replace Keysrs in Applications.
+**Updates.** Keysrs updates itself. Check for Updates… in the Keysrs menu
+asks GitHub's latest-release API what is newest; when there is a newer
+version, Update Now downloads the release's `Keysrs-arm64.dmg` from GitHub,
+checks its SHA-256 checksum and Apple code signature, replaces Keysrs where
+it is and restarts it. No Terminal, and keys, history and settings are
+untouched. Automatically Check for Updates does the same check at launch and
+once a day and is off until you turn it on; it reports the release and
+installs nothing until you click Update Now. The check sends no cookies and
+nothing from your data.
 
 **Upgrading from 0.9.x.** Open the new app once. It stops the old background
 agent (`com.keysreallysafe.menubar`), deletes its launchd plist and the old
@@ -76,8 +80,9 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   [self-hosted collector](Analytics/README.md).
 - Update checks are off by default. Check for Updates…, and Automatically
   Check for Updates once turned on, send one cookieless request to GitHub's
-  public latest-release API and read only the version number. Nothing from
-  the catalog goes with it, and nothing is downloaded or installed.
+  public latest-release API and read only the release's version and download
+  address. Nothing from the catalog goes with it. A download happens only
+  after you click Update Now, and it comes from GitHub's release for Keysrs.
 - No scraping. It does not open provider websites, cookies or browser sessions.
 - The usage catalog stores only counters and metadata. Gateway request bodies
   never reach that catalog.

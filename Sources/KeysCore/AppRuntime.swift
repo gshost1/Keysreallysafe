@@ -88,6 +88,9 @@ enum AppRuntime {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lock = try AppInstanceLock(root: root)
         defer { lock.close() }
+        // A previous one-click update can leave its set-aside bundle behind if the helper died;
+        // the names are the updater's own, so this never touches anything a person created.
+        AppUpdater.sweepStaleInstall(around: Bundle.main.bundleURL)
         let logURL = root.appendingPathComponent("menubar.log")
         func log(_ message: String) {
             let data = Data((UTC.iso(Date()) + " " + message + "\n").utf8)
@@ -173,7 +176,7 @@ extension CommandLineLink {
 }
 
 final class UpdateCheck: NSObject, URLSessionTaskDelegate, Sendable {
-    static func latestVersion() async throws -> String {
+    static func latestRelease() async throws -> ReleaseInfo {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
@@ -184,14 +187,13 @@ final class UpdateCheck: NSObject, URLSessionTaskDelegate, Sendable {
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         let (data, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw AppError.http("GitHub did not return a release.") }
-        return try parseVersion(data)
+        return try AppUpdater.parseRelease(data)
     }
 
     static func parseVersion(_ data: Data) throws -> String {
         struct Release: Decodable { let tag_name: String }
         let tag = try JSONDecoder().decode(Release.self, from: data).tag_name
-        let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-        guard version.range(of: "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$", options: .regularExpression) != nil else {
+        guard let version = AppUpdater.normalizedVersion(tag) else {
             throw AppError.http("GitHub returned an unsupported version string.")
         }
         return version
