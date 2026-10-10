@@ -32,6 +32,8 @@ public struct KeysCLI: ParsableCommand {
             ClientCommand.self,
             ProvidersCommand.self,
             ProviderCommand.self,
+            AgentCommand.self,
+            SetupCommand.self,
             PurgeCommand.self,
         ]
     )
@@ -875,3 +877,212 @@ struct ProviderUnhideCommand: ParsableCommand {
         try ProviderHideCommand.setHidden(false, id: id)
     }
 }
+
+// MARK: - Coding agents (setup and launch)
+
+struct AgentCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "agent",
+        abstract: "Launch a coding agent with a vault key behind the local gateway (one Touch ID).",
+        usage: "keys agent <agent> <key> [--minutes N] [--client] [--label <text>] [--] [args...]",
+        discussion: """
+            Claude Code, Codex, Grok and Droid are supported. One Touch ID mints a grant; the \
+            agent gets the gateway's URL and the grant token where it expects an API key, and \
+            the raw secret never leaves the vault. The grant is revoked when the agent exits, \
+            and also dies on screen lock or expiry. Run `keys setup <agent> --key <key>` once \
+            first for codex, grok and droid; Claude Code needs no setup.
+            """
+    )
+
+    @Argument(help: "claude, codex, grok or droid.") var agent: String
+    @Argument(help: "Vault key name.") var key: String
+    @Option(help: "Grant life in minutes (1 to 1440). Default \(CodingAgent.grantMinutes).") var minutes: Int = CodingAgent.grantMinutes
+    @Flag(help: "Mint a long-lived client token instead of a grant; it survives this launch (30 days).") var client = false
+    @Option(help: "Label for the client token with --client.") var label: String = ""
+    @Argument(parsing: .remaining, help: "Arguments passed to the agent after --.") var args: [String] = []
+
+    func run() throws {
+        let agent = try CodingAgent.parse(agent)
+        try KeyName.validate(key)
+        let service = try AppFactory.makeService()
+        guard let row = try service.list().first(where: { $0.name == key }) else { throw AppError.notFound(key) }
+        guard let provider = Providers.provider(id: row.provider) else {
+            throw AppError.usage("unknown provider \(row.provider); edit the key and pick one from the list")
+        }
+        guard agent.supportedAPIs.contains(provider.api) else {
+            throw AppError.usage(
+                "\(agent.displayName) speaks the \(agent.supportedAPIs.sorted().joined(separator: "/")) wire; "
+                    + "\(key) is a \(provider.name) key (\(provider.api)). "
+                    + "Supported: \(CodingAgent.allCases.map(\.displayName).joined(separator: ", "))."
+            )
+        }
+        if let home = agent.configHome {
+            let problem: String?
+            switch agent {
+            case .codex: problem = CodexSetup.verify(home: home, key: key, port: GatewayListener.port)
+            case .grok: problem = GrokSetup.verify(home: home, key: key, port: GatewayListener.port)
+            case .droid: problem = DroidSetup.verify(home: home, key: key, port: GatewayListener.port)
+            case .claude: problem = nil
+            }
+            if let problem { throw AppError.usage(problem) }
+        }
+
+        let token: String
+        var grantID: String?
+        if client {
+            let issued = try service.issueGatewayClient(
+                name: key,
+                label: label.isEmpty ? "\(agent.displayName) on this Mac" : label,
+                days: GatewayClientToken.defaultDays,
+                methods: ["POST", "GET"],
+                pathPrefix: nil,
+                caller: "agent"
+            )
+            token = issued.token
+            fputs(
+                "client #\(issued.client.id) for \(key) expires \(issued.client.expiresAt); "
+                    + "revoke with: keys client revoke \(key) \(issued.client.id)\n",
+                stderr
+            )
+        } else {
+            let control = try ControlClient.connect()
+            fputs("Touch ID in the Keysrs site…\n", stderr)
+            let obj = try control.call(
+                method: "POST", path: "/api/keys/\(key)/grants",
+                body: ["task": agent.task, "minutes": minutes, "methods": ["GET", "POST"], "caller": "agent"],
+                expect: 201
+            )
+            token = JSONValue.string(obj["token"]) ?? ""
+            grantID = JSONValue.string(obj["id"])
+            guard !token.isEmpty else { throw AppError.usage("the site returned no token") }
+        }
+
+        let env = agent.launchEnv(key: key, port: GatewayListener.port, token: token)
+        fputs(
+            "launching \(agent.executable) with \(key) (\(provider.name)) behind http://127.0.0.1:\(GatewayListener.port)/\(key)\n",
+            stderr
+        )
+        let status = try service.runner.run(argv: [agent.executable] + args, extraEnv: env)
+        if let grantID {
+            // The session is over; nothing should keep the token alive.
+            if let control = try? ControlClient.connect() {
+                _ = try? control.call(method: "DELETE", path: "/api/grants/\(grantID)", expect: 200)
+            }
+        }
+        Darwin.exit(status)
+    }
+}
+
+struct SetupCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "setup",
+        abstract: "Write a coding agent's config so it runs on a vault key through the local gateway.",
+        usage: "keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]",
+        discussion: """
+            Writes the agent's own config file, with a backup beside it: the gateway base URL \
+            for the key and the name of the environment variable `keys agent` fills with a \
+            fresh token at launch. No secret is ever written to a file. Droid gets a customModels \
+            entry in ~/.factory/settings.json, Codex a model_providers.keysrs block in \
+            ~/.codex/config.toml, Grok a model.keysrs block in ~/.grok/config.toml. Claude Code \
+            reads its base URL and token from the environment, so it needs no file.
+            """
+    )
+
+    @Argument(help: "claude, codex, grok or droid.") var agent: String
+    @Option(help: "Vault key name; defaults to the only key when there is exactly one.") var key: String?
+    @Option(help: "Model id the agent requests. Defaults to claude-sonnet-4-5-20250929 for Anthropic keys.") var model: String?
+    @Option(name: .customLong("display-name"), help: "Name the agent's model picker shows. Default: Keysrs <key>.") var displayName: String?
+    @Option(help: "Wire format override (droid: anthropic|openai|generic-chat-completion-api, codex: chat|responses).") var wire: String?
+    @Flag(name: .customLong("set-default"), help: "Codex only: also make keysrs the default provider and set the model.") var setDefault = false
+
+    func run() throws {
+        let agent = try CodingAgent.parse(agent)
+        let service = try AppFactory.makeService()
+        let rows = try service.list()
+        let row: CatalogRow
+        if let key {
+            try KeyName.validate(key)
+            guard let found = rows.first(where: { $0.name == key }) else { throw AppError.notFound(key) }
+            row = found
+        } else if rows.count == 1 {
+            row = rows[0]
+        } else if rows.isEmpty {
+            throw AppError.usage("no keys in the vault yet; add one first: keys add <name> --provider <provider>")
+        } else {
+            throw AppError.usage("name the key with --key (\(rows.map(\.name).joined(separator: ", ")))")
+        }
+        guard let provider = Providers.provider(id: row.provider) else {
+            throw AppError.usage("unknown provider \(row.provider); edit the key and pick one from the list")
+        }
+        guard agent.supportedAPIs.contains(provider.api) else {
+            throw AppError.usage(
+                "\(agent.displayName) speaks the \(agent.supportedAPIs.sorted().joined(separator: "/")) wire; "
+                    + "\(row.name) is a \(provider.name) key (\(provider.api))"
+            )
+        }
+        let model = try resolveModel(agent: agent, provider: provider, keyName: row.name)
+
+        switch agent {
+        case .claude:
+            let base = "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
+            print("Claude Code needs no config file; it reads two variables at launch.")
+            print("Either launch it through the vault (recommended, one Touch ID, no secret in the environment file):")
+            print("  keys agent claude \(row.name)")
+            print("Or export and run claude yourself with a token from: keys grant \(row.name)")
+            print("  export ANTHROPIC_BASE_URL=\(base)")
+            print("  export ANTHROPIC_AUTH_TOKEN=<grant or client token>")
+        case .codex:
+            let kind = try CodingAgent.codexWire(for: provider, override: wire)
+            let home = agent.configHome!
+            try CodexSetup.upsert(
+                home: home, key: row.name, port: GatewayListener.port, wire: kind,
+                setDefault: setDefault, model: setDefault ? model : nil
+            )
+            let url = CodexSetup.configURL(home: home)
+            print("wrote [\(CodexSetup.section)] in \(url.path)")
+            print(SetupCommand.backupNote(for: url))
+            if setDefault {
+                print("keysrs is now the default provider, model \(model)")
+            } else {
+                print("make it the default with: keys setup codex --key \(row.name) --model \(model) --set-default")
+            }
+            print("launch with: keys agent codex \(row.name) -- codex")
+        case .grok:
+            let home = agent.configHome!
+            try GrokSetup.upsert(home: home, key: row.name, port: GatewayListener.port, model: model)
+            print("wrote [\(GrokSetup.section)] in \(GrokSetup.configURL(home: home).path)")
+            print(SetupCommand.backupNote(for: GrokSetup.configURL(home: home)))
+            print("pick the model \"\(displayName ?? "Keysrs gateway")\" in grok (grok models lists it)")
+            print("launch with: keys agent grok \(row.name) -- grok")
+        case .droid:
+            let kind = try CodingAgent.droidProviderKind(for: provider, override: wire)
+            let name = displayName ?? "Keysrs \(row.name)"
+            try DroidSetup.upsert(
+                home: agent.configHome!, key: row.name, port: GatewayListener.port, model: model,
+                displayName: name, providerKind: kind, liveKeyNames: Set(rows.map(\.name))
+            )
+            print("wrote a customModels entry in \(DroidSetup.settingsURL(home: agent.configHome!).path)")
+            print(SetupCommand.backupNote(for: DroidSetup.settingsURL(home: agent.configHome!)))
+            print("launch with: keys agent droid \(row.name) -- droid, then pick \"\(name)\" with /model")
+            print("unattended (headless droid exec): keys client issue \(row.name) --label droid --days 90, then export \(CodingAgent.droid.tokenVar!)=…")
+        }
+    }
+
+    /// A first write has no previous file to keep; the promise of a backup starts with the second.
+    static func backupNote(for url: URL) -> String {
+        FileManager.default.fileExists(atPath: url.appendingPathExtension("bak").path)
+            ? "your previous file is kept beside it as a .bak"
+            : "edits from here on keep a .bak beside it"
+    }
+
+    private func resolveModel(agent: CodingAgent, provider: Providers.Record, keyName: String) throws -> String {
+        if let model, !model.trimmingCharacters(in: .whitespaces).isEmpty {
+            return model.trimmingCharacters(in: .whitespaces)
+        }
+        if let fallback = CodingAgent.defaultModel(for: provider) {
+            return fallback
+        }
+        throw AppError.usage("give --model for \(keyName) (\(provider.name)); list what the provider offers with: keys models \(keyName) --cached")
+    }
+}
+
