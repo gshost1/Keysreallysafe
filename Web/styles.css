@@ -175,7 +175,8 @@ kbd {
   text-align: right;
 }
 body:not([data-pane="keys"]) #keys-count,
-body:not([data-pane="keys"]) #btn-add { display: none !important; }
+body:not([data-pane="keys"]) #btn-add,
+body:not([data-pane="keys"]) #btn-providers { display: none !important; }
 body:not([data-pane="chart"]) #btn-export,
 body:not([data-pane="chart"]) #btn-copy-totals { display: none !important; }
 .td-usd { color: var(--fg-2); font-variant-numeric: tabular-nums; text-align: right; }
@@ -848,4 +849,31 @@ main { flex: 1; min-height: 0; overflow: auto; }
 .methods legend { padding: 0 4px; color: var(--fg-3); }
 .methods .inline { display: inline-flex; align-items: center; gap: 4px; margin: 0 12px 0 0; }
 .methods input { width: auto; margin: 0; }
+
+/* providers manager */
+.providers-list { list-style: none; margin: 0 0 14px; padding: 0; max-height: 32vh; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+.providers-group { padding: 4px 10px 2px; font-size: 11px; color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg-sel); }
+.provider-row { display: flex; align-items: center; gap: 10px; padding: 4px 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.provider-row .provider-name { font-weight: 500; }
+.provider-row code { color: var(--fg-3); font-size: 11px; }
+.provider-row .provider-host { color: var(--fg-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.provider-row .provider-state { margin-left: auto; white-space: nowrap; color: var(--fg-3); }
+.provider-row .provider-actions { white-space: nowrap; }
+.provider-row.dim .provider-name, .provider-row.dim code { color: var(--fg-3); text-decoration: line-through; }
+.inline { display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 12px; color: var(--fg-2); }
+.inline input { width: auto; margin: 0; }
+
+/* agents dialog */
+.agents-key-label { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 0 0 10px; }
+.agents-key-label select, .agents-key-label input { flex: 1; margin: 0; }
+.agent { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; }
+.agent summary { cursor: pointer; padding: 6px 10px; font-weight: 500; font-size: 13px; user-select: none; }
+.agent summary:hover { background: var(--bg-sel); }
+.agent[open] summary { border-bottom: 1px solid var(--line); }
+.agent-steps { list-style: none; margin: 0; padding: 6px 10px; }
+.agent-step { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 12px; color: var(--fg-2); }
+.agent-step-text { flex: 0 1 auto; }
+.agent-cmd { display: block; flex: 1 1 240px; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; padding: 4px 8px; background: var(--bg-sel); border-radius: 4px; user-select: all; -webkit-user-select: all; }
+.agent-step .btn-row { flex: 0 0 auto; }
+
 

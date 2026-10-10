@@ -21,6 +21,24 @@ const assets = new Map([
   ["/providers.json", ["application/json", asset("providers.json")]],
 ]);
 
+// The merged catalog the engine serves at /api/providers, mirrored from the shipped file: the
+// dashboard skips `hidden` records in the Add dialog while the key table still names them.
+const shippedCatalog = JSON.parse(asset("providers.json").toString("utf8"));
+const providersCatalog = () => ({
+  groups: [{ id: "yours", name: "Yours" }, ...shippedCatalog.groups],
+  providers: [
+    // A custom id overrides a shipped one, so the override replaces it in the listing.
+    ...customProviders.map((p) => ({ ...p, custom: true, hidden: null })),
+    ...shippedCatalog.providers
+      .filter((p) => !customProviders.some((c) => c.id === p.id))
+      .map((p) => ({
+        ...p,
+        custom: false,
+        hidden: p.hidden ? "app" : (hiddenUsers.has(p.id) ? "user" : null),
+      })),
+  ],
+});
+
 // ---------- fixture state ----------
 
 const SECRET = "sk-fixture-NEVER-REAL-0000000000";
@@ -51,12 +69,14 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations;
+let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers;
 
 function reset() {
   keys = baseKeys();
   fixtureSecrets = new Map(keys.map(k => [k.name, SECRET]));
   rotations = [];
+  customProviders = [];
+  hiddenUsers = new Set();
   ledger = baseLedger();
   localRows = [];
   // The plan cards. Empty unless a test fills it, as most of this suite expects.
@@ -200,6 +220,36 @@ function handle(method, pathname, body, params) {
   if (keyMatch && leaf === "/events") return [200, { events: [] }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
   if (pathname === "/api/grants") return [200, { grants: [] }];
+  if (pathname === "/api/providers" && method === "GET") return [200, providersCatalog()];
+  if (pathname === "/api/providers" && method === "POST") {
+    if (typeof body.id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(body.id)) return [400, { error: "invalid provider id" }];
+    if (typeof body.name !== "string" || !body.name) return [400, { error: "provider name is required" }];
+    customProviders = customProviders.filter((p) => p.id !== body.id);
+    const record = { ...body, group: "yours", custom: true, hidden: null };
+    customProviders.push(record);
+    return [201, record];
+  }
+  const providerMatch = /^\/api\/providers\/([a-z0-9-]+)$/.exec(pathname);
+  if (providerMatch && method === "PATCH") {
+    const id = providerMatch[1];
+    const mine = customProviders.find((p) => p.id === id);
+    const shipped = shippedCatalog.providers.find((p) => p.id === id);
+    if (mine && body.hidden === true) return [400, { error: "a provider you added is removed instead" }];
+    if (!mine && !shipped) return [404, { error: "not_found" }];
+    if (body.hidden) hiddenUsers.add(id); else hiddenUsers.delete(id);
+    const source = mine ?? shipped;
+    return [200, { ...source, custom: Boolean(mine), hidden: body.hidden ? "user" : null }];
+  }
+  if (providerMatch && method === "DELETE") {
+    const id = providerMatch[1];
+    const before = customProviders.length;
+    customProviders = customProviders.filter((p) => p.id !== id);
+    if (customProviders.length === before && shippedCatalog.providers.some((p) => p.id === id)) {
+      return [400, { error: "openai is a built-in provider; hide it instead".replace("openai", id) }];
+    }
+    if (customProviders.length === before) return [404, { error: "not_found" }];
+    return [200, { removed: id }];
+  }
   if (pathname === "/api/models") return [200, []];
   if (pathname === "/api/status") return [200, { plans }];
   if (pathname.startsWith("/api/spend")) return spend(params);
@@ -1421,6 +1471,116 @@ test("a vault that already has keys is not interrupted by the first-use guide", 
   await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
   await page.getByRole("tab", { name: "Usage" }).click();
   assert.equal(await page.locator("#onboard").isHidden(), true, "an existing user is not onboarded");
+});
+
+// ---------- providers manager and agent recipes ----------
+
+test("the providers manager adds, hides and removes", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  // Both the Add key and the Providers buttons belong to the Keys pane.
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
+  await page.getByRole("button", { name: "Providers", exact: true }).click();
+  await waitDialog(page, "dlg-providers", true);
+  await page.locator("#providers-list .provider-row").first().waitFor();
+  const listing = await page.locator("#providers-list").textContent();
+  assert.match(listing, /Labs/, "the shipped groups are listed");
+  assert.match(listing, /retired/, "OpenAI is retired, not offered, but still shown");
+  assert.doesNotMatch(listing, /Yours\s*Acme/, "nothing is yours yet");
+
+  // Add a custom provider through the form; it lands under Yours.
+  const form = page.locator("#provider-add-form");
+  await form.locator("[name=id]").fill("acme");
+  await form.locator("[name=name]").fill("Acme");
+  await form.locator("[name=host]").fill("api.acme.dev");
+  await form.locator("[name=api]").selectOption("openai");
+  await form.locator("button[type=submit]").click();
+  const mine = page.locator('#providers-list .provider-row:has(code:text-is("acme"))');
+  await mine.waitFor();
+  assert.match(await mine.textContent(), /yours/);
+  assert.match(await mine.textContent(), /api\.acme\.dev/);
+
+  // Hide a built-in provider: it leaves the Add dialog but its row says hidden.
+  const groq = page.locator('#providers-list .provider-row:has(code:text-is("groq"))');
+  await groq.getByRole("button", { name: "Hide" }).click();
+  await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll("#providers-list .provider-row")]
+      .find((r) => r.querySelector("code")?.textContent === "groq");
+    return row?.textContent.includes("hidden");
+  });
+  assert.ok(requests.some((r) => r.method === "PATCH" && r.pathname === "/api/providers/groq"), "the hide reaches the engine");
+  await page.locator("#dlg-providers [data-close]").click();
+  await waitDialog(page, "dlg-providers", false);
+
+  // The Add dialog's picker offers the new provider and no longer offers the hidden one.
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=provider]").click();
+  const offeredText = await page.locator("#add-form .pick-list").textContent();
+  // The listId prefix is always three dash-separated parts (name-pick-xxxxx), so the
+  // provider id itself is everything after that; azure-openai must not count as openai.
+  const offeredIds = await page.locator("#add-form .pick-list .pick-item")
+    .evaluateAll((nodes) => nodes.map((n) => n.id.split("-").slice(3).join("-")));
+  assert.ok(offeredIds.includes("acme"), "a provider you added is offered for new keys");
+  assert.doesNotMatch(offeredText, /Groq/, "a hidden provider is not offered");
+  assert.ok(!offeredIds.includes("openai"), "the retired provider is not offered either");
+  // Escape closes the open picker list only; the dialog stays for its Cancel button.
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+
+  // A hidden provider still names existing keys in the table; the pane never left Keys.
+  assert.equal(await rowCell(page, "alpha", "provider").textContent(), "OpenAI");
+
+  // Removing yours is one click and reaches the engine.
+  await page.getByRole("button", { name: "Providers", exact: true }).click();
+  await waitDialog(page, "dlg-providers", true);
+  const mineAgain = page.locator('#providers-list .provider-row:has(code:text-is("acme"))');
+  await mineAgain.getByRole("button", { name: "Remove" }).click();
+  await mineAgain.waitFor({ state: "detached" });
+  assert.ok(requests.some((r) => r.method === "DELETE" && r.pathname === "/api/providers/acme"), "the removal reaches the engine");
+});
+
+test("the agents dialog personalizes each recipe to the chosen key", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await waitDialog(page, "dlg-agents", true);
+  const body = await page.locator("#agents-body").textContent();
+  for (const name of ["Claude Code", "Codex", "Grok", "Droid", "cloud agent"]) {
+    assert.match(body, new RegExp(name), `${name} has a section`);
+  }
+  const claude = page.locator("#agents-body .agent:has(summary:has-text('Claude Code'))");
+  assert.equal((await claude.locator(".agent-cmd").first().textContent()), "keys agent claude alpha");
+
+  // The vault never appears as a secret in a recipe, only its local URL and tokens.
+  const droid = page.locator("#agents-body .agent:has(summary:has-text('Droid'))");
+  assert.match(await droid.locator(".agent-cmd").first().textContent(), /keys setup droid --key alpha/);
+  const cloud = page.locator("#agents-body .agent:has(summary:has-text('A cloud agent'))");
+  assert.match(await cloud.textContent(), /keys client issue alpha/);
+  assert.match(await cloud.textContent(), /keys tunnel/);
+
+  // Choosing another key rewrites every recipe; the model field feeds the setup commands.
+  await page.locator("#agents-key").selectOption("bravo");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("#agents-body .agent-cmd")].some((n) => n.textContent.includes("keys agent claude bravo")));
+  await page.locator("#agents-body [aria-label='Model id']").fill("grok-4.6");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("#agents-body .agent-cmd")].some((n) => n.textContent.includes("--model grok-4.6")));
+});
+
+test("the first-use guide links to the agents dialog", async (page, origin) => {
+  keys = [];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  assert.match(await page.locator("#onboard").textContent(), /Wire up a coding agent/);
+  await page.locator("#onboard [data-action='agents']").click();
+  await waitDialog(page, "dlg-agents", true);
+  // The cloned guide must keep working after the dialog closes.
+  await page.locator("#dlg-agents [data-close]").click();
+  await waitDialog(page, "dlg-agents", false);
 });
 
 test("three panes: the shortcuts and arrow keys reach Usage, Chart and Keys and nothing else", async (page, origin) => {

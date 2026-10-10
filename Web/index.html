@@ -22,6 +22,8 @@
     <div class="toolbar-end">
       <span id="keys-count" class="count"></span>
       <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
+      <button type="button" id="btn-agents" class="btn-quiet" title="Wire a coding agent (Claude Code, Codex, Grok, Droid) to the vault">Agents</button>
+      <button type="button" id="btn-providers" class="btn-quiet" title="Add, remove or hide providers">Providers</button>
       <button type="button" id="btn-export" class="btn-quiet" title="Download the current rows as CSV (X)">CSV</button>
       <button type="button" id="btn-copy-totals" class="btn-quiet" title="Copy the totals line as Markdown (⇧C)">Copy totals</button>
       <button type="button" id="btn-ingest" class="btn-quiet" title="Ingest Grok, Claude Code and Codex sessions (⌘R)">Ingest</button>
@@ -354,6 +356,71 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-providers" class="dlg dlg-wide" aria-labelledby="providers-title">
+    <h2 id="providers-title">Providers</h2>
+    <p class="hint">The Add dialog offers these. <b>Yours</b> are stored in this catalog and survive restarts; an entry you add can also override a built-in one. Hiding a built-in provider takes it out of the Add dialog while keys that already use it keep their gateway, checks and name.</p>
+    <ul id="providers-list" class="providers-list"></ul>
+    <form id="provider-add-form" novalidate>
+      <h3 class="help-heading">Add a provider</h3>
+      <div class="two-col">
+        <label>Id
+          <input name="id" required pattern="[a-z0-9][a-z0-9\-]*" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="my-gateway">
+        </label>
+        <label>Name
+          <input name="name" required autocomplete="off" placeholder="My gateway">
+        </label>
+      </div>
+      <div class="two-col">
+        <label>Host
+          <input name="host" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="api.example.com (blank when each account has its own)">
+        </label>
+        <label>Usage parser
+          <select name="api">
+            <option value="other">other (requests counted, tokens not parsed)</option>
+            <option value="openai">openai (chat-completions and responses)</option>
+            <option value="anthropic">anthropic (messages)</option>
+            <option value="gemini">gemini (generateContent)</option>
+          </select>
+        </label>
+      </div>
+      <div class="two-col">
+        <label>Auth header
+          <input name="auth_header" value="Authorization" autocomplete="off" autocapitalize="off" spellcheck="false">
+        </label>
+        <label>Auth prefix
+          <input name="auth_prefix" value="Bearer " autocomplete="off">
+        </label>
+      </div>
+      <div class="two-col">
+        <label>Path prefix
+          <input name="path_prefix" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="v1">
+        </label>
+        <label>Key prefix hint
+          <input name="key_prefix" autocomplete="off" spellcheck="false" placeholder="sk-">
+        </label>
+      </div>
+      <label>Note
+        <input name="note" autocomplete="off" placeholder="Shown when asking for a per-account host">
+      </label>
+      <label class="inline"><input type="checkbox" name="gateway" checked> Can be proxied (uncheck for vendors that need request signing or OAuth)</label>
+      <p class="err" id="provider-add-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Close</button>
+        <button type="submit" class="btn btn-primary">Add provider</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-agents" class="dlg dlg-wide" aria-labelledby="agents-title">
+    <h2 id="agents-title">Set up a coding agent</h2>
+    <p class="hint">Each agent gets the gateway's local URL and a token where it expects an API key, so the raw secret stays in the vault. One Touch ID per launch covers the whole session; unattended setups use a revocable client token instead.</p>
+    <div id="agents-body"></div>
+    <p class="hint">Droid calls routed this way are measured like any other gateway call (Chart → API keys). A session the agent runs directly, outside the gateway, is not observable on this Mac.</p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Close</button>
+    </div>
+  </dialog>
+
   <dialog id="dlg-help" class="dlg dlg-wide" aria-labelledby="help-title">
     <h2 id="help-title">How Keys works</h2>
     <section id="guide" class="guide" aria-labelledby="guide-title">
@@ -370,6 +437,13 @@
           environment variable, or route a tool through the local gateway with a scoped grant: one key, one host,
           a method and path scope, an expiry. A grant dies on screen lock, revoke, expiry, gateway off or restart.
           You do not need a <code>.env</code> file, and nothing is written to your shell profile.</span>
+        </li>
+        <li>
+          <b>Wire up a coding agent.</b> <span class="guide-body"><button type="button" class="link" data-action="agents">Agents</button>
+          has the exact commands for Claude Code, Codex, Grok and Droid: the agent talks to the local gateway with a
+          token, and the secret never leaves the vault. <code>keys setup &lt;agent&gt; --key &lt;key&gt;</code> writes
+          the agent's own config (no secret in it), and <code>keys agent &lt;agent&gt; &lt;key&gt;</code> launches it
+          on one Touch ID.</span>
         </li>
         <li>
           <b>Watch it, revoke it, remove it.</b> <span class="guide-body">The <b>Chart</b> pane's <b>API keys</b>

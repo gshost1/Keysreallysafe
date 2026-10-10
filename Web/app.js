@@ -1656,11 +1656,13 @@
     }
   });
 
-  // ---------- providers (grouped picker fed by /providers.json) ----------
+  // ---------- providers (grouped picker fed by /api/providers) ----------
 
   async function loadProviders() {
     try {
-      const data = await api("/providers.json");
+      // The merged catalog: the shipped entries plus the ones added or hidden in this
+      // catalog. Hidden records are still here so the key table can render their names.
+      const data = await api("/api/providers");
       if (data && Array.isArray(data.providers)) {
         state.providers = data;
         renderKeys();
@@ -1675,6 +1677,7 @@
     if (!state.providers || !secret) return null;
     let best = null;
     for (const p of state.providers.providers) {
+      if (p.hidden) continue;
       if (p.key_prefix && secret.startsWith(p.key_prefix) && (!best || p.key_prefix.length > best.key_prefix.length)) best = p;
     }
     // "sk-" is shared by half the labs; only a longer, unique prefix is a real hint
@@ -1715,7 +1718,8 @@
       items = [];
       let n = 0;
       for (const g of groups) {
-        const hits = state.providers.providers.filter((p) => p.group === g.id
+        // Hidden (retired or hidden here) never shows for new keys; it still resolves for old ones.
+        const hits = state.providers.providers.filter((p) => p.group === g.id && !p.hidden
           && (!q || p.id.includes(q) || p.name.toLowerCase().includes(q)));
         if (!hits.length) continue;
         list.append(el("li", { class: "pick-group", role: "presentation", text: g.name }));
@@ -1758,6 +1762,205 @@
     });
   }
   document.querySelectorAll("input[data-picker]").forEach(enhancePicker);
+
+  // ---------- providers manager ----------
+
+  function openProviders() {
+    renderProvidersList();
+    if (!$("dlg-providers").open) $("dlg-providers").showModal();
+  }
+  $("btn-providers").addEventListener("click", openProviders);
+
+  function renderProvidersList() {
+    const list = $("providers-list");
+    list.replaceChildren();
+    const data = state.providers;
+    if (!data || !data.providers.length) {
+      list.append(el("li", { class: "pick-none", text: "No providers loaded." }));
+      return;
+    }
+    for (const group of data.groups) {
+      const rows = data.providers.filter((p) => p.group === group.id);
+      if (!rows.length) continue;
+      list.append(el("li", { class: "providers-group", text: group.name }));
+      for (const p of rows) {
+        const stateText = p.custom ? "yours"
+          : p.hidden === "app" ? "retired" : p.hidden === "user" ? "hidden" : "built-in";
+        const actions = [];
+        if (p.custom) {
+          actions.push(el("button", { class: "link", type: "button", text: "Remove", onclick: () => removeProvider(p) }));
+        } else if (p.hidden === "user") {
+          actions.push(el("button", { class: "link", type: "button", text: "Unhide", onclick: () => hideProvider(p, false) }));
+        } else if (!p.hidden) {
+          actions.push(el("button", { class: "link", type: "button", text: "Hide", onclick: () => hideProvider(p, true) }));
+        }
+        list.append(el("li", { class: "provider-row" + (p.hidden ? " dim" : "") },
+          el("span", { class: "provider-name", text: p.name }),
+          el("code", { text: p.id }),
+          el("span", { class: "provider-host", text: p.host || (p.gateway ? "host per key" : "not proxied") }),
+          el("span", { class: "provider-state", text: stateText }),
+          el("span", { class: "provider-actions" }, ...actions),
+        ));
+      }
+    }
+  }
+
+  async function removeProvider(p) {
+    try {
+      await api(`/api/providers/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+      say(`Removed provider ${p.name}.`);
+      await loadProviders();
+      renderProvidersList();
+      await loadKeys();
+    } catch (e) { say(e.message); }
+  }
+
+  async function hideProvider(p, hidden) {
+    try {
+      await api(`/api/providers/${encodeURIComponent(p.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden }),
+      });
+      say(hidden ? `Hid ${p.name} from the Add dialog; keys using it keep working.` : `${p.name} is back in the Add dialog.`);
+      await loadProviders();
+      renderProvidersList();
+    } catch (e) { say(e.message); }
+  }
+
+  $("provider-add-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const err = $("provider-add-err");
+    err.textContent = "";
+    const payload = {
+      id: form.elements.id.value.trim(),
+      name: form.elements.name.value.trim(),
+      host: form.elements.host.value.trim(),
+      api: form.elements.api.value,
+      auth_header: form.elements.auth_header.value.trim(),
+      auth_prefix: form.elements.auth_prefix.value,
+      path_prefix: form.elements.path_prefix.value.trim(),
+      key_prefix: form.elements.key_prefix.value.trim(),
+      note: form.elements.note.value.trim(),
+      gateway: form.elements.gateway.checked,
+    };
+    try {
+      await api("/api/providers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      say(`Added provider ${payload.name}.`);
+      form.reset();
+      await loadProviders();
+      renderProvidersList();
+    } catch (e2) { err.textContent = e2.message; }
+  });
+
+  // ---------- agents (per-agent setup recipes) ----------
+
+  function copyText(text, btn) {
+    navigator.clipboard?.writeText(text).then(
+      () => { btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1200); },
+      () => say("Clipboard blocked by the browser. Select the text and copy by hand."),
+    );
+  }
+
+  function agentRecipe(id, key, model) {
+    const base = `http://127.0.0.1:12767/${key}`;
+    switch (id) {
+      case "claude":
+        return [
+          { text: "Launch it through the vault — one Touch ID, and the grant dies when it exits:", cmd: `keys agent claude ${key}` },
+          { text: "Or export your own token (keys grant or keys client issue) and run claude yourself:", cmd: `export ANTHROPIC_BASE_URL=${base}\nexport ANTHROPIC_AUTH_TOKEN=<token>` },
+        ];
+      case "codex":
+        return [
+          { text: "Once: write the gateway into ~/.codex/config.toml (needs an OpenAI-compatible provider):", cmd: `keys setup codex --key ${key} --model ${model}` },
+          { text: "Then launch codex on the vault key:", cmd: `keys agent codex ${key} -- codex` },
+          { text: "Optional: make it the default provider:", cmd: `keys setup codex --key ${key} --model ${model} --set-default` },
+        ];
+      case "grok":
+        return [
+          { text: "Once: write a Keysrs model into ~/.grok/config.toml:", cmd: `keys setup grok --key ${key} --model ${model}` },
+          { text: "Then launch grok on the vault key (pick the Keysrs model in the picker):", cmd: `keys agent grok ${key} -- grok` },
+          { text: "Or use an xAI key directly as the environment variable:", cmd: `keys env ${key} XAI_API_KEY -- grok` },
+        ];
+      case "droid":
+        return [
+          { text: "Once: add a custom model pointing at the gateway in ~/.factory/settings.json:", cmd: `keys setup droid --key ${key} --model ${model}` },
+          { text: "Then launch droid on the vault key, and pick the Keysrs model with /model:", cmd: `keys agent droid ${key} -- droid` },
+          { text: "Unattended (headless droid exec, CI): a client token instead of per-launch grants:", cmd: `keys client issue ${key} --label droid --days 90\nexport KEYSRS_DROID_TOKEN=<token>` },
+        ];
+      case "cloud":
+        return [
+          { text: "Create a long-lived token (one Touch ID, revocable from the Keys pane):", cmd: `keys client issue ${key} --label "cloud agent" --days 30` },
+          { text: "From this Mac, forward the gateway to the machine the agent runs on:", cmd: `keys tunnel user@server.example.com` },
+          { text: "On that machine, the vault is a plain local URL — token as the API key:", cmd: `export OPENAI_BASE_URL=http://127.0.0.1:12767/${key}\nexport OPENAI_API_KEY=<token>` },
+          { text: "Same recipe over Tailscale (ssh to the server's tailnet name) or for a self-hosted CI runner; a GitHub-hosted runner cannot reach this Mac, so run the agent on a machine you can ssh to." },
+        ];
+    }
+    return [];
+  }
+
+  function renderAgents() {
+    const body = $("agents-body");
+    body.replaceChildren();
+    const keys = state.keys || [];
+    const select = el("select", { id: "agents-key" },
+      ...keys.map((k) => el("option", { value: k.name, text: `${k.name} (${providerName(k.provider)})` })));
+    const model = el("input", { value: "claude-sonnet-4-5-20250929", placeholder: "model id", "aria-label": "Model id" });
+    const sections = [["claude", "Claude Code"], ["codex", "Codex"], ["grok", "Grok"], ["droid", "Droid"], ["cloud", "A cloud agent"]];
+    const stepsByAgent = new Map();
+    const rerender = () => {
+      const key = keys.length ? select.value : "<key name>";
+      for (const [id] of sections) {
+        const holder = stepsByAgent.get(id);
+        if (holder) holder.replaceChildren(...agentRecipe(id, key, model.value.trim() || "claude-sonnet-4-5-20250929").map(stepLine));
+      }
+    };
+    const stepLine = (step) => el("li", { class: "agent-step" },
+      el("span", { class: "agent-step-text", text: step.text }),
+      step.cmd
+        ? el("code", { class: "agent-cmd", text: step.cmd })
+        : null,
+      step.cmd
+        ? el("button", { class: "btn-row", type: "button", text: "Copy", onclick: (e) => copyText(step.cmd, e.target) })
+        : null,
+    );
+    if (!keys.length) {
+      body.append(el("p", { class: "hint", text: "Add a key first; the recipes below use <key name> until then." }));
+    } else {
+      body.append(
+        el("label", { class: "agents-key-label" }, "Vault key ", select),
+        el("label", { class: "agents-key-label" }, "Model ", model),
+      );
+      select.addEventListener("change", rerender);
+      model.addEventListener("input", rerender);
+    }
+    for (const [id, name] of sections) {
+      const holder = el("ul", { class: "agent-steps" });
+      stepsByAgent.set(id, holder);
+      body.append(el("details", { class: "agent", open: id === "claude" || id === "droid" ? "" : null },
+        el("summary", {}, el("span", { text: name })),
+        holder,
+      ));
+    }
+    rerender();
+  }
+
+  function openAgents() {
+    if (!state.keys) { say("Keys are still loading; try again in a moment."); return; }
+    renderAgents();
+    if (!$("dlg-agents").open) $("dlg-agents").showModal();
+  }
+  $("btn-agents").addEventListener("click", openAgents);
+  // The guide (help dialog and the first-use onboard clone) links here; delegation covers both.
+  document.addEventListener("click", (e) => {
+    const link = e.target.closest('[data-action="agents"]');
+    if (link) { e.preventDefault(); openAgents(); }
+  });
 
   // ---------- add / edit ----------
 
