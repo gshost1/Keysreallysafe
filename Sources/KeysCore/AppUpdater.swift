@@ -122,8 +122,14 @@ enum AppUpdater {
         return value
     }
 
+    /// `hdiutil attach -plist` prints a dictionary whose `system-entities` lists each partition;
+    /// only the mounted one carries a `mount-point`. A bare array is accepted as well.
     static func mountPoint(fromPlist data: Data) -> String? {
-        guard let entries = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [[String: Any]] else { return nil }
+        guard let parsed = try? PropertyListSerialization.propertyList(from: data, format: nil) else { return nil }
+        let entries: [[String: Any]]
+        if let dictionary = parsed as? [String: Any] { entries = [dictionary] }
+        else if let array = parsed as? [[String: Any]] { entries = array }
+        else { return nil }
         for entry in entries {
             if let point = entry["mount-point"] as? String, !point.isEmpty { return point }
             for entity in entry["system-entities"] as? [[String: Any]] ?? [] {

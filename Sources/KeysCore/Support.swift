@@ -3,7 +3,11 @@ import Darwin
 import Foundation
 import Security
 
-enum AppError: Error, CustomStringConvertible {
+/// LocalizedError so `localizedDescription` (what every NSAlert in the app shows) is the
+/// message itself rather than Foundation's "KeysCore.AppError error N".
+enum AppError: LocalizedError, CustomStringConvertible {
+    var errorDescription: String? { description }
+
     case usage(String)
     case notFound(String)
     case authFailed

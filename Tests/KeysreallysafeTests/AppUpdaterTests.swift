@@ -115,22 +115,35 @@ final class AppUpdaterTests: XCTestCase {
     // MARK: - Disk image listing
 
     func testMountPointIsFoundInsideSystemEntitiesOrAtTheTopLevel() {
-        let nested = """
+        // The shape `hdiutil attach -plist` really prints: a dictionary, not an array.
+        let real = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
-        <array><dict><key>system-entities</key><array>
+        <dict><key>system-entities</key><array>
+          <dict><key>content-hint</key><string>GUID_partition_scheme</string></dict>
+          <dict><key>content-hint</key><string>41504653-0000-11AA-AA11-00306543ECAC</string><key>mount-point</key><string>/tmp/keysrs-update/mount</string></dict>
           <dict><key>content-hint</key><string>Apple_APFS</string></dict>
-          <dict><key>content-hint</key><string>Apple_HFS</string><key>mount-point</key><string>/tmp/keysrs-update/mount</string></dict>
-        </array></dict></array>
+        </array></dict>
         </plist>
         """
-        XCTAssertEqual(AppUpdater.mountPoint(fromPlist: Data(nested.utf8)), "/tmp/keysrs-update/mount")
+        XCTAssertEqual(AppUpdater.mountPoint(fromPlist: Data(real.utf8)), "/tmp/keysrs-update/mount")
+        let nested = """
+        <plist version="1.0"><array><dict><key>system-entities</key><array>
+          <dict><key>mount-point</key><string>/tmp/nested</string></dict>
+        </array></dict></array></plist>
+        """
+        XCTAssertEqual(AppUpdater.mountPoint(fromPlist: Data(nested.utf8)), "/tmp/nested")
         let top = """
         <plist version="1.0"><array><dict><key>mount-point</key><string>/Volumes/Keysrs</string></dict></array></plist>
         """
         XCTAssertEqual(AppUpdater.mountPoint(fromPlist: Data(top.utf8)), "/Volumes/Keysrs")
         XCTAssertNil(AppUpdater.mountPoint(fromPlist: Data("not a plist".utf8)))
+    }
+
+    func testErrorDialogsShowTheMessageNotAnErrorNumber() {
+        let error: Error = AppError.http("The download could not be opened as a disk image.")
+        XCTAssertEqual(error.localizedDescription, "The download could not be opened as a disk image.")
     }
 
     // MARK: - Restart helper
