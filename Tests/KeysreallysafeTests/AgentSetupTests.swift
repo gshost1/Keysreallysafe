@@ -211,4 +211,19 @@ final class AgentSetupTests: XCTestCase {
         XCTAssertEqual(try CodingAgent.codexWire(for: Providers.provider(id: "openai")!, override: nil), "responses")
         XCTAssertThrowsError(try CodingAgent.droidProviderKind(for: Providers.provider(id: "fal")!, override: nil))
     }
+
+    func testTunnelCommandShapeAndValidation() throws {
+        let argv = try Tunnel.argv(userHost: " user@server.example.com ", remotePort: 12767, localPort: 12767)
+        XCTAssertEqual(argv.first, "ssh")
+        XCTAssertTrue(argv.contains("-R"))
+        XCTAssertEqual(argv[argv.firstIndex(of: "-R")! + 1], "12767:127.0.0.1:12767")
+        XCTAssertTrue(argv.contains("ExitOnForwardFailure=yes"))
+        XCTAssertEqual(argv.last, "user@server.example.com")
+        XCTAssertThrowsError(try Tunnel.argv(userHost: "", remotePort: 12767, localPort: 12767))
+        XCTAssertThrowsError(try Tunnel.argv(userHost: "a b", remotePort: 12767, localPort: 12767))
+        XCTAssertThrowsError(try Tunnel.argv(userHost: "a@b", remotePort: 0, localPort: 12767))
+        let text = Tunnel.instructions(key: "router", userHost: "user@server", remotePort: 12767, localPort: 12767)
+        XCTAssertTrue(text.contains("keys client issue router"))
+        XCTAssertTrue(text.contains("http://127.0.0.1:12767/router"))
+    }
 }

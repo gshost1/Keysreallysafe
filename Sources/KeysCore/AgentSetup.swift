@@ -401,3 +401,42 @@ enum GrokSetup {
         return nil
     }
 }
+
+/// The SSH reverse forward that carries the gateway to a machine a cloud agent runs on.
+/// The listener keeps binding loopback only; the tunnel is the trust boundary, so the
+/// remote side sees a plain localhost port and needs the client token to use it.
+enum Tunnel {
+    static func argv(userHost: String, remotePort: Int, localPort: Int) throws -> [String] {
+        let host = userHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty, !host.contains(where: { $0.isWhitespace }), host.count <= 253 else {
+            throw AppError.usage("a host to tunnel to is required, e.g. user@server.example.com")
+        }
+        guard (1...65_535).contains(remotePort), (1...65_535).contains(localPort) else {
+            throw AppError.usage("ports must be between 1 and 65535")
+        }
+        return [
+            "ssh", "-N",
+            // Fail loudly when the remote port is taken instead of running with a dead forward.
+            "-o", "ExitOnForwardFailure=yes",
+            // A NAT-dropped tunnel should be noticed and retried, not hang silently.
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-R", "\(remotePort):127.0.0.1:\(localPort)",
+            host,
+        ]
+    }
+
+    /// The instructions printed before the tunnel starts, so the remote setup does not
+    /// depend on remembering the flags.
+    static func instructions(key: String?, userHost: String, remotePort: Int, localPort: UInt16) -> String {
+        let target = key.map { "http://127.0.0.1:\(remotePort)/\($0)" }
+            ?? "http://127.0.0.1:\(remotePort)/<key name>"
+        return """
+        On \(userHost) the gateway appears at \(target)
+        Point the agent there and give it the token as its API key.
+        Create a long-lived token first (one Touch ID, revocable from the dashboard):
+          keys client issue \(key ?? "<key name>") --label "cloud agent" --days 30
+        The local gateway keeps binding 127.0.0.1:\(localPort) only; ssh is the way in.
+        """
+    }
+}

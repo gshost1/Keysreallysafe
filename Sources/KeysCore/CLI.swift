@@ -34,6 +34,7 @@ public struct KeysCLI: ParsableCommand {
             ProviderCommand.self,
             AgentCommand.self,
             SetupCommand.self,
+            TunnelCommand.self,
             PurgeCommand.self,
         ]
     )
@@ -1086,3 +1087,54 @@ struct SetupCommand: ParsableCommand {
     }
 }
 
+struct TunnelCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "tunnel",
+        abstract: "Forward the local gateway to a remote machine so an agent there can use the vault.",
+        usage: "keys tunnel <user@host> [--remote-port N] [--key <name>] [--print]",
+        discussion: """
+            Runs ssh with a reverse forward: 127.0.0.1:<remote-port> on the remote host becomes \
+            the gateway on this Mac. Nothing new listens on this Mac and the gateway keeps its \
+            loopback bind; the ssh session is the trust boundary, and the remote still needs a \
+            client token as its API key. Point the agent at http://127.0.0.1:<remote-port>/<key>. \
+            Ctrl-C stops the tunnel.
+            """
+    )
+
+    @Argument(help: "user@host to forward to, e.g. user@server.example.com.") var userHost: String
+    @Option(name: .customLong("remote-port"), help: "Port on the remote host. Default \(GatewayListener.port).") var remotePort: Int = Int(GatewayListener.port)
+    @Option(help: "Key the printed instructions should mention.") var key: String?
+    @Flag(help: "Print the ssh command instead of running it.") var printOnly = false
+
+    func run() throws {
+        if let key { try KeyName.validate(key) }
+        let argv = try Tunnel.argv(
+            userHost: userHost, remotePort: remotePort, localPort: Int(GatewayListener.port)
+        )
+        try requireGatewayUp()
+        let text = Tunnel.instructions(key: key, userHost: userHost, remotePort: remotePort, localPort: GatewayListener.port)
+        if printOnly {
+            print(argv.map { $0.contains(" ") ? "\"\($0)\"" : $0 }.joined(separator: " "))
+            print(text)
+            return
+        }
+        fputs(text + "\nssh is running; Ctrl-C stops the tunnel.\n", stderr)
+        let service = try AppFactory.makeService()
+        Darwin.exit(try service.runner.run(argv: argv, extraEnv: [:]))
+    }
+
+    /// A tunnel to a closed port fails only when the remote side first uses it; refuse here
+    /// instead, with the fix in the message.
+    private func requireGatewayUp() throws {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(GatewayListener.port)/")!)
+        req.timeoutInterval = 3
+        do {
+            _ = try BlockingHTTP.send(req, timeout: 3)
+        } catch {
+            throw AppError.usage(
+                "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
+                    + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
+            )
+        }
+    }
+}
