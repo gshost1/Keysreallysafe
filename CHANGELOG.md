@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-10-10
 
 - **Droid, Codex, Grok and Claude Code as first-class agents.** `keys setup <agent> --key <name>` writes the agent's own config — a `customModels` entry in `~/.factory/settings.json` for Droid, a `model_providers.keysrs` block in `~/.codex/config.toml` for Codex, a `[model.keysrs]` block in `~/.grok/config.toml` for Grok — and `keys agent <agent> <name>` launches it on one Touch ID. The config files hold no secret: each names an environment variable the launcher fills with a fresh grant, revoked when the agent exits and dead on screen lock; `--client` swaps in a long-lived token for unattended runs. A backup of the file sits beside it after the first edit. Claude Code needs no file; it reads `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` from the launcher's environment. Droid calls routed this way are metered like any other gateway call; a Droid session outside the gateway is not observable locally.
 - **The provider catalog is editable.** `keys provider add` (or the dashboard's **Providers** button) adds a provider — routing metadata, never a secret — that lives in the catalog beside your keys, survives restarts, and can override a shipped entry. `keys provider rm` removes yours and refuses while a key still uses it; `keys provider hide` / `unhide` takes a built-in provider out of the Add dialog while keys that already use it keep their gateway, checks and name. `keys providers` lists the merged catalog.
