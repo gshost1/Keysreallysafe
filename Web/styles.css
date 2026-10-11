@@ -29,6 +29,24 @@
   --s-openai-2: #74aa9c;
   --s-openai-3: #0d8c6d;
   --s-openai-4: #a8d8c8;
+  /* The newer vendor families the Chart colors since Droid's models span vendors. Each family
+     keeps its own hue band, distinct from every other family's, and Claude stays orange. */
+  --s-gemini-1: #7c4dff;
+  --s-gemini-2: #9e86ff;
+  --s-gemini-3: #5b2fd6;
+  --s-gemini-4: #c5b8f5;
+  --s-glm-1: #00b8d9;
+  --s-glm-2: #5fd4e8;
+  --s-glm-3: #0087a8;
+  --s-glm-4: #b8ecf5;
+  --s-kimi-1: #d63384;
+  --s-kimi-2: #f06595;
+  --s-kimi-3: #a61e5a;
+  --s-kimi-4: #f8b3cf;
+  --s-deepseek-1: #4d6bfe;
+  --s-deepseek-2: #7c8cff;
+  --s-deepseek-3: #3b4fd8;
+  --s-deepseek-4: #b3c0ff;
   --s-other-1: #c7c7cc;
   --s-other-2: #9a9aa0;
   --s-other-3: #e0e0e5;
@@ -68,6 +86,22 @@
     --s-openai-2: #74aa9c;
     --s-openai-3: #10a37f;
     --s-openai-4: #1f6b52;
+    --s-gemini-1: #9e86ff;
+    --s-gemini-2: #b9a8ff;
+    --s-gemini-3: #7c4dff;
+    --s-gemini-4: #d4c9ff;
+    --s-glm-1: #40cfe8;
+    --s-glm-2: #6fdff2;
+    --s-glm-3: #0099c4;
+    --s-glm-4: #a9e8f5;
+    --s-kimi-1: #f06595;
+    --s-kimi-2: #f78fb3;
+    --s-kimi-3: #c2255c;
+    --s-kimi-4: #fcc2d4;
+    --s-deepseek-1: #7c8cff;
+    --s-deepseek-2: #a3b0ff;
+    --s-deepseek-3: #4d6bfe;
+    --s-deepseek-4: #c9d2ff;
     --s-other-1: #48484a;
     --s-other-2: #6c6c70;
     --s-other-3: #34343a;

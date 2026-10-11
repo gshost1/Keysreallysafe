@@ -106,29 +106,68 @@ function spend(params) {
   const day = localDay(new Date());
   if (source !== "keys") {
     if (!localRows.length) return [200, { source, by, start_day: day, end_day: day, totals: {}, rows: [], daily: [], points: [], models: [] }];
-    // A local row is a model the tool priced in its own log, or left unpriced; there is no call
-    // count, which is why requests are not a unit outside the gateway ledger.
-    const fam = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude" : "openai");
-    const rows = localRows.filter((r) => source === "all" || fam(r.model) === source);
-    const sum = (f, pick) => rows.filter((r) => fam(r.model) === f).reduce((a, r) => a + (pick(r) || 0), 0);
-    // The engine's own token rule (`TokenTotals.normalized`): Claude counts cache reads and
-    // writes, the others count reasoning tokens. A bucket carries that total, not a raw sum.
-    const normalized = (r) => (r.input_tokens || 0) + (r.output_tokens || 0)
-      + (fam(r.model) === "claude"
-        ? (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0)
-        : (r.reasoning_tokens || 0));
+    // The vendor families, mirrored from the page's family(): the family decides a row's
+    // fallback token rule and where a sourceless row's tool filter looks.
+    const fam = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude"
+      : /^(gpt-|o[1-9]|codex|chatgpt)/i.test(m) ? "openai"
+      : /^gemini/i.test(m) ? "gemini" : /^glm/i.test(m) ? "glm" : /^kimi/i.test(m) ? "kimi"
+      : /^deepseek/i.test(m) ? "deepseek" : "other");
+    // A row that names a source belongs to that tool's filter whatever vendor its model is
+    // (Droid runs Claude and GLM models); a row of the old shape, with no source, keeps being
+    // matched by its model's family the way this suite always matched it.
+    const wireSource = { grok: "grok-local", claude: "claude-local", openai: "codex-local", droid: "droid-local" };
+    const inSource = (r) => source === "all" || (r.source ? r.source === wireSource[source] : fam(r.model) === source);
+    const rows = localRows.filter(inSource);
+    if (!rows.length) return [200, { source, by, start_day: day, end_day: day, totals: {}, rows: [], daily: [], points: [], models: [] }];
+    // The engine's own token rule (`TokenTotals.normalized`), applied per source: Claude's
+    // cache buckets are billed tokens, Codex's and Grok's reasoning tokens are, and Droid's
+    // log bills every bucket it reports. A row with no source follows its model's family.
+    const counted = (r) => {
+      const input = r.input_tokens || 0, output = r.output_tokens || 0;
+      const cache = (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0);
+      const reasoning = r.reasoning_tokens || 0;
+      if (r.source === "claude-local") return input + output + cache;
+      if (r.source === "codex-local" || r.source === "grok-local") return input + output + reasoning;
+      if (r.source === "droid-local") return input + output + cache + reasoning;
+      return input + output + (fam(r.model) === "claude" ? cache : reasoning);
+    };
+    // by=model groups by the model id, so the same model from two tools is one row: the raw
+    // buckets are summed and `counted_tokens` is each part counted under its own source's rule —
+    // the field the engine sends so the chart never has to guess a merged row's token rule.
+    const merged = new Map();
+    for (const r of rows) {
+      const m = merged.get(r.model) || {
+        model: r.model, input_tokens: 0, output_tokens: 0, cached_read_tokens: 0,
+        cache_creation_tokens: 0, reasoning_tokens: 0, model_calls: 0, counted_tokens: 0,
+        usd: null, usd_estimate: null,
+      };
+      m.input_tokens += r.input_tokens || 0;
+      m.output_tokens += r.output_tokens || 0;
+      m.cached_read_tokens += r.cached_read_tokens || 0;
+      m.cache_creation_tokens += r.cache_creation_tokens || 0;
+      m.reasoning_tokens += r.reasoning_tokens || 0;
+      m.model_calls += r.model_calls || 0;
+      m.counted_tokens += counted(r);
+      if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
+      if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
+      merged.set(r.model, m);
+    }
+    const modelRows = [...merged.values()];
+    // Dollars stay per tool: Grok's own receipt, Claude's and Codex's list-price estimates.
+    const grokUsd = rows.filter((r) => r.source === "grok-local" || (!r.source && fam(r.model) === "grok"))
+      .reduce((a, r) => a + (r.usd || 0), 0);
+    const claudeEst = rows.filter((r) => r.source === "claude-local" || (!r.source && fam(r.model) === "claude"))
+      .reduce((a, r) => a + (r.usd_estimate || 0), 0);
+    const openaiEst = rows.filter((r) => r.source === "codex-local" || (!r.source && fam(r.model) === "openai"))
+      .reduce((a, r) => a + (r.usd_estimate || 0), 0);
     return [200, {
       range: params.get("range") || "today", by, source,
       start_day: day, end_day: day, last_ingest_at: day + "T00:00:00Z",
-      totals: {
-        grok_usd: sum("grok", (r) => r.usd),
-        claude_usd_estimate: sum("claude", (r) => r.usd_estimate),
-        openai_usd_estimate: sum("openai", (r) => r.usd_estimate),
-      },
-      rows,
-      daily: by === "hour" ? [] : rows.map((r) => ({ ...r, day, tokens: normalized(r), usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null })),
+      totals: { grok_usd: grokUsd, claude_usd_estimate: claudeEst, openai_usd_estimate: openaiEst },
+      rows: modelRows,
+      daily: by === "hour" ? [] : modelRows.map((r) => ({ ...r, day, tokens: r.counted_tokens, usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null })),
       points: by === "hour"
-        ? rows.map((r) => ({ ...r, hour: `${day}T${pad2(new Date().getHours())}:00`, tokens: normalized(r), usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null }))
+        ? modelRows.map((r) => ({ ...r, hour: `${day}T${pad2(new Date().getHours())}:00`, tokens: r.counted_tokens, usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null }))
         : [],
       models: [...new Set(rows.map((r) => r.model))],
     }];
@@ -1530,6 +1569,163 @@ test("token headlines count reasoning tokens exactly as the engine's buckets do"
   await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
   assert.match(await page.locator("#usage-totals").textContent(), /200 tokens/,
     "the monthly summary counts them the same way");
+});
+
+// ---------- vendor families, the Droid source, and the merge ----------
+
+// The droid-home fixture's October records, in the local shape the engine serves after
+// `keys ingest droid`: two claude-sonnet-5 requests and one gpt-6-pro, every bucket Droid's
+// log reports counted. The month total 75,308 is the figure the Droid row's Month window shows
+// for the same data (the mock's numbers mirror Fixtures/droid-home/README.md).
+const droidFixtureRows = () => [
+  { model: "claude-sonnet-5", source: "droid-local", input_tokens: 1200, output_tokens: 340, cached_read_tokens: 30000, cache_creation_tokens: 500, reasoning_tokens: 0, usd: null, usd_estimate: null },
+  { model: "claude-sonnet-5", source: "droid-local", input_tokens: 800, output_tokens: 512, cached_read_tokens: 41000, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
+  { model: "gpt-6-pro", source: "droid-local", input_tokens: 640, output_tokens: 220, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 96, usd: null, usd_estimate: null },
+];
+
+test("the Droid chip filters the chart to Droid's own records and the URL boots into it", async (page, origin) => {
+  localRows = droidFixtureRows();
+  await page.goto(`${origin}/?range=month`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+  const names = () => page.locator("#mix .mix-name").allTextContents();
+  assert.deepEqual((await names()).sort(), ["claude-sonnet-5", "gpt-6-pro"], "All shows both October models");
+
+  // The chip sits alongside the tool chips and asks the engine for the droid-local ledger.
+  await page.getByRole("radio", { name: "Droid", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#source-chips [data-source="droid"]').getAttribute("aria-checked") === "true");
+  assert.ok(spendSearches().some((s) => s.includes("source=droid")), "the Droid chip must reach /api/spend?source=droid");
+  assert.equal(new URL(await page.url()).searchParams.get("source"), "droid", "the URL carries the choice");
+  assert.deepEqual((await names()).sort(), ["claude-sonnet-5", "gpt-6-pro"], "the same two models, and only they");
+
+  // Droid's Claude model is not Claude Code's: the Claude chip narrows to nothing here, and
+  // the empty state names the tool rather than pretending the model was counted elsewhere.
+  await page.getByRole("radio", { name: "Claude", exact: true }).click();
+  await page.locator("#spend-empty:visible").waitFor();
+  assert.match(await page.locator("#spend-empty").textContent(), /No Claude Code sessions in this range/);
+
+  // Back to All, Droid's rows return untouched.
+  await page.getByRole("radio", { name: "All", exact: true }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+  assert.equal((await names()).length, 2);
+
+  // A link that says ?source=droid boots straight into the Droid source.
+  await page.goto(`${origin}/?range=month&source=droid`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+  assert.equal(await page.locator('#source-chips [data-source="droid"]').getAttribute("aria-checked"), "true", "the boot source is Droid");
+  assert.ok(spendSearches().some((s) => s.includes("source=droid") && s.includes("range=month")),
+    `the booted chart must load the Droid month: ${spendSearches().join(" | ")}`);
+  assert.deepEqual((await names()).sort(), ["claude-sonnet-5", "gpt-6-pro"]);
+});
+
+test("every vendor family wears its own palette, Claude stays orange, and the legend orders by family", async (page, origin) => {
+  localRows = [
+    { model: "grok-4", source: "grok-local", input_tokens: 700, output_tokens: 130, reasoning_tokens: 64, usd: 0.01, usd_estimate: null },
+    { model: "claude-sonnet-5", source: "claude-local", input_tokens: 900, output_tokens: 300, cached_read_tokens: 400, cache_creation_tokens: 100, usd: null, usd_estimate: 0.02 },
+    { model: "gpt-5", source: "codex-local", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, usd: null, usd_estimate: 0.01 },
+    { model: "gemini-3-pro", source: "droid-local", input_tokens: 2100, output_tokens: 430, usd: null, usd_estimate: null },
+    { model: "glm-5.3", source: "droid-local", input_tokens: 900, output_tokens: 150, cached_read_tokens: 1200, cache_creation_tokens: 60, usd: null, usd_estimate: null },
+    { model: "kimi-k3", source: "droid-local", input_tokens: 450, output_tokens: 90, usd: null, usd_estimate: null },
+    { model: "deepseek-r2", source: "droid-local", input_tokens: 300, output_tokens: 60, usd: null, usd_estimate: null },
+    { model: "typesafe-one", source: "droid-local", input_tokens: 10, output_tokens: 5, usd: null, usd_estimate: null },
+  ];
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto(`${origin}/?range=month`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, 8);
+
+  // Every model keeps its own name and its own colour: eight rows, eight distinct swatches.
+  const swatches = await page.locator("#mix .mix-row").evaluateAll((rows) => rows.map((r) => ({
+    model: r.dataset.model,
+    color: getComputedStyle(r.querySelector(".sw")).backgroundColor,
+  })));
+  const colors = swatches.map((s) => s.color);
+  assert.equal(new Set(colors).size, colors.length, `every family's swatch must be distinct: ${colors.join(" | ")}`);
+
+  // Each family resolves to its own palette's first shade, read from the page itself so the
+  // test follows the palette rather than a copy of it.
+  const hexToRgb = (hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+  };
+  const palette = await page.evaluate(() => Object.fromEntries(
+    ["grok", "claude", "openai", "gemini", "glm", "kimi", "deepseek", "other"]
+      .map((f) => [f, getComputedStyle(document.documentElement).getPropertyValue(`--s-${f}-1`).trim()])
+  ));
+  assert.equal(palette.claude, "#c45c38", "Claude's shade is the orange it has always been");
+  const expected = {
+    "grok-4": palette.grok, "claude-sonnet-5": palette.claude, "gpt-5": palette.openai,
+    "gemini-3-pro": palette.gemini, "glm-5.3": palette.glm, "kimi-k3": palette.kimi,
+    "deepseek-r2": palette.deepseek, "typesafe-one": palette.other,
+  };
+  for (const [model, color] of Object.entries(expected)) {
+    const swatch = swatches.find((s) => s.model === model);
+    assert.ok(swatch, `${model} must be charted`);
+    assert.equal(swatch.color, hexToRgb(color), `${model} must wear its family's first shade`);
+  }
+
+  // The legend orders by family first (grok, claude, openai, then the newer families), so a
+  // stack never interleaves one vendor's shades with another's.
+  assert.deepEqual(
+    (await page.locator("#mix .mix-name").allTextContents()),
+    ["grok-4", "claude-sonnet-5", "gpt-5", "gemini-3-pro", "glm-5.3", "kimi-k3", "deepseek-r2", "typesafe-one"],
+  );
+});
+
+test("a model used by Claude Code and Droid is one series whose total counts both tools' rules", async (page, origin) => {
+  localRows = [
+    // Claude Code saw the model: 1,000 in, 400 cached read, 100 cache write, 200 out — 1,700
+    // counted, its cache buckets billed and its log carrying no reasoning bucket.
+    { model: "claude-sonnet-5", source: "claude-local", input_tokens: 1000, output_tokens: 200, cached_read_tokens: 400, cache_creation_tokens: 100, usd: null, usd_estimate: 0.02 },
+    // Droid saw the same model: 100 in, 50 out, 25 reasoning — 175 counted, every bucket.
+    { model: "claude-sonnet-5", source: "droid-local", input_tokens: 100, output_tokens: 50, reasoning_tokens: 25, usd: null, usd_estimate: null },
+  ];
+  await page.goto(`${origin}/?range=month`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1, null, { timeout: 5000 });
+  assert.equal(await page.locator("#mix .mix-name").textContent(), "claude-sonnet-5",
+    "one model id is one series whichever tool used it");
+  // 1,700 under Claude's rule + 175 under Droid's: 1,875, a number no single rule over the
+  // merged raw buckets could produce (Claude's rule would drop the 25 reasoning tokens).
+  assert.match(await totalsText(page), /1\.9K tokens/);
+  assert.equal((await page.locator("#mix .mix-val").first().textContent()).trim(), "1.9K");
+  // The raw buckets of both tools stay on the row for the tooltip, and the totals line names
+  // the reasoning bucket only the Droid part contributed.
+  assert.match(await page.locator("#mix .mix-row").getAttribute("title"), /1,100 in, 250 out, 400 cached reads, 100 cache writes/);
+  assert.match(await page.locator("#totals .totals-main").getAttribute("title"), /25 reasoning/);
+  const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(labels.some((l) => /claude-sonnet-5 1\.9K/.test(l)), `the bar and the headline must agree: ${labels.join(" | ")}`);
+});
+
+test("the Droid chart's month total is the Droid row's Month figure", async (page, origin) => {
+  plans = [droidPlan()];
+  localRows = droidFixtureRows();
+  await page.goto(`${origin}/?range=month`);
+  await page.waitForLoadState("networkidle");
+  const month = page.locator('#live-status .live-row[data-source="droid"] .live-meter', { hasText: "Month" });
+  await month.waitFor();
+  const rowFigure = (await month.locator(".live-note").textContent()).trim();
+  assert.equal(rowFigure, "75.3K tokens", "the fixture's Month figure");
+
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+  await page.getByRole("radio", { name: "Droid", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#source-chips [data-source="droid"]').getAttribute("aria-checked") === "true");
+  await page.waitForFunction((t) => document.querySelector("#totals .totals-main").textContent.includes(t), rowFigure,
+    { timeout: 5000 });
+  const chartTotal = (await page.locator("#totals .totals-main").textContent()).trim();
+  assert.equal(chartTotal, rowFigure, "the chart's Droid month total equals the Droid row's Month figure");
+  // The cache buckets Droid reports are in that total, not dropped by a family-based guess.
+  assert.match(await page.locator("#totals .totals-main").getAttribute("title"), /71,000 cached input read/);
+  assert.deepEqual(
+    (await page.locator("#mix .mix-name").allTextContents()).sort(),
+    ["claude-sonnet-5", "gpt-6-pro"],
+  );
 });
 
 // ---------- model identity ----------

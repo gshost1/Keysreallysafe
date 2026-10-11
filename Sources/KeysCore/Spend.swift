@@ -465,22 +465,23 @@ struct SpendQueries {
     }
 
     /// Chart buckets: one per (bucket, series), sorted by both. `bucket` returns nil to skip an event.
+    /// Each bucket's token total is the row's own counted total — the same per-source rule the
+    /// headline rows carry, so a bar and a legend row cannot disagree about the same records.
     private static func points(
         _ events: [UsageEvent], bucket: (Date) -> String?, series: (UsageEvent) -> String
     ) -> [(bucket: String, series: String, row: SpendRow, tokens: Int)] {
         struct Key: Hashable { var bucket: String; var series: String }
-        var acc: [Key: (row: SpendRow, tokens: Int)] = [:]
+        var acc: [Key: SpendRow] = [:]
         for event in events {
             guard let date = UTC.parse(event.occurredAt), let b = bucket(date) else { continue }
             let key = Key(bucket: b, series: series(event))
-            var cur = acc[key] ?? (SpendRow(), 0)
-            cur.row.add(event)
-            cur.tokens += TokenTotals.normalized(event)
-            acc[key] = cur
+            var row = acc[key] ?? SpendRow()
+            row.add(event)
+            acc[key] = row
         }
         return acc.keys.sorted { ($0.bucket, $0.series) < ($1.bucket, $1.series) }.map { key in
-            let v = acc[key]!
-            return (key.bucket, key.series, v.row, v.tokens)
+            let row = acc[key]!
+            return (key.bucket, key.series, row, row.countedTokens)
         }
     }
 
@@ -541,6 +542,10 @@ extension SpendRow {
         cacheCreationTokens += event.cacheCreationTokens
         reasoningTokens += event.reasoningTokens
         modelCalls += event.modelCalls ?? 0
+        // The row's counted total is stated once, here, under the source's own rule: a row that
+        // mixes tools (by=model groups on the model id) would otherwise force every reader to
+        // guess a rule from the model name, and guess wrong for the second tool.
+        countedTokens += TokenTotals.normalized(event)
         let cost = SpendQueries.cost(event)
         if let usd = cost.usd { self.usd = (self.usd ?? 0) + usd }
         if let estimate = cost.estimate { usdEstimate = (usdEstimate ?? 0) + estimate }

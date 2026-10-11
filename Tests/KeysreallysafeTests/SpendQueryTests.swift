@@ -312,6 +312,64 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertEqual(month.daily.first?.usd ?? 0, 1.5, accuracy: 1e-9)
     }
 
+    // A by=model row groups by the model id, so one row can mix tools — and each tool counts
+    // tokens under its own rule (Claude's cache buckets, Droid's every bucket). The row's raw
+    // buckets alone cannot answer "how many counted"; the chart needs the engine's per-row
+    // total, computed under each event's own source rule.
+    func testModelRowMixingToolsCountsEachSourceByItsOwnRule() throws {
+        let (db, _) = try makeDB()
+        // Claude Code: cache counts, its log carries no reasoning bucket. 1,000 + 200 + 400 + 100.
+        _ = try db.insertUsage(UsageEvent(
+            source: "claude-local", sessionId: "cc", promptId: "cc-1", model: "claude-sonnet-5",
+            occurredAt: "2026-10-10T20:00:00Z", provider: "anthropic",
+            inputTokens: 1_000, outputTokens: 200, cachedReadTokens: 400, cacheCreationTokens: 100
+        ))
+        // Droid saw the same model: every bucket its log reports counts. 100 + 50 + 25.
+        _ = try db.insertUsage(UsageEvent(
+            source: "droid-local", sessionId: "dr", promptId: "dr-1", model: "claude-sonnet-5",
+            occurredAt: "2026-10-10T21:00:00Z", provider: "anthropic",
+            inputTokens: 100, outputTokens: 50, reasoningTokens: 25
+        ))
+        let now = UTC.parse("2026-10-10T22:00:00Z")!
+        let report = try SpendQueries(db: db).report(
+            range: .month, by: .model, source: .all, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        XCTAssertEqual(report.rows.count, 1, "one model id is one row, whichever tool used it")
+        let row = try XCTUnwrap(report.rows.first)
+        XCTAssertEqual(row.inputTokens, 1_100)
+        XCTAssertEqual(row.outputTokens, 250)
+        XCTAssertEqual(row.cachedReadTokens, 400)
+        XCTAssertEqual(row.cacheCreationTokens, 100)
+        XCTAssertEqual(row.reasoningTokens, 25)
+        // Not the raw bucket sum (1,875 + the reasoning a Claude row would drop): each source's
+        // own rule, added. 1,700 + 175.
+        XCTAssertEqual(row.countedTokens, 1_875)
+        let json = row.jsonObject()
+        XCTAssertEqual(json["counted_tokens"] as? Int, 1_875)
+    }
+
+    // The Chart's Droid filter and the Usage row's Month window read the same records, so their
+    // figures must be the same number: the chart sums the rows' counted totals, the row sums
+    // `TokenTotals.normalized` over the same window. (Fixture math: the October records of
+    // Fixtures/droid-home are 74,352 claude-sonnet-5 tokens and 956 gpt-6-pro tokens.)
+    func testDroidMonthChartRowsMatchTheDroidRowMonthWindow() throws {
+        let (db, _) = try makeDB()
+        _ = try DroidIngest.run(home: Fixtures.droidHome, db: db)
+        let utc = TimeZone(identifier: "UTC")!
+        let now = UTC.parse("2026-10-10T22:00:00Z")!
+        let windows = try DroidUsage.windows(catalog: db, now: now, timeZone: utc)
+        XCTAssertEqual(windows.monthly, 75_308)
+        let report = try SpendQueries(db: db).report(
+            range: .month, by: .model, source: .droid, now: now, timeZone: utc
+        )
+        XCTAssertEqual(report.rows.count, 2, "only the two October models are in this month")
+        XCTAssertEqual(Set(report.rows.compactMap(\.model)), ["claude-sonnet-5", "gpt-6-pro"])
+        XCTAssertEqual(report.rows.reduce(0) { $0 + $1.countedTokens }, windows.monthly)
+        // The weekly chart says the same thing: this calendar week holds both October records.
+        let week = try SpendQueries(db: db).report(range: .week, by: .model, source: .droid, now: now, timeZone: utc)
+        XCTAssertEqual(week.rows.reduce(0) { $0 + $1.countedTokens }, windows.weekly)
+    }
+
     private static let denver = TimeZone(identifier: "America/Denver")!
 
     private func localDate(

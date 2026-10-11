@@ -17,7 +17,7 @@
     const asked = q.get("source");
     const key = q.get("key") || null;
     const provider = q.get("provider") || null;
-    if (["all", "grok", "claude", "openai"].includes(asked)) return { source: asked, key: null, provider: null, dropped: Boolean(key || provider) };
+    if (["all", "grok", "claude", "openai", "droid"].includes(asked)) return { source: asked, key: null, provider: null, dropped: Boolean(key || provider) };
     if (asked === "keys") return { source: "keys", key, provider, dropped: false };
     return { source: key || provider ? "keys" : "all", key, provider, dropped: false };
   })();
@@ -59,7 +59,7 @@
   const SLOTS = 4;
   // Family bases leave room for as many models as a family actually has, so the slot order that
   // sorts the legend and the stack can never run one family into the next.
-  const FAM_BASE = { grok: 0, claude: 10000, openai: 20000, other: 30000 };
+  const FAM_BASE = { grok: 0, claude: 10000, openai: 20000, gemini: 30000, glm: 40000, kimi: 50000, deepseek: 60000, other: 70000 };
   const OTHER_SLOT = 900000;
   const OTHER = "Other models";
   const TOKEN = (document.querySelector('meta[name="ksf-token"]') || {}).content || "";
@@ -589,7 +589,12 @@
     } catch { /* colours fall back to first-sighting order */ }
   }
 
-  const family = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude" : /^(gpt-|o[1-9]|codex|chatgpt)/i.test(m) ? "openai" : "other");
+  // The vendor a model id names — one family per vendor, and the family owns the palette, the
+  // legend order and the token-rule fallback below. The prefixes are the public ids the tools
+  // log (Droid included), matching the ingest's provider map; anything unrecognized is
+  // "other", which has its own grey palette.
+  const family = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude" : /^(gpt-|o[1-9]|codex|chatgpt)/i.test(m) ? "openai"
+    : /^gemini/i.test(m) ? "gemini" : /^glm/i.test(m) ? "glm" : /^kimi/i.test(m) ? "kimi" : /^deepseek/i.test(m) ? "deepseek" : "other");
 
   // Colour follows the model. The engine's colour registry gives every model a stable slot, so a
   // family's shades are handed out in slot order and never move between loads or restarts.
@@ -660,8 +665,19 @@
     return input + output + (family(r.model || "") === "claude" ? cache : reasoning);
   }
 
+  // What a report row counts. by=model rows group on the model id, so one row can mix tools —
+  // a model Claude Code and Droid both used — and no single rule over its raw buckets can be
+  // right for both (Claude's cache buckets and Droid's reasoning both count, each under its own
+  // source). The engine states the answer once, in `counted_tokens`: each event counted under
+  // its own source's rule before the grouping, the same `TokenTotals.normalized` the Usage row
+  // reads. Only a payload without the field — an older engine, a hand-made fixture — falls back
+  // to the family-based rule above.
+  const rowCounted = (r, projects = false) => (typeof r.counted_tokens === "number" ? r.counted_tokens : rowTokens(r, projects));
+
   function buildSeries(rows) {
-    const order = { grok: 0, claude: 1, openai: 2, other: 3 };
+    // Families first, newest vendors after the three the chips name, unknown last: a stack
+    // never interleaves one vendor's shades with another's.
+    const order = { grok: 0, claude: 1, openai: 2, gemini: 3, glm: 4, kimi: 5, deepseek: 6, other: 7 };
     // Same accounting as the engine's totals: Claude counts every bucket (cache reads and
     // writes are billed separately), Grok's cached reads already sit inside input_tokens.
     // A gateway call is real even with no token counts: TypeSafe's System One protocol reports
@@ -674,10 +690,11 @@
     for (const r of rows.filter(isReal)) {
       const id = seriesId(r);
       const m = merged.get(id);
-      // Each row is counted under its own source's rule before the merge, so a model served by
-      // two providers is not re-counted under whichever one happened to be named first.
-      if (!m) { merged.set(id, { ...r, counted: rowTokens(r, projectMode()) }); continue; }
-      m.counted += rowTokens(r, projectMode());
+      // Each row arrives already counted under its own sources' rules (`counted_tokens`), so a
+      // model served by two tools or two providers is not re-counted under whichever one
+      // happened to be named first.
+      if (!m) { merged.set(id, { ...r, counted: rowCounted(r, projectMode()) }); continue; }
+      m.counted += rowCounted(r, projectMode());
       for (const f of ["input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "reasoning_tokens", "model_calls"]) m[f] = (m[f] || 0) + (r[f] || 0);
       if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
       if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
@@ -787,7 +804,7 @@
       node.append(`No API key calls in this range. ${onlyRouted} `,
         el("button", { type: "button", class: "link", text: "Show subscriptions", onclick: () => { document.querySelector('[data-scope="subs"]').click(); } }));
     } else if (state.source !== "all") {
-      const name = { grok: "Grok", claude: "Claude Code", openai: "Codex" }[state.source] || state.source;
+      const name = { grok: "Grok", claude: "Claude Code", openai: "Codex", droid: "Droid" }[state.source] || state.source;
       node.append(`No ${name} sessions in this range. `, el("button", { type: "button", class: "link", text: "Show all", onclick: () => { document.querySelector('[data-source="all"]').click(); } }));
     } else if (!ingested) {
       node.append("No sessions ingested yet. ", el("button", { type: "button", class: "link", text: "Ingest now", onclick: ingest }));
@@ -947,7 +964,8 @@
         title: breakdownTitle(b),
       })];
       if (src === "all" && !projectMode()) {
-        for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["other", "other"]]) {
+        // Every family a fixture can hold, so the parts always sum to the headline beside them.
+        for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["gemini", "Gemini"], ["glm", "GLM"], ["kimi", "Kimi"], ["deepseek", "DeepSeek"], ["other", "other"]]) {
           const n = byFamily.get(fam) || 0;
           if (n > 0) parts.push(el("span", { class: "totals-part" }, el("b", { text: fmtTokens(n) }), " " + label));
         }
@@ -2930,12 +2948,12 @@
       let cached = 0;
       for (const r of rows) {
         const f = family(r.model || "");
-        byFamily.set(f, (byFamily.get(f) || 0) + rowTokens(r));
+        byFamily.set(f, (byFamily.get(f) || 0) + rowCounted(r));
         cached += (r.cached_read_tokens || 0);
       }
       const total = [...byFamily.values()].reduce((a, n) => a + n, 0);
       const parts = [];
-      for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["other", "other"]]) {
+      for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["gemini", "Gemini"], ["glm", "GLM"], ["kimi", "Kimi"], ["deepseek", "DeepSeek"], ["other", "other"]]) {
         const n = byFamily.get(fam) || 0;
         if (n > 0) parts.push(el("span", {}, el("b", { text: fmtTokens(n) }), " " + label));
       }

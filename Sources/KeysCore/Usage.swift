@@ -222,6 +222,12 @@ struct SpendRow: Equatable {
     var cacheCreationTokens: Int = 0
     var reasoningTokens: Int = 0
     var modelCalls: Int = 0
+    /// The row's tokens counted under each event's own source rule (`TokenTotals.normalized`),
+    /// summed as events are added. A by=model row groups by the model id, so one row can mix
+    /// tools whose rules differ — Claude's cache buckets, Droid's every bucket — and the raw
+    /// buckets alone cannot answer how many counted. The chart reads this total instead of
+    /// re-deriving a rule from the model name.
+    var countedTokens: Int = 0
     var usd: Double?
     var usdEstimate: Double?
     var key: String? = nil
@@ -378,6 +384,7 @@ extension SpendRow {
             "cached_read_tokens": cachedReadTokens,
             "cache_creation_tokens": cacheCreationTokens,
             "reasoning_tokens": reasoningTokens,
+            "counted_tokens": countedTokens,
             "model_calls": modelCalls,
             "usd": usd as Any? ?? NSNull(),
             "usd_estimate": usdEstimate as Any? ?? NSNull(),

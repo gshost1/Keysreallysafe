@@ -168,11 +168,14 @@ list-price table applied to it afterwards. `T` flips tokens and USD, the choice
 is remembered, and the Usage summary and the Keys table's gateway column follow
 the same unit from their own switches. The model list under the chart shows
 every model by default, each with its own name, colour and filter however many
-a family has, and clicking one shows it alone. `X` downloads the rows as CSV, `⇧C` copies the
+a family has, and clicking one shows it alone. Each model wears its vendor's
+colour — Claude orange, OpenAI green, Grok blue, and the vendors Droid runs
+(Gemini, GLM, Kimi, DeepSeek, and anything unrecognized in grey) each their own
+palette — and the same model id coming from several tools is one series. `X` downloads the rows as CSV, `⇧C` copies the
 totals line as Markdown.
 
-Under **Subscriptions**, chips narrow the view to Grok, Claude or OpenAI.
-Everything here is estimated from what those tools wrote to their own logs on
+Under **Subscriptions**, chips narrow the view to Grok, Claude, OpenAI or
+Droid. Everything here is estimated from what those tools wrote to their own logs on
 this Mac — not from a plan invoice, and the plan windows themselves stay in the
 Usage pane rather than being redrawn as bars. Claude and Codex dollars are
 list-price estimates and are labelled as such; Grok's come from its own cost
