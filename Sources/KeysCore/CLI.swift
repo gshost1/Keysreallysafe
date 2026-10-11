@@ -272,27 +272,45 @@ struct StatusCommand: ParsableCommand {
 
     private func printPlan(_ row: ToolStatus) {
         print(row.title)
-        if let usd = row.weeklyUsd, row.weeklyTokens != nil {
-            print("  weekly  \(row.weeklyTokens ?? 0) tokens  ≈ \(String(format: "$%.2f", usd)) estimate")
-        } else if let usd = row.weeklyUsd {
-            print("  weekly  \(String(format: "$%.2f", usd))  local spend")
-        } else if row.weeklyTokens != nil {
-            print("  weekly  \(row.weeklyTokens ?? 0) tokens")
-        } else if let prompts = row.weeklyPrompts {
-            print("  weekly  \(prompts) prompts sent · limit not tracked")
-        }
-        if row.fiveHourPct != nil || row.source == "claude" || row.source == "openai" {
-            print("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt))")
-        }
-        if row.weeklyPct != nil || row.source == "openai" {
-            print("  weekly  \(pctLine(row.weeklyPct, reset: row.weeklyResetsAt))")
-        }
-        if row.source == "claude" {
-            print("  Fable   \(pctLine(row.fablePct, reset: row.fableResetsAt))")
+        if row.source == "droid" {
+            // Three catalog-backed windows, each with its optional limit. A limit prints the
+            // percent it drives; an unlimited window prints the tokens alone.
+            print("  5 hour  \(droidWindow(row.fiveHourTokens, limit: row.fiveHourLimit))")
+            print("  weekly  \(droidWindow(row.weeklyTokens, limit: row.weeklyLimit))")
+            print("  month   \(droidWindow(row.monthlyTokens, limit: row.monthlyLimit))")
+        } else {
+            if let usd = row.weeklyUsd, row.weeklyTokens != nil {
+                print("  weekly  \(row.weeklyTokens ?? 0) tokens  ≈ \(String(format: "$%.2f", usd)) estimate")
+            } else if let usd = row.weeklyUsd {
+                print("  weekly  \(String(format: "$%.2f", usd))  local spend")
+            } else if row.weeklyTokens != nil {
+                print("  weekly  \(row.weeklyTokens ?? 0) tokens")
+            } else if let prompts = row.weeklyPrompts {
+                print("  weekly  \(prompts) prompts sent · limit not tracked")
+            }
+            if row.fiveHourPct != nil || row.source == "claude" || row.source == "openai" {
+                print("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt))")
+            }
+            if row.weeklyPct != nil || row.source == "openai" {
+                print("  weekly  \(pctLine(row.weeklyPct, reset: row.weeklyResetsAt))")
+            }
+            if row.source == "claude" {
+                print("  Fable   \(pctLine(row.fablePct, reset: row.fableResetsAt))")
+            }
         }
         if let note = row.usageNote {
             print("  \(note)")
         }
+    }
+
+    /// One Droid window: its tokens, and the percent of the limit when one is set.
+    private func droidWindow(_ tokens: Int?, limit: Int?) -> String {
+        guard let tokens else { return "—" }
+        var line = "\(tokens) tokens"
+        if let limit {
+            line += "  (\(DroidUsage.pct(tokens, limit: limit))% of \(limit) limit)"
+        }
+        return line
     }
 
     private func pctLine(_ pct: Int?, reset: String?) -> String {

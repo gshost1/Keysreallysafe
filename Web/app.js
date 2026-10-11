@@ -2676,6 +2676,9 @@
 
   function hasLocalMeasure(row) {
     if (!row) return false;
+    // The Droid row is counted from the catalog, so its zeros are real zeros: it never falls
+    // into "not tracked", which is for tools whose quota is not in any local file.
+    if (row.source === "droid") return true;
     if (row.limit_remaining != null || row.usage_weekly != null) return true;
     if (row.source === "claude" || row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null) return true;
     if (row.source === "grok" && row.weekly_usd != null) return true;
@@ -2694,11 +2697,108 @@
     perplexity: "https://www.perplexity.ai/settings/account",
     openrouter: "https://openrouter.ai/activity",
     "xai-api": "https://console.x.ai",
-    droid: "https://app.factory.ai",
   };
+
+  // ---------- Droid row: three windows, optional limits ----------
+
+  const LIMIT_WINDOWS = ["five_hour", "weekly", "monthly"];
+  // The row the Set limits dialog was opened for, kept here because the form cannot hold it.
+  let limitsForRow = null;
+
+  // The Droid row: 5-hour rolling, calendar week and calendar month, counted by the engine from
+  // the records it ingested. A window with a limit the user set is a percent meter with
+  // "X of Y tokens"; a window without one shows its tokens alone. Nothing is estimated: a zero
+  // window says zero, and an empty catalog says so in the note.
+  function renderDroidRow(row) {
+    const windows = [
+      { label: "5 hour", tokens: row.five_hour_tokens, limit: row.five_hour_limit, pct: row.five_hour_pct },
+      { label: "Weekly", tokens: row.weekly_tokens, limit: row.weekly_limit, pct: row.weekly_pct },
+      { label: "Month", tokens: row.monthly_tokens, limit: row.monthly_limit, pct: row.monthly_pct },
+    ];
+    const meters = windows.map(({ label, tokens, limit, pct }) => {
+      if (limit != null && pct != null) {
+        // The bar caps at 100%, the number does not: a blown limit stays honest past it.
+        return meter(label, pct, el("span", {},
+          el("span", { class: "live-used", text: pct + "%" }),
+          el("span", { text: " · " + fmtTokens(tokens) + " of " + fmtTokens(limit) + " tokens" }),
+        ));
+      }
+      return meter(label, null, fmtTokens(tokens) + " tokens");
+    });
+    const note = row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null;
+    return el("div", { class: "live-row", "data-source": row.source },
+      el("div", { class: "live-head" },
+        el("span", { class: "live-title", text: row.title || "Droid" }),
+        el("button", {
+          type: "button", class: "btn-row live-limits",
+          title: "Set optional token limits for the Droid windows",
+          onclick: () => openLimits(row),
+        }, "Set limits"),
+      ),
+      el("div", { class: "live-meters" }, ...meters),
+      note,
+    );
+  }
+
+  function openLimits(row) {
+    limitsForRow = row;
+    $("limits-err").textContent = "";
+    const form = $("limits-form");
+    for (const name of LIMIT_WINDOWS) {
+      form.elements[name].value = row[name + "_limit"] != null ? String(row[name + "_limit"]) : "";
+    }
+    if (!$("dlg-limits").open) $("dlg-limits").showModal();
+  }
+
+  $("limits-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const err = $("limits-err");
+    err.textContent = "";
+    const row = limitsForRow;
+    if (!row) { $("dlg-limits").close(); return; }
+    const ops = [];
+    for (const name of LIMIT_WINDOWS) {
+      const input = form.elements[name];
+      const raw = input.value.trim();
+      const prior = row[name + "_limit"];
+      // A number field reports typed letters as an empty value; badInput keeps them from
+      // passing as "no limit" and silently clearing the window.
+      if (input.validity.badInput) {
+        err.textContent = "Limits are whole token counts of 1 or more.";
+        return;
+      }
+      if (!raw) {
+        // An emptied field clears that window's limit; a window that never had one sends nothing.
+        if (prior != null) ops.push(api(`/api/limits/${row.source}/${name}`, { method: "DELETE" }));
+        continue;
+      }
+      const tokens = Number(raw);
+      if (!Number.isInteger(tokens) || tokens <= 0) {
+        err.textContent = "Limits are whole token counts of 1 or more.";
+        return;
+      }
+      if (tokens !== prior) {
+        ops.push(api(`/api/limits/${row.source}/${name}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tokens }),
+        }));
+      }
+    }
+    try {
+      await Promise.all(ops);
+      say("Saved Droid limits.");
+      $("dlg-limits").close();
+      await loadStatus();
+    } catch (e2) { err.textContent = e2.message; }
+  });
 
   function renderLiveRow(row) {
     if (!row) return null;
+    // The Droid row is its own layout: three windows, each optionally a meter of a limit the
+    // user set, plus the control that sets them. The generic branches below stay provider-shaped.
+    if (row.source === "droid") return renderDroidRow(row);
     const meters = [];
     // The engine attaches its calendar-week period to every row with a weekly figure;
     // Claude and OpenRouter rows carry none.

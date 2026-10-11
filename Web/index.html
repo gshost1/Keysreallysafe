@@ -356,6 +356,27 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-limits" class="dlg" aria-labelledby="limits-title">
+    <form id="limits-form" novalidate>
+      <h2 id="limits-title">Droid token limits</h2>
+      <p class="hint">Optional, per window. A window with a limit becomes a percent meter on the Droid row; an empty field clears it. Factory's own plan limits are not in local files, so set your own here.</p>
+      <label>5-hour rolling window
+        <input name="five_hour" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit" autocomplete="off">
+      </label>
+      <label>Weekly (calendar week)
+        <input name="weekly" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit" autocomplete="off">
+      </label>
+      <label>Month (calendar month)
+        <input name="monthly" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit" autocomplete="off">
+      </label>
+      <p class="err" id="limits-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="dlg-providers" class="dlg dlg-wide" aria-labelledby="providers-title">
     <h2 id="providers-title">Providers</h2>
     <p class="hint">The Add dialog offers these. <b>Yours</b> are stored in this catalog and survive restarts; an entry you add can also override a built-in one. Hiding a built-in provider takes it out of the Add dialog while keys that already use it keep their gateway, checks and name.</p>

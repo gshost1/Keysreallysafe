@@ -35,6 +35,7 @@
   --s-other-4: #7c7c84;
   --s-other: #c7c7cc;
   --live-claude: #c45c38;
+  --live-droid: #0071e3;
   --live-track: #e8e8ea;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
@@ -374,6 +375,9 @@ main { flex: 1; min-height: 0; overflow: auto; }
 }
 .live-row[data-source="claude"] .live-fill { background: var(--live-claude); }
 .live-row[data-source="openai"] .live-fill { background: var(--s-openai-1); }
+/* Droid's models span vendors, so the row meter wears the app's own blue, not a vendor's. */
+.live-row[data-source="droid"] .live-fill { background: var(--live-droid); }
+.live-limits { margin-left: auto; }
 .live-note { color: var(--fg-3); }
 .live-used { color: var(--fg); }
 .live-reset { color: var(--fg-2); }

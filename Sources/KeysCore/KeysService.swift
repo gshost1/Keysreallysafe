@@ -220,6 +220,33 @@ final class KeysService: @unchecked Sendable {
         Providers.setOverlay(Dictionary(custom.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
     }
 
+    // MARK: usage limits
+
+    /// Every saved window limit, for the dashboard's dialog and for tests.
+    func usageLimits() throws -> [CatalogDB.UsageLimit] {
+        try catalog.usageLimits()
+    }
+
+    /// Sets (or replaces) one window's token limit. The catalog version moves so an already-open
+    /// dashboard reloads its status row on its next poll.
+    @discardableResult
+    func setUsageLimit(source: String, window: String, tokens: Int) throws -> CatalogDB.UsageLimit {
+        let window = try UsageLimits.validate(source: source, window: window)
+        try UsageLimits.validateTokens(tokens)
+        let record = CatalogDB.UsageLimit(source: source, window: window.rawValue, tokens: tokens)
+        try catalog.setUsageLimit(source: record.source, window: record.window, tokens: record.tokens)
+        try catalog.bumpCatalogVersion()
+        return record
+    }
+
+    /// Clears one window's limit; the window goes back to tokens only. Clearing a window that
+    /// never had one is the same end state, so it is not an error.
+    func clearUsageLimit(source: String, window: String) throws {
+        let window = try UsageLimits.validate(source: source, window: window)
+        _ = try catalog.clearUsageLimit(source: source, window: window.rawValue)
+        try catalog.bumpCatalogVersion()
+    }
+
     /// The catalog the dashboard uses: the user's providers first, then the shipped ones, with
     /// hidden entries still present (flagged) so the key table can render their names.
     func providersJSONObject() throws -> [String: Any] {
@@ -979,7 +1006,7 @@ final class KeysService: @unchecked Sendable {
             codexHome: codexHome,
             weekPeriod: period,
             grokBotHome: grokBotHome,
-            droidHome: droidHome
+            droidRow: try DroidUsage.row(catalog: catalog)
         )
         status.lastIngestAt = try catalog.lastIngestAt()
         status.catalogVersion = try catalog.catalogVersion()

@@ -69,7 +69,7 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers;
+let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits;
 
 function reset() {
   keys = baseKeys();
@@ -77,6 +77,8 @@ function reset() {
   rotations = [];
   customProviders = [];
   hiddenUsers = new Set();
+  // "source/window" -> token limit, mirroring the engine's usage_limits rows.
+  limits = new Map();
   ledger = baseLedger();
   localRows = [];
   // The plan cards. Empty unless a test fills it, as most of this suite expects.
@@ -252,6 +254,31 @@ function handle(method, pathname, body, params) {
   }
   if (pathname === "/api/models") return [200, []];
   if (pathname === "/api/status") return [200, { plans }];
+  // The per-window token limits, mirroring the engine's usage_limits: only the Droid row is
+  // tracked, the windows are fixed, and a limit is a positive whole number and nothing else.
+  if (pathname === "/api/limits" && method === "GET") {
+    return [200, { limits: [...limits].map(([key, tokens]) => {
+      const [source, window] = key.split("/");
+      return { source, window, tokens };
+    }) }];
+  }
+  const limitMatch = /^\/api\/limits\/([a-z0-9-]+)\/([a-z_]+)$/.exec(pathname);
+  if (limitMatch) {
+    const source = limitMatch[1], window = limitMatch[2];
+    if (source !== "droid") return [400, { error: "limits exist for droid only" }];
+    if (!["five_hour", "weekly", "monthly"].includes(window)) return [400, { error: "window must be five_hour, weekly or monthly" }];
+    if (method === "PUT") {
+      if (typeof body.tokens !== "number" || !Number.isInteger(body.tokens) || body.tokens <= 0) {
+        return [400, { error: "tokens must be a positive whole number" }];
+      }
+      limits.set(`${source}/${window}`, body.tokens);
+      return [200, { source, window, tokens: body.tokens }];
+    }
+    if (method === "DELETE") {
+      limits.delete(`${source}/${window}`);
+      return [200, { removed: `${source}/${window}` }];
+    }
+  }
   if (pathname.startsWith("/api/spend")) return spend(params);
 
   unexpected.push(rule(method, pathname));
@@ -1337,26 +1364,149 @@ test("Grok Bot shows this week's prompt count, and an idle week is not tracked",
   assert.match(await page.locator("#live-status .live-absent").textContent(), /Grok Bot/);
 });
 
-// Droid's session totals are tokens, so its card reads like the Codex one; an idle week links out.
-test("Droid shows this week's tokens, and an idle week links to Factory", async (page, origin) => {
-  plans = [
-    { source: "droid", title: "Droid", kind: "subscription", weekly_tokens: 2500000, period: { label: "This week" },
-      usage_note: "4 Droid sessions active this week, from the token totals Droid keeps on this Mac. Factory plan limits and credits are not in local files." },
-  ];
+// The Droid row is catalog-backed: three windows (5-hour rolling, calendar week, calendar month),
+// each tokens-only until the user sets a limit for it, which turns that one window into a
+// percent meter. The fixture numbers mirror the droid-home fixture's windows at its fixed clock.
+const droidPlan = (extra = {}) => ({
+  source: "droid", title: "Droid", kind: "subscription",
+  five_hour_tokens: 74352, weekly_tokens: 75308, monthly_tokens: 75308, ...extra,
+  usage_note: extra.usage_note || "Tokens per window, from the per-request records in Droid's local logs. Factory's own plan limits are not in local files; use Set limits to add your own.",
+});
+
+test("Droid shows three token windows, tokens only until a window gets a limit", async (page, origin) => {
+  plans = [droidPlan()];
   localRows = subscriptionRows();
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   const card = page.locator('#live-status .live-row[data-source="droid"]');
   await card.waitFor();
-  assert.match(await card.textContent(), /tokens · local logs/);
-  assert.match(await card.textContent(), /4 Droid sessions active this week/);
+  // Laid out like the Claude/OpenAI rows: one meter line per window, in this order.
+  assert.deepEqual(
+    await card.locator(".live-meter-label").evaluateAll((rows) => rows.map((r) => r.firstChild.textContent.trim())),
+    ["5 hour", "Weekly", "Month"],
+  );
+  const text = await card.textContent();
+  assert.match(text, /74\.4K tokens/, "the 5-hour window shows its own tokens");
+  assert.match(text, /75\.3K tokens.*75\.3K tokens/, "weekly and month each show their figure");
+  assert.match(text, /per-request records in Droid's local logs/);
+  // Without limits nothing is a percent: no track, no % sign, and the row stays tracked.
+  assert.equal(await card.locator(".live-track").count(), 0);
+  assert.doesNotMatch(text, /%/);
+  assert.equal(await card.locator("#live-status .live-absent").count(), 0);
+  assert.equal(await card.getByRole("button", { name: "Set limits" }).count(), 1);
 
-  plans = [{ source: "droid", title: "Droid", kind: "subscription", weekly_tokens: 0, usage_note: "No Droid usage this week." }];
+  // A limit turns exactly its own window into a meter; the others stay token text.
+  plans = [droidPlan({ weekly_limit: 100000, weekly_pct: 75 })];
   await page.reload();
   await page.waitForLoadState("networkidle");
-  await page.locator("#live-status .live-more").waitFor();
-  assert.equal(await page.locator('#live-status .live-row[data-source="droid"]').count(), 0);
-  assert.equal(await page.locator('#live-status .live-absent a[href="https://app.factory.ai"]').count(), 1);
+  await card.locator(".live-track").waitFor();
+  const weekly = card.locator(".live-meter", { hasText: "Weekly" });
+  assert.match(await weekly.textContent(), /75% · 75\.3K of 100K tokens/);
+  const fill = await weekly.locator(".live-fill").evaluate((n) => n.style.width);
+  assert.equal(fill, "75%");
+  assert.equal(await card.locator(".live-track").count(), 1, "only the limited window gets a track");
+  assert.match(await card.locator(".live-meter", { hasText: "5 hour" }).textContent(), /74\.4K tokens/);
+  assert.match(await card.locator(".live-meter", { hasText: "Month" }).textContent(), /75\.3K tokens/);
+});
+
+test("a blown Droid limit caps the bar but keeps the true percentage", async (page, origin) => {
+  plans = [droidPlan({ weekly_tokens: 120000, monthly_tokens: 120000, weekly_limit: 100000, weekly_pct: 120 })];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const weekly = page.locator('#live-status .live-row[data-source="droid"] .live-meter', { hasText: "Weekly" });
+  await weekly.waitFor();
+  assert.match(await weekly.textContent(), /120% · 120K of 100K tokens/, "the number stays honest past 100");
+  assert.equal(await weekly.locator(".live-fill").evaluate((n) => n.style.width), "100%", "the bar caps visually");
+  assert.match(await weekly.locator(".live-fill").getAttribute("class"), /live-fill-over/);
+});
+
+test("Set limits sets, validates and clears Droid window limits through the API", async (page, origin) => {
+  plans = [droidPlan()];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const card = page.locator('#live-status .live-row[data-source="droid"]');
+  await card.waitFor();
+  await card.getByRole("button", { name: "Set limits" }).click();
+  await waitDialog(page, "dlg-limits", true);
+  const form = page.locator("#limits-form");
+  // Three optional fields, prefilled from the row's current limits (none yet).
+  assert.deepEqual(
+    await form.locator("input").evaluateAll((inputs) => inputs.map((i) => i.value)),
+    ["", "", ""],
+  );
+
+  // 0 is not a limit: an inline error, the dialog stays open, nothing is sent.
+  await form.locator('input[name="weekly"]').fill("0");
+  await page.getByRole("button", { name: "Save" }).click();
+  assert.match(await page.locator("#limits-err").textContent(), /whole token counts of 1 or more/);
+  assert.equal(await dialogOpen(page, "dlg-limits"), true);
+  assert.equal(requests.filter((r) => r.pathname.startsWith("/api/limits")).length, 0);
+  // Non-numeric text, negatives and fractions are refused the same way, never read as an empty
+  // "no limit". Chromium drops typed letters outright, but "1e" reaches the field as badInput.
+  await form.locator('input[name="weekly"]').fill("");
+  for (const bad of ["1e", "-5", "12.5"]) {
+    await page.locator("#limits-err").evaluate((n) => { n.textContent = ""; });
+    await form.locator('input[name="monthly"]').evaluate((n) => { n.value = ""; });
+    await form.locator('input[name="monthly"]').pressSequentially(bad);
+    await page.getByRole("button", { name: "Save" }).click();
+    assert.match(await page.locator("#limits-err").textContent(), /whole token counts of 1 or more/, `"${bad}" must be refused`);
+    assert.equal(await dialogOpen(page, "dlg-limits"), true);
+  }
+  assert.equal(requests.filter((r) => r.pathname.startsWith("/api/limits")).length, 0);
+  await form.locator('input[name="monthly"]').fill("");
+
+  // A valid limit saves (the fixture answers, and the status reload carries the meter).
+  await form.locator('input[name="weekly"]').fill("100000");
+  plans = [droidPlan({ weekly_limit: 100000, weekly_pct: 75 })];
+  await page.getByRole("button", { name: "Save" }).click();
+  await waitDialog(page, "dlg-limits", false);
+  const put = requests.find((r) => r.method === "PUT" && r.pathname === "/api/limits/droid/weekly");
+  assert.ok(put, "the save writes the limit through the token-protected route");
+  assert.equal(put.token, "test-token");
+  await card.locator(".live-track").waitFor();
+  assert.match(await card.textContent(), /75% · 75\.3K of 100K tokens/);
+
+  // Reopening prefills the saved limit; clearing the field clears the window's limit.
+  await card.getByRole("button", { name: "Set limits" }).click();
+  await waitDialog(page, "dlg-limits", true);
+  assert.equal(await form.locator('input[name="weekly"]').inputValue(), "100000");
+  plans = [droidPlan()];
+  await form.locator('input[name="weekly"]').fill("");
+  await page.getByRole("button", { name: "Save" }).click();
+  await waitDialog(page, "dlg-limits", false);
+  const del = requests.find((r) => r.method === "DELETE" && r.pathname === "/api/limits/droid/weekly");
+  assert.ok(del, "an emptied field clears the limit instead of writing 0");
+  await page.waitForFunction(() => document.querySelector('#live-status .live-row[data-source="droid"]') && document.querySelectorAll('#live-status .live-row[data-source="droid"] .live-track').length === 0);
+  assert.match(await card.textContent(), /75\.3K tokens/);
+});
+
+test("an empty Droid catalog shows zeros and no fabricated numbers", async (page, origin) => {
+  plans = [droidPlan({
+    five_hour_tokens: 0, weekly_tokens: 0, monthly_tokens: 0,
+    usage_note: "No Droid usage recorded yet. The windows fill from the per-request records in Droid's local logs.",
+  })];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const card = page.locator('#live-status .live-row[data-source="droid"]');
+  await card.waitFor();
+  const text = await card.textContent();
+  assert.match(text, /No Droid usage recorded yet/);
+  assert.equal((text.match(/0 tokens/g) || []).length, 3, "each window says its real zero");
+  assert.doesNotMatch(text, /%/, "no percent without a limit");
+  assert.equal(await card.locator(".live-track").count(), 0);
+
+  // A limit on an empty window is a real 0%, which is the one honest percent there is.
+  plans = [droidPlan({
+    five_hour_tokens: 0, weekly_tokens: 0, monthly_tokens: 0,
+    monthly_limit: 500000, monthly_pct: 0,
+    usage_note: "No Droid usage recorded yet. The windows fill from the per-request records in Droid's local logs.",
+  })];
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  const month = card.locator(".live-meter", { hasText: "Month" });
+  await month.locator(".live-track").waitFor();
+  assert.match(await month.textContent(), /0% · 0 of 500K tokens/);
+  assert.equal(await card.locator(".live-track").count(), 1, "the unlimited windows stay plain");
 });
 
 // The engine's token rule counts reasoning tokens for Codex, OpenAI and Grok. A headline that

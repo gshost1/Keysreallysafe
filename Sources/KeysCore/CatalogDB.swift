@@ -181,6 +181,16 @@ final class CatalogDB: @unchecked Sendable {
               created_at TEXT NOT NULL
             );
             """)
+        // A user-set token limit for one window of a locally tracked row. The CHECKs hold the
+        // shape the API already validates, so a row written another way cannot sneak past them.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS usage_limits (
+              source TEXT NOT NULL,
+              window TEXT NOT NULL CHECK (window IN ('five_hour', 'weekly', 'monthly')),
+              tokens INTEGER NOT NULL CHECK (tokens > 0),
+              PRIMARY KEY (source, window)
+            );
+            """)
         // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
         // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
         // the main file nor the WAL keeps the old page images. The vacuum is best effort.
@@ -352,6 +362,52 @@ final class CatalogDB: @unchecked Sendable {
     @discardableResult
     func deleteCustomProvider(id: String) throws -> Bool {
         try withLock { try run("DELETE FROM custom_providers WHERE id = ?;", id) > 0 }
+    }
+
+    // MARK: usage limits
+
+    struct UsageLimit: Equatable {
+        var source: String
+        var window: String
+        var tokens: Int
+
+        func jsonObject() -> [String: Any] {
+            ["source": source, "window": window, "tokens": tokens]
+        }
+    }
+
+    func usageLimits(source: String? = nil) throws -> [UsageLimit] {
+        var sql = "SELECT source, window, tokens FROM usage_limits"
+        var args: [any SQLBindable] = []
+        if let source {
+            sql += " WHERE source = ?"
+            args.append(source)
+        }
+        sql += " ORDER BY source, window;"
+        return try query(sql, args) {
+            UsageLimit(
+                source: columnText($0, 0) ?? "",
+                window: columnText($0, 1) ?? "",
+                tokens: Int(sqlite3_column_int64($0, 2))
+            )
+        }
+    }
+
+    /// Upsert: setting a limit again replaces it, so the row is always the one truth.
+    func setUsageLimit(source: String, window: String, tokens: Int) throws {
+        try withLock {
+            try run("""
+                INSERT INTO usage_limits (source, window, tokens)
+                VALUES (?, ?, ?)
+                ON CONFLICT(source, window) DO UPDATE SET tokens = excluded.tokens;
+                """, source, window, tokens)
+        }
+    }
+
+    /// True when a limit existed; clearing an already-clear window is fine either way.
+    @discardableResult
+    func clearUsageLimit(source: String, window: String) throws -> Bool {
+        try withLock { try run("DELETE FROM usage_limits WHERE source = ? AND window = ?;", source, window) > 0 }
     }
 
     private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version"

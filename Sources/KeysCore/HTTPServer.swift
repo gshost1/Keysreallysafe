@@ -160,6 +160,12 @@ final class APIHandler: @unchecked Sendable {
                 return try providersItem(request, path: p)
             case ("POST", "/api/ingest"):
                 return try ingest(request)
+            case ("GET", "/api/limits"):
+                return try limitsList()
+            case ("PUT", let p) where p.hasPrefix("/api/limits/"):
+                return try limitSet(request, path: p)
+            case ("DELETE", let p) where p.hasPrefix("/api/limits/"):
+                return try limitClear(p)
             case ("GET", _) where !path.hasPrefix("/api/"):
                 return staticFile(path)
             case ("HEAD", _) where !path.hasPrefix("/api/"):
@@ -180,7 +186,9 @@ final class APIHandler: @unchecked Sendable {
     }
 
     private func mutatingAPI(_ method: String) -> Bool {
-        method == "POST" || method == "PATCH" || method == "DELETE"
+        // PUT is only the limits route today, but it mutates the same way POST does, so it
+        // rides the same token gate instead of growing into a hole.
+        method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
     }
 
     private func analyticsStatus() throws -> HTTPResponse {
@@ -350,6 +358,47 @@ final class APIHandler: @unchecked Sendable {
         default:
             return HTTPResponse.json(405, ["error": "method_not_allowed"])
         }
+    }
+
+    // The per-window token limits on a locally tracked row (the Droid row today). Writes carry
+    // the same per-launch token as every other mutation, and a limit is a positive whole number
+    // and nothing else, so a value a caller did not quite mean is refused rather than coerced.
+    private func limitsList() throws -> HTTPResponse {
+        HTTPResponse.json(200, ["limits": try service.usageLimits().map { $0.jsonObject() }])
+    }
+
+    private func limitSet(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
+        let (source, window) = try limitTarget(path)
+        let obj = try jsonBody(request)
+        guard let tokens = wholePositiveInt(obj["tokens"]) else {
+            return HTTPResponse.json(400, ["error": "tokens must be a positive whole number"])
+        }
+        return HTTPResponse.json(200, try service.setUsageLimit(
+            source: source, window: window, tokens: tokens
+        ).jsonObject())
+    }
+
+    /// Idempotent on purpose: clearing an already-clear window leaves the same state, so it
+    /// answers like clearing a present limit does.
+    private func limitClear(_ path: String) throws -> HTTPResponse {
+        let (source, window) = try limitTarget(path)
+        try service.clearUsageLimit(source: source, window: window)
+        return HTTPResponse.json(200, ["removed": "\(source)/\(window)"])
+    }
+
+    private func limitTarget(_ path: String) throws -> (source: String, window: String) {
+        let parts = path.dropFirst("/api/limits/".count).split(separator: "/").map(String.init)
+        guard parts.count == 2 else { throw AppError.usage("expected /api/limits/<source>/<window>") }
+        return (parts[0], parts[1])
+    }
+
+    /// A JSON number that is a whole count above zero: booleans, strings, fractions and floats
+    /// beyond the integer range are all nil.
+    private func wholePositiveInt(_ any: Any?) -> Int? {
+        guard let number = any as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let value = number.doubleValue
+        guard value > 0, value.rounded() == value, value <= 9_007_199_254_740_991 else { return nil }
+        return Int(value)
     }
 
     private func keysGateway(_ request: HTTPRequest, name: String) throws -> HTTPResponse {

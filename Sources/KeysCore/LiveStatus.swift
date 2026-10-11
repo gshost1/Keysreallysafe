@@ -21,6 +21,14 @@ struct ToolStatus: Equatable {
     var fableResetsAt: String? = nil
     /// Prompts counted from local chat history, for tools that keep no token or limit figures.
     var weeklyPrompts: Int? = nil
+    // Droid's catalog-backed windows and the optional limits the user set. The pcts are shared
+    // with the provider-reported ones above: a percent only ever means "of a limit someone set".
+    var fiveHourTokens: Int? = nil
+    var monthlyTokens: Int? = nil
+    var fiveHourLimit: Int? = nil
+    var weeklyLimit: Int? = nil
+    var monthlyLimit: Int? = nil
+    var monthlyPct: Int? = nil
 
     func jsonObject() -> [String: Any] {
         var obj: [String: Any] = [
@@ -35,6 +43,12 @@ struct ToolStatus: Equatable {
             "fable_resets_at": fableResetsAt as Any? ?? NSNull(),
             "weekly_usd": weeklyUsd as Any? ?? NSNull(),
             "weekly_tokens": weeklyTokens as Any? ?? NSNull(),
+            "five_hour_tokens": fiveHourTokens as Any? ?? NSNull(),
+            "monthly_tokens": monthlyTokens as Any? ?? NSNull(),
+            "five_hour_limit": fiveHourLimit as Any? ?? NSNull(),
+            "weekly_limit": weeklyLimit as Any? ?? NSNull(),
+            "monthly_limit": monthlyLimit as Any? ?? NSNull(),
+            "monthly_pct": monthlyPct as Any? ?? NSNull(),
             "usage_note": usageNote as Any? ?? NSNull(),
             "plan": plan as Any? ?? NSNull(),
             "snapshot_at": snapshotAt as Any? ?? NSNull(),
@@ -156,7 +170,7 @@ struct LiveStatus: Equatable {
         codexHome: URL,
         weekPeriod: SpendPeriod? = nil,
         grokBotHome: URL? = nil,
-        droidHome: URL? = nil,
+        droidRow: ToolStatus? = nil,
         now: Date = Date()
     ) -> LiveStatus {
         let grok = grokRow(weekUsd: grokWeekUsd, period: weekPeriod, home: grokHome, now: now)
@@ -176,9 +190,9 @@ struct LiveStatus: Equatable {
         if let grokBotHome {
             plans.insert(GrokBotActivity.row(home: grokBotHome, period: weekPeriod, now: now), at: 1)
         }
-        if let droidHome {
+        if let droidRow {
             let after = (plans.firstIndex { $0.source == "openai" } ?? plans.count - 1) + 1
-            plans.insert(DroidActivity.row(home: droidHome, period: weekPeriod, now: now), at: after)
+            plans.insert(droidRow, at: after)
         }
         return LiveStatus(grok: grok, claude: claude, plans: plans)
     }
