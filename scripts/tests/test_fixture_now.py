@@ -112,6 +112,60 @@ class FixtureNowTests(unittest.TestCase):
             self.assertGreater(age, timedelta(0))
             self.assertLess(age, timedelta(hours=3), "records must sit inside today, week, month and the 5-hour window")
 
+    def local_midnight(self, now):
+        return now.astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def assert_records_inside_today(self, info, now):
+        """Every stamped record, Droid's and Claude Code's, sits after local midnight."""
+        midnight = self.local_midnight(now).astimezone(timezone.utc)
+        stamps = []
+        for line in info["droid_log"].read_text(encoding="utf-8").splitlines():
+            stamps.append(datetime.strptime(line[1:line.index("]")], "%Y-%m-%dT%H:%M:%S.%fZ")
+                          .replace(tzinfo=timezone.utc))
+        for entry in (json.loads(line) for line in
+                      info["claude_log"].read_text(encoding="utf-8").splitlines()):
+            stamps.append(datetime.strptime(entry["timestamp"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc))
+        for stamp in stamps:
+            self.assertGreaterEqual(stamp, midnight,
+                                    "a record stamped before local midnight empties the Today range")
+            self.assertLessEqual(stamp, now, "records are stamped in the past")
+        return stamps
+
+    def test_a_run_just_after_midnight_clamps_records_into_today(self):
+        # Twelve minutes past local midnight, a raw 30-115 minute spread would stamp every
+        # record on yesterday (and on the previous week when midnight opens one). The helper
+        # compresses the spread onto the time since midnight instead, so Today and Week both
+        # stay populated, and it says so in its report.
+        midnight = self.local_midnight(datetime.now(timezone.utc))
+        now = midnight + timedelta(minutes=12)
+        info = fixture_now.write(self.out, now=now)
+        self.assertTrue(info["clamped"], "the helper must report that it clamped the ages")
+        stamps = self.assert_records_inside_today(info, now)
+        # The clamp preserves each log's own order and fits the whole spread into the
+        # twelve minutes since midnight.
+        self.assertEqual(stamps[0], min(stamps), "the first line of the log stays the oldest record")
+        self.assertEqual(stamps[-1], max(stamps), "the last record stays the youngest")
+        self.assertLessEqual(max(stamps) - min(stamps), timedelta(minutes=12))
+        self.assertGreaterEqual(min(stamps), midnight.astimezone(timezone.utc))
+
+    def test_a_run_just_before_the_spread_needs_no_clamp(self):
+        # Ten in the morning has far more room than the spread needs, so the ages are the
+        # plain 30-115 minutes and the records still land after this morning's midnight.
+        midnight = self.local_midnight(datetime.now(timezone.utc))
+        now = midnight + timedelta(hours=10)
+        info = fixture_now.write(self.out, now=now)
+        self.assertFalse(info["clamped"])
+        stamps = self.assert_records_inside_today(info, now)
+        spread = max(stamps) - min(stamps)
+        self.assertGreater(spread, timedelta(minutes=80), "an unclamped run keeps its age spread")
+
+    def test_at_midnight_itself_the_clamp_gives_up_honestly(self):
+        # In the first seconds after midnight there is no room after it at all; the helper
+        # leaves the ages alone rather than inventing timestamps, and says it did not clamp.
+        midnight = self.local_midnight(datetime.now(timezone.utc))
+        info = fixture_now.write(self.out, now=midnight + timedelta(seconds=6))
+        self.assertFalse(info["clamped"])
+
     def test_claude_home_shares_a_model_with_the_droid_home(self):
         lines = [json.loads(line) for line in
                  self.info["claude_log"].read_text(encoding="utf-8").splitlines()]

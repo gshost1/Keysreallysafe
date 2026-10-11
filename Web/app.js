@@ -809,7 +809,7 @@
     } else if (!ingested) {
       node.append("No sessions ingested yet. ", el("button", { type: "button", class: "link", text: "Ingest now", onclick: ingest }));
     } else {
-      node.append("Nothing in this range. Claude Code, Grok and Codex logs were read; none fall in ",
+      node.append("Nothing in this range. Claude Code, Grok, Codex and Droid logs were read; none fall in ",
         el("span", { text: state.range === "week" ? "this week." : state.range === "month" ? "this month." : "today." }));
     }
   }
@@ -2697,6 +2697,9 @@
     // The Droid row is counted from the catalog, so its zeros are real zeros: it never falls
     // into "not tracked", which is for tools whose quota is not in any local file.
     if (row.source === "droid") return true;
+    // A subscription row is a card the user pinned here; it shows a plan, never a measurement,
+    // but it belongs in the list above the collapsed group, not inside it.
+    if (row.subscription_id != null) return true;
     if (row.limit_remaining != null || row.usage_weekly != null) return true;
     if (row.source === "claude" || row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null) return true;
     if (row.source === "grok" && row.weekly_usd != null) return true;
@@ -2744,14 +2747,32 @@
       return meter(label, null, fmtTokens(tokens) + " tokens");
     });
     const note = row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null;
+    // A Factory subscription attaches here rather than adding a row of its own: its plan
+    // names the row, a token limit already is one window's limit, and a non-token limit
+    // stays the one line of text it was entered as.
+    const sub = row.subscription_id != null;
     return el("div", { class: "live-row", "data-source": row.source },
       el("div", { class: "live-head" },
         el("span", { class: "live-title", text: row.title || "Droid" }),
-        el("button", {
-          type: "button", class: "btn-row live-limits",
-          title: "Set optional token limits for the Droid windows",
-          onclick: () => openLimits(row),
-        }, "Set limits"),
+        row.plan ? el("span", { class: "live-plan", text: row.plan, title: "The plan on the Factory subscription pinned to this row" }) : null,
+        row.limit_text ? el("span", { class: "live-plan", text: row.limit_text, title: "The limit on the Factory subscription; a token limit would be the window's meter instead" }) : null,
+        el("span", { class: "row-actions live-limits" },
+          sub ? el("button", {
+            type: "button", class: "btn-row",
+            title: "Edit the Factory subscription pinned to this row",
+            onclick: () => openSubDialog(row),
+          }, "Edit") : null,
+          sub ? el("button", {
+            type: "button", class: "btn-row",
+            title: "Remove the Factory subscription from the Droid row",
+            onclick: () => askRemoveSub(row),
+          }, "Remove") : null,
+          el("button", {
+            type: "button", class: "btn-row",
+            title: "Set optional token limits for the Droid windows",
+            onclick: () => openLimits(row),
+          }, "Set limits"),
+        ),
       ),
       el("div", { class: "live-meters" }, ...meters),
       note,
@@ -2812,11 +2833,170 @@
     } catch (e2) { err.textContent = e2.message; }
   });
 
+  // ---------- subscriptions (plans the user pins to the Usage pane) ----------
+
+  const SUB_TOOLS = ["cursor", "gemini", "copilot", "perplexity", "chatgpt", "factory", "custom"];
+  // The row being edited (its subscription_id addresses the record); null means a fresh add.
+  let subEditing = null;
+  let subRemoving = null;
+
+  // One row per subscription: the plan and the optional limit as text, and the one honest
+  // sentence about why no usage figure sits beside them. Never a percent: nothing on this
+  // row is measured, so there is nothing a percent could be of.
+  function renderSubRow(row) {
+    return el("div", { class: "live-row", "data-source": row.source, "data-sub-id": row.subscription_id },
+      el("div", { class: "live-head" },
+        el("span", { class: "live-title", text: row.title || row.source }),
+        row.plan ? el("span", { class: "live-plan", text: row.plan }) : null,
+        row.limit_text ? el("span", { class: "live-plan", text: row.limit_text, title: "The limit you set; usage against it is not tracked locally" }) : null,
+        el("span", { class: "row-actions live-limits" },
+          el("button", {
+            type: "button", class: "btn-row",
+            title: "Edit this subscription",
+            onclick: () => openSubDialog(row),
+          }, "Edit"),
+          el("button", {
+            type: "button", class: "btn-row",
+            title: "Remove this subscription",
+            onclick: () => askRemoveSub(row),
+          }, "Remove"),
+        ),
+      ),
+      row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null,
+    );
+  }
+
+  function syncSubNameField(tool) {
+    // Only a custom tool is named by its own name; the built-ins carry theirs in the picker.
+    $("sub-name-label").hidden = tool !== "custom";
+  }
+
+  async function openSubDialog(row) {
+    subEditing = row || null;
+    $("sub-err").textContent = "";
+    const dialog = $("dlg-sub");
+    const form = $("sub-form");
+    $("sub-title").textContent = row ? "Edit subscription" : "Add subscription";
+    $("sub-submit").textContent = row ? "Save" : "Add subscription";
+    // The tool is who the subscription is about; once the row exists it cannot change.
+    form.elements.tool.disabled = Boolean(row);
+    if (!dialog.open) dialog.showModal();
+    // An edit fills from the stored record: the rendered row carries the plan and the limit
+    // as text, and the raw amount, unit and period (and a Factory row's tool) live only in
+    // the catalog.
+    let sub = null;
+    if (row) {
+      try {
+        const data = await api("/api/subscriptions");
+        sub = ((data && data.subscriptions) || []).find((s) => s.id === row.subscription_id) || null;
+        if (!sub) $("sub-err").textContent = "That subscription is no longer in the catalog; reload the page.";
+      } catch (e) { $("sub-err").textContent = e.message; }
+    }
+    const tool = sub ? sub.tool : (row ? (row.source === "droid" ? "factory" : row.source) : "cursor");
+    form.elements.tool.value = SUB_TOOLS.includes(tool) ? tool : "cursor";
+    syncSubNameField(form.elements.tool.value);
+    form.elements.name.value = sub ? (sub.name || "") : "";
+    form.elements.plan.value = sub ? sub.plan : "";
+    form.elements.limit_amount.value = sub && sub.limit_amount != null ? String(sub.limit_amount) : "";
+    form.elements.limit_unit.value = sub ? (sub.limit_unit || "") : "";
+    form.elements.limit_period.value = sub ? (sub.limit_period || "") : "";
+  }
+
+  $("btn-add-sub").addEventListener("click", () => openSubDialog(null));
+  $("sub-form").elements.tool.addEventListener("change", (e) => syncSubNameField(e.target.value));
+
+  $("sub-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const err = $("sub-err");
+    err.textContent = "";
+    const tool = form.elements.tool.value;
+    const name = form.elements.name.value.trim();
+    if (tool === "custom" && !name) { err.textContent = "A custom tool needs a name."; return; }
+    const plan = form.elements.plan.value.trim();
+    if (!plan) { err.textContent = "Plan is required."; return; }
+    // The limit is one fact in three fields; anything less is never sent anywhere.
+    const amountInput = form.elements.limit_amount;
+    const rawAmount = amountInput.value.trim();
+    const unit = form.elements.limit_unit.value;
+    const period = form.elements.limit_period.value;
+    const body = {
+      tool,
+      name: tool === "custom" ? name : null,
+      plan,
+      limit_amount: null, limit_unit: null, limit_period: null,
+    };
+    if (rawAmount || unit || period) {
+      if (!rawAmount || !unit || !period) {
+        err.textContent = "A limit needs an amount, a unit and a period together.";
+        return;
+      }
+      // A number field reports typed letters as an empty value; badInput keeps them from
+      // passing as "no limit", the same guard the Droid limits dialog uses.
+      if (amountInput.validity.badInput) { err.textContent = "The limit amount must be a number."; return; }
+      const amount = Number(rawAmount);
+      if (!Number.isFinite(amount) || amount <= 0) { err.textContent = "The limit amount must be greater than 0."; return; }
+      if ((unit === "tokens" || unit === "requests") && !Number.isInteger(amount)) {
+        err.textContent = "A " + unit + " limit is a whole number.";
+        return;
+      }
+      body.limit_amount = amount;
+      body.limit_unit = unit;
+      body.limit_period = period;
+    }
+    try {
+      if (subEditing) {
+        await api("/api/subscriptions/" + encodeURIComponent(subEditing.subscription_id), {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        say("Saved the subscription.");
+      } else {
+        await api("/api/subscriptions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        say("Added the subscription.");
+      }
+      $("dlg-sub").close();
+      await loadStatus();
+    } catch (e2) { err.textContent = e2.message; }
+  });
+
+  function askRemoveSub(row) {
+    subRemoving = row;
+    $("sub-remove-err").textContent = "";
+    $("sub-remove-name").textContent = row.title || row.plan || "this subscription";
+    $("sub-remove-hint").textContent = row.source === "droid"
+      ? "The plan and limit come off the Droid row, and the window limit it drove is cleared with it."
+      : "The row disappears from this pane and the built-in placeholder returns.";
+    if (!$("dlg-sub-remove").open) $("dlg-sub-remove").showModal();
+  }
+
+  $("sub-remove-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!subRemoving) { $("dlg-sub-remove").close(); return; }
+    try {
+      await api("/api/subscriptions/" + encodeURIComponent(subRemoving.subscription_id), { method: "DELETE" });
+      say("Removed the subscription.");
+      subRemoving = null;
+      $("dlg-sub-remove").close();
+      await loadStatus();
+    } catch (e2) { $("sub-remove-err").textContent = e2.message; }
+  });
+
   function renderLiveRow(row) {
     if (!row) return null;
     // The Droid row is its own layout: three windows, each optionally a meter of a limit the
-    // user set, plus the control that sets them. The generic branches below stay provider-shaped.
+    // user set, plus the controls that set them and, with a Factory subscription pinned to it,
+    // that subscription's plan, limit text, Edit and Remove. The generic branches below stay
+    // provider-shaped.
     if (row.source === "droid") return renderDroidRow(row);
+    // A pinned subscription is a card of its own shape: plan, limit text, the honest note, and
+    // Edit and Remove. No meters, no percents — nothing on it was measured.
+    if (row.subscription_id != null) return renderSubRow(row);
     const meters = [];
     // The engine attaches its calendar-week period to every row with a weekly figure;
     // Claude and OpenRouter rows carry none.

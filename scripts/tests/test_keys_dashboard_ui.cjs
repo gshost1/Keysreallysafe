@@ -69,7 +69,7 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits;
+let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits, subscriptions, nextSubId;
 
 function reset() {
   keys = baseKeys();
@@ -83,6 +83,9 @@ function reset() {
   localRows = [];
   // The plan cards. Empty unless a test fills it, as most of this suite expects.
   plans = [];
+  // The subscriptions the user pinned on the Usage pane, mirroring the engine's rows.
+  subscriptions = [];
+  nextSubId = 1;
   failures = new Map();   // "METHOD /path" -> {status, body} | "drop"
   delays = new Map();     // "METHOD /path" -> milliseconds
   requests = [];
@@ -206,6 +209,70 @@ function spend(params) {
   }];
 }
 
+const SUB_TOOLS = ["cursor", "gemini", "copilot", "perplexity", "chatgpt", "factory", "custom"];
+const SUB_UNITS = ["tokens", "requests", "credits", "usd"];
+const SUB_PERIODS = ["five_hour", "weekly", "monthly"];
+
+// The engine's subscription validation, mirrored so a page that sends a half-sent payload
+// fails here instead of passing. `existing` carries PATCH's "absent means keep".
+function subLimitOf(body, existingLimit) {
+  const present = (k) => Object.prototype.hasOwnProperty.call(body, k);
+  const keys = ["limit_amount", "limit_unit", "limit_period"];
+  const presentCount = keys.filter(present).length;
+  if (!presentCount) return [null, existingLimit];
+  const amount = present("limit_amount") && body.limit_amount !== null ? body.limit_amount : null;
+  const unit = present("limit_unit") && body.limit_unit !== null ? body.limit_unit : null;
+  const period = present("limit_period") && body.limit_period !== null ? body.limit_period : null;
+  const allOrNothing = "limit fields are all-or-nothing: set amount, unit and period together, or clear all three";
+  if (amount == null && unit == null && period == null) {
+    if (presentCount !== 3) return [allOrNothing];
+    return [null, null];
+  }
+  if (presentCount !== 3 || amount == null || unit == null || period == null) return [allOrNothing];
+  const value = Number(amount);
+  if (typeof amount !== "number" || !Number.isFinite(value) || value <= 0 || value > 1e9) {
+    return ["limit amount must be greater than 0 and at most a billion"];
+  }
+  if (!SUB_UNITS.includes(unit)) return [`limit unit must be one of ${SUB_UNITS.join(", ")}`];
+  if (!SUB_PERIODS.includes(period)) return [`limit period must be one of ${SUB_PERIODS.join(", ")}`];
+  if ((unit === "tokens" || unit === "requests") && !Number.isInteger(value)) {
+    return [`a ${unit} limit is a whole number`];
+  }
+  return [null, { amount: value, unit, period }];
+}
+
+function subValidate(body, existing) {
+  if (!existing && (typeof body.tool !== "string" || !SUB_TOOLS.includes(body.tool))) {
+    return [`tool must be one of ${SUB_TOOLS.join(", ")}`];
+  }
+  const tool = existing ? existing.tool : body.tool;
+  const rawName = body.name !== undefined ? body.name : (existing ? existing.name : undefined);
+  const name = typeof rawName === "string" ? rawName.trim() : "";
+  if (tool === "custom") {
+    if (!name || name.length > 64 || /\n/.test(name)) {
+      return ["a custom subscription needs a name (one line, at most 64 characters)"];
+    }
+  } else if (name) return ["name is only for a custom tool"];
+  const rawPlan = body.plan !== undefined ? body.plan : (existing ? existing.plan : undefined);
+  const plan = typeof rawPlan === "string" ? rawPlan.trim() : "";
+  if (!plan || plan.length > 80 || /\n/.test(plan)) {
+    return ["plan is required (one line, at most 80 characters)"];
+  }
+  const [limitErr, limit] = subLimitOf(body, existing ? existing.limit : null);
+  if (limitErr) return [limitErr];
+  return [null, { tool, name, plan, limit }];
+}
+
+function subRecord(sub) {
+  return {
+    id: sub.id, tool: sub.tool, name: sub.name, plan: sub.plan,
+    limit_amount: sub.limit ? sub.limit.amount : null,
+    limit_unit: sub.limit ? sub.limit.unit : null,
+    limit_period: sub.limit ? sub.limit.period : null,
+    created_at: sub.created_at,
+  };
+}
+
 const rule = (method, pathname) => `${method} ${pathname}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -317,6 +384,42 @@ function handle(method, pathname, body, params) {
       limits.delete(`${source}/${window}`);
       return [200, { removed: `${source}/${window}` }];
     }
+  }
+  // The subscriptions the user pins to the Usage pane, mirroring the engine's rows and its
+  // strict validation: one of the listed tools, a custom tool named by its own name, a plan
+  // always, and the limit one fact in three fields.
+  if (pathname === "/api/subscriptions" && method === "GET") {
+    return [200, { subscriptions: subscriptions.map(subRecord) }];
+  }
+  if (pathname === "/api/subscriptions" && method === "POST") {
+    const [err, fields] = subValidate(body, null);
+    if (err) return [400, { error: err }];
+    if (fields.tool === "factory" && subscriptions.some((s) => s.tool === "factory")) {
+      return [400, { error: "a Factory subscription already exists; edit it instead" }];
+    }
+    const sub = { id: "sub-" + (nextSubId++), created_at: "2026-10-11T00:00:00Z", ...fields };
+    subscriptions.push(sub);
+    return [201, subRecord(sub)];
+  }
+  const subMatch = /^\/api\/subscriptions\/([^/]+)$/.exec(pathname);
+  if (subMatch) {
+    const sub = subscriptions.find((s) => s.id === subMatch[1]);
+    if (method === "PATCH") {
+      if (!sub) return [404, { error: "not_found" }];
+      if (body.tool !== undefined && body.tool !== sub.tool) {
+        return [400, { error: "tool cannot change; remove the subscription and add it again" }];
+      }
+      const [err, fields] = subValidate(body, sub);
+      if (err) return [400, { error: err }];
+      Object.assign(sub, fields);
+      return [200, subRecord(sub)];
+    }
+    if (method === "DELETE") {
+      if (!sub) return [404, { error: "not_found" }];
+      subscriptions = subscriptions.filter((s) => s.id !== subMatch[1]);
+      return [200, { removed: subMatch[1] }];
+    }
+    return [405, { error: "method_not_allowed" }];
   }
   if (pathname.startsWith("/api/spend")) return spend(params);
 
@@ -1546,6 +1649,227 @@ test("an empty Droid catalog shows zeros and no fabricated numbers", async (page
   await month.locator(".live-track").waitFor();
   assert.match(await month.textContent(), /0% · 0 of 500K tokens/);
   assert.equal(await card.locator(".live-track").count(), 1, "the unlimited windows stay plain");
+});
+
+// ---------- subscriptions (plans the user pins to the Usage pane) ----------
+
+// The shape the engine gives a pinned subscription row on /api/status.
+const subPlan = (extra = {}) => ({
+  source: "cursor", title: "Cursor", kind: "subscription", subscription_id: "sub-1",
+  plan: "Pro", limit_text: "500 requests per month", usage_note: "usage not tracked locally", ...extra,
+});
+// The dialog's own controls, scoped so the toolbar's "+ Add subscription" and a row's Edit and
+// Remove (whose accessible names are just "Edit" / "Remove") never collide with them.
+const subSubmit = (page) => page.locator("#dlg-sub").getByRole("button", { name: "Add subscription", exact: true });
+const subCancel = (page) => page.locator("#dlg-sub-remove").getByRole("button", { name: "Cancel", exact: true });
+const subConfirm = (page) => page.locator("#dlg-sub-remove").getByRole("button", { name: "Remove", exact: true });
+
+test("+ Add subscription opens the dialog and Custom requires a name", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "+ Add subscription" }).click();
+  await waitDialog(page, "dlg-sub", true);
+  const form = page.locator("#sub-form");
+  // Every tool the engine lists, and only those.
+  assert.deepEqual(
+    await form.locator("select[name=tool] option").evaluateAll((os) => os.map((o) => o.textContent.trim())),
+    ["Cursor", "Gemini", "GitHub Copilot", "Perplexity", "ChatGPT", "Factory", "Custom…"],
+  );
+  // The name field belongs to Custom alone.
+  assert.equal(await page.locator("#sub-name-label").evaluate((n) => n.hidden), true);
+  await form.locator("select[name=tool]").selectOption("custom");
+  assert.equal(await page.locator("#sub-name-label").evaluate((n) => n.hidden), false);
+
+  // A custom tool with no name is refused here; nothing is sent.
+  await form.locator("input[name=plan]").fill("Team");
+  await subSubmit(page).click();
+  assert.match(await page.locator("#sub-err").textContent(), /custom tool needs a name/);
+  assert.equal(await dialogOpen(page, "dlg-sub"), true);
+  assert.equal(requests.filter((r) => r.pathname === "/api/subscriptions").length, 0);
+
+  // With a name the POST carries the tool and the name, and no limit was invented.
+  await form.locator("input[name=name]").fill("Windsurf");
+  plans = [subPlan({ source: "custom", title: "Windsurf", subscription_id: "sub-1", plan: "Team", limit_text: null, usage_note: "usage not tracked locally" })];
+  await subSubmit(page).click();
+  await waitDialog(page, "dlg-sub", false);
+  const post = requests.find((r) => r.method === "POST" && r.pathname === "/api/subscriptions");
+  assert.ok(post, "the save goes through the token-protected route");
+  assert.equal(post.token, "test-token");
+  assert.equal(subscriptions[0].tool, "custom");
+  assert.equal(subscriptions[0].name, "Windsurf");
+  assert.equal(subscriptions[0].plan, "Team");
+  assert.equal(subscriptions[0].limit, null);
+  const row = page.locator('#live-status .live-row[data-sub-id="sub-1"]');
+  await row.waitFor();
+  const text = await row.textContent();
+  assert.match(text, /Windsurf/);
+  assert.match(text, /Team/);
+  assert.match(text, /usage not tracked locally/);
+  assert.doesNotMatch(text, /%/, "a row that measures nothing shows no percent");
+});
+
+test("a built-in subscription shows its plan, limit text and honest note, and hides the placeholder", async (page, origin) => {
+  plans = [
+    subPlan(),
+    { source: "gemini", title: "Gemini", kind: "subscription", usage_note: "Google AI Pro/Ultra remaining is not in local files." },
+  ];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const card = page.locator('#live-status .live-row[data-source="cursor"]');
+  await card.waitFor();
+  const text = await card.textContent();
+  assert.match(text, /Cursor/);
+  assert.match(text, /Pro/);
+  assert.match(text, /500 requests per month/);
+  assert.match(text, /usage not tracked locally/);
+  // No invented usage: no percent, no token figure, no meter track on a row that measures nothing.
+  assert.doesNotMatch(text, /%/);
+  assert.doesNotMatch(text, /tokens/);
+  assert.equal(await card.locator(".live-track").count(), 0);
+  // The placeholder Cursor row is gone from the collapsed group; a tool without a subscription
+  // keeps its own placeholder.
+  const absent = await page.locator("#live-status .live-absent").textContent();
+  assert.doesNotMatch(absent, /Cursor/);
+  assert.match(absent, /Gemini/);
+  assert.equal(await card.locator('button[title="Edit this subscription"]').count(), 1);
+  assert.equal(await card.locator('button[title="Remove this subscription"]').count(), 1);
+});
+
+test("the subscription limit is all-or-nothing before anything is sent", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "+ Add subscription" }).click();
+  await waitDialog(page, "dlg-sub", true);
+  const form = page.locator("#sub-form");
+  await form.locator("input[name=plan]").fill("Pro");
+  // An amount alone is not a limit.
+  await form.locator("input[name=limit_amount]").fill("500");
+  await subSubmit(page).click();
+  assert.match(await page.locator("#sub-err").textContent(), /amount, a unit and a period together/);
+  // Unit and period without an amount are not one either.
+  await form.locator("select[name=limit_unit]").selectOption("requests");
+  await form.locator("select[name=limit_period]").selectOption("monthly");
+  await form.locator("input[name=limit_amount]").fill("");
+  await subSubmit(page).click();
+  assert.match(await page.locator("#sub-err").textContent(), /amount, a unit and a period together/);
+  // Zero, negatives and fractions of a request are refused, never coerced.
+  for (const bad of ["0", "-5", "12.5"]) {
+    await page.locator("#sub-err").evaluate((n) => { n.textContent = ""; });
+    await form.locator("input[name=limit_amount]").evaluate((n) => { n.value = ""; });
+    await form.locator("input[name=limit_amount]").pressSequentially(bad);
+    await subSubmit(page).click();
+    assert.match(await page.locator("#sub-err").textContent(), bad === "12.5" ? /whole number/ : /greater than 0/, `"${bad}" must be refused`);
+    assert.equal(await dialogOpen(page, "dlg-sub"), true);
+  }
+  assert.equal(requests.filter((r) => r.pathname === "/api/subscriptions").length, 0);
+
+  // A valid one sends all three fields together.
+  await form.locator("input[name=limit_amount]").fill("500");
+  plans = [subPlan()];
+  await subSubmit(page).click();
+  await waitDialog(page, "dlg-sub", false);
+  assert.deepEqual(subscriptions[0].limit, { amount: 500, unit: "requests", period: "monthly" });
+  await page.locator('#live-status .live-row[data-source="cursor"]').waitFor();
+});
+
+test("Edit and Remove go through PATCH and a confirmed DELETE, and the placeholder returns", async (page, origin) => {
+  subscriptions = [{
+    id: "sub-1", tool: "cursor", name: "", plan: "Pro",
+    limit: { amount: 500, unit: "requests", period: "monthly" },
+    created_at: "2026-10-11T00:00:00Z",
+  }];
+  plans = [subPlan()];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const card = page.locator('#live-status .live-row[data-source="cursor"]');
+  await card.waitFor();
+  await card.locator('button[title="Edit this subscription"]').click();
+  await waitDialog(page, "dlg-sub", true);
+  const form = page.locator("#sub-form");
+  // The edit dialog keeps the tool fixed and fills the fields from the stored record.
+  assert.equal(await form.locator("select[name=tool]").isDisabled(), true);
+  assert.equal(await form.locator("select[name=tool]").inputValue(), "cursor");
+  await page.waitForFunction(() => document.querySelector('#sub-form input[name="plan"]').value === "Pro");
+  assert.equal(await form.locator("input[name=limit_amount]").inputValue(), "500");
+  assert.equal(await form.locator("select[name=limit_unit]").inputValue(), "requests");
+  assert.equal(await form.locator("select[name=limit_period]").inputValue(), "monthly");
+  // The title and the button say edit.
+  assert.equal(await page.locator("#sub-title").textContent(), "Edit subscription");
+
+  await form.locator("input[name=plan]").fill("Ultra");
+  await form.locator("input[name=limit_amount]").fill("1000");
+  plans = [subPlan({ plan: "Ultra", limit_text: "1,000 requests per month" })];
+  await page.locator("#dlg-sub").getByRole("button", { name: "Save" }).click();
+  await waitDialog(page, "dlg-sub", false);
+  const patch = requests.find((r) => r.method === "PATCH" && r.pathname === "/api/subscriptions/sub-1");
+  assert.ok(patch, "the edit is a token-protected PATCH on the row's id");
+  assert.equal(patch.token, "test-token");
+  assert.equal(subscriptions[0].plan, "Ultra");
+  assert.deepEqual(subscriptions[0].limit, { amount: 1000, unit: "requests", period: "monthly" });
+  await page.waitForFunction(() => /Ultra/.test(document.querySelector('#live-status .live-row[data-source="cursor"]').textContent));
+  assert.match(await card.textContent(), /1,000 requests per month/);
+
+  // Remove asks first; a cancel keeps the row.
+  await card.locator('button[title="Remove this subscription"]').click();
+  await waitDialog(page, "dlg-sub-remove", true);
+  assert.match(await page.locator("#sub-remove-title").textContent(), /Remove Cursor\?/);
+  await subCancel(page).click();
+  await waitDialog(page, "dlg-sub-remove", false);
+  assert.equal(requests.filter((r) => r.method === "DELETE" && r.pathname === "/api/subscriptions/sub-1").length, 0);
+  assert.equal(await card.count(), 1, "the row survives a cancelled remove");
+
+  // Confirming removes it, and the built-in placeholder returns to the not-tracked group.
+  await card.locator('button[title="Remove this subscription"]').click();
+  await waitDialog(page, "dlg-sub-remove", true);
+  plans = [{ source: "cursor", title: "Cursor", kind: "subscription", usage_note: "Plan remaining is not in local files. We do not read Cursor cookies." }];
+  await subConfirm(page).click();
+  await waitDialog(page, "dlg-sub-remove", false);
+  const del = requests.find((r) => r.method === "DELETE" && r.pathname === "/api/subscriptions/sub-1");
+  assert.ok(del, "the confirmed remove is a DELETE on the row's id");
+  assert.equal(del.token, "test-token");
+  assert.equal(subscriptions.length, 0);
+  await page.waitForFunction(() => document.querySelectorAll("#live-status .live-row[data-sub-id]").length === 0);
+  assert.match(await page.locator("#live-status .live-absent").textContent(), /Cursor/, "the placeholder Cursor returns to the collapsed group");
+});
+
+test("a Factory subscription attaches to the Droid row, its token limit becoming a window meter", async (page, origin) => {
+  subscriptions = [{
+    id: "sub-9", tool: "factory", name: "", plan: "Max",
+    limit: { amount: 100000, unit: "tokens", period: "monthly" },
+    created_at: "2026-10-11T00:00:00Z",
+  }];
+  plans = [droidPlan({ plan: "Max", subscription_id: "sub-9", monthly_limit: 100000, monthly_pct: 75 })];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const card = page.locator('#live-status .live-row[data-source="droid"]');
+  await card.waitFor();
+  assert.match(await card.textContent(), /Max/, "the Factory plan names the Droid row");
+  const month = card.locator(".live-meter", { hasText: "Month" });
+  assert.match(await month.textContent(), /75% · 75\.3K of 100K tokens/, "the Factory token limit is the Month window's meter");
+  assert.equal(await page.locator('#live-status .live-row[data-source="factory"]').count(), 0, "no duplicate Factory row appears");
+  // The Droid row carries the pinned subscription's own Edit and Remove beside Set limits.
+  assert.equal(await card.locator('button[title="Edit the Factory subscription pinned to this row"]').count(), 1);
+  assert.equal(await card.locator('button[title="Remove the Factory subscription from the Droid row"]').count(), 1);
+  assert.equal(await card.getByRole("button", { name: "Set limits" }).count(), 1);
+
+  // Removing it from the Droid row takes the plan and the meter off with it.
+  await card.locator('button[title="Remove the Factory subscription from the Droid row"]').click();
+  await waitDialog(page, "dlg-sub-remove", true);
+  assert.match(await page.locator("#sub-remove-title").textContent(), /Remove Droid\?/);
+  plans = [droidPlan()];
+  await subConfirm(page).click();
+  await waitDialog(page, "dlg-sub-remove", false);
+  await page.waitForFunction(() => !/Max/.test(document.querySelector('#live-status .live-row[data-source="droid"]').textContent));
+  assert.equal(await card.locator(".live-track").count(), 0, "the window the subscription drove goes back to tokens only");
+
+  // A non-token Factory limit stays one line of text beside the plan, never a meter.
+  plans = [droidPlan({ plan: "Max", subscription_id: "sub-9", limit_text: "$200 per month" })];
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  const text = await card.textContent();
+  assert.match(text, /Max/);
+  assert.match(text, /\$200 per month/);
+  assert.equal(await card.locator(".live-track").count(), 0);
 });
 
 // The engine's token rule counts reasoning tokens for Codex, OpenAI and Grok. A headline that

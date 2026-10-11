@@ -37,6 +37,8 @@
     <p id="engine-down" class="err engine-down" role="alert" hidden>Engine is not answering. Run keys dashboard or keys menubar, then reload.</p>
     <section id="pane-usage" role="tabpanel" aria-labelledby="nav-usage">
       <div id="live-status" class="live-status" hidden></div>
+      <!-- The quiet way in to the subscription list; the rows above stay the point of the pane. -->
+      <p class="subs-add"><button type="button" id="btn-add-sub" class="btn-quiet" title="Pin a plan Keysrs does not measure locally, or a Factory plan onto the Droid row">+ Add subscription</button></p>
       <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac. <button type="button" class="link" id="usage-empty-help">See how Keys works</button></p>
       <!-- First use only: an empty vault with nothing dismissed yet. It is filled from the help
            dialog's guide so the two can never drift apart, and it stays reachable from ? later. -->
@@ -374,6 +376,69 @@
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-sub" class="dlg" aria-labelledby="sub-title">
+    <form id="sub-form" novalidate>
+      <h2 id="sub-title">Add subscription</h2>
+      <label>Tool
+        <select name="tool">
+          <option value="cursor">Cursor</option>
+          <option value="gemini">Gemini</option>
+          <option value="copilot">GitHub Copilot</option>
+          <option value="perplexity">Perplexity</option>
+          <option value="chatgpt">ChatGPT</option>
+          <option value="factory">Factory</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </label>
+      <label id="sub-name-label" hidden>Name
+        <input name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="The tool's own name" maxlength="64">
+      </label>
+      <label>Plan
+        <input name="plan" required autocomplete="off" placeholder="Pro" maxlength="80">
+      </label>
+      <div class="two-col">
+        <label>Limit amount (optional)
+          <input name="limit_amount" type="number" min="0.01" step="any" inputmode="decimal" placeholder="none" autocomplete="off">
+        </label>
+        <label>Unit
+          <select name="limit_unit">
+            <option value="">—</option>
+            <option value="tokens">tokens</option>
+            <option value="requests">requests</option>
+            <option value="credits">credits</option>
+            <option value="usd">usd</option>
+          </select>
+        </label>
+      </div>
+      <label>Period
+        <select name="limit_period">
+          <option value="">—</option>
+          <option value="five_hour">5-hour window</option>
+          <option value="weekly">week</option>
+          <option value="monthly">month</option>
+        </select>
+      </label>
+      <p class="hint" id="sub-hint">Keysrs does not measure these tools' quotas, so a subscription is a note about your plan, never a usage figure. A Factory subscription attaches its plan to the Droid row, and a token limit becomes that window's limit there.</p>
+      <p class="err" id="sub-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="sub-submit">Add subscription</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-sub-remove" class="dlg" aria-labelledby="sub-remove-title">
+    <form id="sub-remove-form">
+      <h2 id="sub-remove-title">Remove <span id="sub-remove-name"></span>?</h2>
+      <p class="hint" id="sub-remove-hint"></p>
+      <p class="err" id="sub-remove-err" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="sub-remove-confirm">Remove</button>
       </div>
     </form>
   </dialog>

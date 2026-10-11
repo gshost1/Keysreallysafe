@@ -151,7 +151,19 @@ the calendar week and the calendar month — counted from the per-request
 records in its local logs, and **Set limits** on the row adds an optional
 token limit for each window, turning that window into a percent meter; Factory's
 own plan limits are not in local files. Tools whose quota is not in any local file
-sit in a collapsed "not tracked" group with a link to their own dashboard. One
+sit in a collapsed "not tracked" group with a link to their own dashboard.
+**+ Add subscription** under the rows pins a plan you pay for: pick Cursor,
+Gemini, Copilot, Perplexity, ChatGPT, Factory or a custom tool you name, name
+the plan, and optionally give it a limit — an amount, a unit (tokens, requests,
+credits or USD) and a window (5-hour, week or month), all three together or
+none. Keysrs measures none of those tools locally, so the row shows exactly the
+plan and the limit, says "usage not tracked locally", and never dresses a note
+up as a percent; it takes over that tool's placeholder in the collapsed group
+until you remove it. A Factory subscription instead attaches to the Droid row —
+Droid's usage is the one that is measured — so its plan names the row, a token
+limit is that window's limit (the same single fact as the row's **Set limits**
+dialog, stored in the same place), and any other unit stays text. Edit and
+Remove sit on each row, and Remove asks first. One
 quiet line underneath gives this month from the local logs, in tokens by
 default, with a switch on the line itself for USD. A first run with an empty
 vault also gets a short getting-started guide there; it stays available under
@@ -525,7 +537,10 @@ KEYS_NO_OPEN=1 KEYS_CATALOG=/tmp/keys-now/catalog.db \
 The helper prints the per-model and merged totals the Chart should show for the
 current month. Its homes are synthetic and throwaway; the checked-in fixtures
 are never touched, and `scripts/tests/test_fixture_now.py` pins the helper's
-line format to DroidIngest's exact marker.
+line format to DroidIngest's exact marker. When the helper runs so soon after
+local midnight that its records would land on yesterday (or on the previous
+calendar week), it clamps their timestamps to stay after the most recent local
+midnight, so the Today and Week ranges keep data even right after midnight.
 
 ## License
 

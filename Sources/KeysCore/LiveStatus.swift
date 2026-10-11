@@ -29,6 +29,11 @@ struct ToolStatus: Equatable {
     var weeklyLimit: Int? = nil
     var monthlyLimit: Int? = nil
     var monthlyPct: Int? = nil
+    // A subscription the user pinned with "+ Add subscription": the row's id, so the web's
+    // Edit and Remove can address it, and its optional limit as one line of text. A Factory
+    // subscription sets these on the Droid row instead of adding a row of its own.
+    var subscriptionId: String? = nil
+    var limitText: String? = nil
 
     func jsonObject() -> [String: Any] {
         var obj: [String: Any] = [
@@ -49,6 +54,8 @@ struct ToolStatus: Equatable {
             "weekly_limit": weeklyLimit as Any? ?? NSNull(),
             "monthly_limit": monthlyLimit as Any? ?? NSNull(),
             "monthly_pct": monthlyPct as Any? ?? NSNull(),
+            "subscription_id": subscriptionId as Any? ?? NSNull(),
+            "limit_text": limitText as Any? ?? NSNull(),
             "usage_note": usageNote as Any? ?? NSNull(),
             "plan": plan as Any? ?? NSNull(),
             "snapshot_at": snapshotAt as Any? ?? NSNull(),

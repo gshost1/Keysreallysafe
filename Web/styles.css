@@ -460,6 +460,8 @@ main { flex: 1; min-height: 0; overflow: auto; }
 }
 .live-absent-name { font-weight: 500; color: var(--fg-2); }
 .live-absent-why { color: var(--fg-3); }
+/* The quiet way in to the subscription list, one line under the plan rows. */
+.subs-add { display: flex; padding: 0 16px 12px; }
 
 .caption {
   padding: 8px 16px 16px;

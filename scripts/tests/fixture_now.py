@@ -7,9 +7,11 @@ today/week/month windows and the Chart's current ranges come up nearly empty. Th
 helper writes throwaway homes whose records are a few minutes old, so the Chart
 (and the Droid row's 5-hour window) have data in every current range, every vendor
 family wears its own colour, and a model shared by Claude Code and Droid merges
-into one series. Everything is invented: no line is copied from a real
-~/.factory/logs file, no real home is read, and the checked-in fixtures are never
-touched.
+into one series. When the run starts so soon after local midnight that the records'
+spread would straddle it, the ages are clamped to stay after the most recent local
+midnight, so Today and This week stay populated right after midnight too. Everything
+is invented: no line is copied from a real ~/.factory/logs file, no real home is
+read, and the checked-in fixtures are never touched.
 
 Usage:
     python3 scripts/tests/fixture_now.py --out /tmp/keys-now
@@ -56,6 +58,41 @@ CLAUDE_RECORDS = [
 ZERO_SESSION = "99999999-0000-4000-8000-000000000009"
 NOISE_SESSION = "88888888-0000-4000-8000-000000000008"
 
+# Every age `write` stamps, before any clamping: the two noise records, the zero-token
+# record, the Claude Code lines and each Droid record. The widest spread is what the
+# midnight clamp below has to fit inside the time since the last local midnight.
+RAW_AGES = [115, 114, 35, 31, 30] + [record[2] for record in DROID_RECORDS]
+
+
+def age_adjustment(now):
+    """Return (adjust, clamped) for stamping records at this `now`.
+
+    A run started soon after local midnight would otherwise stamp its oldest records
+    on yesterday — or even on the previous calendar week, when the boundary falls on a
+    Sunday — and the dashboard's Today and Week ranges would come up empty even though
+    the homes are full. When less time has passed since the most recent local midnight
+    than the records' spread, the ages are compressed onto that span: the youngest
+    record stays a few seconds old and the oldest lands just after midnight. Every
+    record then sits inside today, and because a calendar week can only begin at a
+    midnight, inside the current week as well.
+    """
+    oldest, youngest = max(RAW_AGES), min(RAW_AGES)
+    local = now.astimezone()
+    floor = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    span = (now - floor).total_seconds() / 60.0
+    if span >= oldest:
+        return (lambda age: age), False
+    if span < 0.2:
+        # At midnight itself there is no room after it; leave the ages alone and let
+        # Today be empty for the moment, exactly as it honestly is.
+        return (lambda age: age), False
+
+    def adjust(age):
+        frac = (age - youngest) / float(oldest - youngest)
+        return 0.05 + (span - 0.1) * frac
+
+    return adjust, True
+
 
 def droid_total(record):
     """The dashboard's droid-local rule: every bucket the log reports."""
@@ -70,12 +107,14 @@ def claude_total(record):
 
 
 def iso(moment):
-    """Droid's and Claude Code's shared timestamp shape, milliseconds and Z."""
+    """Droid's and Claude Code's shared timestamp shape, milliseconds and Z (always UTC)."""
+    moment = moment.astimezone(timezone.utc)
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (moment.microsecond // 1000)
 
 
-def droid_line(now, record):
-    model, session, age, tokens, cache_read, cache_written, output, reasoning, upstream = record
+def droid_line(now, age, record):
+    """One usage line, stamped `age` minutes before `now` (the age may be clamped)."""
+    model, session, _, tokens, cache_read, cache_written, output, reasoning, upstream = record
     context = {
         "count": 1,
         "inputTokens": tokens,
@@ -95,8 +134,8 @@ def droid_line(now, record):
                         json.dumps(context, separators=(",", ":")))
 
 
-def claude_line(index, now, record):
-    model, session, age, tokens, cache_read, cache_creation, output = record
+def claude_line(index, now, age, record):
+    model, session, _, tokens, cache_read, cache_creation, output = record
     entry = {
         "type": "assistant",
         "uuid": "u-now-%d" % index,
@@ -145,6 +184,9 @@ def merged_totals():
 def write(out_dir, now=None):
     """Write <out>/droid-home and <out>/claude-home and return what to expect of them."""
     now = now or datetime.now(timezone.utc)
+    # Stamp every record inside today whenever the clock is close to local midnight, so
+    # the dashboard's Today and Week ranges stay populated right after midnight too.
+    adjust, clamped = age_adjustment(now)
     out = Path(out_dir)
     logs = out / "droid-home" / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -153,22 +195,17 @@ def write(out_dir, now=None):
         # The real log holds far more record types than usage ones; one of each kind
         # the parser must count past keeps the shape honest without any content.
         "[%s] INFO: [Agent] Streaming text | Context: %s" % (
-            iso(now - timedelta(minutes=115)),
+            iso(now - timedelta(minutes=adjust(115))),
             json.dumps({"sessionId": NOISE_SESSION, "text": "SYNTHETIC-STREAMING-TEXT"},
                        separators=(",", ":"))),
         "[%s] INFO: [Gateway] Request | Context: %s" % (
-            iso(now - timedelta(minutes=114)),
+            iso(now - timedelta(minutes=adjust(114))),
             json.dumps({"sessionId": NOISE_SESSION, "url": "https://api.synthetic.example/v1/responses"},
                        separators=(",", ":"))),
     ]
-    lines.extend(droid_line(now, record) for record in DROID_RECORDS)
-    lines.append("[%s%s%s" % (
-        iso(now - timedelta(minutes=35)), MARKER,
-        json.dumps({"count": 1, "inputTokens": 0, "cacheReadInputTokens": 0,
-                    "cachedTokensWritten": 0, "totalInputTokens": 0, "outputTokens": 0,
-                    "reasoningTokens": 0, "type": "message_delta",
-                    "tags": {"sessionId": ZERO_SESSION, "modelId": "claude-sonnet-5"}},
-                   separators=(",", ":"))))
+    lines.extend(droid_line(now, adjust(record[2]), record) for record in DROID_RECORDS)
+    lines.append(droid_line(now, adjust(35), (
+        "claude-sonnet-5", ZERO_SESSION, 35, 0, 0, 0, 0, 0, None)))
     droid_log = logs / "droid-log-single.log"
     droid_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -176,17 +213,17 @@ def write(out_dir, now=None):
     projects.mkdir(parents=True, exist_ok=True)
     claude_lines = [
         json.dumps({"type": "user", "uuid": "u-now-user", "sessionId": CLAUDE_RECORDS[0][1],
-                    "timestamp": iso(now - timedelta(minutes=31)),
+                    "timestamp": iso(now - timedelta(minutes=adjust(31))),
                     "cwd": "/tmp/keysrs-fixture-now",
                     "message": {"role": "user", "content": "SYNTHETIC-CLAUDE-CONTENT"}},
                    separators=(",", ":")),
     ]
-    claude_lines.extend(claude_line(index, now, record)
-                        for index, record in enumerate(CLAUDE_RECORDS, start=1))
+    claude_lines.extend(claude_line(index, now, adjust(record[2]), record)
+                       for index, record in enumerate(CLAUDE_RECORDS, start=1))
     claude_log = projects / "session.jsonl"
     claude_log.write_text("\n".join(claude_lines) + "\n", encoding="utf-8")
 
-    ages = [record[2] for record in DROID_RECORDS] + [record[2] for record in CLAUDE_RECORDS]
+    ages = [adjust(record[2]) for record in DROID_RECORDS] + [record[2] for record in CLAUDE_RECORDS]
     return {
         "now": now,
         "droid_log": droid_log,
@@ -196,6 +233,7 @@ def write(out_dir, now=None):
         "merged_totals": merged_totals(),
         "youngest_age_minutes": min(ages),
         "oldest_age_minutes": max(ages),
+        "clamped": clamped,
     }
 
 
@@ -212,10 +250,15 @@ def main(argv=None):
     print("Wrote %s (%d usage records, plus one zero-token and two non-usage records)"
           % (info["droid_log"], len(DROID_RECORDS)))
     print("Wrote %s (%d assistant record)" % (info["claude_log"], len(CLAUDE_RECORDS)))
-    print("Records are %d-%d minutes old: today, this week, this month and the Droid 5-hour"
+    print("Records are %.0f-%.0f minutes old: today, this week, this month and the Droid 5-hour"
           % (info["youngest_age_minutes"], info["oldest_age_minutes"]))
-    print("window all hold them. Rerun later if the local clock sits inside that span of a"
-          " day, week or month boundary.")
+    print("window all hold them.")
+    if info["clamped"]:
+        print("The ages were clamped so every record stays after today's local midnight, so a"
+              " run just after midnight keeps Today and Week populated too.")
+    else:
+        print("Rerun later if the local clock sits inside that span of a day, week or month"
+              " boundary.")
     print()
     print("Expected per-model Droid totals (droid-local rule: input + cache read"
           " + cache write + output + reasoning):")

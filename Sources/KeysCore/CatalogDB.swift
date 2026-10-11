@@ -191,6 +191,23 @@ final class CatalogDB: @unchecked Sendable {
               PRIMARY KEY (source, window)
             );
             """)
+        // A subscription the user pinned on the Usage pane: a plan name and an optional limit
+        // for a tool Keysrs cannot measure locally (or Factory, whose usage is Droid's here).
+        // The limit is one fact in three fields, and the CHECKs hold the all-or-nothing shape
+        // the API already enforces.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+              id TEXT PRIMARY KEY,
+              tool TEXT NOT NULL CHECK (tool IN ('cursor', 'gemini', 'copilot', 'perplexity', 'chatgpt', 'factory', 'custom')),
+              name TEXT NOT NULL DEFAULT '',
+              plan TEXT NOT NULL,
+              limit_amount REAL,
+              limit_unit TEXT CHECK (limit_unit IS NULL OR limit_unit IN ('tokens', 'requests', 'credits', 'usd')),
+              limit_period TEXT CHECK (limit_period IS NULL OR limit_period IN ('five_hour', 'weekly', 'monthly')),
+              created_at TEXT NOT NULL,
+              CHECK ((limit_amount IS NULL) = (limit_unit IS NULL) AND (limit_amount IS NULL) = (limit_period IS NULL))
+            );
+            """)
         // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
         // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
         // the main file nor the WAL keeps the old page images. The vacuum is best effort.
@@ -408,6 +425,107 @@ final class CatalogDB: @unchecked Sendable {
     @discardableResult
     func clearUsageLimit(source: String, window: String) throws -> Bool {
         try withLock { try run("DELETE FROM usage_limits WHERE source = ? AND window = ?;", source, window) > 0 }
+    }
+
+    // MARK: subscriptions (plans the user pinned on the Usage pane)
+
+    struct Subscription: Equatable {
+        var id: String
+        var tool: String
+        var name: String
+        var plan: String
+        var limitAmount: Double?
+        var limitUnit: String?
+        var limitPeriod: String?
+        var createdAt: String
+
+        /// The three limit fields as one value, when the row has a limit at all.
+        var limit: Subscriptions.LimitFields? {
+            guard let limitAmount, let limitUnit, let limitPeriod else { return nil }
+            return Subscriptions.LimitFields(amount: limitAmount, unit: limitUnit, period: limitPeriod)
+        }
+
+        func jsonObject() -> [String: Any] {
+            [
+                "id": id,
+                "tool": tool,
+                "name": name,
+                "plan": plan,
+                "limit_amount": limitAmount as Any? ?? NSNull(),
+                "limit_unit": limitUnit as Any? ?? NSNull(),
+                "limit_period": limitPeriod as Any? ?? NSNull(),
+                "created_at": createdAt,
+            ]
+        }
+    }
+
+    private static let subscriptionColumns =
+        "id, tool, name, plan, limit_amount, limit_unit, limit_period, created_at"
+
+    private func decodeSubscription(_ stmt: OpaquePointer) -> Subscription {
+        func double(_ idx: Int32) -> Double? { sqlite3_column_type(stmt, idx) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, idx) }
+        return Subscription(
+            id: columnText(stmt, 0) ?? "",
+            tool: columnText(stmt, 1) ?? "",
+            name: columnText(stmt, 2) ?? "",
+            plan: columnText(stmt, 3) ?? "",
+            limitAmount: double(4),
+            limitUnit: columnText(stmt, 5),
+            limitPeriod: columnText(stmt, 6),
+            createdAt: columnText(stmt, 7) ?? ""
+        )
+    }
+
+    func listSubscriptions() throws -> [Subscription] {
+        try query(
+            "SELECT \(Self.subscriptionColumns) FROM subscriptions ORDER BY created_at, id;",
+            row: decodeSubscription
+        )
+    }
+
+    func subscription(id: String) throws -> Subscription? {
+        try one("SELECT \(Self.subscriptionColumns) FROM subscriptions WHERE id = ?;", id, row: decodeSubscription)
+    }
+
+    /// The one Factory subscription, if there is one; it attaches to the Droid row.
+    func factorySubscription() throws -> Subscription? {
+        try one(
+            "SELECT \(Self.subscriptionColumns) FROM subscriptions WHERE tool = 'factory' ORDER BY created_at, id;",
+            row: decodeSubscription
+        )
+    }
+
+    func insertSubscription(_ row: Subscription) throws {
+        try withLock {
+            do {
+                try run("""
+                    INSERT INTO subscriptions
+                      (id, tool, name, plan, limit_amount, limit_unit, limit_period, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    row.id, row.tool, row.name, row.plan, row.limitAmount, row.limitUnit, row.limitPeriod,
+                    row.createdAt)
+            } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
+                throw AppError.alreadyExists(row.id)
+            }
+        }
+    }
+
+    /// True when the row existed; the id and the tool never change, only the user's fields do.
+    @discardableResult
+    func updateSubscription(_ row: Subscription) throws -> Bool {
+        try withLock {
+            try run("""
+                UPDATE subscriptions SET tool = ?, name = ?, plan = ?,
+                  limit_amount = ?, limit_unit = ?, limit_period = ? WHERE id = ?;
+                """, row.tool, row.name, row.plan, row.limitAmount, row.limitUnit, row.limitPeriod, row.id) > 0
+        }
+    }
+
+    /// True when the row existed.
+    @discardableResult
+    func deleteSubscription(id: String) throws -> Bool {
+        try withLock { try run("DELETE FROM subscriptions WHERE id = ?;", id) > 0 }
     }
 
     private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version"

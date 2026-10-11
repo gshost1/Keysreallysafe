@@ -235,6 +235,7 @@ final class KeysService: @unchecked Sendable {
         try UsageLimits.validateTokens(tokens)
         let record = CatalogDB.UsageLimit(source: source, window: window.rawValue, tokens: tokens)
         try catalog.setUsageLimit(source: record.source, window: record.window, tokens: record.tokens)
+        try syncFactorySubscription(window: window.rawValue, tokens: tokens)
         try catalog.bumpCatalogVersion()
         return record
     }
@@ -244,6 +245,101 @@ final class KeysService: @unchecked Sendable {
     func clearUsageLimit(source: String, window: String) throws {
         let window = try UsageLimits.validate(source: source, window: window)
         _ = try catalog.clearUsageLimit(source: source, window: window.rawValue)
+        try syncFactorySubscription(window: window.rawValue, tokens: nil)
+        try catalog.bumpCatalogVersion()
+    }
+
+    /// A Factory subscription's token limit and the Droid row's Set limits control are the same
+    /// fact seen from two dialogs. `usage_limits` is the single source of truth for a Droid
+    /// window limit; this keeps the subscription's stored copy in step whenever the row's own
+    /// control edits or clears that window, so the two surfaces can never show different numbers
+    /// for the same window. A window the subscription does not name is a different fact and
+    /// leaves the subscription alone.
+    private func syncFactorySubscription(window: String, tokens: Int?) throws {
+        guard var sub = try catalog.factorySubscription(),
+              sub.limitUnit == "tokens", sub.limitPeriod == window
+        else { return }
+        let amount = tokens.map(Double.init)
+        guard sub.limitAmount != amount else { return }
+        sub.limitAmount = amount
+        if amount == nil { sub.limitUnit = nil; sub.limitPeriod = nil }
+        _ = try catalog.updateSubscription(sub)
+    }
+
+    // MARK: subscriptions (plans the user pinned on the Usage pane)
+
+    func subscriptions() throws -> [CatalogDB.Subscription] {
+        try catalog.listSubscriptions()
+    }
+
+    func subscription(id: String) throws -> CatalogDB.Subscription? {
+        try catalog.subscription(id: id)
+    }
+
+    /// Adds a subscription. A second Factory subscription is refused: both would claim the one
+    /// Droid row the Factory tool attaches to. A Factory token limit is written straight through
+    /// to `usage_limits`, so the Droid window the subscription names becomes a percent meter with
+    /// nothing left to disagree with it.
+    @discardableResult
+    func addSubscription(tool: String, name: String, plan: String, limit: Subscriptions.LimitFields?) throws -> CatalogDB.Subscription {
+        if tool == "factory" {
+            guard try catalog.factorySubscription() == nil else {
+                throw AppError.usage("a Factory subscription already exists; edit it instead")
+            }
+        }
+        let row = CatalogDB.Subscription(
+            id: Hex.encode(SecureRandom.bytes(16)),
+            tool: tool,
+            name: name,
+            plan: plan,
+            limitAmount: limit?.amount,
+            limitUnit: limit?.unit,
+            limitPeriod: limit?.period,
+            createdAt: UTC.iso(Date())
+        )
+        try catalog.insertSubscription(row)
+        if tool == "factory", let limit, limit.unit == "tokens" {
+            try setUsageLimit(source: "droid", window: limit.period, tokens: Int(limit.amount))
+        }
+        try catalog.bumpCatalogVersion()
+        return row
+    }
+
+    /// Rewrites a subscription's user fields; the id and the tool stay. A Factory subscription
+    /// keeps `usage_limits` (the single source of truth for its Droid window) in step: the window
+    /// it no longer names is cleared, the one it newly names is set.
+    @discardableResult
+    func updateSubscription(id: String, name: String, plan: String, limit: Subscriptions.LimitFields?) throws -> CatalogDB.Subscription {
+        guard var row = try catalog.subscription(id: id) else { throw AppError.notFound(id) }
+        let oldLimit = row.limit
+        row.name = name
+        row.plan = plan
+        row.limitAmount = limit?.amount
+        row.limitUnit = limit?.unit
+        row.limitPeriod = limit?.period
+        guard try catalog.updateSubscription(row) else { throw AppError.notFound(id) }
+        if row.tool == "factory" {
+            if let oldLimit, oldLimit.unit == "tokens",
+               !(limit?.unit == "tokens" && limit?.period == oldLimit.period)
+            {
+                try clearUsageLimit(source: "droid", window: oldLimit.period)
+            }
+            if let limit, limit.unit == "tokens" {
+                try setUsageLimit(source: "droid", window: limit.period, tokens: Int(limit.amount))
+            }
+        }
+        try catalog.bumpCatalogVersion()
+        return row
+    }
+
+    func removeSubscription(id: String) throws {
+        guard let row = try catalog.subscription(id: id) else { throw AppError.notFound(id) }
+        _ = try catalog.deleteSubscription(id: id)
+        // The window limit this subscription drove was the same fact as the subscription; with
+        // the row gone it is nobody's limit any more.
+        if row.tool == "factory", let limit = row.limit, limit.unit == "tokens" {
+            try clearUsageLimit(source: "droid", window: limit.period)
+        }
         try catalog.bumpCatalogVersion()
     }
 
@@ -1011,6 +1107,9 @@ final class KeysService: @unchecked Sendable {
         status.lastIngestAt = try catalog.lastIngestAt()
         status.catalogVersion = try catalog.catalogVersion()
         applyOpenRouter(&status)
+        // The user's subscriptions take over their placeholders and attach Factory's plan to the
+        // Droid row, before the poll hands the rows to the dashboard.
+        status.plans = Subscriptions.merge(try catalog.listSubscriptions(), into: status.plans)
         // Plan-window peaks for the day's report; a no-op unless sharing is on.
         analytics?.observe(status)
         return status

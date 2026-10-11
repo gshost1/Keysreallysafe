@@ -166,6 +166,12 @@ final class APIHandler: @unchecked Sendable {
                 return try limitSet(request, path: p)
             case ("DELETE", let p) where p.hasPrefix("/api/limits/"):
                 return try limitClear(p)
+            case ("GET", "/api/subscriptions"):
+                return try subscriptionsList()
+            case ("POST", "/api/subscriptions"):
+                return try subscriptionsAdd(request)
+            case (_, let p) where p.hasPrefix("/api/subscriptions/"):
+                return try subscriptionsItem(request, path: p)
             case ("GET", _) where !path.hasPrefix("/api/"):
                 return staticFile(path)
             case ("HEAD", _) where !path.hasPrefix("/api/"):
@@ -390,6 +396,98 @@ final class APIHandler: @unchecked Sendable {
         let parts = path.dropFirst("/api/limits/".count).split(separator: "/").map(String.init)
         guard parts.count == 2 else { throw AppError.usage("expected /api/limits/<source>/<window>") }
         return (parts[0], parts[1])
+    }
+
+    // The subscriptions the user pins to the Usage pane. Writes carry the same per-launch token
+    // as every other mutation, and the fields are validated strictly — a subscription is a note
+    // the user wrote about a plan, so a half-sent one is refused rather than guessed at.
+    private func subscriptionsList() throws -> HTTPResponse {
+        HTTPResponse.json(200, ["subscriptions": try service.subscriptions().map { $0.jsonObject() }])
+    }
+
+    private func subscriptionsAdd(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        let tool = try Subscriptions.validateTool(obj["tool"])
+        let name = try Subscriptions.validateName(obj["name"], tool: tool)
+        let plan = try Subscriptions.validatePlan(obj["plan"])
+        let limit = try Subscriptions.resolveLimit(try subscriptionLimitInput(obj), existing: nil)
+        let record = try service.addSubscription(tool: tool, name: name, plan: plan, limit: limit)
+        return HTTPResponse.json(201, record.jsonObject())
+    }
+
+    /// PATCH rewrites the user's fields (a present-and-equal `tool` is accepted so the dialog can
+    /// always send the whole form); DELETE removes the row.
+    private func subscriptionsItem(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
+        let parts = path.dropFirst("/api/subscriptions/".count).split(separator: "/").map(String.init)
+        guard parts.count == 1, !parts[0].isEmpty else {
+            throw AppError.usage("expected /api/subscriptions/<id>")
+        }
+        let id = parts[0]
+        switch request.method {
+        case "PATCH":
+            guard let existing = try service.subscription(id: id) else { throw AppError.notFound(id) }
+            let obj = try jsonBody(request)
+            if obj.keys.contains("tool") {
+                let tool = try Subscriptions.validateTool(obj["tool"])
+                guard tool == existing.tool else {
+                    throw AppError.usage("tool cannot change; remove the subscription and add it again")
+                }
+            }
+            let name: String
+            if obj.keys.contains("name") {
+                name = try Subscriptions.validateName(obj["name"], tool: existing.tool)
+            } else {
+                name = existing.name
+            }
+            let plan: String
+            if obj.keys.contains("plan") {
+                plan = try Subscriptions.validatePlan(obj["plan"])
+            } else {
+                plan = existing.plan
+            }
+            let limit = try Subscriptions.resolveLimit(try subscriptionLimitInput(obj), existing: existing.limit)
+            let record = try service.updateSubscription(id: id, name: name, plan: plan, limit: limit)
+            return HTTPResponse.json(200, record.jsonObject())
+        case "DELETE":
+            try service.removeSubscription(id: id)
+            return HTTPResponse.json(200, ["removed": id])
+        default:
+            return HTTPResponse.json(405, ["error": "method_not_allowed"])
+        }
+    }
+
+    /// The three limit fields with their presence kept, so "all-or-nothing" can be told from
+    /// "not being edited". Values of the wrong type are a 400 here, not a silent nil.
+    private func subscriptionLimitInput(_ obj: [String: Any]) throws -> Subscriptions.LimitInput {
+        var input = Subscriptions.LimitInput()
+        if obj.keys.contains("limit_amount") {
+            input.amountPresent = true
+            let value = obj["limit_amount"]
+            if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+                input.amount = number.doubleValue
+            } else if !(value is NSNull) {
+                throw AppError.usage("limit_amount must be a number or null")
+            }
+        }
+        if obj.keys.contains("limit_unit") {
+            input.unitPresent = true
+            let value = obj["limit_unit"]
+            if let string = value as? String {
+                input.unit = string
+            } else if !(value is NSNull) {
+                throw AppError.usage("limit_unit must be a string or null")
+            }
+        }
+        if obj.keys.contains("limit_period") {
+            input.periodPresent = true
+            let value = obj["limit_period"]
+            if let string = value as? String {
+                input.period = string
+            } else if !(value is NSNull) {
+                throw AppError.usage("limit_period must be a string or null")
+            }
+        }
+        return input
     }
 
     /// A JSON number that is a whole count above zero: booleans, strings, fractions and floats
