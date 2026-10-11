@@ -2968,7 +2968,11 @@
   function askRemoveSub(row) {
     subRemoving = row;
     $("sub-remove-err").textContent = "";
-    $("sub-remove-name").textContent = row.title || row.plan || "this subscription";
+    // A Factory subscription lives on the Droid row it is pinned to; the confirmation must ask
+    // about the subscription, not name the row it sits on, so it cannot read "Remove Droid?".
+    $("sub-remove-name").textContent = row.source === "droid"
+      ? "the Factory subscription"
+      : row.title || row.plan || "this subscription";
     $("sub-remove-hint").textContent = row.source === "droid"
       ? "The plan and limit come off the Droid row, and the window limit it drove is cleared with it."
       : "The row disappears from this pane and the built-in placeholder returns.";

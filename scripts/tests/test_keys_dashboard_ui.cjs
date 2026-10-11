@@ -1855,7 +1855,9 @@ test("a Factory subscription attaches to the Droid row, its token limit becoming
   // Removing it from the Droid row takes the plan and the meter off with it.
   await card.locator('button[title="Remove the Factory subscription from the Droid row"]').click();
   await waitDialog(page, "dlg-sub-remove", true);
-  assert.match(await page.locator("#sub-remove-title").textContent(), /Remove Droid\?/);
+  // The question is about the subscription, not the row it is pinned to.
+  assert.match(await page.locator("#sub-remove-title").textContent(), /Remove the Factory subscription\?/);
+  assert.doesNotMatch(await page.locator("#sub-remove-title").textContent(), /Droid/);
   plans = [droidPlan()];
   await subConfirm(page).click();
   await waitDialog(page, "dlg-sub-remove", false);
@@ -1998,6 +2000,73 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
     (await page.locator("#mix .mix-name").allTextContents()),
     ["grok-4", "claude-sonnet-5", "gpt-5", "gemini-3-pro", "glm-5.3", "kimi-k3", "deepseek-r2", "typesafe-one"],
   );
+});
+
+// ---------- theme ----------
+
+// The dashboard wears the keysrs.com light look and nothing else: the dark block is gone, so a
+// Mac set to Dark (which headless Chrome also inherits) still gets the light palette.
+test("the site-matched light theme holds, even under a dark system preference", async (page, origin) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  plans = [droidPlan()];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator('#live-status .live-row[data-source="droid"]').waitFor();
+  const theme = await page.evaluate(() => ({
+    meta: document.querySelector('meta[name="color-scheme"]').content,
+    scheme: getComputedStyle(document.body).colorScheme,
+    bodyBg: getComputedStyle(document.body).backgroundColor,
+    bodyInk: getComputedStyle(document.body).color,
+    paneBg: getComputedStyle(document.getElementById("pane-usage")).backgroundColor,
+    paneRadius: getComputedStyle(document.getElementById("pane-usage")).borderRadius,
+    blue: getComputedStyle(document.documentElement).getPropertyValue("--blue").trim(),
+    claude: getComputedStyle(document.documentElement).getPropertyValue("--s-claude-1").trim(),
+  }));
+  assert.equal(theme.meta, "light");
+  assert.equal(theme.scheme, "light");
+  assert.equal(theme.bodyBg, "rgb(245, 245, 247)", "the page sits on the site's #f5f5f7 surface");
+  assert.equal(theme.bodyInk, "rgb(29, 29, 31)", "text is the site's #1d1d1f ink");
+  assert.equal(theme.paneBg, "rgb(255, 255, 255)", "the pane is a white card");
+  assert.equal(theme.paneRadius, "18px", "the pane is a rounded card");
+  assert.equal(theme.blue, "#0071e3", "the primary blue is the site's");
+  assert.equal(theme.claude, "#c45c38", "Claude keeps its orange under a dark preference");
+
+  // The sheet itself carries no dark block and declares light once, in CSS and meta.
+  const css = await page.evaluate(() => fetch("/styles.css").then((r) => r.text()));
+  assert.ok(!css.includes("prefers-color-scheme"), "no dark-mode media block");
+  assert.match(css, /color-scheme:\s*light/);
+
+  // The primary button is the site's blue pill, read off a real one in the Add subscription dialog.
+  await page.locator("#btn-add-sub").click();
+  await waitDialog(page, "dlg-sub", true);
+  const primary = await page.locator("#dlg-sub .btn-primary").evaluate((n) => {
+    const cs = getComputedStyle(n);
+    return { bg: cs.backgroundColor, radius: cs.borderRadius, color: cs.color };
+  });
+  assert.equal(primary.bg, "rgb(0, 113, 227)", "primary buttons are the site's #0071e3");
+  assert.equal(primary.radius, "999px", "primary buttons are pills");
+  assert.equal(primary.color, "rgb(255, 255, 255)");
+});
+
+test("every pane fits the viewport at 390, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
+  const foreign = [];
+  page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
+  plans = [droidPlan()];
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  for (const width of [390, 1280, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const pane of ["Usage", "Chart", "Keys"]) {
+      await page.getByRole("tab", { name: pane, exact: true }).click();
+      if (pane === "Usage") await page.locator("#live-status .live-row").first().waitFor();
+      else if (pane === "Chart") await page.locator("#daily-svg").waitFor();
+      else await page.locator("#keys-body tr[data-name]").first().waitFor();
+      const spill = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert.ok(spill <= 1, `${pane} pane spills ${spill}px at ${width}px`);
+    }
+  }
+  assert.deepEqual(foreign, [], "every request stays on the dashboard's own origin");
 });
 
 test("a model used by Claude Code and Droid is one series whose total counts both tools' rules", async (page, origin) => {
