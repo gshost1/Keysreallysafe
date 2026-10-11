@@ -509,6 +509,24 @@ table, and the provider catalog. `.github/workflows/test.yml` is the full list
 of checks CI runs, including the dashboard browser suites, with Playwright
 pinned in `scripts/tests/package.json`.
 
+The fixtures are pinned to fixed dates the Swift tests assert against, so on a
+live clock most of their records sit outside the dashboard's today/week/month
+windows and the Chart's current ranges come up nearly empty. To drive those
+ranges with data (vendor colours across every Droid family, a model merged
+across Claude Code and Droid), write throwaway homes dated a few minutes ago:
+
+```sh
+python3 scripts/tests/fixture_now.py --out /tmp/keys-now
+KEYS_NO_OPEN=1 KEYS_CATALOG=/tmp/keys-now/catalog.db \
+  KEYS_DROID_HOME=/tmp/keys-now/droid-home CLAUDE_CONFIG_DIR=/tmp/keys-now/claude-home \
+  ./.build/debug/keys dashboard
+```
+
+The helper prints the per-model and merged totals the Chart should show for the
+current month. Its homes are synthetic and throwaway; the checked-in fixtures
+are never touched, and `scripts/tests/test_fixture_now.py` pins the helper's
+line format to DroidIngest's exact marker.
+
 ## License
 
 MIT. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
