@@ -4,7 +4,7 @@ import Foundation
 
 enum Ingest {
     enum Source: String {
-        case all, grok, claude, openai
+        case all, grok, claude, openai, droid
     }
 
     static func run(
@@ -12,6 +12,7 @@ enum Ingest {
         grokHome: URL,
         claudeHome: URL,
         codexHome: URL,
+        droidHome: URL,
         db: CatalogDB
     ) throws -> [(name: String, report: IngestReport)] {
         var out: [(name: String, report: IngestReport)] = []
@@ -23,6 +24,9 @@ enum Ingest {
         }
         if source == .all || source == .openai {
             out.append(("openai", try CodexIngest.run(home: codexHome, db: db)))
+        }
+        if source == .all || source == .droid {
+            out.append(("droid", try DroidIngest.run(home: droidHome, db: db)))
         }
         return out
     }

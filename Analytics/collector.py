@@ -50,7 +50,7 @@ ROW_TABLES = {
                 ("requests", "ok", "failed", "input_tokens", "output_tokens", "cache_read_tokens",
                  "cache_write_tokens")),
 }
-SOURCES = ("claude_code", "codex", "grok")
+SOURCES = ("claude_code", "codex", "grok", "droid")
 WINDOWS = frozenset({("claude_code", "5h"), ("claude_code", "weekly"), ("claude_code", "fable"),
                      ("codex", "5h"), ("codex", "weekly"), ("grok", "weekly")})
 # The ids in Web/providers.json, plus "other" for anything outside it
@@ -217,9 +217,13 @@ def unique(values, fields, name):
 
 def day_tokens(source, row):
     """The dashboard's own rule (TokenTotals in Spend.swift): Claude Code's
-    total includes cache reads and writes; Codex and Grok count reasoning."""
+    total includes cache reads and writes; Codex and Grok count reasoning;
+    Droid's log bills every bucket it reports."""
     if source == "claude_code":
         return row["input_tokens"] + row["output_tokens"] + row["cached_read_tokens"] + row["cache_creation_tokens"]
+    if source == "droid":
+        return (row["input_tokens"] + row["output_tokens"] + row["cached_read_tokens"]
+                + row["cache_creation_tokens"] + row["reasoning_tokens"])
     return row["input_tokens"] + row["output_tokens"] + row["reasoning_tokens"]
 
 

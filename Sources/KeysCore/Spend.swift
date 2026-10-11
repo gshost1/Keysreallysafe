@@ -18,7 +18,8 @@ enum ClaudeEstimate {
 
 enum TokenTotals {
     /// Claude includes cache tokens; Codex and Grok exclude cached reads and include reasoning;
-    /// a gateway call follows its provider's API.
+    /// Droid's log bills every bucket it reports, so all five count; a gateway call follows its
+    /// provider's API.
     static func normalized(_ event: UsageEvent) -> Int {
         switch event.source {
         case "claude-local":
@@ -26,6 +27,9 @@ enum TokenTotals {
                 + event.cachedReadTokens + event.cacheCreationTokens
         case "codex-local", "grok-local":
             return event.inputTokens + event.outputTokens + event.reasoningTokens
+        case "droid-local":
+            return event.inputTokens + event.outputTokens
+                + event.cachedReadTokens + event.cacheCreationTokens + event.reasoningTokens
         case "gateway":
             if Providers.provider(id: event.provider)?.api == "anthropic" {
                 return event.inputTokens + event.outputTokens

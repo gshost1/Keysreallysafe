@@ -321,6 +321,22 @@ class CollectorTests(unittest.TestCase):
         families = re.search(r'static let modelFamilies = "\^(.*)\$"', swift).group(1)
         self.assertEqual(families + r"\Z", collector.MODEL_FAMILIES.pattern)
 
+    def test_droid_is_an_accepted_source_and_counts_every_bucket(self):
+        # ProductAnalyticsTests.swift sends the same shape from the droid-local catalog rows;
+        # SOURCES and day_tokens must accept the tool on both sides.
+        self.assertEqual(collector.SOURCES, ("claude_code", "codex", "grok", "droid"))
+        row = usage_row(source="droid", provider="zhipu", model="glm-5.3",
+                        input_tokens=100, output_tokens=50, cached_read_tokens=1_000,
+                        cache_creation_tokens=10, reasoning_tokens=25)
+        body = json.dumps(report(usage=[row])).encode()
+        self.assertEqual(self.post(body), 204)
+        stored = self.server.store.usage_summary()["usage"]
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["source"], "droid")
+        self.assertEqual(stored[0]["reasoning_tokens"], 25)
+        # The Compare table uses the dashboard's own rule: Droid's total is all five buckets.
+        self.assertEqual(collector.day_tokens("droid", row), 100 + 50 + 1_000 + 10 + 25)
+
     def test_oversized_integer_literal_is_a_clean_400(self):
         body = json.dumps(report()).replace('"os_major": 15', '"os_major": ' + "9" * 5000).encode()
         self.assertEqual(self.post(body), 400)

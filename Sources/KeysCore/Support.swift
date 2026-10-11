@@ -182,6 +182,13 @@ enum Paths {
     static var droidHome: URL {
         env("KEYS_DROID_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".factory")
     }
+
+    /// Tests and validators start the dashboard themselves, so `KEYS_NO_OPEN` keeps
+    /// `keys dashboard` from opening a tab in the user's default browser on the way up.
+    static func noOpenBrowser(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        guard let value = environment["KEYS_NO_OPEN"] else { return false }
+        return !value.isEmpty && value != "0"
+    }
 }
 
 enum FixturePath {

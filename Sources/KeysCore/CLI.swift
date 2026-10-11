@@ -179,13 +179,13 @@ struct RotateCommand: ParsableCommand {
 }
 
 struct IngestCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "ingest", abstract: "Scan local Grok, Claude Code, and Codex usage logs.")
+    static let configuration = CommandConfiguration(commandName: "ingest", abstract: "Scan local Grok, Claude Code, Codex, and Droid usage logs.")
 
     @Argument var source: String = "all"
 
     func run() throws {
         guard let parsed = Ingest.Source(rawValue: source) else {
-            throw AppError.usage("ingest source must be all, grok, claude, or openai")
+            throw AppError.usage("ingest source must be all, grok, claude, openai, or droid")
         }
         let service = try AppFactory.makeService()
         let reports = try service.ingest(parsed)
@@ -571,7 +571,9 @@ struct DashboardCommand: ParsableCommand {
         let line = "Keysrs  \(url.absoluteString)\n"
         FileHandle.standardOutput.write(Data(line.utf8))
         fflush(stdout)
-        NSWorkspace.shared.open(url)
+        if !Paths.noOpenBrowser() {
+            NSWorkspace.shared.open(url)
+        }
         DispatchQueue.global(qos: .utility).async {
             _ = try? service.ingest(.all)
             try? service.pollOpenRouter()

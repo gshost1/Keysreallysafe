@@ -335,6 +335,34 @@ final class ProductAnalyticsTests: XCTestCase {
         XCTAssertEqual((sent["windows"] as? [[String: Any]])?.count, 0)
     }
 
+    /// Droid's per-request records enter the same usage vocabulary as the other local tools:
+    /// the source is "droid" and the raw buckets travel unchanged (reasoning stays its own
+    /// bucket), so the collector's SOURCES tuple and docs/product-analytics.md stay pinned.
+    func testDroidLocalEventsSummarizeAsTheDroidTool() throws {
+        let (db, clock, transport, analytics) = try harness()   // 2026-05-19T04:00Z
+        try analytics.setEnabled(true, consentVersion: 2)
+        try usage(db, "2026-05-19T05:00:00Z", source: "droid-local", provider: "anthropic",
+                  model: "claude-sonnet-5", input: 100, output: 50, cacheRead: 1_000, cacheWrite: 10, reasoning: 25)
+        try usage(db, "2026-05-19T06:00:00Z", source: "droid-local", provider: "zhipu",
+                  model: "glm-5.3", input: 10, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 0)
+        analytics.record(.ingestSuccess)   // the ingest pass that read the Droid log
+        clock.advance(86_400)
+        analytics.flushCompletedReports()
+        let sent = try sentReport(transport)
+        let rows = try XCTUnwrap(sent["usage"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 2)
+        for row in rows { XCTAssertEqual(row["source"] as? String, "droid") }
+        let claude = try XCTUnwrap(rows.first { $0["model"] as? String == "claude-sonnet-5" })
+        XCTAssertEqual(claude["provider"] as? String, "anthropic")
+        XCTAssertEqual(claude["input_tokens"] as? Int, 100)
+        XCTAssertEqual(claude["cached_read_tokens"] as? Int, 1_000)
+        XCTAssertEqual(claude["cache_creation_tokens"] as? Int, 10)
+        XCTAssertEqual(claude["reasoning_tokens"] as? Int, 25)
+        let glm = try XCTUnwrap(rows.first { $0["model"] as? String == "glm-5.3" })
+        XCTAssertEqual(glm["provider"] as? String, "zhipu")
+        XCTAssertEqual(Set(ProductAnalytics.sources.values), ["claude_code", "codex", "grok", "droid"])
+    }
+
     func testSealedReportIsIdenticalOnRetryEvenIfLateUsageArrives() throws {
         let (db, clock, transport, analytics) = try harness()
         try analytics.setEnabled(true, consentVersion: 2)

@@ -37,7 +37,7 @@
 <h2>What the app reads on your Mac</h2>
 <ul>
   <li>Usage records that Claude Code, OpenAI Codex CLI and Grok CLI write to your home folder (session logs and usage caches). Only counts and metadata are kept; prompt content is not stored.</li>
-  <li>The token totals Droid keeps beside each session in <code>~/.factory/sessions/</code> (the <code>*.settings.json</code> files only). Droid's transcripts and login files are never opened.</li>
+  <li>The token totals Droid keeps beside each session in <code>~/.factory/sessions/</code> (the <code>*.settings.json</code> files only), and the per-request usage records Droid writes to <code>~/.factory/logs/</code>: only the <code>[Agent] Streaming result</code> lines of <code>droid-log-single.log</code> and its dated rotations are read, keeping their token counts, model, session id and timestamp. Droid's transcripts, its login files, and every other record in its log (the ones that carry message content) are never opened.</li>
   <li>Claude's subscription limits, from the cache Claude Code keeps and, when you ask for it, through Claude Code's own <code>/usage</code> command using its existing login. Refreshing in the background every five minutes is off unless you turn it on at first launch or from the menu. No model request is made and no credentials are read.</li>
   <li>API keys you add yourself. They are stored in the macOS Keychain under your login and are read back only after a Touch ID or login-password prompt.</li>
 </ul>
@@ -58,7 +58,7 @@
 <ul>
   <li>the app version, macOS major version, CPU architecture, the UTC day it covers and a random report ID;</li>
   <li>how many times fixed app features were used that day (for example a dashboard pane opened, or a key added or copied);</li>
-  <li>per tool (Claude Code, Codex, Grok), provider and public model name: prompt, model-call and token totals for the day;</li>
+  <li>per tool (Claude Code, Codex, Grok, Droid), provider and public model name: prompt, model-call and token totals for the day;</li>
   <li>for calls through the app's local gateway: request and token totals per provider and model, never per key;</li>
   <li>the highest plan-limit percentage seen that day for each plan window, rounded to 5, and whether it reached 100%.</li>
 </ul>

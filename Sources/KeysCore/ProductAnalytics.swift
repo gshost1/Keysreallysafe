@@ -435,7 +435,8 @@ final class ProductAnalytics: @unchecked Sendable {
 
     // MARK: Day summaries
 
-    static let sources = ["claude-local": "claude_code", "codex-local": "codex", "grok-local": "grok"]
+    static let sources = ["claude-local": "claude_code", "codex-local": "codex", "grok-local": "grok",
+                           "droid-local": "droid"]
     static let windows: Set<String> = ["claude_code|5h", "claude_code|weekly", "claude_code|fable",
                                        "codex|5h", "codex|weekly", "grok|weekly"]
     /// The ids in Web/providers.json. A custom provider id is text the user

@@ -15,6 +15,7 @@ enum Fixtures {
     static var claudeHome: URL { root.appendingPathComponent("claude-home") }
     static var claudeDedupHome: URL { root.appendingPathComponent("claude-dedup") }
     static var codexHome: URL { root.appendingPathComponent("codex-home") }
+    static var droidHome: URL { root.appendingPathComponent("droid-home") }
     static var grokQuotaHome: URL { root.appendingPathComponent("grok-quota") }
     static var codexQuotaHome: URL { root.appendingPathComponent("codex-quota") }
 
@@ -72,6 +73,7 @@ func makeGatedService(
         grokHome: Fixtures.grokHome,
         claudeHome: Fixtures.claudeHome,
         codexHome: Fixtures.codexHome,
+        droidHome: Fixtures.droidHome,
         runner: runner,
         openRouter: openRouter
     )

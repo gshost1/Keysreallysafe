@@ -16,7 +16,7 @@ Every report contains only:
 
 - Report schema and consent versions, a random report UUID (reused only when retrying that report), the UTC day summarized, app version, macOS major version and CPU architecture.
 - `counts`: counts from a fixed set of event names (dashboard pane visits; key add/copy/delete and grant/client creation; ingestion and gateway outcomes; four gateway duration buckets). May be empty. The vocabulary still accepts the optimizer, context-pack and Optimizer pane counters that 0.9.0 and 0.9.1 recorded, so their stored reports stay valid; nothing records them since the optimizer was removed.
-- `usage`: at most 40 rows, one per (tool, provider, model) with activity that day, from the local usage catalog: tool is `claude_code`, `codex` or `grok`; prompts, model calls, and input, output, cache-read, cache-write and reasoning token totals.
+- `usage`: at most 40 rows, one per (tool, provider, model) with activity that day, from the local usage catalog: tool is `claude_code`, `codex`, `grok` or `droid`; prompts, model calls, and input, output, cache-read, cache-write and reasoning token totals.
 - `gateway`: at most 40 rows, one per (provider, model) the local gateway routed that day: requests, succeeded, failed, and token totals. Rows are per provider, never per key.
 - `windows`: one row per plan window the app saw that day (Claude Code 5-hour, weekly and Fable; Codex 5-hour and weekly; Grok weekly): the peak percentage rounded to 5, whether it reached 100%, and how many UTC hours had a live reading.
 
@@ -30,7 +30,7 @@ The counters are operational, not task-quality labels. A gateway success means t
 
 While sharing is on, the app downloads `GET /v1/benchmarks` from the same host at most once a day (one attempt per six hours), through the same ephemeral transport, and caches it in the local catalog. The request carries nothing about the user. The table contains, over the last 28 days of received reports: percentiles (5% steps, rounded to two significant figures) of daily tokens per tool and plan-window cap-hit rates. A cell appears only when at least 50 reports contribute to it.
 
-The app computes the comparison locally: this Mac's typical day is the median of its active days in the last seven closed UTC days, using the dashboard's own token rule (Claude Code includes cache reads and writes; Codex and Grok include reasoning). A tool without a published cell or without local activity gets no line; nothing is estimated. Reports are per day, not per person, so the line compares days ("more than 80% of shared days"), not users.
+The app computes the comparison locally: this Mac's typical day is the median of its active days in the last seven closed UTC days, using the dashboard's own token rule (Claude Code includes cache reads and writes; Codex and Grok include reasoning; Droid includes every bucket its log reports). A tool without a published cell or without local activity gets no line; nothing is estimated. Reports are per day, not per person, so the line compares days ("more than 80% of shared days"), not users.
 
 ## Storage and delivery
 

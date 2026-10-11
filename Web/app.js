@@ -654,6 +654,8 @@
     // source with a project path.
     if (projects || src === "claude-local") return input + output + cache;
     if (src === "codex-local" || src === "grok-local") return input + output + reasoning;
+    // Droid's log bills every bucket it reports, cache and thinking included.
+    if (src === "droid-local") return input + output + cache + reasoning;
     if (src === "gateway" || (!src && r.provider)) return input + output + (anthropicApi(r.provider) ? cache : reasoning);
     return input + output + (family(r.model || "") === "claude" ? cache : reasoning);
   }

@@ -92,7 +92,11 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   `sand-secrets.json`. Message text is not kept; only prompts are counted.
   From `~/.factory/sessions/` only the per-session `*.settings.json` files
   are opened, for their `tokenUsage` totals; Droid's transcripts (`*.jsonl`)
-  and its auth files are never read.
+  and its auth files are never read. From `~/.factory/logs/` only the
+  `[Agent] Streaming result` records of `droid-log-single.log` and its dated
+  rotations are read, and of those only the token counts, model id, session
+  id and timestamp are kept; the log's other record types carry message
+  content and are never parsed.
 - No fake numbers. A provider whose remaining quota is not in a local file is
   listed as "not tracked" with a link to its own dashboard.
 - No secret on screen by default. The key list shows names, never values.
@@ -490,9 +494,9 @@ deleting the app leaves both alone.
 ## Development
 
 ```sh
-CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home GROK_BOT_HOME=Fixtures/grok-bot-home swift test
+CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home GROK_BOT_HOME=Fixtures/grok-bot-home KEYS_DROID_HOME=Fixtures/droid-home swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
+KEYS_NO_OPEN=1 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```
 
 `Web/` is plain HTML, CSS and JavaScript with no build step and no external

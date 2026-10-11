@@ -55,7 +55,8 @@ final class BackendContractUITests: XCTestCase {
             clipboard: clipboard,
             grokHome: Fixtures.grokHome,
             claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome
+            codexHome: Fixtures.codexHome,
+            droidHome: Fixtures.droidHome
         )
         // Sharing is off: the privacy pane reads a real status, and the recording
         // transport would hold any report or benchmark request that slipped out.

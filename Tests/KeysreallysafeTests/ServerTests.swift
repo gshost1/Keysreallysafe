@@ -10,7 +10,8 @@ final class ServerTests: XCTestCase {
             presence: RecordingPresenceGate(),
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome
+            claudeHome: Fixtures.claudeHome,
+            droidHome: Fixtures.droidHome
         )
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
@@ -43,7 +44,8 @@ final class ServerTests: XCTestCase {
             presence: RecordingPresenceGate(),
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome
+            claudeHome: Fixtures.claudeHome,
+            droidHome: Fixtures.droidHome
         )
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
@@ -559,7 +561,8 @@ final class ServerTests: XCTestCase {
             clipboard: FakeClipboard(),
             grokHome: empty,
             claudeHome: empty,
-            codexHome: empty
+            codexHome: empty,
+            droidHome: empty
         )
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)

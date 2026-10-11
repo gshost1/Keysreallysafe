@@ -59,6 +59,8 @@ enum SourceFilter: String {
     case grok
     case claude
     case openai
+    /// Droid's own per-request ledger, from the Streaming-result records in its log.
+    case droid
     /// The local gateway's own ledger: calls this Mac routed through an API key in the vault.
     /// Nothing else observes a key, so a provider called directly is not in here.
     case keys
@@ -69,6 +71,7 @@ enum SourceFilter: String {
         case .grok: return ["grok-local"]
         case .claude: return ["claude-local"]
         case .openai: return ["codex-local"]
+        case .droid: return ["droid-local"]
         case .keys: return ["gateway"]
         }
     }

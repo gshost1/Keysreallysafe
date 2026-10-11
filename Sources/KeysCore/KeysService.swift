@@ -905,6 +905,7 @@ final class KeysService: @unchecked Sendable {
             grokHome: grokHome,
             claudeHome: claudeHome,
             codexHome: codexHome,
+            droidHome: droidHome,
             db: catalog
         )
         let changed = reports.reduce(0) { $0 + $1.report.rowsInserted + $1.report.rowsUpdated }
