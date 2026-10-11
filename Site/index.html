@@ -30,6 +30,9 @@
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
     <symbol id="check" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="currentColor" opacity=".14"/><path d="M6 10.3l2.6 2.6L14 7.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <radialGradient id="tid-disc" cx=".5" cy=".38" r=".62"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dedee2"/></radialGradient>
+    <linearGradient id="tid-whorl" gradientUnits="userSpaceOnUse" x1="4" y1="2" x2="20" y2="22"><stop offset="0" stop-color="#f0569a"/><stop offset="1" stop-color="#c2185b"/></linearGradient>
+    <symbol id="tid-fp" viewBox="0 0 64 64"><circle cx="32" cy="32" r="31" fill="url(#tid-disc)" stroke="rgba(0,0,0,.1)" stroke-width=".8"/><g transform="translate(5.4 7.6) scale(2.2)" fill="none" stroke="url(#tid-whorl)" stroke-width="1" stroke-linecap="round"><path d="M12 11v3.5a6 6 0 0 1-1.2 3.6M8.5 9.8A3.5 3.5 0 0 1 15.5 11v2.5a9 9 0 0 1-.8 3.7M6.2 8.2A6 6 0 0 1 18 11v1.6M6 11v1.8a8.4 8.4 0 0 1-1 4M17.7 15.4a13 13 0 0 1-.9 3.1M8.8 3.6A8.5 8.5 0 0 1 20.4 9.6M3.9 7.6a8.5 8.5 0 0 1 2.3-2.9"/></g></symbol>
   </defs>
 </svg>
 
@@ -64,7 +67,7 @@
   </div>
 
   <div class="wrap">
-    <div class="mac" role="img" aria-label="A Mac screen: the Keysrs dropdown shows Claude at 94% of its 5-hour window while Claude Code asks for a key by name and macOS shows a Touch ID prompt.">
+    <div class="mac" role="img" aria-label="A Mac screen: the Keysrs dropdown shows Claude at 94% of its 5-hour window while Claude Code asks for a key by name and the macOS Touch ID prompt asks to grant “run evals” the key codex-astra for OpenAI for 30 minutes.">
       <div class="screen">
         <div class="mbar">
           <span class="b">Terminal</span><span class="hs">Shell</span><span class="hs">Edit</span><span class="hs">View</span><span class="hs">Window</span><span class="hs">Help</span>
@@ -76,18 +79,20 @@
           <div class="tb"><i></i><i></i><i></i><span>claude — ~/evals</span></div>
 <pre><span class="cu">&gt; run the eval suite with codex-astra from Keysrs</span>
 
-<span class="cd">⏺</span> I'll ask Keysrs for a grant on codex-astra.
 <span class="cd">⏺</span> <b>Bash</b>(keys grant codex-astra --task "run evals")
-  <span class="ct">⎿  Waiting for Touch ID on your Mac…</span>
-  <span class="ct">⎿  </span><span class="ok">✓ Granted for 30 min. I never see the key.</span>
+  <span class="ct">⎿  Touch ID in the Keysrs site…</span>
+     <span class="ct">grant 3f9c2a71  codex-astra -&gt; OpenAI (api.openai.com)</span>
+       <span class="ct">expires  2026-09-24T06:43:00Z  (30 min)</span>
+<span class="cd">⏺</span> <span class="ok">Granted for 30 min. I never see the key.</span>
 <span class="cd">⏺</span> Running 48 evals through the grant… <span class="cur"></span></pre>
         </div>
 
         <div class="touch">
-          <svg class="fp" viewBox="0 0 24 24" fill="none" stroke="#ff375f" stroke-width="1.3" stroke-linecap="round"><path d="M12 11v3.5a6 6 0 0 1-1.2 3.6M8.5 9.8A3.5 3.5 0 0 1 15.5 11v2.5a9 9 0 0 1-.8 3.7M6.2 8.2A6 6 0 0 1 18 11v1.6M6 11v1.8a8.4 8.4 0 0 1-1 4M17.7 15.4a13 13 0 0 1-.9 3.1M8.8 3.6A8.5 8.5 0 0 1 20.4 9.6M3.9 7.6a8.5 8.5 0 0 1 2.3-2.9"/></svg>
-          <b>Keys wants to let “run evals” use codex-astra for 30 minutes</b>
-          Touch ID or enter your password to allow this.
-          <div class="bts"><span>Cancel</span><span>Use Password…</span></div>
+          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
+          <b>Keysrs</b>
+          <p>“Keysrs” is trying to Grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.</p>
+          <p>Touch ID or enter your password to allow this.</p>
+          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
         </div>
 
         <div class="dd">
@@ -201,15 +206,18 @@
 
 <span class="cd">⏺</span> I'll ask Keysrs for a grant on codex-astra.
 <span class="cd">⏺</span> <b>Bash</b>(keys grant codex-astra --task "run evals")
-  <span class="ct">⎿  Waiting for Touch ID on your Mac…</span>
-  <span class="ct">⎿  </span><span class="ok">✓ Granted for 30 min. I never see the key.</span>
+  <span class="ct">⎿  Touch ID in the Keysrs site…</span>
+     <span class="ct">grant 3f9c2a71  codex-astra -&gt; OpenAI (api.openai.com)</span>
+       <span class="ct">expires  2026-09-24T06:43:00Z  (30 min)</span>
+<span class="cd">⏺</span> <span class="ok">Granted for 30 min. I never see the key.</span>
 <span class="cd">⏺</span> Running 48 evals through the grant… <span class="cur"></span></pre>
         </div>
         <div class="touch t2">
-          <svg class="fp" viewBox="0 0 24 24" fill="none" stroke="#ff375f" stroke-width="1.3" stroke-linecap="round"><path d="M12 11v3.5a6 6 0 0 1-1.2 3.6M8.5 9.8A3.5 3.5 0 0 1 15.5 11v2.5a9 9 0 0 1-.8 3.7M6.2 8.2A6 6 0 0 1 18 11v1.6M6 11v1.8a8.4 8.4 0 0 1-1 4M17.7 15.4a13 13 0 0 1-.9 3.1M8.8 3.6A8.5 8.5 0 0 1 20.4 9.6M3.9 7.6a8.5 8.5 0 0 1 2.3-2.9"/></svg>
-          <b>Keys wants to let “run evals” use codex-astra for 30 minutes</b>
-          Touch ID or enter your password to allow this.
-          <div class="bts"><span>Cancel</span><span>Use Password…</span></div>
+          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
+          <b>Keysrs</b>
+          <p>“Keysrs” is trying to Grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.</p>
+          <p>Touch ID or enter your password to allow this.</p>
+          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
         </div>
       </div>
     </div>
