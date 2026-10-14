@@ -194,6 +194,7 @@ enum ProviderCheck {
     static func safeMessage(_ data: Data, secret: String) -> String? {
         guard !data.isEmpty else { return nil }
         var text: String?
+        var limit = 200
         if let root = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object) {
             if let err = JSONValue.object(root["error"]) {
                 text = JSONValue.string(err["message"]) ?? JSONValue.string(err["type"])
@@ -202,12 +203,17 @@ enum ProviderCheck {
             } else if let s = JSONValue.string(root["message"]) ?? JSONValue.string(root["detail"]) {
                 text = s
             }
-        } else if let s = String(data: data.prefix(160), encoding: .utf8), !s.contains("<") {
+        } else if let s = String(data: data.prefix(64 * 1024), encoding: .utf8), !s.contains("<") {
             text = s
+            limit = 160
         }
-        guard var t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
-        if t.count > 200 { t = String(t.prefix(200)) + "…" }
-        return Redact.scrub(t, secrets: [secret])
+        // Scrub before shortening: a cut that lands inside an echoed secret leaves a prefix
+        // the whole-secret match no longer finds.
+        guard let raw = text else { return nil }
+        var t = Redact.scrub(raw, secrets: [secret]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        if t.count > limit { t = String(t.prefix(limit)) + "…" }
+        return t
     }
 }
 

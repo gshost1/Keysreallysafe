@@ -128,6 +128,26 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertEqual(json["source"] as? String, "openrouter")
     }
 
+    // A key unlocked for another provider must not be polled at openrouter.ai because a
+    // different process relabelled it as an OpenRouter billing key in the catalog.
+    func testOpenRouterPollIgnoresAKeyRelabelledBehindTheService() throws {
+        let (db, _) = try makeDB()
+        let fake = FakeOpenRouter(
+            snapshot: CatalogDB.ProviderSnapshot(
+                provider: "openrouter", keyName: "", ts: "2026-09-04T20:00:00Z",
+                usageDaily: 0, usageWeekly: 0, usageMonthly: 0, limit: nil, limitRemaining: nil, rawKind: nil
+            )
+        )
+        let (service, _) = makeGatedService(db: db, openRouter: fake)
+        try service.add(name: "other", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.setGateway(name: "other", enabled: true, host: nil)
+
+        _ = try db.updateCatalog(name: "other", provider: "openrouter", kind: "billing", notes: nil)
+        try service.pollOpenRouter()
+        XCTAssertEqual(fake.calls, [])
+        XCTAssertFalse(service.isGatewayEnabled("other"))
+    }
+
     func testDoctorListsSourcesAndDoesNotProbeInTests() throws {
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
