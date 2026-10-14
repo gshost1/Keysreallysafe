@@ -164,9 +164,9 @@ final class BackendContractUITests: XCTestCase {
                              "deleting through the dashboard must drop the stored secret too")
         XCTAssertEqual(clipboard.value, Self.alphaSecret, "the real copy route must reach the clipboard boundary")
         XCTAssertEqual(clipboard.lastBackgroundWipe, ClipboardWipe.seconds)
-        XCTAssertTrue(presence.reasons.contains("Unlock contract-alpha"), "\(presence.reasons)")
-        XCTAssertTrue(presence.reasons.contains("Unlock contract-delta"), "\(presence.reasons)")
-        XCTAssertTrue(presence.reasons.contains("Delete contract-delta"), "\(presence.reasons)")
+        XCTAssertTrue(presence.reasons.contains("unlock contract-alpha"), "\(presence.reasons)")
+        XCTAssertTrue(presence.reasons.contains("unlock contract-delta"), "\(presence.reasons)")
+        XCTAssertTrue(presence.reasons.contains("delete contract-delta"), "\(presence.reasons)")
 
         // The create/reveal round trip the browser performed went through real
         // storage: the event log is the service's own record of it.

@@ -54,7 +54,7 @@ final class ProviderCheckTests: XCTestCase {
 
         let first = try service.checkProvider(name: "demo", caller: "test")
         XCTAssertEqual(gate.reasons.count, 1)
-        XCTAssertEqual(gate.reasons[0], "Check demo against OpenAI at api.openai.com (read-only)")
+        XCTAssertEqual(gate.reasons[0], "check demo against OpenAI at api.openai.com (read-only)")
         XCTAssertEqual(first.outcome, .ok)
         XCTAssertEqual(first.models, ["gpt-4.1", "o3"])
         XCTAssertEqual(first.requestId, "req_123")

@@ -32,7 +32,7 @@ final class GatewayClientTests: XCTestCase {
         XCTAssertThrowsError(try rig.service.issueGatewayClient(name: "demo", label: "cli"))
         rig.gate.error = nil
         let issued = try rig.service.issueGatewayClient(name: "demo", label: "cli", days: 7)
-        XCTAssertTrue(rig.gate.reasons.contains("Issue gateway client for demo"))
+        XCTAssertTrue(rig.gate.reasons.contains("issue gateway client for demo"))
         XCTAssertTrue(GatewayClientToken.looksLikeToken(issued.token))
         XCTAssertEqual(issued.client.methods, ["POST"])
         let listed = try rig.service.gatewayClients(name: "demo")

@@ -49,7 +49,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let rotated = try service.rotate(name: "demo", secret: "new-secret-value", caller: "rotate")
         XCTAssertEqual(rotated.version, 2)
         XCTAssertEqual(try inner.get(name: "demo"), "new-secret-value")
-        XCTAssertEqual(gate.reasons, ["Unlock demo"])
+        XCTAssertEqual(gate.reasons, ["unlock demo"])
         XCTAssertEqual(try service.keyEvents(name: "demo").map(\.action).first, "rotate")
 
         _ = try service.setGateway(name: "demo", enabled: true, host: nil)
@@ -60,7 +60,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let beforeRemove = gate.reasons.count
         try service.remove(name: "demo", caller: "rm")
         XCTAssertEqual(gate.reasons.count, beforeRemove + 1)
-        XCTAssertEqual(gate.reasons.last, "Delete demo")
+        XCTAssertEqual(gate.reasons.last, "delete demo")
         XCTAssertTrue(try service.list().isEmpty)
         XCTAssertThrowsError(try inner.get(name: "demo"))
     }
@@ -249,7 +249,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: optimizer.path), "a refused purge deletes nothing")
         try service.purge(confirmation: "purge")
         XCTAssertFalse(FileManager.default.fileExists(atPath: optimizer.path))
-        XCTAssertEqual(gate.reasons.last, "Purge Keysrs")
+        XCTAssertEqual(gate.reasons.last, "purge Keysrs")
         XCTAssertTrue(try service.list().isEmpty)
         XCTAssertThrowsError(try inner.get(name: "demo"))
         XCTAssertNil(try db.providerCheck(keyName: "demo"))

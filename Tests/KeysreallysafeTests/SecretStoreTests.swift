@@ -71,7 +71,7 @@ final class SecretStoreTests: XCTestCase {
         try service.copy(name: "xai", holdUntilWipe: false)
         XCTAssertEqual(clipboard.value, fixtureSecret)
         XCTAssertEqual(try service.reveal(name: "xai"), fixtureSecret)
-        XCTAssertEqual(gate.reasons, ["Unlock xai", "Unlock xai"])
+        XCTAssertEqual(gate.reasons, ["unlock xai", "unlock xai"])
     }
 
     func testFailedPresenceReadsNothing() throws {

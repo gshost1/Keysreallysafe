@@ -142,7 +142,7 @@ final class GrantTests: XCTestCase {
             caller: "cli"
         )
         XCTAssertEqual(gate.reasons.count, 1)
-        XCTAssertEqual(gate.reasons[0], "Grant \"list models\" the key demo for OpenAI at 127.0.0.1:\(stub.boundPort), 15 min")
+        XCTAssertEqual(gate.reasons[0], "grant \"list models\" the key demo for OpenAI at 127.0.0.1:\(stub.boundPort), 15 min")
         XCTAssertTrue(service.isGatewayEnabled("demo"))
 
         for header in ["Authorization", "x-api-key", "x-goog-api-key", "api-key"] {

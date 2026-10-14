@@ -463,7 +463,7 @@ final class KeysService: @unchecked Sendable {
             {
                 disableGatewayMemory(name: name, reason: "target_changed")
             }
-            try presence.require(reason: reason ?? "Unlock \(name)")
+            try presence.require(reason: reason ?? "unlock \(name)")
             let target = GatewayTarget(
                 name: name, secret: try secrets.get(name: name), provider: provider, host: resolved, version: row.version
             )
@@ -515,9 +515,11 @@ final class KeysService: @unchecked Sendable {
         return issued
     }
 
+    /// The OS renders the prompt as `"<App>" is trying to <reason>.`, so reasons
+    /// start lowercase to read mid-sentence; proper nouns keep their case.
     static func grantReason(task: String, key: String, provider: Providers.Record, host: String, minutes: Int) -> String {
         let span = minutes % 60 == 0 && minutes >= 60 ? "\(minutes / 60) h" : "\(minutes) min"
-        return "Grant \"\(task)\" the key \(key) for \(provider.name) at \(host), \(span)"
+        return "grant \"\(task)\" the key \(key) for \(provider.name) at \(host), \(span)"
     }
 
     static func grantDetail(_ g: Grant) -> String {
@@ -606,7 +608,7 @@ final class KeysService: @unchecked Sendable {
         if let cached = gatewayLock.withLock({ gatewayCache[name]?.secret }) {
             secret = cached
         } else {
-            try presence.require(reason: "Check \(name) against \(provider.name) at \(host) (read-only)")
+            try presence.require(reason: "check \(name) against \(provider.name) at \(host) (read-only)")
             secret = try secrets.get(name: name)
         }
         let result = ProviderCheck.run(key: name, provider: provider, host: host, secret: secret, fetcher: checker)
@@ -673,7 +675,7 @@ final class KeysService: @unchecked Sendable {
         let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
         let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
         let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        try presence.require(reason: "Issue gateway client for \(name)")
+        try presence.require(reason: "issue gateway client for \(name)")
         let token = GatewayClientToken.generate()
         let client = try catalog.insertGatewayClient(
             keyName: name,
@@ -872,7 +874,7 @@ final class KeysService: @unchecked Sendable {
 
     func get(name: String) throws -> String {
         _ = try existingRow(name)
-        try presence.require(reason: "Unlock \(name)")
+        try presence.require(reason: "unlock \(name)")
         return try secrets.get(name: name)
     }
 
@@ -895,7 +897,7 @@ final class KeysService: @unchecked Sendable {
     func remove(name: String, caller: String = "dashboard") throws {
         try requireGatewayOwner()
         _ = try existingRow(name)
-        try presence.require(reason: "Delete \(name)")
+        try presence.require(reason: "delete \(name)")
         _ = gatewayLock.withLock { gatewayCache.removeValue(forKey: name) }
         revokeGrants(key: name, reason: "key_deleted", caller: caller)
         try secrets.delete(name: name)
@@ -908,7 +910,7 @@ final class KeysService: @unchecked Sendable {
         try requireGatewayOwner()
         _ = try existingRow(name)
         guard !secret.isEmpty else { throw AppError.usage("empty secret") }
-        try presence.require(reason: "Unlock \(name)")
+        try presence.require(reason: "unlock \(name)")
         try secrets.replace(name: name, secret: secret)
         let version = try catalog.incrementVersion(name: name)
         gatewayLock.withLock {
@@ -930,7 +932,7 @@ final class KeysService: @unchecked Sendable {
 
     func purge(confirmation: String) throws {
         try requireGatewayOwner()
-        try presence.require(reason: "Purge Keysrs")
+        try presence.require(reason: "purge Keysrs")
         guard confirmation == "purge" else {
             throw AppError.usage("type purge to confirm")
         }
