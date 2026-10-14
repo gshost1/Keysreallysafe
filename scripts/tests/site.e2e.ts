@@ -4,6 +4,11 @@ import { expect } from 'e2e';
 test('marketing navigation, release links, privacy and terms', async ({ app, browser, screen }) => {
   await app.open('/');
   await expect(screen.getByRole('heading', /Stop hitting AI limits/)).toBeVisible();
+  const promptBody = '“Keysrs” is trying to grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.';
+  await expect(browser.locator('.touch p:first-of-type')).toHaveCount(2);
+  await expect(browser.locator('.touch p:first-of-type').first()).toHaveText(promptBody);
+  await expect(browser.locator('.touch p:first-of-type').last()).toHaveText(promptBody);
+  await expect(browser.locator('body')).not.toContainText('is trying to Grant');
   const download = browser.locator('a[href$="Keysrs-arm64.dmg"]');
   await expect(download.first()).toHaveAttribute('href', 'https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg');
   await expect(download).toHaveCount(3);
