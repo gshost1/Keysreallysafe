@@ -141,6 +141,8 @@ Touch ID), then move the app to the Trash.
 
 The Keysrs window has three panes, switched with the segmented control or `⌘1` through `⌘3`.
 
+The dashboard uses a light-only theme that matches keysrs.com, regardless of your Mac's appearance.
+
 **Usage** is the first thing you see: the plan windows each tool reports
 locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
 windows; Codex has five-hour and weekly windows; Grok has a weekly one. Grok Bot
