@@ -5,6 +5,15 @@ import Foundation
 /// (a point distance from the right edge) when the autosave name is applied; with no saved
 /// value it places the item far left, the first spot that is dropped when the bar is full.
 /// This is an inferred mitigation, not an observed fix — see docs/menubar-recovery.md.
+/// The two defaults calls the seed needs, so tests can use memory instead of a real
+/// preferences domain (cfprefsd leaves an empty plist behind for every throwaway suite).
+protocol MenubarDefaults: AnyObject {
+    func object(forKey defaultName: String) -> Any?
+    func set(_ value: Any?, forKey defaultName: String)
+}
+
+extension UserDefaults: MenubarDefaults {}
+
 enum MenubarPosition {
     enum Decision: Equatable { case seeded(Double), keptExisting(Double), skippedHidden }
 
@@ -16,7 +25,7 @@ enum MenubarPosition {
 
     /// Writes `preferred` only when no position is saved and the user has not hidden the
     /// item; never overwrites a user's position or a hidden item.
-    static func seedIfUnset(defaults: UserDefaults, autosaveName: String, preferred: Double) -> Decision {
+    static func seedIfUnset(defaults: MenubarDefaults, autosaveName: String, preferred: Double) -> Decision {
         if let visible = defaults.object(forKey: visibleKey(autosaveName)) as? Bool, visible == false {
             return .skippedHidden
         }

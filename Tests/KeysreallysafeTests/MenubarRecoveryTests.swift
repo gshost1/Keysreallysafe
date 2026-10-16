@@ -3,21 +3,7 @@ import XCTest
 @testable import KeysCore
 
 final class MenubarRecoveryTests: XCTestCase {
-    private var defaultsSuite: String!
-    private var defaults: UserDefaults!
-
-    override func setUp() {
-        super.setUp()
-        defaultsSuite = "keysrs.test.menubar-position.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: defaultsSuite)
-    }
-
-    override func tearDown() {
-        defaults.removePersistentDomain(forName: defaultsSuite)
-        defaults = nil
-        defaultsSuite = nil
-        super.tearDown()
-    }
+    private let defaults = MemoryDefaults()
 
     @MainActor func testWakeReplacesEvenNominallyVisibleItemAndPreservesMenu() async throws {
         _ = NSApplication.shared

@@ -12,14 +12,14 @@ final class MenubarItemController {
     private var recoveryTask: Task<Void, Never>?
     private var pendingReason: String?
     private var stopped = false
-    private let defaults: UserDefaults
+    private let defaults: MenubarDefaults
     var menuIsOpen = false
 
     init(statusBar: NSStatusBar = .system,
          workspaceCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
          appCenter: NotificationCenter = .default,
          recoveryDelay: Duration = .seconds(2),
-         defaults: UserDefaults = .standard) {
+         defaults: MenubarDefaults = UserDefaults.standard) {
         self.statusBar = statusBar
         self.recoveryDelay = recoveryDelay
         self.defaults = defaults
@@ -34,7 +34,7 @@ final class MenubarItemController {
         observe(NSApplication.didChangeScreenParametersNotification, center: appCenter)
     }
 
-    private static func seedPosition(defaults: UserDefaults) {
+    private static func seedPosition(defaults: MenubarDefaults) {
         let decision = MenubarPosition.seedIfUnset(defaults: defaults,
                                                    autosaveName: MenubarPosition.autosaveName,
                                                    preferred: MenubarPosition.preferredDistanceFromRightEdge)

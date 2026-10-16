@@ -2,14 +2,8 @@ import XCTest
 @testable import KeysCore
 
 final class MenubarPositionTests: XCTestCase {
-    private func throwawayDefaults() -> (UserDefaults, String) {
-        let name = "keysrs.test.menubar-position.\(UUID().uuidString)"
-        return (UserDefaults(suiteName: name)!, name)
-    }
-
     func testAbsentPositionIsSeededAndWritten() {
-        let (defaults, suite) = throwawayDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = MemoryDefaults()
         let name = MenubarPosition.autosaveName
         let positionKey = MenubarPosition.positionKey(name)
         XCTAssertNil(defaults.object(forKey: positionKey))
@@ -23,8 +17,7 @@ final class MenubarPositionTests: XCTestCase {
     }
 
     func testExistingPositionIsKeptUnchanged() {
-        let (defaults, suite) = throwawayDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = MemoryDefaults()
         let name = MenubarPosition.autosaveName
         let positionKey = MenubarPosition.positionKey(name)
         let existing = 42.0
@@ -38,8 +31,7 @@ final class MenubarPositionTests: XCTestCase {
     }
 
     func testUserHiddenItemIsSkippedAndNotSeeded() {
-        let (defaults, suite) = throwawayDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = MemoryDefaults()
         let name = MenubarPosition.autosaveName
         let positionKey = MenubarPosition.positionKey(name)
         defaults.set(false, forKey: MenubarPosition.visibleKey(name))
@@ -50,4 +42,11 @@ final class MenubarPositionTests: XCTestCase {
         XCTAssertEqual(decision, .skippedHidden)
         XCTAssertNil(defaults.object(forKey: positionKey))
     }
+}
+
+/// In-memory stand-in for the menu bar's defaults; nothing reaches ~/Library/Preferences.
+final class MemoryDefaults: MenubarDefaults {
+    private var values: [String: Any] = [:]
+    func object(forKey defaultName: String) -> Any? { values[defaultName] }
+    func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
 }
