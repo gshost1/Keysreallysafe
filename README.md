@@ -475,7 +475,10 @@ the clipboard. It prints the provider and host the key belongs to before the
 prompt, so a similarly named key for a different provider is caught early.
 Prefer `keys grant` when the child only needs to call that provider. `keys doctor` prints every local source it looked for, whether
 it was found, when it last changed, which row in the dashboard it feeds, and why a
-row is empty. Start there when a number is missing.
+row is empty. It also reports the install: which `Keysrs.app` it found, whether
+Start at Login is on, whether the `keys` on PATH is that bundle's binary, and any
+0.9.x leftovers to remove with `keys autostart --remove`. Start there when a
+number is missing or the menu bar item does not behave like the copy you built.
 
 ## Local sources
 
