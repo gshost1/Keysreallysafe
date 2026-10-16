@@ -71,6 +71,7 @@ struct DoctorInstall: Equatable {
     static func live(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         probeAgent: Bool,
+        runningExecutable: URL? = Bundle.main.executableURL,
         loginRunner: LoginRunner = { probeLoginItem(binary: $0) }
     ) -> DoctorInstall {
         let fm = FileManager.default
@@ -85,12 +86,16 @@ struct DoctorInstall: Equatable {
             if fm.fileExists(atPath: installed.path) { bundle = installed }
         }
 
-        let running = Bundle.main.executableURL
+        let running = runningExecutable
 
         let loginItem: LoginItemState
         if Bundle.main.bundleURL.pathExtension == "app" {
             loginItem = LoginItemState(status: SMAppService.mainApp.status)
-        } else if let bundle {
+        } else if let bundle,
+                  let running,
+                  running.resolvingSymlinksInPath() == bundle.appendingPathComponent("Contents/MacOS/keys").resolvingSymlinksInPath() {
+            // Only ask a bundle this very binary lives in. A dev build or a stray copy would be
+            // running someone else's executable and reporting that build's answer as its own.
             let bundled = bundle.appendingPathComponent("Contents/MacOS/keys")
             loginItem = loginRunner(bundled).map(LoginItemState.init(word:)) ?? .notQueried
         } else {
@@ -159,16 +164,21 @@ struct DoctorInstall: Equatable {
         proc.arguments = ["login-item-status"]
         let out = Pipe()
         proc.standardOutput = out
-        proc.standardError = Pipe()
+        // An older binary answers with usage text on stderr; an unread pipe could fill and
+        // stall it until the timeout, so stderr goes nowhere.
+        proc.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in exited.signal() }
         do { try proc.run() } catch { return nil }
-        let deadline = Date().addingTimeInterval(timeout)
-        while proc.isRunning && Date() < deadline { usleep(50_000) }
-        if proc.isRunning {
+        // stdout is one word from a current binary and empty from an older one, so it is read
+        // after exit; a child that floods it hits the timeout and reads as not queried.
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
             proc.terminate()
             return nil
         }
         guard proc.terminationStatus == 0 else { return nil }
-        let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let data = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+        let text = String(decoding: data.prefix(256), as: UTF8.self)
         return text.split(whereSeparator: { $0.isWhitespace }).first.map(String.init)
     }
 }

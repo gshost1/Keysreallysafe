@@ -50,7 +50,9 @@ struct DoctorSource: Equatable {
 }
 
 enum Doctor {
-    static func report(service: KeysService, probeListener: Bool = true, install: DoctorInstall? = nil) throws -> DoctorReport {
+    static func report(
+        service: KeysService, probeListener: Bool = true, probeAgent: Bool = true, install: DoctorInstall? = nil
+    ) throws -> DoctorReport {
         let status = try service.liveStatus()
         let grokSessions = service.grokHome.appendingPathComponent("sessions", isDirectory: true)
         let grokLog = service.grokHome.appendingPathComponent("logs/unified.jsonl")
@@ -140,7 +142,7 @@ enum Doctor {
             keychainReachable: keychainReachable(service: "keysreallysafe"),
             gatewayListening: listening,
             gatewayPort: GatewayListener.port,
-            install: install ?? DoctorInstall.live(probeAgent: probeListener),
+            install: install ?? DoctorInstall.live(probeAgent: probeAgent),
             controlFile: ControlFile.live(at: ControlFile.url(beside: service.catalog.path)).map { "127.0.0.1:\($0.port) pid \($0.pid)" }
         )
     }

@@ -169,15 +169,53 @@ final class DoctorInstallTests: XCTestCase {
         let link = try makeLink(dir, to: binary)
         let env = ["PATH": link.deletingLastPathComponent().path]
 
-        let enabled = DoctorInstall.live(environment: env, probeAgent: false, loginRunner: { _ in "enabled" })
+        // Running through the PATH link, so the binary is the bundle's own.
+        let enabled = DoctorInstall.live(environment: env, probeAgent: false, runningExecutable: link,
+                                         loginRunner: { _ in "enabled" })
         XCTAssertEqual(enabled.appBundle?.path, app.path)
         XCTAssertEqual(enabled.commandOnPath?.path, link.path)
         XCTAssertEqual(enabled.loginItem, .enabled)
 
-        let failed = DoctorInstall.live(environment: env, probeAgent: false, loginRunner: { _ in nil })
+        let failed = DoctorInstall.live(environment: env, probeAgent: false, runningExecutable: link,
+                                        loginRunner: { _ in nil })
         XCTAssertEqual(failed.loginItem, .notQueried)
 
-        let garbage = DoctorInstall.live(environment: env, probeAgent: false, loginRunner: { _ in "???" })
+        let garbage = DoctorInstall.live(environment: env, probeAgent: false, runningExecutable: link,
+                                         loginRunner: { _ in "???" })
         XCTAssertEqual(garbage.loginItem, .notQueried)
+    }
+
+    // A dev build or stray copy must not run the installed bundle's binary and report that
+    // build's login item as its own.
+    func testLiveDoesNotAskABundleItIsNotRunningFrom() throws {
+        let dir = try TempDir.make()
+        let (_, binary) = try makeFakeApp(dir, bytes: "installed-binary")
+        let link = try makeLink(dir, to: binary)
+        let env = ["PATH": link.deletingLastPathComponent().path]
+        let elsewhere = dir.appendingPathComponent("checkout/.build/debug/keys")
+        var asked = false
+        let install = DoctorInstall.live(environment: env, probeAgent: false, runningExecutable: elsewhere,
+                                         loginRunner: { _ in asked = true; return "enabled" })
+        XCTAssertFalse(asked)
+        XCTAssertEqual(install.loginItem, .notQueried)
+    }
+
+    // The probe must survive an older binary's usage flood on stderr and give up on a hang.
+    func testProbeLoginItemHandlesStderrFloodAndTimeout() throws {
+        let dir = try TempDir.make()
+        func script(_ name: String, _ body: String) throws -> URL {
+            let url = dir.appendingPathComponent(name)
+            try Data("#!/bin/sh\n\(body)\n".utf8).write(to: url)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+            return url
+        }
+        let current = try script("current", "echo enabled")
+        XCTAssertEqual(DoctorInstall.probeLoginItem(binary: current), "enabled")
+        let older = try script("older", "head -c 200000 /dev/zero | tr '\\0' u >&2; exit 64")
+        let started = Date()
+        XCTAssertNil(DoctorInstall.probeLoginItem(binary: older, timeout: 2))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        let hung = try script("hung", "sleep 5")
+        XCTAssertNil(DoctorInstall.probeLoginItem(binary: hung, timeout: 0.5))
     }
 }
