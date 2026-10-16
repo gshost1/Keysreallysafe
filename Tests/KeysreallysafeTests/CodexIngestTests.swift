@@ -133,7 +133,7 @@ final class CodexIngestTests: XCTestCase {
         XCTAssertEqual(report.totals.openaiTokens, 42)
     }
 
-    func testWithoutTotalsOnlyLiteralDuplicatesCollapse() throws {
+    func testWithoutTotalsRepeatsCollapseWhateverTheirTimestamp() throws {
         func parse(_ secondTimestamp: String) throws -> [UsageEvent] {
             let home = try TempDir.make()
             let dir = home.appendingPathComponent("sessions/2026/09/05", isDirectory: true)
@@ -152,8 +152,25 @@ final class CodexIngestTests: XCTestCase {
             try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
             return try CodexIngest.parseFile(file)
         }
-        XCTAssertEqual(try parse("2026-09-05T12:00:02.000Z").count, 2)
+        // A repeat emission is logged after the call, so its timestamp differs; without
+        // totals it must still collapse rather than double the call.
+        XCTAssertEqual(try parse("2026-09-05T12:00:02.000Z").count, 1)
         XCTAssertEqual(try parse("2026-09-05T12:00:01.000Z").count, 1)
+    }
+
+    func testStateFromBeforeTotalsDropsTheReemittedCallOnce() throws {
+        let legacy = #"{"sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","model":"gpt-5.4","lastUsageFingerprint":"gpt-5.4|10|4|0|0","lastTurnId":"turn-2","turnIndex":2}"#
+        var parser = try JSONDecoder().decode(CodexIngest.LineParser.self, from: Data(legacy.utf8))
+        func tokenCount(ts: String, totalIn: Int, totalOut: Int) -> String {
+            #"{"timestamp":"\#(ts)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":\#(totalIn),"output_tokens":\#(totalOut),"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#
+        }
+        // Re-emission of the call the old build already ingested as turn-2.
+        XCTAssertNil(parser.consume(tokenCount(ts: "2026-09-05T12:00:05.000Z", totalIn: 20, totalOut: 8)))
+        XCTAssertNil(parser.consume(tokenCount(ts: "2026-09-05T12:00:06.000Z", totalIn: 20, totalOut: 8)))
+        // A genuinely new call with the same per-call counts advances the totals.
+        let next = parser.consume(tokenCount(ts: "2026-09-05T12:00:07.000Z", totalIn: 30, totalOut: 12))
+        XCTAssertEqual(next?.promptId, "turn-3")
+        XCTAssertEqual(next?.inputTokens, 10)
     }
 
     func testLegacyParserJSONDecodes() throws {
@@ -162,7 +179,6 @@ final class CodexIngestTests: XCTestCase {
         XCTAssertEqual(parser.turnIndex, 2)
         XCTAssertEqual(parser.lastTurnId, "turn-1")
         XCTAssertNil(parser.lastTotalsFingerprint)
-        XCTAssertNil(parser.lastTimestamp)
     }
 
     func testMissingSessionsSucceedsWithZeroFiles() throws {

@@ -45,7 +45,6 @@ enum CodexIngest {
         var lastUsageFingerprint: String?
         var lastTurnId: String?
         var lastTotalsFingerprint: String?
-        var lastTimestamp: String?
         var turnIndex: Int = 0
 
         mutating func consume(_ line: String) -> UsageEvent? {
@@ -74,15 +73,23 @@ enum CodexIngest {
                 let fingerprint =
                     "\(event.model)|\(event.inputTokens)|\(event.outputTokens)|\(event.cachedReadTokens)|\(event.reasoningTokens)"
                 let totalsFingerprint = CodexIngest.totalsFingerprint(payload: payload, model: event.model)
-                let timestamp = JSONValue.string(root["timestamp"])
                 // Real rollouts carry no turn/event id, so two distinct calls can share a
                 // per-call fingerprint. The cumulative totals disambiguate: unchanged totals
                 // are a repeat emission of the same call, advancing totals are a new call.
                 if let turnId {
                     if turnId == lastTurnId { return nil }
                 } else if let totalsFingerprint {
-                    if totalsFingerprint == lastTotalsFingerprint { return nil }
-                } else if fingerprint == lastUsageFingerprint, timestamp == lastTimestamp {
+                    if let lastTotals = lastTotalsFingerprint {
+                        if totalsFingerprint == lastTotals { return nil }
+                    } else if fingerprint == lastUsageFingerprint {
+                        // State saved by a build that never recorded totals: the line may re-emit
+                        // the call already ingested, so apply the old rule once and start tracking.
+                        lastTotalsFingerprint = totalsFingerprint
+                        return nil
+                    }
+                } else if fingerprint == lastUsageFingerprint {
+                    // Without totals a repeat emission (logged later, so a new timestamp) and a
+                    // second identical call look the same; dropping it is the safer error.
                     return nil
                 }
                 if turnId == nil { turnIndex += 1 }
@@ -90,7 +97,6 @@ enum CodexIngest {
                 lastTurnId = turnId ?? event.promptId
                 lastUsageFingerprint = fingerprint
                 lastTotalsFingerprint = totalsFingerprint
-                lastTimestamp = timestamp
                 return event
             }
             return nil
