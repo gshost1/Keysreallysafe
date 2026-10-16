@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Back-to-back Codex calls with identical token counts are both counted.** A rollout carries no turn or event id, so Codex ingest deduped `token_count` lines on the per-call `last_token_usage` alone: two distinct calls that happened to spend the same tokens collapsed into one row. Ingest now dedupes on the session-cumulative `total_token_usage` when the line carries it — unchanged totals are a repeat emission (such as a rate-limit refresh), advancing totals are a new call even when the per-call counts match — and falls back to the per-call fingerprint plus the line timestamp only when no totals are present. Turn-id handling and the `turnIndex`-based prompt ids are unchanged, so re-ingest stays idempotent.
+- **Token counts above ~2.1 billion read back correctly.** The catalog bound token counts as 64-bit but read them back with 32-bit `sqlite3_column_int`, so any `usage_events` count over `Int32.max` (2,147,483,647) came back as a negative number and corrupted spend totals. Every token read — input, output, cached-read, cache-creation and reasoning tokens, plus the shared optional-int helper used for model-call counts — now uses `sqlite3_column_int64`, so large counts round-trip exactly.
 
 ## 0.11.1 — 2026-10-13
 

@@ -82,6 +82,41 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(dirMode?.intValue ?? 0 & 0o777, 0o700)
     }
 
+    /// Token counts above Int32.max must survive a round-trip; the reads used to be 32-bit
+    /// so anything over ~2.1 billion came back as a negative number.
+    func testTokenCountsAboveInt32MaxRoundTrip() throws {
+        let (db, _) = try makeDB()
+        let input = 3_000_000_000
+        let output = 3_000_000_001
+        let cachedRead = 3_000_000_002
+        let cacheCreation = 3_000_000_003
+        let reasoning = 3_000_000_004
+        XCTAssertGreaterThan(input, 2_147_483_647)
+        let event = UsageEvent(
+            source: "grok-local", sessionId: "big", promptId: "p1", model: "grok-4.6-build",
+            occurredAt: "2026-01-15T12:00:00Z", provider: "xai", cwd: nil, sessionTitle: nil,
+            modelCalls: 1,
+            inputTokens: input, outputTokens: output, cachedReadTokens: cachedRead,
+            cacheCreationTokens: cacheCreation, reasoningTokens: reasoning, costUsdTicks: nil
+        )
+        try db.insertUsage(event)
+
+        let stored = try db.allUsageEvents()
+        XCTAssertEqual(stored.count, 1)
+        let got = stored[0]
+        XCTAssertEqual(got.inputTokens, input)
+        XCTAssertEqual(got.outputTokens, output)
+        XCTAssertEqual(got.cachedReadTokens, cachedRead)
+        XCTAssertEqual(got.cacheCreationTokens, cacheCreation)
+        XCTAssertEqual(got.reasoningTokens, reasoning)
+
+        let report = try SpendQueries(db: db).report(
+            range: .month, by: .model, source: .grok,
+            now: UTC.parse("2026-01-20T00:00:00Z")!, timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        XCTAssertEqual(report.totals.inputTokens, input)
+    }
+
     /// A 0.9 catalog has usage_events without http_status; opening it adds the column.
     func testOpeningPre010CatalogAddsGatewayStatusColumn() throws {
         let dir = try TempDir.make()

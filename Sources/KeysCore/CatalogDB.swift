@@ -710,7 +710,7 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     private func decodeModelColor(_ stmt: OpaquePointer) -> ModelColor {
-        ModelColor(model: columnText(stmt, 0) ?? "", slot: Int(sqlite3_column_int(stmt, 1)))
+        ModelColor(model: columnText(stmt, 0) ?? "", slot: Int(sqlite3_column_int64(stmt, 1)))
     }
 
     func listModelColors() throws -> [ModelColor] {
@@ -817,11 +817,11 @@ final class CatalogDB: @unchecked Sendable {
             cwd: columnText(stmt, 6),
             sessionTitle: columnText(stmt, 7),
             modelCalls: columnOptionalInt(stmt, 8),
-            inputTokens: Int(sqlite3_column_int(stmt, 9)),
-            outputTokens: Int(sqlite3_column_int(stmt, 10)),
-            cachedReadTokens: Int(sqlite3_column_int(stmt, 11)),
-            cacheCreationTokens: Int(sqlite3_column_int(stmt, 12)),
-            reasoningTokens: Int(sqlite3_column_int(stmt, 13)),
+            inputTokens: Int(sqlite3_column_int64(stmt, 9)),
+            outputTokens: Int(sqlite3_column_int64(stmt, 10)),
+            cachedReadTokens: Int(sqlite3_column_int64(stmt, 11)),
+            cacheCreationTokens: Int(sqlite3_column_int64(stmt, 12)),
+            reasoningTokens: Int(sqlite3_column_int64(stmt, 13)),
             costUsdTicks: sqlite3_column_type(stmt, 14) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 14),
             keyName: columnText(stmt, 15),
             httpStatus: columnOptionalInt(stmt, 16)
@@ -995,7 +995,7 @@ final class CatalogDB: @unchecked Sendable {
             createdAt: columnText(stmt, 4) ?? "",
             lastUsedAt: columnText(stmt, 5),
             gatewayHost: columnText(stmt, 6),
-            version: Int(sqlite3_column_int(stmt, 7))
+            version: Int(sqlite3_column_int64(stmt, 7))
         )
     }
 
@@ -1083,7 +1083,7 @@ final class CatalogDB: @unchecked Sendable {
 
     private func columnOptionalInt(_ stmt: OpaquePointer, _ idx: Int32) -> Int? {
         guard sqlite3_column_type(stmt, idx) != SQLITE_NULL else { return nil }
-        return Int(sqlite3_column_int(stmt, idx))
+        return Int(sqlite3_column_int64(stmt, idx))
     }
 
     private func columnOptionalDouble(_ stmt: OpaquePointer, _ idx: Int32) -> Double? {
