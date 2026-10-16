@@ -96,6 +96,75 @@ final class CodexIngestTests: XCTestCase {
         XCTAssertEqual(events[0].outputTokens, 7)
     }
 
+    func testDistinctCallsWithIdenticalPerCallCountsCountAndCollapseRepeats() throws {
+        let home = try TempDir.make()
+        let dir = home.appendingPathComponent("sessions/2026/09/03", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent(
+            "rollout-2026-09-03T12-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
+        )
+        func tokenCount(ts: String, totalIn: Int, totalOut: Int) -> String {
+            #"{"timestamp":"\#(ts)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":\#(totalIn),"output_tokens":\#(totalOut),"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#
+        }
+        let lines = [
+            #"{"timestamp":"2026-09-03T12:00:00.000Z","type":"session_meta","payload":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/x","config":{"model":"gpt-5.4"}}}"#,
+            tokenCount(ts: "2026-09-03T12:00:01.000Z", totalIn: 10, totalOut: 4),
+            tokenCount(ts: "2026-09-03T12:00:02.000Z", totalIn: 20, totalOut: 8),
+            tokenCount(ts: "2026-09-03T12:00:03.000Z", totalIn: 30, totalOut: 12),
+            // A verbatim repeat of the third line's info at a later timestamp: the cumulative
+            // totals have not advanced, so it is a repeat emission, not a new call.
+            tokenCount(ts: "2026-09-03T12:00:04.000Z", totalIn: 30, totalOut: 12),
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let events = try CodexIngest.parseFile(file)
+        XCTAssertEqual(events.count, 3)
+        XCTAssertEqual(events.map(\.promptId), ["turn-1", "turn-2", "turn-3"])
+        XCTAssertEqual(events.map(\.inputTokens), [10, 10, 10])
+        XCTAssertEqual(events.map(\.outputTokens), [4, 4, 4])
+
+        let (db, _) = try makeDB()
+        XCTAssertEqual(try CodexIngest.run(home: home, db: db).rowsInserted, 3)
+        XCTAssertEqual(try CodexIngest.run(home: home, db: db).rowsInserted, 0)
+        let report = try SpendQueries(db: db).report(
+            range: .month, by: .model, source: .openai,
+            now: UTC.parse("2026-09-03T18:00:00Z")!, timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        XCTAssertEqual(report.totals.openaiTokens, 42)
+    }
+
+    func testWithoutTotalsOnlyLiteralDuplicatesCollapse() throws {
+        func parse(_ secondTimestamp: String) throws -> [UsageEvent] {
+            let home = try TempDir.make()
+            let dir = home.appendingPathComponent("sessions/2026/09/05", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent(
+                "rollout-2026-09-05T12-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
+            )
+            func tokenCount(_ ts: String) -> String {
+                #"{"timestamp":"\#(ts)","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#
+            }
+            let lines = [
+                #"{"timestamp":"2026-09-05T12:00:00.000Z","type":"session_meta","payload":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/x","config":{"model":"gpt-5.4"}}}"#,
+                tokenCount("2026-09-05T12:00:01.000Z"),
+                tokenCount(secondTimestamp),
+            ]
+            try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+            return try CodexIngest.parseFile(file)
+        }
+        XCTAssertEqual(try parse("2026-09-05T12:00:02.000Z").count, 2)
+        XCTAssertEqual(try parse("2026-09-05T12:00:01.000Z").count, 1)
+    }
+
+    func testLegacyParserJSONDecodes() throws {
+        let json = #"{"sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","lastUsageFingerprint":"gpt-5.4|10|4|0|0","lastTurnId":"turn-1","turnIndex":2}"#
+        let parser = try JSONDecoder().decode(CodexIngest.LineParser.self, from: Data(json.utf8))
+        XCTAssertEqual(parser.turnIndex, 2)
+        XCTAssertEqual(parser.lastTurnId, "turn-1")
+        XCTAssertNil(parser.lastTotalsFingerprint)
+        XCTAssertNil(parser.lastTimestamp)
+    }
+
     func testMissingSessionsSucceedsWithZeroFiles() throws {
         let home = try TempDir.make()
         let report = try CodexIngest.run(home: home, db: try makeDB().0)

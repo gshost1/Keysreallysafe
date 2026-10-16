@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Back-to-back Codex calls with identical token counts are both counted.** A rollout carries no turn or event id, so Codex ingest deduped `token_count` lines on the per-call `last_token_usage` alone: two distinct calls that happened to spend the same tokens collapsed into one row. Ingest now dedupes on the session-cumulative `total_token_usage` when the line carries it — unchanged totals are a repeat emission (such as a rate-limit refresh), advancing totals are a new call even when the per-call counts match — and falls back to the per-call fingerprint plus the line timestamp only when no totals are present. Turn-id handling and the `turnIndex`-based prompt ids are unchanged, so re-ingest stays idempotent.
+
 ## 0.11.1 — 2026-10-13
 
 - **Droid usage is tracked locally.** Keysrs reads the `[Agent] Streaming result` records Droid writes to `~/.factory/logs/droid-log-single.log` and its dated rotations, and keeps one row per request in its own usage catalog under the tool id `droid-local`: timestamp, session id, model and the raw token buckets (input, cache read, cache write, output and reasoning, each kept separate; the log's `totalInputTokens` is never added on top of them). Nothing else from the log is stored: the other ~333 record types carry message content and are never parsed, and of a record's tags only the session and model ids are kept. Requests with zero tokens are skipped, re-reads update rather than duplicate, and the history stays in the catalog after Droid rotates its logs away (about 8 days). The new source is wired through `keys ingest droid`, `POST /api/ingest` with `"source":"droid"`, spend queries with `source=droid`, the scheduled ingest pass and the share-to-compare vocabulary on both the app and collector sides. Tests get a synthetic `Fixtures/droid-home` and a `KEYS_NO_OPEN` switch that stops `keys dashboard` from opening a browser tab.

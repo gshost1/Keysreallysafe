@@ -44,6 +44,8 @@ enum CodexIngest {
         var model: String?
         var lastUsageFingerprint: String?
         var lastTurnId: String?
+        var lastTotalsFingerprint: String?
+        var lastTimestamp: String?
         var turnIndex: Int = 0
 
         mutating func consume(_ line: String) -> UsageEvent? {
@@ -71,16 +73,40 @@ enum CodexIngest {
                 ) else { return nil }
                 let fingerprint =
                     "\(event.model)|\(event.inputTokens)|\(event.outputTokens)|\(event.cachedReadTokens)|\(event.reasoningTokens)"
-                if let turnId, turnId == lastTurnId { return nil }
-                if turnId == nil, fingerprint == lastUsageFingerprint { return nil }
+                let totalsFingerprint = CodexIngest.totalsFingerprint(payload: payload, model: event.model)
+                let timestamp = JSONValue.string(root["timestamp"])
+                // Real rollouts carry no turn/event id, so two distinct calls can share a
+                // per-call fingerprint. The cumulative totals disambiguate: unchanged totals
+                // are a repeat emission of the same call, advancing totals are a new call.
+                if let turnId {
+                    if turnId == lastTurnId { return nil }
+                } else if let totalsFingerprint {
+                    if totalsFingerprint == lastTotalsFingerprint { return nil }
+                } else if fingerprint == lastUsageFingerprint, timestamp == lastTimestamp {
+                    return nil
+                }
                 if turnId == nil { turnIndex += 1 }
                 event.promptId = turnId ?? "turn-\(turnIndex)"
                 lastTurnId = turnId ?? event.promptId
                 lastUsageFingerprint = fingerprint
+                lastTotalsFingerprint = totalsFingerprint
+                lastTimestamp = timestamp
                 return event
             }
             return nil
         }
+    }
+
+    /// Fingerprint of the session-cumulative `total_token_usage`, or nil when absent.
+    /// Used only to tell an advancing call apart from a repeat emission; never summed.
+    static func totalsFingerprint(payload: [String: Any], model: String) -> String? {
+        let info = JSONValue.object(payload["info"]) ?? [:]
+        guard let totals = JSONValue.object(info["total_token_usage"]) else { return nil }
+        let input = JSONValue.int(totals["input_tokens"]) ?? 0
+        let output = JSONValue.int(totals["output_tokens"]) ?? 0
+        let cached = JSONValue.int(totals["cached_input_tokens"]) ?? 0
+        let reasoning = JSONValue.int(totals["reasoning_output_tokens"]) ?? 0
+        return "\(model)|\(input)|\(output)|\(cached)|\(reasoning)"
     }
 
     static func turnIdentity(root: [String: Any], payload: [String: Any]) -> String? {

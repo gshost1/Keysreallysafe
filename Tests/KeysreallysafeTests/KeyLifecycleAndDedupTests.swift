@@ -287,8 +287,8 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         let lines = [
             #"{"timestamp":"2026-09-04T12:00:00.000Z","type":"session_meta","payload":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/x","config":{"model":"gpt-5.4"}}}"#,
             #"{"timestamp":"2026-09-04T12:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
-            #"{"timestamp":"2026-09-04T12:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":8,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
-            #"{"timestamp":"2026-09-04T12:00:02.100Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":8,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
+            #"{"timestamp":"2026-09-04T12:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":8,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":30,"output_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
+            #"{"timestamp":"2026-09-04T12:00:02.100Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":8,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":30,"output_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
         ]
         try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
         let events = try CodexIngest.parseFile(file)
