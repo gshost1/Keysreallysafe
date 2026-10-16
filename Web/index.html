@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="dark light">
   <title>Keysrs</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
@@ -18,18 +18,13 @@
       <button type="button" role="tab" id="nav-usage" aria-selected="true" aria-controls="pane-usage" title="Usage (⌘1)">Usage</button>
       <button type="button" role="tab" id="nav-chart" aria-selected="false" aria-controls="pane-chart" tabindex="-1" title="Chart (⌘2)">Chart</button>
       <button type="button" role="tab" id="nav-keys" aria-selected="false" aria-controls="pane-keys" tabindex="-1" title="Keys (⌘3)">Keys</button>
+      <button type="button" role="tab" id="nav-settings" aria-selected="false" aria-controls="pane-settings" tabindex="-1" title="Settings (⌘4)">Settings</button>
     </nav>
+    <!-- Only what every pane needs. The rest lives with its pane or in Settings, so the header
+         never outgrows its column and slides under the tabs. -->
     <div class="toolbar-end">
-      <span id="keys-count" class="count"></span>
-      <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
-      <button type="button" id="btn-agents" class="btn-quiet" title="Wire a coding agent (Claude Code, Codex, Grok, Droid) to the vault">Agents</button>
-      <button type="button" id="btn-providers" class="btn-quiet" title="Add, remove or hide providers">Providers</button>
-      <button type="button" id="btn-export" class="btn-quiet" title="Download the current rows as CSV (X)">CSV</button>
-      <button type="button" id="btn-copy-totals" class="btn-quiet" title="Copy the totals line as Markdown (⇧C)">Copy totals</button>
-      <button type="button" id="btn-ingest" class="btn-quiet" title="Ingest Grok, Claude Code and Codex sessions (⌘R)">Ingest</button>
-      <button type="button" id="btn-privacy" class="btn-quiet" aria-haspopup="dialog" title="Product analytics privacy settings">Privacy</button>
-      <button type="button" id="btn-help" class="btn-quiet" aria-label="Keyboard shortcuts" title="Shortcuts">?</button>
       <p id="status" class="status" role="status" aria-live="polite"></p>
+      <button type="button" id="btn-help" class="btn-quiet" aria-label="Keyboard shortcuts" title="Shortcuts">?</button>
     </div>
   </header>
 
@@ -39,6 +34,7 @@
       <div id="live-status" class="live-status" hidden></div>
       <!-- The quiet way in to the subscription list; the rows above stay the point of the pane. -->
       <p class="subs-add"><button type="button" id="btn-add-sub" class="btn-quiet" title="Pin a plan Keysrs does not measure locally, or a Factory plan onto the Droid row">+ Add subscription</button></p>
+      <p id="usage-hidden" class="muted usage-hidden" hidden><span id="usage-hidden-text"></span> <button type="button" class="link" data-action="settings">Settings</button></p>
       <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac. <button type="button" class="link" id="usage-empty-help">See how Keys works</button></p>
       <!-- First use only: an empty vault with nothing dismissed yet. It is filled from the help
            dialog's guide so the two can never drift apart, and it stays reachable from ? later. -->
@@ -103,6 +99,12 @@
 
     <section id="pane-keys" role="tabpanel" aria-labelledby="nav-keys" hidden>
       <p id="keys-error" class="err pane-error" role="alert"></p>
+      <div class="keys-tools">
+        <span id="keys-count" class="count"></span>
+        <input type="search" id="keys-search" class="keys-search" placeholder="Search keys" aria-label="Search keys" autocomplete="off" spellcheck="false">
+        <button type="button" id="btn-providers" class="btn-quiet" title="Add, remove or hide providers">Providers</button>
+        <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
+      </div>
       <div id="grants" class="grants" hidden>
         <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind.</span></div>
         <ul id="grants-list" class="grants-list"></ul>
@@ -137,7 +139,55 @@
         </thead>
         <tbody id="keys-body"></tbody>
       </table>
+      <p id="keys-no-match" class="empty" hidden></p>
       <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button> or <button type="button" class="link" id="keys-empty-help">see how Keys works</button>.</p>
+    </section>
+
+    <section id="pane-settings" role="tabpanel" aria-labelledby="nav-settings" class="settings" hidden>
+      <section class="settings-group" aria-labelledby="set-appearance">
+        <h2 id="set-appearance">Appearance</h2>
+        <div class="setting">
+          <span class="setting-label" id="theme-label">Light theme<span class="setting-hint">Dark blue is the default.</span></span>
+          <button type="button" role="switch" id="theme-switch" class="switch" aria-checked="false" aria-labelledby="theme-label"></button>
+        </div>
+      </section>
+      <section class="settings-group" aria-labelledby="set-usage">
+        <h2 id="set-usage">Usage cards</h2>
+        <p class="setting-note">Hiding a card only takes it off the Usage pane. Its tokens are still recorded and still count in the Chart.</p>
+        <div class="setting">
+          <span class="setting-label" id="droid-label">Show Droid on Usage</span>
+          <button type="button" role="switch" id="droid-switch" class="switch" aria-checked="false" aria-labelledby="droid-label"></button>
+        </div>
+        <div id="usage-cards-list" class="usage-cards-list"></div>
+      </section>
+      <section class="settings-group" aria-labelledby="set-data">
+        <h2 id="set-data">Data</h2>
+        <div class="setting">
+          <span class="setting-label">Read new sessions now<span class="setting-hint" id="last-ingest"></span></span>
+          <button type="button" id="btn-ingest" class="btn-quiet" title="Ingest Grok, Claude Code and Codex sessions (⌘R)">Ingest now</button>
+        </div>
+      </section>
+      <section class="settings-group" aria-labelledby="set-export">
+        <h2 id="set-export">Export</h2>
+        <div class="setting">
+          <span class="setting-label">Chart data<span class="setting-hint">Uses the Chart's current range, scope and filters.</span></span>
+          <span class="setting-actions">
+            <button type="button" id="btn-export" class="btn-quiet" title="Download the current rows as CSV (X)">CSV</button>
+            <button type="button" id="btn-copy-totals" class="btn-quiet" title="Copy the totals line as Markdown (⇧C)">Copy totals</button>
+          </span>
+        </div>
+      </section>
+      <section class="settings-group" aria-labelledby="set-agents">
+        <h2 id="set-agents">Agents and privacy</h2>
+        <div class="setting">
+          <span class="setting-label">Coding agents<span class="setting-hint">Wire Claude Code, Codex, Grok or Droid to the vault.</span></span>
+          <button type="button" id="btn-agents" class="btn-quiet" title="Wire a coding agent (Claude Code, Codex, Grok, Droid) to the vault">Agents</button>
+        </div>
+        <div class="setting">
+          <span class="setting-label">Product analytics<span class="setting-hint">Opt-in aggregate sharing.</span></span>
+          <button type="button" id="btn-privacy" class="btn-quiet" aria-haspopup="dialog" title="Product analytics privacy settings">Privacy</button>
+        </div>
+      </section>
     </section>
   </main>
 
@@ -550,7 +600,9 @@
       <dt><kbd>⌘</kbd><kbd>1</kbd></dt><dd>Usage</dd>
       <dt><kbd>⌘</kbd><kbd>2</kbd></dt><dd>Chart</dd>
       <dt><kbd>⌘</kbd><kbd>3</kbd></dt><dd>Keys</dd>
-      <dt><kbd>⌘</kbd><kbd>R</kbd></dt><dd>Ingest sessions</dd>
+      <dt><kbd>⌘</kbd><kbd>4</kbd></dt><dd>Settings</dd>
+      <dt><kbd>⌘</kbd><kbd>R</kbd></dt><dd>Ingest sessions (Ingest now in Settings)</dd>
+      <dt><kbd>/</kbd></dt><dd>Search keys</dd>
       <dt><kbd>S</kbd></dt><dd>Subscriptions / API keys</dd>
       <dt><kbd>T</kbd></dt><dd>Tokens / USD / requests (requests in the API keys view)</dd>
       <dt><kbd>N</kbd></dt><dd>Add key</dd>
@@ -565,8 +617,8 @@
       <dt><kbd>R</kbd></dt><dd>Rotate the selected key</dd>
       <dt><kbd>P</kbd></dt><dd>Models / projects (Claude)</dd>
       <dt><kbd>D</kbd> <kbd>W</kbd> <kbd>M</kbd></dt><dd>Today / week / month</dd>
-      <dt><kbd>X</kbd></dt><dd>Download spend rows as CSV</dd>
-      <dt><kbd>⇧</kbd><kbd>C</kbd></dt><dd>Copy the totals line as Markdown</dd>
+      <dt><kbd>X</kbd></dt><dd>Download spend rows as CSV (also in Settings)</dd>
+      <dt><kbd>⇧</kbd><kbd>C</kbd></dt><dd>Copy the totals line as Markdown (also in Settings)</dd>
       <dt><kbd>⌫</kbd></dt><dd>Delete the selected key</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close</dd>
       <dt><kbd>?</kbd></dt><dd>This list</dd>

@@ -1,12 +1,78 @@
-/* Keysrs — the keysrs.com look, light only.
-   The dashboard shares the site's tokens (Site/styles.css): white cards on a #f5f5f7 page,
-   #1d1d1f ink, #e6e6eb hairlines, #0071e3 blue, the two-layer shadow, the SF system stack,
-   pill buttons, and rounded cards for the panes and dialogs. color-scheme is pinned to light,
-   here and in the meta tag, so a Mac set to Dark (which headless Chrome also inherits) still
-   gets this palette; the dashboard has no dark face. Density stays a tool's: 13px type,
-   full-width panes, no external resources (the served CSP is default-src 'self'). */
+/* Keysrs — dark blue by default, the keysrs.com light look on request.
+   The light face shares the site's tokens (Site/styles.css): white cards on a #f5f5f7 page,
+   #1d1d1f ink, #e6e6eb hairlines, #0071e3 blue, the two-layer shadow. The default face is a
+   dark-blue variant of the same layout. Settings → Appearance sets html[data-theme="light"]
+   and remembers it in this browser (ksf.theme); app.js applies it before first paint. The
+   page never follows the OS appearance: the choice is the viewer's. Density
+   stays a tool's: 13px type, full-width panes, no external resources (the served CSP is
+   default-src 'self'). */
 
+/* Shared by both faces, plus the dark-blue default. */
 :root {
+  color-scheme: dark;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --bg: #0b1324;
+  --bg-2: #0e1730;
+  --bg-3: #172544;
+  --card: #121d38;
+  --ink: #e8edf8;
+  --ink-2: #aab6d0;
+  --ink-3: #7f8cab;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --blue: #4c9aff;
+  --blue-2: #62a8ff;
+  --blue-tint: rgba(76, 154, 255, 0.14);
+  --blue-ink: #8fc1ff;
+  --green: #34c759;
+  --red: #ff6b5e;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 28px -10px rgba(0, 0, 0, 0.65);
+  --focus: rgba(76, 154, 255, 0.6);
+  --scrim: rgba(2, 6, 18, 0.65);
+  --seg-track: rgba(255, 255, 255, 0.07);
+  --seg-shadow: rgba(0, 0, 0, 0.45);
+  --on-blue: #ffffff;
+  --s-grok-1: #409cff;
+  --s-grok-2: #70d7ff;
+  --s-grok-3: #0a84ff;
+  --s-grok-4: #1f5fbf;
+  --s-claude-1: #e08a6a;
+  --s-claude-2: #b5522f;
+  --s-claude-3: #f0bfa4;
+  --s-claude-4: #7a3418;
+  --s-openai-1: #3ecf9a;
+  --s-openai-2: #74aa9c;
+  --s-openai-3: #10a37f;
+  --s-openai-4: #1f6b52;
+  --s-gemini-1: #9e86ff;
+  --s-gemini-2: #b9a8ff;
+  --s-gemini-3: #7c4dff;
+  --s-gemini-4: #d4c9ff;
+  --s-glm-1: #40cfe8;
+  --s-glm-2: #6fdff2;
+  --s-glm-3: #0099c4;
+  --s-glm-4: #a9e8f5;
+  --s-kimi-1: #f06595;
+  --s-kimi-2: #f78fb3;
+  --s-kimi-3: #c2255c;
+  --s-kimi-4: #fcc2d4;
+  --s-deepseek-1: #7c8cff;
+  --s-deepseek-2: #a3b0ff;
+  --s-deepseek-3: #4d6bfe;
+  --s-deepseek-4: #c9d2ff;
+  --s-other-1: #6b7694;
+  --s-other-2: #8791ad;
+  --s-other-3: #4d5771;
+  --s-other-4: #a7afc6;
+  --s-other: #6b7694;
+  --live-claude: #e08a6a;
+  --live-droid: #4c9aff;
+  --live-track: rgba(255, 255, 255, 0.10);
+}
+
+html[data-theme="light"] {
   color-scheme: light;
   /* keysrs.com's tokens, kept beside the site's so the two stay in step. The site's :root also
      holds --orange (its mockup's hot meter) and --max/--display (page layout); none of them
@@ -27,8 +93,6 @@
   --blue-ink: #0066cc; /* --blue as text fails 4.5:1 on the tinted and grey backgrounds */
   --green: #28a745;
   --red: #ff3b30;
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 28px -10px rgba(0, 0, 0, 0.12);
   /* The dashboard's own working values, on the site's ground. */
   --focus: rgba(0, 113, 227, 0.45); /* the site's focus ring */
@@ -72,7 +136,9 @@
   --live-claude: #c45c38;
   --live-droid: #0071e3;
   --live-track: rgba(0, 0, 0, 0.08); /* the site's meter track */
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --seg-track: rgba(0, 0, 0, 0.06); /* the site's segmented track on white */
+  --seg-shadow: rgba(0, 0, 0, 0.15);
+  --on-blue: #ffffff;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -138,7 +204,7 @@ kbd {
   display: inline-flex;
   padding: 2px;
   border-radius: 7px;
-  background: rgba(0, 0, 0, 0.06); /* the site's segmented track on white */
+  background: var(--seg-track);
 }
 .seg [role="tab"] {
   height: 24px;
@@ -153,7 +219,7 @@ kbd {
   background: var(--bg);
   color: var(--ink);
   font-weight: 500;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 2px var(--seg-shadow);
 }
 .toolbar-end {
   display: flex;
@@ -162,10 +228,12 @@ kbd {
   gap: 8px;
   min-width: 0;
 }
-.count { color: var(--ink-2); font-size: 12px; }
+.count { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+/* The header holds only the status line and help, so the status may take the whole column
+   and still ellipsize instead of pushing under the tabs. */
 .status {
-  flex: none;
-  max-width: 220px;
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
   color: var(--ink-2);
   white-space: nowrap;
@@ -173,11 +241,6 @@ kbd {
   text-overflow: ellipsis;
   text-align: right;
 }
-body:not([data-pane="keys"]) #keys-count,
-body:not([data-pane="keys"]) #btn-add,
-body:not([data-pane="keys"]) #btn-providers { display: none !important; }
-body:not([data-pane="chart"]) #btn-export,
-body:not([data-pane="chart"]) #btn-copy-totals { display: none !important; }
 .td-usd { color: var(--ink-2); font-variant-numeric: tabular-nums; text-align: right; }
 .td-usd.none { color: var(--ink-3); }
 .th-usd { text-align: right; }
@@ -202,7 +265,7 @@ body:not([data-pane="chart"]) #btn-copy-totals { display: none !important; }
   padding: 2px;
   gap: 0;
   border-radius: 7px;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--seg-track);
 }
 .chips[aria-label="Range"] [role="radio"], .chips[aria-label="Unit"] [role="radio"], .chips[aria-label="Group by"] [role="radio"] {
   height: 22px;
@@ -214,7 +277,7 @@ body:not([data-pane="chart"]) #btn-copy-totals { display: none !important; }
 .chips[aria-label="Group by"] [role="radio"][aria-checked="true"] {
   background: var(--bg);
   color: var(--ink);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 2px var(--seg-shadow);
 }
 .chips[aria-label="Source"] { position: relative; padding-left: 16px; }
 .chips[aria-label="Source"]::before {
@@ -246,9 +309,10 @@ body:not([data-pane="chart"]) #btn-copy-totals { display: none !important; }
 .btn:hover { background: var(--bg-3); }
 .btn:active { transform: scale(0.98); }
 .btn[disabled] { opacity: 0.55; }
-.btn-primary { background: var(--blue); color: #ffffff; }
+.btn-primary { background: var(--blue); color: var(--on-blue); }
 .btn-primary:hover { background: var(--blue-2); }
 .btn-quiet {
+  white-space: nowrap;
   height: 24px;
   padding: 0 8px;
   border: 0;
@@ -751,6 +815,85 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
   font-size: 12px;
 }
 .keys-sort { margin-right: auto; display: inline-flex; align-items: baseline; gap: 6px; }
+/* Count, search and the pane's own actions; always shown, so Add key is there on an empty vault. */
+.keys-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 8px;
+}
+.keys-search {
+  flex: 1 1 160px;
+  max-width: 320px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--ink);
+}
+.keys-search::placeholder { color: var(--ink-3); }
+.keys-tools #btn-providers { margin-left: auto; }
+/* One label row per provider; it carries no data-name, so selection and the arrow keys skip it. */
+.keys tr.key-group th {
+  height: 26px;
+  padding: 10px 16px 4px;
+  background: var(--card);
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.keys tbody tr.key-group:hover th { background: var(--card); }
+.usage-hidden { padding: 0 16px 12px; color: var(--ink-3); font-size: 12px; }
+
+/* ---------- settings ---------- */
+
+.settings { padding: 8px 0 16px; }
+.settings-group { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.settings-group:last-child { border-bottom: 0; }
+.settings-group h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+.setting-note { margin: 0 0 6px; color: var(--ink-3); font-size: 12px; }
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 36px;
+  padding: 4px 0;
+}
+.setting-label { display: flex; flex-direction: column; min-width: 0; }
+.setting-hint { color: var(--ink-3); font-size: 12px; }
+.setting-actions { display: inline-flex; gap: 4px; }
+.usage-cards-list .setting { padding-left: 12px; }
+.switch {
+  flex: none;
+  position: relative;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+  transition: background-color 120ms var(--ease-out);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 120ms var(--ease-out);
+}
+.switch[aria-checked="true"] { background: var(--blue); }
+.switch[aria-checked="true"]::after { transform: translateX(14px); }
 .keys-sort select { font: inherit; color: var(--ink-2); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 1px 4px; }
 
 .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; margin-bottom: 14px; }
@@ -774,6 +917,7 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
 @media (prefers-reduced-motion: reduce) {
   [role="tabpanel"].fade { animation: none; }
   .btn { transform: none; }
+  .switch, .switch::after { transition: none; }
 }
 
 @media (max-width: 1100px) {
@@ -800,7 +944,7 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
     flex-wrap: wrap;
     max-width: 100%;
   }
-  .status { max-width: 140px; }
+  .status { max-width: 220px; }
   .filters, .chart-top, .live-status, .caption, .chart, .usage-totals, .pane-error { padding-left: 12px; padding-right: 12px; }
   .chart svg { height: 170px; }
   .filters { gap: 8px 12px; }
@@ -817,6 +961,7 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
   .key-name, .key-notes, .key-host { max-width: 100%; }
   .keys thead { display: none; }
   .keys, .keys tbody, .keys tr, .keys td { display: block; width: 100%; }
+  .keys tr.key-group th { display: block; width: 100%; padding: 12px 12px 2px; }
   .keys tbody tr {
     padding: 10px 12px 8px;
     border-bottom: 1px solid var(--line);

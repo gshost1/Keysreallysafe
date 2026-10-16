@@ -139,9 +139,12 @@ Touch ID), then move the app to the Trash.
 
 ## The dashboard
 
-The Keysrs window has three panes, switched with the segmented control or `⌘1` through `⌘3`.
+The Keysrs window has four panes, switched with the segmented control or `⌘1` through `⌘4`:
+Usage, Chart, Keys and Settings.
 
-The dashboard uses a light-only theme that matches keysrs.com, regardless of your Mac's appearance.
+The dashboard is dark blue by default. **Settings → Light theme** switches it to the
+keysrs.com light look; the choice is remembered on this Mac and does not follow the
+system appearance.
 
 **Usage** is the first thing you see: the plan windows each tool reports
 locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
@@ -186,7 +189,7 @@ a family has, and clicking one shows it alone. Each model wears its vendor's
 colour — Claude orange, OpenAI green, Grok blue, and the vendors Droid runs
 (Gemini, GLM, Kimi, DeepSeek, and anything unrecognized in grey) each their own
 palette — and the same model id coming from several tools is one series. `X` downloads the rows as CSV, `⇧C` copies the
-totals line as Markdown.
+totals line as Markdown (both are also buttons in Settings).
 
 Under **Subscriptions**, chips narrow the view to Grok, Claude, OpenAI or
 Droid. Everything here is estimated from what those tools wrote to their own logs on
@@ -224,7 +227,19 @@ Check (`T`, authentication status and model list from the provider's
 read-only endpoint, with a filter box) and Delete (`⌫`). Active grants sit
 above the table with a Revoke button each. `N` adds a key; the provider
 picker is grouped into Labs, Routers, Hosts, Clouds and Non-chat, and a pasted
-secret with a recognisable prefix pre-fills it. `?` lists every shortcut.
+secret with a recognisable prefix pre-fills it. Rows are grouped under a header
+per provider, and the search box (`/`) narrows them by name, provider or host —
+the count reads "N of M keys" while it does, and `Esc` clears it. `?` lists
+every shortcut.
+
+**Settings** holds what used to crowd the toolbar: the theme switch, which
+cards Usage shows, **Ingest now** with the last ingest time, the CSV export and
+Copy totals, and the Agents and Privacy dialogs. Turning a card off only takes
+it off Usage — the subscription, its history and the Chart are untouched, and
+Usage says how many cards are hidden rather than showing nothing. Droid's row
+is off by default (**Show Droid on Usage** turns it on); its usage is ingested
+and charted either way. These choices live in this browser's storage, not in
+the catalog.
 
 The [analytics collector](Analytics/README.md) runs at `analytics.keysrs.com`
 and is deployed separately from the app.
@@ -410,7 +425,7 @@ an unattended setup a token that lives for days instead of a session. Droid
 calls through the gateway are metered like any other API-key call (Chart →
 API keys); a Droid session run outside the gateway is not observable on this
 Mac. Claude Code needs an Anthropic-wire provider key; Codex and Grok need an
-OpenAI-compatible one; Droid takes either. The dashboard's **Agents** button
+OpenAI-compatible one; Droid takes either. The dashboard's **Agents** button (in Settings)
 shows the same recipes personalized to your key names, with copy buttons.
 
 ## Cloud agents

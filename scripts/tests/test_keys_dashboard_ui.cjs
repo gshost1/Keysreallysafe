@@ -480,6 +480,10 @@ const dialogOpen = (page, id) => page.locator(`#${id}`).evaluate((node) => node.
 const waitDialog = (page, id, open) =>
   page.waitForFunction(([name, want]) => document.getElementById(name).open === want, [id, open]);
 
+// Droid is off the Usage pane by default (Settings → Show Droid on Usage); the tests about its
+// card turn it on before the page loads.
+const showDroidOnUsage = (page) => page.addInitScript(() => { try { localStorage.setItem("ksf.showDroid", "1"); } catch { /* fine */ } });
+
 async function openKeys(page, origin, options = {}) {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
@@ -496,7 +500,8 @@ const test = (name, fn) => { if (!only || name.includes(only)) checks.push({ nam
 
 test("key list renders every key with its count and no empty state", async (page, origin) => {
   await openKeys(page, origin);
-  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  // Grouped by provider name (Anthropic, OpenAI, TypeSafe), then by name inside a group.
+  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "charlie"]);
   assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
   assert.equal(await page.locator("#keys-empty").isHidden(), true);
   assert.equal(await page.locator("#keys-table").isVisible(), true);
@@ -602,7 +607,7 @@ test("a copy whose row disappears before the deferred reload does not throw", as
   keys = keys.filter((k) => k.name !== "charlie");
   await page.clock.runFor(3000);
   await page.waitForTimeout(300);
-  assert.deepEqual(await rowNames(page), ["alpha", "bravo"]);
+  assert.deepEqual(await rowNames(page), ["bravo", "alpha"]);
   assert.deepEqual(pageErrors, [], "a stale reload must not raise");
 });
 
@@ -638,7 +643,7 @@ test("add creates the key, carries the launch token and selects the new row", as
   await page.locator("#add-form [type=submit]").click();
   await waitDialog(page, "dlg-add", false);
   await page.locator('#keys-body tr[data-name="delta"]').waitFor();
-  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie", "delta"]);
+  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "delta", "charlie"]);
   assert.equal(await status(page), "Added delta.");
   assert.equal(await page.locator('#keys-body tr[data-name="delta"]').getAttribute("aria-selected"), "true");
   const post = requests.find((r) => r.method === "POST" && r.pathname === "/api/keys");
@@ -708,13 +713,13 @@ test("delete confirms first, survives a refusal and then removes the row", async
   assert.equal(await page.locator("#delete-err").textContent(), "That key no longer exists.");
   assert.equal(await page.locator("#dlg-delete").evaluate((d) => d.open), true);
   assert.equal(await page.locator("#delete-confirm").isDisabled(), false);
-  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"], "nothing is removed optimistically");
+  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "charlie"], "nothing is removed optimistically");
 
   failures.delete(rule("DELETE", "/api/keys/charlie"));
   await page.locator("#delete-confirm").click();
   await waitDialog(page, "dlg-delete", false);
   await page.waitForFunction(() => !document.querySelector('#keys-body tr[data-name="charlie"]'));
-  assert.deepEqual(await rowNames(page), ["alpha", "bravo"]);
+  assert.deepEqual(await rowNames(page), ["bravo", "alpha"]);
   assert.equal(await status(page), "Deleted charlie.");
 });
 
@@ -777,17 +782,18 @@ const waitEmpty = (page, selector) =>
 test("row keys move the selection and open each dialog on the focused row", async (page, origin) => {
   await openKeys(page, origin);
   await settleKeys(page);
-  await focusRow(page, "alpha");
+  // Rows are grouped by provider: bravo (Anthropic), alpha (OpenAI), charlie (TypeSafe). The
+  // group label rows between them are never a stop.
+  await focusRow(page, "bravo");
   await page.keyboard.press("ArrowDown");
-  assert.equal(await focused(page), "bravo");
+  assert.equal(await focused(page), "alpha");
   await page.keyboard.press("End");
   assert.equal(await focused(page), "charlie");
   await page.keyboard.press("j");
   assert.equal(await focused(page), "charlie", "the list clamps at the end");
   await page.keyboard.press("Home");
   await page.keyboard.press("k");
-  assert.equal(await focused(page), "alpha", "and at the start");
-  await page.keyboard.press("ArrowDown");
+  assert.equal(await focused(page), "bravo", "and at the start");
 
   // Each dialog opens on the row's key; closing it returns focus to the row that opened it.
   await page.keyboard.press("e");
@@ -896,6 +902,8 @@ test("chips and pickers wrap on the arrow keys", async (page, origin) => {
   await page.getByRole("tab", { name: "Chart" }).focus();
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(() => !document.getElementById("pane-keys").hidden);
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => !document.getElementById("pane-settings").hidden);
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
 });
@@ -1516,6 +1524,7 @@ const droidPlan = (extra = {}) => ({
 });
 
 test("Droid shows three token windows, tokens only until a window gets a limit", async (page, origin) => {
+  await showDroidOnUsage(page);
   plans = [droidPlan()];
   localRows = subscriptionRows();
   await page.goto(origin);
@@ -1552,6 +1561,7 @@ test("Droid shows three token windows, tokens only until a window gets a limit",
 });
 
 test("a blown Droid limit caps the bar but keeps the true percentage", async (page, origin) => {
+  await showDroidOnUsage(page);
   plans = [droidPlan({ weekly_tokens: 120000, monthly_tokens: 120000, weekly_limit: 100000, weekly_pct: 120 })];
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
@@ -1563,6 +1573,7 @@ test("a blown Droid limit caps the bar but keeps the true percentage", async (pa
 });
 
 test("Set limits sets, validates and clears Droid window limits through the API", async (page, origin) => {
+  await showDroidOnUsage(page);
   plans = [droidPlan()];
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
@@ -1623,6 +1634,7 @@ test("Set limits sets, validates and clears Droid window limits through the API"
 });
 
 test("an empty Droid catalog shows zeros and no fabricated numbers", async (page, origin) => {
+  await showDroidOnUsage(page);
   plans = [droidPlan({
     five_hour_tokens: 0, weekly_tokens: 0, monthly_tokens: 0,
     usage_note: "No Droid usage recorded yet. The windows fill from the per-request records in Droid's local logs.",
@@ -1833,6 +1845,7 @@ test("Edit and Remove go through PATCH and a confirmed DELETE, and the placehold
 });
 
 test("a Factory subscription attaches to the Droid row, its token limit becoming a window meter", async (page, origin) => {
+  await showDroidOnUsage(page);
   subscriptions = [{
     id: "sub-9", tool: "factory", name: "", plan: "Max",
     limit: { amount: 100000, unit: "tokens", period: "monthly" },
@@ -1910,6 +1923,7 @@ const droidFixtureRows = () => [
 ];
 
 test("the Droid chip filters the chart to Droid's own records and the URL boots into it", async (page, origin) => {
+  await showDroidOnUsage(page);
   localRows = droidFixtureRows();
   await page.goto(`${origin}/?range=month`);
   await page.waitForLoadState("networkidle");
@@ -1982,7 +1996,8 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
     ["grok", "claude", "openai", "gemini", "glm", "kimi", "deepseek", "other"]
       .map((f) => [f, getComputedStyle(document.documentElement).getPropertyValue(`--s-${f}-1`).trim()])
   ));
-  assert.equal(palette.claude, "#c45c38", "Claude's shade is the orange it has always been");
+  // Dark blue is the default face; Claude's orange there is the lighter shade that reads on it.
+  assert.equal(palette.claude, "#e08a6a", "Claude's shade is orange in the dark-blue face");
   const expected = {
     "grok-4": palette.grok, "claude-sonnet-5": palette.claude, "gpt-5": palette.openai,
     "gemini-3-pro": palette.gemini, "glm-5.3": palette.glm, "kimi-k3": palette.kimi,
@@ -2006,15 +2021,18 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
 
 // The dashboard wears the keysrs.com light look and nothing else: the dark block is gone, so a
 // Mac set to Dark (which headless Chrome also inherits) still gets the light palette.
-test("the site-matched light theme holds, even under a dark system preference", async (page, origin) => {
-  await page.emulateMedia({ colorScheme: "dark" });
+test("dark blue is the default, Settings switches to the site's light look and it survives a reload", async (page, origin) => {
+  // The OS preference never decides: a light system still opens dark blue.
+  await page.emulateMedia({ colorScheme: "light" });
   plans = [droidPlan()];
+  await showDroidOnUsage(page);
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.locator('#live-status .live-row[data-source="droid"]').waitFor();
-  const theme = await page.evaluate(() => ({
+  const read = () => page.evaluate(() => ({
+    attr: document.documentElement.dataset.theme || null,
     meta: document.querySelector('meta[name="color-scheme"]').content,
-    scheme: getComputedStyle(document.body).colorScheme,
+    scheme: getComputedStyle(document.documentElement).colorScheme,
     bodyBg: getComputedStyle(document.body).backgroundColor,
     bodyInk: getComputedStyle(document.body).color,
     paneBg: getComputedStyle(document.getElementById("pane-usage")).backgroundColor,
@@ -2022,21 +2040,44 @@ test("the site-matched light theme holds, even under a dark system preference", 
     blue: getComputedStyle(document.documentElement).getPropertyValue("--blue").trim(),
     claude: getComputedStyle(document.documentElement).getPropertyValue("--s-claude-1").trim(),
   }));
-  assert.equal(theme.meta, "light");
-  assert.equal(theme.scheme, "light");
-  assert.equal(theme.bodyBg, "rgb(245, 245, 247)", "the page sits on the site's #f5f5f7 surface");
-  assert.equal(theme.bodyInk, "rgb(29, 29, 31)", "text is the site's #1d1d1f ink");
-  assert.equal(theme.paneBg, "rgb(255, 255, 255)", "the pane is a white card");
-  assert.equal(theme.paneRadius, "18px", "the pane is a rounded card");
-  assert.equal(theme.blue, "#0071e3", "the primary blue is the site's");
-  assert.equal(theme.claude, "#c45c38", "Claude keeps its orange under a dark preference");
+  const dark = await read();
+  assert.equal(dark.attr, null);
+  assert.equal(dark.meta, "dark light");
+  assert.equal(dark.scheme, "dark");
+  assert.equal(dark.bodyBg, "rgb(14, 23, 48)", "the page sits on the dark-blue #0e1730");
+  assert.equal(dark.bodyInk, "rgb(232, 237, 248)");
+  assert.equal(dark.paneRadius, "18px", "the pane is still a rounded card");
+  assert.equal(dark.blue, "#4c9aff");
 
-  // The sheet itself carries no dark block and declares light once, in CSS and meta.
+  await page.getByRole("tab", { name: "Settings" }).click();
+  const sw = page.locator("#theme-switch");
+  assert.equal(await sw.getAttribute("aria-checked"), "false");
+  await sw.click();
+  assert.equal(await sw.getAttribute("aria-checked"), "true");
+  const light = await read();
+  assert.equal(light.attr, "light");
+  assert.equal(light.scheme, "light");
+  assert.equal(light.bodyBg, "rgb(245, 245, 247)", "the site's #f5f5f7 surface");
+  assert.equal(light.bodyInk, "rgb(29, 29, 31)", "the site's #1d1d1f ink");
+  assert.equal(light.paneBg, "rgb(255, 255, 255)", "the pane is a white card");
+  assert.equal(light.blue, "#0071e3", "the primary blue is the site's");
+  assert.equal(light.claude, "#c45c38", "Claude keeps its orange");
+  assert.equal(await page.evaluate(() => localStorage.getItem("ksf.theme")), "light");
+
+  // Remembered, and applied before the first paint rather than after a flash of dark.
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  assert.equal((await read()).attr, "light");
+  // Even under a dark system preference, the stored choice wins.
+  await page.emulateMedia({ colorScheme: "dark" });
+  assert.equal((await read()).bodyBg, "rgb(245, 245, 247)");
+
+  // The sheet never follows the OS.
   const css = await page.evaluate(() => fetch("/styles.css").then((r) => r.text()));
-  assert.ok(!css.includes("prefers-color-scheme"), "no dark-mode media block");
-  assert.match(css, /color-scheme:\s*light/);
+  assert.ok(!css.includes("prefers-color-scheme"), "no OS-driven media block");
 
-  // The primary button is the site's blue pill, read off a real one in the Add subscription dialog.
+  // The primary button is the site's blue pill in the light look.
+  await page.getByRole("tab", { name: "Usage" }).click();
   await page.locator("#btn-add-sub").click();
   await waitDialog(page, "dlg-sub", true);
   const primary = await page.locator("#dlg-sub .btn-primary").evaluate((n) => {
@@ -2053,20 +2094,45 @@ test("every pane fits the viewport at 390, 1280 and 1920 px, and nothing loads o
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
   plans = [droidPlan()];
   localRows = subscriptionRows();
+  await showDroidOnUsage(page);
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   for (const width of [390, 1280, 1920]) {
     await page.setViewportSize({ width, height: 900 });
-    for (const pane of ["Usage", "Chart", "Keys"]) {
+    for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
       await page.getByRole("tab", { name: pane, exact: true }).click();
       if (pane === "Usage") await page.locator("#live-status .live-row").first().waitFor();
       else if (pane === "Chart") await page.locator("#daily-svg").waitFor();
-      else await page.locator("#keys-body tr[data-name]").first().waitFor();
+      else if (pane === "Keys") await page.locator("#keys-body tr[data-name]").first().waitFor();
+      else await page.locator("#theme-switch").waitFor();
       const spill = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.ok(spill <= 1, `${pane} pane spills ${spill}px at ${width}px`);
     }
   }
   assert.deepEqual(foreign, [], "every request stays on the dashboard's own origin");
+});
+
+// The header used to carry every control, so on the Keys pane with a status message the right
+// column spilled under the tabs. It now holds only the status line and help.
+test("the header stays one row and never slides under the tabs from 760 px up", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.evaluate(() => { document.getElementById("status").textContent = "Ingested 1,234 new rows from 56 files, 3 parse errors. ".repeat(3); });
+  for (const width of [760, 900, 1180, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
+      await page.getByRole("tab", { name: pane, exact: true }).click();
+      const g = await page.evaluate(() => {
+        const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+        const seg = r("nav.seg"), end = r(".toolbar-end"), brand = r(".brand"), header = r("header.toolbar");
+        const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+        return { height: header.height, endHits: hit(seg, end), brandHits: hit(seg, brand) };
+      });
+      assert.ok(Math.abs(g.height - 48) <= 2, `${pane} at ${width}px: header is ${g.height}px tall`);
+      assert.ok(!g.endHits, `${pane} at ${width}px: the header end overlaps the tabs`);
+      assert.ok(!g.brandHits, `${pane} at ${width}px: the brand overlaps the tabs`);
+    }
+  }
 });
 
 test("a model used by Claude Code and Droid is one series whose total counts both tools' rules", async (page, origin) => {
@@ -2096,6 +2162,7 @@ test("a model used by Claude Code and Droid is one series whose total counts bot
 });
 
 test("the Droid chart's month total is the Droid row's Month figure", async (page, origin) => {
+  await showDroidOnUsage(page);
   plans = [droidPlan()];
   localRows = droidFixtureRows();
   await page.goto(`${origin}/?range=month`);
@@ -2307,6 +2374,8 @@ test("the providers manager adds, hides and removes", async (page, origin) => {
 test("the agents dialog personalizes each recipe to the chosen key", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
+  // Agents lives in Settings now that the header carries only status and help.
+  await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   await waitDialog(page, "dlg-agents", true);
   const body = await page.locator("#agents-body").textContent();
@@ -2344,28 +2413,30 @@ test("the first-use guide links to the agents dialog", async (page, origin) => {
   await waitDialog(page, "dlg-agents", false);
 });
 
-test("three panes: the shortcuts and arrow keys reach Usage, Chart and Keys and nothing else", async (page, origin) => {
+test("four panes: the shortcuts and arrow keys reach Usage, Chart, Keys and Settings and nothing else", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   const tabNames = await page.locator(".seg [role=tab]").allTextContents();
-  assert.deepEqual(tabNames.map((t) => t.trim()), ["Usage", "Chart", "Keys"]);
+  assert.deepEqual(tabNames.map((t) => t.trim()), ["Usage", "Chart", "Keys", "Settings"]);
   const shown = () => page.evaluate(() =>
     [...document.querySelectorAll("main [role=tabpanel]")].filter((p) => !p.hidden).map((p) => p.id));
   await page.locator("body").click({ position: { x: 1, y: 1 } });
-  for (const [key, pane] of [["2", "pane-chart"], ["3", "pane-keys"], ["1", "pane-usage"]]) {
+  for (const [key, pane] of [["2", "pane-chart"], ["3", "pane-keys"], ["4", "pane-settings"], ["1", "pane-usage"]]) {
     await page.keyboard.press(`ControlOrMeta+${key}`);
     await page.waitForFunction((id) => !document.getElementById(id).hidden, pane);
     assert.deepEqual(await shown(), [pane], `shortcut ${key}`);
   }
-  await page.keyboard.press("ControlOrMeta+4");
-  assert.deepEqual(await shown(), ["pane-usage"], "a fourth shortcut no longer switches panes");
-  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.keyboard.press("ControlOrMeta+5");
+  assert.deepEqual(await shown(), ["pane-usage"], "a fifth shortcut does not switch panes");
+  await page.getByRole("tab", { name: "Settings" }).click();
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
-  assert.deepEqual(await shown(), ["pane-usage"], "the arrow keys wrap from Keys back to Usage");
+  assert.deepEqual(await shown(), ["pane-usage"], "the arrow keys wrap from Settings back to Usage");
   await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
   await waitDialog(page, "dlg-help", true);
-  assert.doesNotMatch(await page.locator("#dlg-help .shortcuts").textContent(), /Optimizer/);
+  const help = await page.locator("#dlg-help .shortcuts").textContent();
+  assert.doesNotMatch(help, /Optimizer/);
+  assert.match(help, /Settings/);
 });
 
 // ---------- per-pane load failures ----------
@@ -2510,11 +2581,11 @@ test("a slow key list cannot overwrite a newer one", async (page, origin) => {
   await page.locator("#add-form [type=submit]").click();
   await waitDialog(page, "dlg-add", false);
   await page.locator('#keys-body tr[data-name="foxtrot"]').waitFor();
-  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"]);
+  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "foxtrot"]);
 
   // The slow reply, carrying the older vault, lands last.
   await page.waitForTimeout(1800);
-  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"],
+  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "foxtrot"],
     "a stale list must not restore a deleted key or drop a new one");
 });
 
@@ -2539,6 +2610,8 @@ test("repeated reveals of different keys never show the wrong secret", async (pa
 });
 
 test("key sort orders rows and survives a reload", async (page, origin) => {
+  // One provider group, so the chosen sort alone decides the order inside it.
+  for (const k of keys) k.provider = "openai";
   await openKeys(page, origin);
   await page.locator("#keys-body tr[data-name]").first().waitFor();
   const order = () => page.locator("#keys-body tr[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
@@ -2597,6 +2670,142 @@ if (require.main === module && process.env.KEYS_FIXTURE_PORT) {
   reset();
   server.listen(Number(process.env.KEYS_FIXTURE_PORT), "127.0.0.1");
 } else if (require.main === module) {
+
+// ---------- Settings: which cards Usage shows ----------
+
+// Hiding a card is a display choice. The subscription, its history and the Chart stay as they were,
+// so hidden never reads as zero and nothing is deleted on the engine's side.
+test("hiding a usage card in Settings takes it off Usage only and survives a reload", async (page, origin) => {
+  plans = [subPlan(), { ...subPlan({ subscription_id: "sub-2", title: "Copilot", source: "copilot" }) }];
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#live-status .live-row").nth(1).waitFor();
+  assert.equal(await page.locator("#live-status .live-row").count(), 2);
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  const cursor = page.locator('#usage-cards-list [data-usage-id="sub-1"]');
+  assert.equal(await cursor.getAttribute("aria-checked"), "true", "every card starts shown");
+  await cursor.click();
+  assert.equal(await cursor.getAttribute("aria-checked"), "false");
+
+  await page.getByRole("tab", { name: "Usage" }).click();
+  assert.equal(await page.locator("#live-status .live-row").count(), 1);
+  assert.match(await page.locator("#live-status").textContent(), /Copilot/);
+  assert.doesNotMatch(await page.locator("#live-status").textContent(), /Cursor/);
+  assert.match(await page.locator("#usage-hidden").textContent(), /1 card hidden/);
+  assert.equal(requests.filter((r) => r.method === "DELETE").length, 0, "hiding deletes nothing");
+
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await page.locator("#live-status .live-row").first().waitFor();
+  assert.equal(await page.locator("#live-status .live-row").count(), 1, "the choice is remembered");
+
+  // The Chart still asks for everything; Settings is not a filter on history.
+  const before = requests.filter((r) => r.pathname === "/api/spend").length;
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+  assert.ok(requests.filter((r) => r.pathname === "/api/spend").length >= before);
+  assert.equal(await page.locator("#mix .mix-row").count() > 0, true);
+
+  // The link on Usage goes back to Settings, where the card can be turned on again.
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.locator("#usage-hidden").getByRole("button", { name: "Settings" }).click();
+  assert.equal(await page.locator("#pane-settings").isVisible(), true);
+  await page.locator('#usage-cards-list [data-usage-id="sub-1"]').click();
+  await page.getByRole("tab", { name: "Usage" }).click();
+  assert.equal(await page.locator("#live-status .live-row").count(), 2);
+  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
+});
+
+test("with every card hidden Usage says so instead of claiming there is nothing", async (page, origin) => {
+  plans = [subPlan()];
+  await page.addInitScript(() => { try { localStorage.setItem("ksf.hiddenUsage", JSON.stringify(["sub-1"])); } catch { /* fine */ } });
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#usage-hidden").waitFor();
+  assert.match(await page.locator("#usage-hidden").textContent(), /All usage cards are hidden/);
+  assert.equal(await page.locator("#live-status .live-row").count(), 0);
+  assert.equal(await page.locator("#usage-empty").isHidden(), true, "hidden is not the same as empty");
+});
+
+test("Droid stays off Usage until Settings turns it on, and is never removed", async (page, origin) => {
+  plans = [droidPlan(), subPlan()];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#live-status .live-row").first().waitFor();
+  assert.equal(await page.locator('#live-status .live-row[data-source="droid"]').count(), 0);
+  // Off by default still counts as hidden, so a Droid user has a pointer to where it lives.
+  assert.match(await page.locator("#usage-hidden").textContent(), /1 card hidden/);
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  const sw = page.locator("#droid-switch");
+  assert.equal(await sw.getAttribute("aria-checked"), "false");
+  assert.equal(await page.locator('#usage-cards-list [data-usage-id="droid"]').count(), 0, "Droid has its own switch");
+  await sw.click();
+  assert.equal(await sw.getAttribute("aria-checked"), "true");
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.locator('#live-status .live-row[data-source="droid"]').waitFor();
+  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await page.locator('#live-status .live-row[data-source="droid"]').waitFor();
+});
+
+// ---------- key search ----------
+
+test("key search filters by name, provider and host, counts what it shows and clears on Escape", async (page, origin) => {
+  await page.goto(`${origin}/#keys`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator("#keys-body tr[data-name]").first().waitFor();
+  const names = () => page.locator("#keys-body tr[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
+  const groups = () => page.locator("#keys-body tr.key-group").evaluateAll((rows) => rows.map((r) => r.textContent.trim()));
+  assert.equal((await groups()).length, 3, "one header row per provider");
+
+  // "/" jumps to the search box from anywhere on the Keys pane.
+  await page.locator("body").click();
+  await page.keyboard.press("/");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "keys-search");
+
+  await page.keyboard.type("open");
+  assert.deepEqual(await names(), ["alpha"], "provider names match");
+  assert.match(await page.locator("#keys-count").textContent(), /1 of 3 keys/);
+  assert.deepEqual((await groups()).length, 1);
+
+  await page.locator("#keys-search").fill("CHAR");
+  assert.deepEqual(await names(), ["charlie"], "case does not matter");
+
+  await page.locator("#keys-search").fill("nothing-like-this");
+  assert.deepEqual(await names(), []);
+  assert.match(await page.locator("#keys-no-match").textContent(), /No keys match “nothing-like-this”/);
+  assert.equal(await page.locator("#keys-empty").isHidden(), true, "a miss is not an empty vault");
+
+  await page.locator("#keys-search").press("Escape");
+  assert.equal(await page.locator("#keys-search").inputValue(), "");
+  assert.deepEqual(await names(), ["bravo", "alpha", "charlie"]);
+  assert.match(await page.locator("#keys-count").textContent(), /^3 keys/);
+  assert.equal(await page.locator("#keys-no-match").isHidden(), true);
+  assert.doesNotMatch(await page.locator("#keys-body").textContent(), new RegExp(SECRET));
+});
+
+test("arrow keys step over the provider header rows", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator("#keys-body tr[data-name]").first().waitFor();
+  await page.locator("#keys-search").focus();
+  await page.keyboard.press("ArrowDown");
+  const selected = () => page.evaluate(() => document.activeElement.closest("tr")?.dataset.name || null);
+  assert.equal(await selected(), "bravo");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await selected(), "alpha", "the OpenAI header between them is skipped");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await selected(), "charlie");
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await selected(), "alpha");
+});
+
 
 (async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

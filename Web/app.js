@@ -1,6 +1,15 @@
 (() => {
   "use strict";
 
+  // First, before anything paints: dark blue unless this browser chose light. An attribute plus
+  // CSS variables, because the CSP allows no inline style to switch with.
+  const readTheme = () => { try { return localStorage.getItem("ksf.theme") === "light" ? "light" : "dark"; } catch { return "dark"; } };
+  const applyTheme = (name) => {
+    if (name === "light") document.documentElement.dataset.theme = "light";
+    else delete document.documentElement.dataset.theme;
+  };
+  applyTheme(readTheme());
+
   const $ = (id) => document.getElementById(id);
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -52,6 +61,8 @@
     keyIndex: [],
     catalogVersion: null,
     status: null,
+    // Session-only: a search is a momentary lookup, not a view to come back to.
+    keySearch: "",
   };
 
   // Hand-picked shades per family. It is a palette size, not a limit on how many models a family
@@ -240,9 +251,11 @@
 
   // ---------- panes ----------
 
-  const panes = { usage: $("pane-usage"), chart: $("pane-chart"), keys: $("pane-keys") };
-  const tabs = { usage: $("nav-usage"), chart: $("nav-chart"), keys: $("nav-keys") };
-  const PANE_ORDER = ["usage", "chart", "keys"];
+  const panes = { usage: $("pane-usage"), chart: $("pane-chart"), keys: $("pane-keys"), settings: $("pane-settings") };
+  const tabs = { usage: $("nav-usage"), chart: $("nav-chart"), keys: $("nav-keys"), settings: $("nav-settings") };
+  const PANE_ORDER = ["usage", "chart", "keys", "settings"];
+  // The analytics vocabulary (server allowlist and collector) knows these three views only.
+  const COUNTED_VIEWS = new Set(["usage", "chart", "keys"]);
 
   function leaveHiddenPaneFocus(next) {
     const active = document.activeElement;
@@ -259,7 +272,7 @@
   function showPane(name, opts = {}) {
     const changed = state.pane !== name;
     state.pane = name;
-    if (changed) window.KeysAnalytics?.event(`view_${name}`);
+    if (changed && COUNTED_VIEWS.has(name)) window.KeysAnalytics?.event(`view_${name}`);
     document.body.dataset.pane = name;
     for (const key of Object.keys(panes)) {
       const on = key === name;
@@ -277,6 +290,7 @@
     if (name === "usage") loadStatus();
     else if (name === "chart") loadSpend();
     else if (name === "keys") loadKeys({ focus: !!opts.keyboard && !opts.focusTab });
+    else if (name === "settings") { renderSettings(); loadStatus(); }
   }
 
   for (const [name, tab] of Object.entries(tabs)) {
@@ -540,6 +554,22 @@
     state.keySort = keySorts[e.target.value] ? e.target.value : "name";
     try { localStorage.setItem("ksf.keysort", state.keySort); } catch { /* fine */ }
     renderKeys();
+  });
+  $("keys-search").addEventListener("input", (e) => {
+    state.keySearch = e.target.value;
+    renderKeys();
+  });
+  $("keys-search").addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && e.target.value) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.target.value = "";
+      state.keySearch = "";
+      renderKeys();
+    } else if (e.key === "ArrowDown") {
+      const tr = rowFor(state.selected);
+      if (tr) { e.preventDefault(); tr.focus(); }
+    }
   });
   const usdMode = () => state.unit === "usd";
   const requestMode = () => state.unit === "requests";
@@ -1418,76 +1448,49 @@
   const readKeySort = () => { try { const v = localStorage.getItem("ksf.keysort"); return keySorts[v] ? v : "name"; } catch { return "name"; } };
   state.keySort = readKeySort();
 
+  // Names and provider metadata only: the keys payload carries no secret to match against.
+  function keyMatches(k, q) {
+    if (!q) return true;
+    const prov = providerById(k.provider);
+    const group = prov && state.providers ? (state.providers.groups || []).find((g) => g.id === prov.group) : null;
+    return [k.name, k.provider, providerName(k.provider), group && group.name, k.host, k.gateway_host]
+      .some((v) => typeof v === "string" && v.toLowerCase().includes(q));
+  }
+  const keyGroupLabel = (k) => (k.provider ? providerName(k.provider) : "No provider");
+  const isKeyRow = (tr) => !!tr.dataset.name && !tr.classList.contains("key-events-row");
+
   function renderKeys(opts = {}) {
     const body = $("keys-body");
     const by = keySorts[state.keySort] || keySorts.name;
-    const keys = [...state.keys].sort((a, b) => by(a, b) || keySorts.name(a, b));
+    const q = state.keySearch.trim().toLowerCase();
+    const all = state.keys;
+    // Grouped by provider name, then the chosen sort inside each group.
+    const keys = all.filter((k) => keyMatches(k, q)).sort((a, b) =>
+      keyGroupLabel(a).localeCompare(keyGroupLabel(b), undefined, { sensitivity: "base" })
+      || by(a, b) || keySorts.name(a, b));
     $("keys-sort").value = state.keySort;
-    $("keys-count").textContent = plural(keys.length, "key", "keys");
+    $("keys-count").textContent = q ? `${keys.length} of ${plural(all.length, "key", "keys")}` : plural(all.length, "key", "keys");
     syncOnboard();
     $("keys-table").hidden = keys.length === 0;
-    $("keys-toolbar").hidden = keys.length === 0;
-    $("keys-empty").hidden = keys.length > 0;
+    $("keys-toolbar").hidden = all.length === 0;
+    $("keys-search").hidden = all.length === 0 && !q;
+    $("keys-empty").hidden = all.length > 0;
+    $("keys-no-match").hidden = all.length === 0 || keys.length > 0;
+    if (all.length > 0 && keys.length === 0) $("keys-no-match").textContent = `No keys match “${state.keySearch.trim()}”.`;
     if (!keys.some((k) => k.name === state.selected)) state.selected = keys[0] ? keys[0].name : null;
 
+    const columns = $("keys-table").tHead.rows[0].cells.length;
+    const groupSizes = new Map();
+    for (const k of keys) groupSizes.set(keyGroupLabel(k), (groupSizes.get(keyGroupLabel(k)) || 0) + 1);
+    let lastGroup = null;
     const rows = keys.map((k) => {
-      const selected = k.name === state.selected;
-      const tab = selected ? "0" : "-1";
-      const tr = el("tr", { tabindex: selected ? "0" : "-1", "data-name": k.name, "aria-selected": String(selected) });
-      const on = !!k.gateway_enabled;
-      const nameCell = el("td", { class: "td-name", "data-label": "Name" },
-        el("span", { class: "key-name" }, k.name,
-          on ? el("span", { class: "badge", text: "Gateway on", title: "Requests to the local gateway use this key until the engine restarts" }) : null),
-      );
-      if (k.notes) nameCell.append(el("span", { class: "key-notes", text: k.notes }));
-      if (on && k.gateway_url) nameCell.append(el("span", { class: "key-notes gw-url", text: k.gateway_url, title: "Point the SDK base URL here. Select to copy." }));
-      const prov = providerById(k.provider);
-      const noGateway = prov && prov.gateway === false;
-      tr.append(
-        nameCell,
-        el("td", { class: "td-provider", "data-label": "Provider", title: k.host ? "Requests bound to " + k.host : "No fixed host" },
-          providerName(k.provider),
-          k.host ? el("span", { class: "key-host", text: k.host }) : null,
-          k.last_check ? el("span", { class: "key-host", text: (k.last_check.ok ? "✓ " : "✗ ") + k.last_check.summary + " · " + relTime(k.last_check.checked_at), title: "Last read-only check " + k.last_check.checked_at }) : null),
-        el("td", { class: "td-kind", "data-label": "Kind", text: k.kind || "—" }),
-        el("td", { class: "td-created", "data-label": "Created", text: fmtDate(k.created_at), title: k.created_at || null }),
-        el("td", { class: "td-used", "data-label": "Last used", text: relTime(k.last_used_at), title: k.last_used_at || "Never copied or revealed" }),
-        gatewayMonthCell(k, on),
-        el("td", { class: "td-actions", "data-label": "Actions" },
-          el("div", { class: "row-actions" },
-            el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "copy", "aria-label": "Copy " + k.name, text: "Copy" }),
-            el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "reveal", "aria-label": "Reveal " + k.name, text: "Reveal" }),
-            el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "edit", "aria-label": "Edit " + k.name, text: "Edit" }),
-            el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "history", "aria-pressed": String(state.eventsOpen === k.name), "aria-label": "History of " + k.name, text: "History" }),
-            el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "rotate", "aria-label": "Rotate " + k.name, text: "Rotate", title: "Replace the secret, keep the name" }),
-            el("button", {
-              type: "button", class: "btn btn-row", tabindex: tab, "data-act": "gateway", "aria-pressed": String(on),
-              "aria-label": (on ? "Turn the gateway off for " : "Turn the gateway on for ") + k.name,
-              text: on ? "Gateway on" : "Gateway",
-              disabled: noGateway ? "" : null,
-              title: noGateway ? (prov.name + " needs request signing; it cannot be proxied") : on ? "Stop proxying with this key" : "One Touch ID, then http://127.0.0.1:12767/" + k.name + " forwards to the provider with this key",
-            }),
-            el("button", {
-              type: "button", class: "btn btn-row", tabindex: tab, "data-act": "grant",
-              "aria-label": "Grant temporary access to " + k.name + " or issue a long-lived client",
-              text: k.active_grants ? `Grant (${k.active_grants})` : "Grant",
-              disabled: noGateway ? "" : null,
-              title: noGateway ? (prov.name + " cannot be proxied, so no grant") : "One Touch ID for a temporary, scoped token an agent uses instead of the real key",
-            }),
-            el("button", {
-              type: "button", class: "btn btn-row", tabindex: tab, "data-act": "check",
-              "aria-label": "Check " + k.name + " against its provider",
-              text: "Check",
-              disabled: k.checkable ? null : "",
-              title: k.checkable ? "Read-only: authentication status and model list from " + (k.host || "the provider") : "No read-only check endpoint for this provider; nothing is sent",
-            }),
-            el("span", { class: "act-div", "aria-hidden": "true" }),
-            el("button", { type: "button", class: "btn btn-row btn-danger", tabindex: tab, "data-act": "delete", "aria-label": "Delete " + k.name, text: "Delete" }),
-          ),
-        ),
-      );
-      if (state.eventsOpen === k.name) return [tr, eventsRow(k)];
-      return tr;
+      const label = keyGroupLabel(k);
+      const head = label !== lastGroup
+        ? el("tr", { class: "key-group" }, el("th", { scope: "rowgroup", colspan: String(columns), text: `${label} · ${groupSizes.get(label)}` }))
+        : null;
+      lastGroup = label;
+      const row = keyRow(k);
+      return head ? [head, row].flat() : row;
     });
     body.replaceChildren(...rows.flat());
     if (state.eventsOpen) loadEvents(state.eventsOpen);
@@ -1497,9 +1500,70 @@
     }
   }
 
+  function keyRow(k) {
+    const selected = k.name === state.selected;
+    const tab = selected ? "0" : "-1";
+    const tr = el("tr", { tabindex: selected ? "0" : "-1", "data-name": k.name, "aria-selected": String(selected) });
+    const on = !!k.gateway_enabled;
+    const nameCell = el("td", { class: "td-name", "data-label": "Name" },
+      el("span", { class: "key-name" }, k.name,
+        on ? el("span", { class: "badge", text: "Gateway on", title: "Requests to the local gateway use this key until the engine restarts" }) : null),
+    );
+    if (k.notes) nameCell.append(el("span", { class: "key-notes", text: k.notes }));
+    if (on && k.gateway_url) nameCell.append(el("span", { class: "key-notes gw-url", text: k.gateway_url, title: "Point the SDK base URL here. Select to copy." }));
+    const prov = providerById(k.provider);
+    const noGateway = prov && prov.gateway === false;
+    tr.append(
+      nameCell,
+      el("td", { class: "td-provider", "data-label": "Provider", title: k.host ? "Requests bound to " + k.host : "No fixed host" },
+        providerName(k.provider),
+        k.host ? el("span", { class: "key-host", text: k.host }) : null,
+        k.last_check ? el("span", { class: "key-host", text: (k.last_check.ok ? "✓ " : "✗ ") + k.last_check.summary + " · " + relTime(k.last_check.checked_at), title: "Last read-only check " + k.last_check.checked_at }) : null),
+      el("td", { class: "td-kind", "data-label": "Kind", text: k.kind || "—" }),
+      el("td", { class: "td-created", "data-label": "Created", text: fmtDate(k.created_at), title: k.created_at || null }),
+      el("td", { class: "td-used", "data-label": "Last used", text: relTime(k.last_used_at), title: k.last_used_at || "Never copied or revealed" }),
+      gatewayMonthCell(k, on),
+      el("td", { class: "td-actions", "data-label": "Actions" },
+        el("div", { class: "row-actions" },
+          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "copy", "aria-label": "Copy " + k.name, text: "Copy" }),
+          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "reveal", "aria-label": "Reveal " + k.name, text: "Reveal" }),
+          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "edit", "aria-label": "Edit " + k.name, text: "Edit" }),
+          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "history", "aria-pressed": String(state.eventsOpen === k.name), "aria-label": "History of " + k.name, text: "History" }),
+          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "rotate", "aria-label": "Rotate " + k.name, text: "Rotate", title: "Replace the secret, keep the name" }),
+          el("button", {
+            type: "button", class: "btn btn-row", tabindex: tab, "data-act": "gateway", "aria-pressed": String(on),
+            "aria-label": (on ? "Turn the gateway off for " : "Turn the gateway on for ") + k.name,
+            text: on ? "Gateway on" : "Gateway",
+            disabled: noGateway ? "" : null,
+            title: noGateway ? (prov.name + " needs request signing; it cannot be proxied") : on ? "Stop proxying with this key" : "One Touch ID, then http://127.0.0.1:12767/" + k.name + " forwards to the provider with this key",
+          }),
+          el("button", {
+            type: "button", class: "btn btn-row", tabindex: tab, "data-act": "grant",
+            "aria-label": "Grant temporary access to " + k.name + " or issue a long-lived client",
+            text: k.active_grants ? `Grant (${k.active_grants})` : "Grant",
+            disabled: noGateway ? "" : null,
+            title: noGateway ? (prov.name + " cannot be proxied, so no grant") : "One Touch ID for a temporary, scoped token an agent uses instead of the real key",
+          }),
+          el("button", {
+            type: "button", class: "btn btn-row", tabindex: tab, "data-act": "check",
+            "aria-label": "Check " + k.name + " against its provider",
+            text: "Check",
+            disabled: k.checkable ? null : "",
+            title: k.checkable ? "Read-only: authentication status and model list from " + (k.host || "the provider") : "No read-only check endpoint for this provider; nothing is sent",
+          }),
+          el("span", { class: "act-div", "aria-hidden": "true" }),
+          el("button", { type: "button", class: "btn btn-row btn-danger", tabindex: tab, "data-act": "delete", "aria-label": "Delete " + k.name, text: "Delete" }),
+        ),
+      ),
+    );
+    if (state.eventsOpen === k.name) return [tr, eventsRow(k)];
+    return tr;
+  }
+
   function selectRow(name, focus) {
     state.selected = name;
     for (const tr of $("keys-body").rows) {
+      if (tr.classList.contains("key-group")) continue;
       const on = tr.dataset.name === name;
       tr.setAttribute("aria-selected", String(on));
       tr.tabIndex = on ? 0 : -1;
@@ -1507,7 +1571,7 @@
       if (on && focus) tr.focus();
     }
   }
-  const rowFor = (name) => [...$("keys-body").rows].find((tr) => tr.dataset.name === name && !tr.classList.contains("key-events-row")) || null;
+  const rowFor = (name) => [...$("keys-body").rows].find((tr) => isKeyRow(tr) && tr.dataset.name === name) || null;
   const btnFor = (name, act) => { const tr = rowFor(name); return tr ? tr.querySelector(`[data-act="${act}"]`) : null; };
 
   function restoreKeysFocus(name, act) {
@@ -1529,7 +1593,7 @@
 
   $("keys-body").addEventListener("click", (e) => {
     const tr = e.target.closest("tr");
-    if (!tr) return;
+    if (!tr || tr.classList.contains("key-group")) return;
     selectRow(tr.dataset.name, false);
     const btn = e.target.closest("[data-act]");
     if (btn) ROW_ACT[btn.dataset.act]?.(tr.dataset.name);
@@ -1541,8 +1605,8 @@
     const tr = e.target.closest("tr");
     if (!tr) return;
     const onButton = e.target.closest("[data-act]");
-    if (tr.classList.contains("key-events-row")) return;
-    const rows = [...$("keys-body").rows].filter((r) => !r.classList.contains("key-events-row"));
+    if (!isKeyRow(tr)) return;
+    const rows = [...$("keys-body").rows].filter(isKeyRow);
     const j = listStep(e.key, rows.indexOf(tr), rows.length);
     if (j >= 0) { e.preventDefault(); selectRow(rows[j].dataset.name, true); return; }
     let act = LIST_KEYS[e.key];
@@ -2422,7 +2486,12 @@
     const s = String(v);
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
-  function exportCsv() {
+  // From Settings the Chart may never have loaded; fetch its current view first.
+  async function ensureSpend() {
+    if (!state.spend) await loadSpend();
+  }
+  async function exportCsv() {
+    await ensureSpend();
     const data = state.spend;
     if (!data || !(data.rows || []).length) { say("Nothing to export in this range."); return; }
     const cols = projectMode()
@@ -2504,6 +2573,7 @@
     return `${head}\n${line}\n${foot}\n`;
   }
   async function copyTotals() {
+    await ensureSpend();
     const md = totalsMarkdown();
     if (!md) { say("Nothing to copy yet."); return; }
     try {
@@ -2534,12 +2604,12 @@
       say(`Ingested ${plural(inserted, "new row", "new rows")} from ${plural(files, "file", "files")}${errors ? `, ${plural(errors, "parse error", "parse errors")}` : ""}.`);
       await loadModels();
       if (state.pane === "chart") await loadSpend();
-      if (state.pane === "usage") await loadStatus();
+      if (state.pane === "usage" || state.pane === "settings") await loadStatus();
     } catch (e) {
       say(e.message);
     } finally {
       btn.disabled = false;
-      btn.textContent = "Ingest";
+      btn.textContent = "Ingest now";
       state.busy = false;
     }
   }
@@ -2596,6 +2666,7 @@
       if (e.key === "1") { e.preventDefault(); showPane("usage", { keyboard: true }); }
       else if (e.key === "2") { e.preventDefault(); showPane("chart", { keyboard: true }); }
       else if (e.key === "3") { e.preventDefault(); showPane("keys", { keyboard: true }); }
+      else if (e.key === "4") { e.preventDefault(); showPane("settings", { keyboard: true }); }
       else if (e.key === "r" || e.key === "R") { e.preventDefault(); ingest(); }
       return;
     }
@@ -2626,6 +2697,7 @@
     }
     if (state.pane === "keys") {
       if (e.key === "n") { e.preventDefault(); openAdd(); return; }
+      if (e.key === "/" && !$("keys-search").hidden) { e.preventDefault(); $("keys-search").focus(); return; }
       const act = PANE_KEYS[e.key];
       if (act && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); ROW_ACT[act](state.selected); return; }
       const inList = e.target.closest && e.target.closest("#keys-body");
@@ -3084,8 +3156,15 @@
   function renderStatus() {
     const data = state.status;
     if (!data) return;
+    renderSettings();
     const box = $("live-status");
-    const list = data.plans || [];
+    // Hidden cards leave this pane only: they are not zero and not "not tracked", and the
+    // Chart, the totals and ingest never consult these preferences.
+    const hidden = hiddenUsage();
+    const isHidden = (r) => (r.source === "droid" && !showDroid()) || hidden.has(usageId(r));
+    const all = data.plans || [];
+    const hiddenCount = all.filter(isHidden).length;
+    const list = all.filter((r) => !isHidden(r));
     const useful = [];
     const absent = [];
     for (const row of list) {
@@ -3101,10 +3180,81 @@
       if (box.querySelector(".live-more")?.open) details.open = true;
       nodes.push(details);
     }
-    $("usage-empty").hidden = nodes.length > 0;
+    const allHidden = nodes.length === 0 && hiddenCount > 0;
+    $("usage-empty").hidden = nodes.length > 0 || allHidden;
+    $("usage-hidden").hidden = hiddenCount === 0;
+    $("usage-hidden-text").textContent = allHidden
+      ? "All usage cards are hidden. Turn them back on in"
+      : plural(hiddenCount, "card", "cards") + " hidden.";
     box.hidden = nodes.length === 0;
     box.replaceChildren(...nodes);
   }
+
+  // ---------- settings ----------
+
+  // Per-browser presentation preferences, like the unit and key sort. Nothing here reaches the
+  // catalog or an /api endpoint; hiding a subscription never removes it.
+  const showDroid = () => { try { return localStorage.getItem("ksf.showDroid") === "1"; } catch { return false; } };
+  const hiddenUsage = () => {
+    try {
+      const v = JSON.parse(localStorage.getItem("ksf.hiddenUsage") || "[]");
+      return new Set(Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+    } catch { return new Set(); }
+  };
+  // Two Cursor plans share a source, so a pinned subscription is told apart by its id.
+  const usageId = (row) => row.subscription_id || row.source;
+
+  function setShowDroid(on) {
+    try { localStorage.setItem("ksf.showDroid", on ? "1" : "0"); } catch { /* fine */ }
+    renderStatus();
+  }
+  function setUsageHidden(id, hide) {
+    const set = hiddenUsage();
+    if (hide) set.add(id); else set.delete(id);
+    try { localStorage.setItem("ksf.hiddenUsage", JSON.stringify([...set])); } catch { /* fine */ }
+    renderStatus();
+  }
+  function setTheme(name) {
+    applyTheme(name);
+    try { localStorage.setItem("ksf.theme", name); } catch { /* fine */ }
+    renderSettings();
+    // Chart colours come from CSS variables read at draw time.
+    if (state.spend) renderSpend();
+  }
+
+  const setSwitch = (btn, on) => btn.setAttribute("aria-checked", on ? "true" : "false");
+
+  function renderSettings() {
+    setSwitch($("theme-switch"), readTheme() === "light");
+    setSwitch($("droid-switch"), showDroid());
+    const status = state.status;
+    const list = $("usage-cards-list");
+    if (!status) {
+      list.replaceChildren(el("p", { class: "muted", text: "Loading…" }));
+      $("last-ingest").textContent = "";
+      return;
+    }
+    $("last-ingest").textContent = status.last_ingest_at ? "Last ingest " + relTime(status.last_ingest_at) : "Not ingested yet";
+    const hidden = hiddenUsage();
+    const rows = (status.plans || []).filter((r) => r.source !== "droid");
+    list.replaceChildren(...rows.map((r) => {
+      const id = usageId(r);
+      const labelId = "usage-card-" + id.replace(/[^a-z0-9_-]/gi, "-");
+      return el("div", { class: "setting" },
+        el("span", { class: "setting-label", id: labelId, text: r.plan ? `${r.title} · ${r.plan}` : r.title || r.source }),
+        el("button", { type: "button", role: "switch", class: "switch", "data-usage-id": id, "aria-labelledby": labelId, "aria-checked": String(!hidden.has(id)) }),
+      );
+    }));
+  }
+
+  $("theme-switch").addEventListener("click", () => setTheme(readTheme() === "light" ? "dark" : "light"));
+  $("droid-switch").addEventListener("click", () => setShowDroid(!showDroid()));
+  $("usage-cards-list").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-usage-id]");
+    if (!btn) return;
+    setUsageHidden(btn.dataset.usageId, btn.getAttribute("aria-checked") === "true");
+  });
+  document.querySelectorAll('[data-action="settings"]').forEach((b) => b.addEventListener("click", () => showPane("settings")));
 
   // One quiet line under the plan rows: this month from the local logs, in the unit this page is
   // in. It is never a subscription invoice, and no dollar figure appears unless USD was chosen.

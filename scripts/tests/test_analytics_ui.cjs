@@ -87,6 +87,8 @@ const collector = http.createServer((_request, response) => {
 });
 
 async function open(page) {
+  // Privacy lives in Settings, which the analytics vocabulary does not count as a view.
+  await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Privacy" }).click();
   await page.locator("#dlg-privacy").waitFor({ state: "visible" });
   await page.waitForFunction(() => document.getElementById("analytics-state").textContent !== "");
