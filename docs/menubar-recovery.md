@@ -38,3 +38,31 @@ displaysleepnow`, then a user wake. `menubar.log` gained exactly one line,
 process, and the user confirmed the item was still visible afterwards. This
 exercises the trigger from the 22:19 incident but not full system sleep, unlock,
 or a display reconfiguration, and it does not reproduce the original loss.
+
+## Seeding the item's preferred position — 2026-10-15
+
+A second, unproven mitigation for the item being hidden on a full notched menu
+bar. This was inferred, not seen on screen: a read-only check found the installed
+app's defaults domain `com.keysreallysafe.keysrs` held no
+`NSStatusItem Preferred Position Keysreallysafe.usage` key after two days of
+running. AppKit reads that key (a point distance from the right edge of the menu
+bar) when the autosave name is applied; with no saved value it places the item far
+left, which is the first spot macOS drops when the bar is full on a notched
+display. So the leading explanation for the item never appearing is simply that it
+was placed off the usable area, not the disconnected-scene bug the recovery path
+above addresses.
+
+The mitigation is seed-if-absent: `MenubarPosition.seedIfUnset` writes a preferred
+distance only when no position key exists and the item is not user-hidden
+(`NSStatusItem Visible Keysreallysafe.usage == false`). It never overwrites a
+position the user dragged the item to, and it never un-hides an item the user chose
+to hide. The seeded constant is 200 points from the right edge; this is a guess,
+not a measured value — there is no reproduction to tune it against.
+
+This is not a proven fix: the disappearance was never reproduced on screen, and the
+constant is unmeasured. Roll it back with one command, after which macOS falls back
+to its own placement:
+
+```sh
+defaults delete com.keysreallysafe.keysrs "NSStatusItem Preferred Position Keysreallysafe.usage"
+```

@@ -12,22 +12,35 @@ final class MenubarItemController {
     private var recoveryTask: Task<Void, Never>?
     private var pendingReason: String?
     private var stopped = false
+    private let defaults: UserDefaults
     var menuIsOpen = false
 
     init(statusBar: NSStatusBar = .system,
          workspaceCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
          appCenter: NotificationCenter = .default,
-         recoveryDelay: Duration = .seconds(2)) {
+         recoveryDelay: Duration = .seconds(2),
+         defaults: UserDefaults = .standard) {
         self.statusBar = statusBar
         self.recoveryDelay = recoveryDelay
+        self.defaults = defaults
+        Self.seedPosition(defaults: defaults)
         item = statusBar.statusItem(withLength: NSStatusItem.variableLength)
-        item.autosaveName = "Keysreallysafe.usage"
+        item.autosaveName = MenubarPosition.autosaveName
         item.button?.imagePosition = .noImage
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
                      NSWorkspace.sessionDidBecomeActiveNotification] {
             observe(name, center: workspaceCenter)
         }
         observe(NSApplication.didChangeScreenParametersNotification, center: appCenter)
+    }
+
+    private static func seedPosition(defaults: UserDefaults) {
+        let decision = MenubarPosition.seedIfUnset(defaults: defaults,
+                                                   autosaveName: MenubarPosition.autosaveName,
+                                                   preferred: MenubarPosition.preferredDistanceFromRightEdge)
+        if case .seeded(let distance) = decision {
+            FileHandle.standardError.write(Data("menubar seeded preferred position: \(distance)\n".utf8))
+        }
     }
 
     private func observe(_ name: Notification.Name, center: NotificationCenter) {
@@ -73,8 +86,9 @@ final class MenubarItemController {
         let tooltip = oldItem.button?.toolTip
         oldItem.menu = nil
         statusBar.removeStatusItem(oldItem)
+        Self.seedPosition(defaults: defaults)
         item = statusBar.statusItem(withLength: NSStatusItem.variableLength)
-        item.autosaveName = "Keysreallysafe.usage"
+        item.autosaveName = MenubarPosition.autosaveName
         item.button?.imagePosition = .noImage
         item.button?.title = title
         item.button?.toolTip = tooltip

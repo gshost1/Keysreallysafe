@@ -3,11 +3,27 @@ import XCTest
 @testable import KeysCore
 
 final class MenubarRecoveryTests: XCTestCase {
+    private var defaultsSuite: String!
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaultsSuite = "keysrs.test.menubar-position.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: defaultsSuite)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        defaults = nil
+        defaultsSuite = nil
+        super.tearDown()
+    }
+
     @MainActor func testWakeReplacesEvenNominallyVisibleItemAndPreservesMenu() async throws {
         _ = NSApplication.shared
         let center = NotificationCenter()
         let controller = MenubarItemController(workspaceCenter: center, appCenter: center,
-                                               recoveryDelay: .milliseconds(20))
+                                               recoveryDelay: .milliseconds(20), defaults: defaults)
         defer { controller.stop() }
         let original = controller.item
         original.button?.title = "C 12%  X 34%"
@@ -30,7 +46,7 @@ final class MenubarRecoveryTests: XCTestCase {
         _ = NSApplication.shared
         let center = NotificationCenter()
         let controller = MenubarItemController(workspaceCenter: center, appCenter: center,
-                                               recoveryDelay: .milliseconds(20))
+                                               recoveryDelay: .milliseconds(20), defaults: defaults)
         defer { controller.stop() }
         let original = controller.item
         controller.menuIsOpen = true
@@ -46,7 +62,7 @@ final class MenubarRecoveryTests: XCTestCase {
         _ = NSApplication.shared
         let center = NotificationCenter()
         let controller = MenubarItemController(workspaceCenter: center, appCenter: center,
-                                               recoveryDelay: .milliseconds(20))
+                                               recoveryDelay: .milliseconds(20), defaults: defaults)
         defer { controller.stop() }
         let original = controller.item
         original.isVisible = false
@@ -64,7 +80,7 @@ final class MenubarRecoveryTests: XCTestCase {
         _ = NSApplication.shared
         let center = NotificationCenter()
         let controller = MenubarItemController(workspaceCenter: center, appCenter: center,
-                                               recoveryDelay: .milliseconds(400))
+                                               recoveryDelay: .milliseconds(400), defaults: defaults)
         let original = controller.item
         // The delay is generous next to the 10 ms steps: a busy CI runner can
         // oversleep by tens of milliseconds, which fired recovery mid-burst at 80 ms.
