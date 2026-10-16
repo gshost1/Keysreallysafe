@@ -203,9 +203,15 @@ enum ProviderCheck {
             } else if let s = JSONValue.string(root["message"]) ?? JSONValue.string(root["detail"]) {
                 text = s
             }
-        } else if let s = String(data: data.prefix(64 * 1024), encoding: .utf8), !s.contains("<") {
-            text = s
-            limit = 160
+        } else {
+            // Read well past the shown 160 characters so a secret straddling the cut is still
+            // scrubbed whole. Decode lossily (a 64 KB cut can split a character) and judge HTML
+            // by the opening only, as the 160-byte read did, so later '<' text isn't lost.
+            let s = String(decoding: data.prefix(64 * 1024), as: UTF8.self)
+            if !s.prefix(160).contains("<") {
+                text = s
+                limit = 160
+            }
         }
         // Scrub before shortening: a cut that lands inside an echoed secret leaves a prefix
         // the whole-secret match no longer finds.

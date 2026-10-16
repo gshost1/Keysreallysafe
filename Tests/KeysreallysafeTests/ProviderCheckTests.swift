@@ -204,6 +204,21 @@ final class ProviderCheckTests: XCTestCase {
         XCTAssertEqual(plainMessage?.count, 161)
     }
 
+    // Reading 64 KB to scrub whole secrets must not cost the message: a '<' past the shown
+    // text, or a cut that splits a multi-byte character, used to drop it entirely.
+    func testPlainTextMessageSurvivesLaterAngleBracketAndSplitCharacter() {
+        let secret = "QZ7-synthetic-placeholder-0123456789"
+        let later = Data("Invalid model. \(String(repeating: "m", count: 200)) expected one of: <list>".utf8)
+        XCTAssertEqual(ProviderCheck.safeMessage(later, secret: secret)?.hasPrefix("Invalid model."), true)
+
+        // 15 + (64 KB - 16) bytes, then a two-byte 'é' that the 64 KB read splits in half.
+        let cut = Data("Quota exceeded ".utf8) + Data(repeating: 0x61, count: 64 * 1024 - 16) + Data("é".utf8)
+        XCTAssertEqual(ProviderCheck.safeMessage(cut, secret: secret)?.hasPrefix("Quota exceeded"), true)
+
+        let html = Data("<html><body>502 Bad Gateway</body></html>".utf8)
+        XCTAssertNil(ProviderCheck.safeMessage(html, secret: secret))
+    }
+
     func testAuthErrorsAreDistinctInCLIAndAPI() throws {
         XCTAssertEqual(AppError.authCancelled.exitCode, 3)
         XCTAssertEqual(AppError.authUnavailable("x").exitCode, 3)
