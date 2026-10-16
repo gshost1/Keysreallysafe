@@ -2,6 +2,7 @@ import AppKit
 import ArgumentParser
 import Darwin
 import Foundation
+import ServiceManagement
 
 public struct KeysCLI: ParsableCommand {
     public init() {}
@@ -20,6 +21,7 @@ public struct KeysCLI: ParsableCommand {
             SpendCommand.self,
             StatusCommand.self,
             DoctorCommand.self,
+            LoginItemStatusCommand.self,
             EnvCommand.self,
             GrantCommand.self,
             GrantsCommand.self,
@@ -326,13 +328,29 @@ struct StatusCommand: ParsableCommand {
 struct DoctorCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "doctor",
-        abstract: "Show local sources, catalog, Keychain, gateway, and autostart."
+        abstract: "Show local sources, catalog, Keychain, gateway, the app install, its login item, and the command line link."
     )
 
     func run() throws {
         let service = try AppFactory.makeService()
         let report = try Doctor.report(service: service)
         print(report.printed)
+    }
+}
+
+/// Reports the app's login item registration so a `keys doctor` run from outside the bundle can
+/// ask the installed app. Hidden from help. Deliberately touches nothing but `SMAppService` and
+/// one `print`: no service, catalog or Keychain, so an incidental run against an older installed
+/// binary fails at argument parsing before anything else would.
+struct LoginItemStatusCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "login-item-status",
+        abstract: "Print the app's login item state (internal).",
+        shouldDisplay: false
+    )
+
+    func run() {
+        print(LoginItemState(status: SMAppService.mainApp.status).statusWord)
     }
 }
 

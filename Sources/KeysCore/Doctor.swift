@@ -11,10 +11,7 @@ struct DoctorReport: Equatable {
     var keychainReachable: Bool
     var gatewayListening: Bool
     var gatewayPort: UInt16
-    var autostartPlist: Bool
-    var autostartPlistPath: String
-    var installedBinarySHA256: String?
-    var runningBinarySHA256: String?
+    var install: DoctorInstall
     var controlFile: String? = nil
 
     var printed: String {
@@ -37,13 +34,7 @@ struct DoctorReport: Equatable {
             "gateway  127.0.0.1:\(gatewayPort)  \(gatewayListening ? "listening" : "not listening")"
         )
         lines.append("site  control=\(controlFile ?? "none (no running site)")")
-        lines.append(
-            "autostart  \(autostartPlistPath)  \(autostartPlist ? "present" : "missing")"
-        )
-        let same = installedBinarySHA256 != nil && installedBinarySHA256 == runningBinarySHA256
-        lines.append(
-            "binary  installed sha256=\(installedBinarySHA256 ?? "missing")  running sha256=\(runningBinarySHA256 ?? "missing")  \(same ? "match" : "differs")"
-        )
+        lines.append(contentsOf: Doctor.installLines(install))
         return lines.joined(separator: "\n")
     }
 }
@@ -59,7 +50,7 @@ struct DoctorSource: Equatable {
 }
 
 enum Doctor {
-    static func report(service: KeysService, probeListener: Bool = true) throws -> DoctorReport {
+    static func report(service: KeysService, probeListener: Bool = true, install: DoctorInstall? = nil) throws -> DoctorReport {
         let status = try service.liveStatus()
         let grokSessions = service.grokHome.appendingPathComponent("sessions", isDirectory: true)
         let grokLog = service.grokHome.appendingPathComponent("logs/unified.jsonl")
@@ -137,9 +128,6 @@ enum Doctor {
 
         let catalogPath = service.catalog.path
         let catalogSize = fileSize(catalogPath)
-        let plist = LoginItem.agentPlist
-        // Bundle.main, not argv[0]: run from PATH, argv[0] is just "keys".
-        let running = Bundle.main.executableURL.flatMap(fileSHA256)
 
         let listening = service.isGatewayRunning()
             || (probeListener && portOpen(host: BindPolicy.loopback, port: GatewayListener.port))
@@ -152,12 +140,75 @@ enum Doctor {
             keychainReachable: keychainReachable(service: "keysreallysafe"),
             gatewayListening: listening,
             gatewayPort: GatewayListener.port,
-            autostartPlist: FileManager.default.fileExists(atPath: plist.path),
-            autostartPlistPath: plist.path,
-            installedBinarySHA256: fileSHA256(Installer.live.binary),
-            runningBinarySHA256: running,
+            install: install ?? DoctorInstall.live(probeAgent: probeListener),
             controlFile: ControlFile.live(at: ControlFile.url(beside: service.catalog.path)).map { "127.0.0.1:\($0.port) pid \($0.pid)" }
         )
+    }
+
+    /// Formats the install block. Pure: it reads only the gathered `DoctorInstall`, never the
+    /// file system, so the same lines can be asserted in tests.
+    static func installLines(_ i: DoctorInstall) -> [String] {
+        if let app = i.appBundle {
+            var lines = [
+                "app  \(app.path)  sha256=\(i.bundleBinarySHA256 ?? "missing")",
+                "login  \(loginDescription(i.loginItem))",
+                commandLine(i),
+                runningLine(i),
+            ]
+            if i.legacyPlistExists || i.legacyBinaryExists || i.legacyAgentLoaded == true {
+                lines.append(legacyLine(i))
+            }
+            return lines
+        }
+        if i.legacyPlistExists || i.legacyBinaryExists {
+            let installed = i.legacyBinarySHA256
+            let running = i.runningBinarySHA256
+            let same = installed != nil && installed == running
+            return [
+                "autostart  \(i.legacyPlist.path)  \(i.legacyPlistExists ? "present" : "missing")",
+                "binary  installed sha256=\(installed ?? "missing")  running sha256=\(running ?? "missing")  \(same ? "match" : "differs")",
+            ]
+        }
+        return ["app  not installed (running from \(i.runningExecutable?.path ?? "unknown"))"]
+    }
+
+    private static func loginDescription(_ state: LoginItemState) -> String {
+        switch state {
+        case .enabled: return "enabled"
+        case .notRegistered: return "not registered"
+        case .requiresApproval: return "requires approval"
+        case .notFound: return "not found"
+        case .notQueried: return "not queried (open Keysrs to see Start at Login)"
+        }
+    }
+
+    private static func commandLine(_ i: DoctorInstall) -> String {
+        guard let command = i.commandOnPath else {
+            return "command  keys not on PATH (Install Command Line Tool… in the Keysrs menu)"
+        }
+        var line = "command  \(command.path)"
+        if let target = i.commandTarget { line += " -> \(target)" }
+        let verdict: String
+        if i.commandSHA256 == nil { verdict = "missing" }
+        else if i.commandSHA256 == i.bundleBinarySHA256 { verdict = "match" }
+        else { verdict = "differs" }
+        line += "  sha256=\(i.commandSHA256 ?? "missing")  \(verdict)"
+        return line
+    }
+
+    private static func runningLine(_ i: DoctorInstall) -> String {
+        let same = i.runningBinarySHA256 != nil && i.runningBinarySHA256 == i.bundleBinarySHA256
+        return "running  \(i.runningExecutable?.path ?? "unknown")  sha256=\(i.runningBinarySHA256 ?? "missing")  \(same ? "match" : "differs")"
+    }
+
+    private static func legacyLine(_ i: DoctorInstall) -> String {
+        let agent: String
+        switch i.legacyAgentLoaded {
+        case .some(true): agent = "loaded"
+        case .some(false): agent = "not loaded"
+        case .none: agent = "not probed"
+        }
+        return "legacy  plist \(i.legacyPlistExists ? "present" : "absent")  bin \(i.legacyBinaryExists ? "present" : "absent")  agent \(agent)  remove with: keys autostart --remove"
     }
 
     private static func source(

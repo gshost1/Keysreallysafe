@@ -151,7 +151,9 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
     func testDoctorListsSourcesAndDoesNotProbeInTests() throws {
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
-        let report = try Doctor.report(service: service, probeListener: false)
+        // A stub install keeps this test off the live app bundle, the real command line link
+        // and Installer.live.binary; the install block has its own coverage in DoctorInstallTests.
+        let report = try Doctor.report(service: service, probeListener: false, install: DoctorInstall())
         XCTAssertEqual(report.sources.map(\.id), [
             "grok-sessions", "grok-quota", "claude-projects", "claude-hud", "claude-usage-cache", "codex-sessions",
         ])
