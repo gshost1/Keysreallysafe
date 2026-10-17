@@ -188,7 +188,7 @@ class HostileInputTests(unittest.TestCase):
             self.assertTrue(lines[0].startswith("[" + good + "] INFO:"))
 
     def test_ids_and_times_are_bounded_and_typed(self):
-        bad_ids = ("x" * 129, "has space", "new\nline", "SENT\x00", True, 5, ["a"], {"a": "b"}, "")
+        bad_ids = ("x" * 129, " lead", "trail ", "new\nline", "SENT\x00", "tab\there", 'q"uote', "back\\slash", "caf\u00e9", "del\x7f", True, 5, ["a"], {"a": "b"}, "")
         for bad in bad_ids:
             with self.subTest(bad=repr(bad)[:20]):
                 code, lines, err = self.run_main(
@@ -210,6 +210,15 @@ class HostileInputTests(unittest.TestCase):
         code, lines, _ = self.run_main(claude=[claude_with(requestId=edge + ".:@/-_Z9")[:0] or claude_with(requestId=edge)])
         self.assertEqual(len(lines), 1)
         self.assertIn(edge, lines[0])
+
+    def test_custom_model_ids_export_unchanged(self):
+        model = "custom:Kimi-K3-[Proxy]-0"
+        code, lines, err = self.run_main(
+            droid=[droid_with(tags={"modelId": model, "sessionId": "s"})],
+            claude=[claude_with(message={"id": "msg_1", "model": "my model 2", "usage": {"input_tokens": 1}})])
+        self.assertEqual(len(lines), 2, err)
+        self.assertIn(json.dumps(model), lines[0])
+        self.assertIn("my model 2", lines[1])
 
     def test_fixture_ids_export_unchanged(self):
         uuid = "bbbbbbbb-0000-4000-8000-000000000001"

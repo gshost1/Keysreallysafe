@@ -36,7 +36,9 @@ COMPLETION_USAGE = CLAUDE_USAGE + ("thinking_tokens",)
 
 TOKEN_CAP = 10 ** 12
 EPOCH_MS_CAP = 10 ** 14
-ID_RE = re.compile(r"[A-Za-z0-9._:@/-]{1,128}")
+# Real droid custom model ids look like `custom:Kimi-K3-[Proxy]-0`, so any printable ASCII is allowed
+# except the quote and backslash; whitespace only inside.
+ID_RE = re.compile(r'(?!\s)[ !#-\[\]-~]{1,128}(?<!\s)')
 # The instant a droid log line opens with and a Claude Code transcript stamps on a turn.
 INSTANT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})")
 
