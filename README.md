@@ -546,6 +546,15 @@ request's model, so a run that fell back from Claude to `kimi-k3` shows both. A
 stream-json total covers a whole session and is stored under the model
 `unattributed`; if the same session's per-request lines are imported too, they
 replace it. Re-importing a file updates rows rather than adding them twice.
+Run the exporter where the usage happened, not on the Mac that runs Keysrs:
+exporting this Mac's own logs and importing them double-counts them. Keysrs
+skips rows it already has locally, but do not rely on that. The exporter keeps
+only plain token counts from 0 to 10^12, ids of up to 128 characters from
+`A-Za-z0-9._:@/-`, and ISO-8601 timestamps; a record with anything else is
+dropped and counted on stderr. A named `--stream` file or `--factory-home` /
+`--claude-home` that does not exist, a non-regular input, or an `-o` that is an
+input or lies inside the Claude projects folder is refused with one line and
+exit 2, and a failed run leaves no output file.
 Files dropped into `~/Library/Application Support/Keysreallysafe/imports/` are
 imported on the next ingest and moved to `imports/imported/`.
 
