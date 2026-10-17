@@ -53,13 +53,14 @@ final class RemoteImportTests: XCTestCase {
         XCTAssertEqual(try db.usageEvents(from: "1970-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", source: .cloud).count, 2)
     }
 
-    func testReimportingTheSameFileUpdatesInsteadOfDoubleCounting() throws {
+    func testReimportingTheSameFileChangesNothingInsteadOfDoubleCounting() throws {
         let (db, dir) = try makeDB()
         let file = try write([droidLine(model: "kimi-k3", response: "r1"), claudeLine], in: dir)
         _ = try RemoteImport.importFile(file, db: db)
         let again = try RemoteImport.importFile(file, db: db)
         XCTAssertEqual(again.rowsInserted, 0)
-        XCTAssertEqual(again.rowsUpdated, 2)
+        XCTAssertEqual(again.rowsUpdated, 0, "identical values are not an update")
+        XCTAssertEqual(again.rowsUnchanged, 2)
         XCTAssertEqual(try rows(db).count, 2)
     }
 

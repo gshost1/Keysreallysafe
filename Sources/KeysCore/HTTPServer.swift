@@ -732,6 +732,9 @@ final class APIHandler: @unchecked Sendable {
                 "inserted": report.rowsInserted,
                 "updated": report.rowsUpdated,
                 "errors": report.parseErrors,
+                "unchanged": report.rowsUnchanged,
+                "rows_skipped": report.rowsSkipped,
+                "held": report.held,
             ]
         }
         return HTTPResponse.json(200, payload)

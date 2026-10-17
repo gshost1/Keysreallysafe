@@ -27,9 +27,9 @@ enum DroidUsage {
             // TokenTotals.normalized and reused here so the row and the Chart cannot disagree.
             let tokens = TokenTotals.normalized(event)
             guard let at = UTC.parse(event.occurredAt) else { continue }
-            if at >= fiveHourStart { out.fiveHour += tokens }
-            if at >= week.0 && at < week.1 { out.weekly += tokens }
-            if at >= month.0 && at < month.1 { out.monthly += tokens }
+            if at >= fiveHourStart { out.fiveHour.saturatingAdd(tokens) }
+            if at >= week.0 && at < week.1 { out.weekly.saturatingAdd(tokens) }
+            if at >= month.0 && at < month.1 { out.monthly.saturatingAdd(tokens) }
         }
         return out
     }

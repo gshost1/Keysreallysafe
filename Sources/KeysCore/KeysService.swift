@@ -940,6 +940,7 @@ final class KeysService: @unchecked Sendable {
             throw AppError.usage("type purge to confirm")
         }
         try Self.removeRetiredOptimizerData(catalogDirectory: catalog.path.deletingLastPathComponent())
+        try Self.removeRemoteImports(importsDir)
         gatewayLock.withLock { gatewayCache.removeAll() }
         revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
@@ -957,6 +958,14 @@ final class KeysService: @unchecked Sendable {
         let fm = FileManager.default
         guard (try? fm.attributesOfItem(atPath: directory.path)) != nil else { return }
         try fm.removeItem(at: directory)
+    }
+
+    /// The drop folder holds usage exports the user brought in, and `imported/` inside it keeps
+    /// the ones already read; purge promises to leave no Keysrs data behind, so both go.
+    static func removeRemoteImports(_ directory: URL) throws {
+        var info = stat()
+        guard lstat(directory.path, &info) == 0 else { return }
+        try FileManager.default.removeItem(at: directory)
     }
 
     func recordKeyEvent(
@@ -1021,7 +1030,7 @@ final class KeysService: @unchecked Sendable {
         ingestLock.lock()
         defer { ingestLock.unlock() }
         let report = try RemoteImport.importFile(url, db: catalog)
-        if report.handledRows > 0 {
+        if report.changedRows > 0 {
             try catalog.bumpCatalogVersion()
             try catalog.ensureModelColors()
         }
@@ -1059,7 +1068,10 @@ final class KeysService: @unchecked Sendable {
         if source == .all {
             reports.append(("imports", RemoteImport.drain(importsDir, db: catalog)))
         }
-        let changed = reports.reduce(0) { $0 + $1.report.handledRows }
+        // Local rows that arrived since a remote import make some of its rows duplicates or
+        // shrink a session total; settle that on every pass, whichever source was ingested.
+        let reconciled = try RemoteImport.reconcile(db: catalog)
+        let changed = reports.reduce(reconciled) { $0 + $1.report.changedRows }
         if changed > 0 {
             try catalog.bumpCatalogVersion()
         }

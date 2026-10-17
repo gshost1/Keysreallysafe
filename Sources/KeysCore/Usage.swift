@@ -43,15 +43,22 @@ struct IngestReport: Equatable {
     var rowsUpdated: Int = 0
     var parseErrors: Int = 0
     var rowsSkipped: Int = 0
+    var rowsUnchanged: Int = 0
+    var rowsDeleted: Int = 0
     var held: [String] = []
 
     /// Rows this pass dealt with, stored or recognised: a remote file whose rows were all
     /// skipped (this Mac already holds them) is finished, not stuck.
-    var handledRows: Int { rowsInserted + rowsUpdated + rowsSkipped }
+    var handledRows: Int { rowsInserted + rowsUpdated + rowsSkipped + rowsUnchanged }
+
+    /// Rows whose stored values this pass actually changed; only these move the catalog version.
+    var changedRows: Int { rowsInserted + rowsUpdated + rowsDeleted }
 
     var line: String {
         var text = "files=\(filesScanned) inserted=\(rowsInserted) updated=\(rowsUpdated) errors=\(parseErrors)"
         if rowsSkipped > 0 { text += " skipped=\(rowsSkipped)" }
+        if rowsUnchanged > 0 { text += " unchanged=\(rowsUnchanged)" }
+        if rowsDeleted > 0 { text += " deleted=\(rowsDeleted)" }
         if !held.isEmpty { text += " held=\(held.joined(separator: ","))" }
         return text
     }
@@ -62,6 +69,8 @@ struct IngestReport: Equatable {
         rowsUpdated += other.rowsUpdated
         parseErrors += other.parseErrors
         rowsSkipped += other.rowsSkipped
+        rowsUnchanged += other.rowsUnchanged
+        rowsDeleted += other.rowsDeleted
         held += other.held
     }
 }
@@ -246,6 +255,9 @@ struct SpendRow: Equatable {
     /// buckets alone cannot answer how many counted. The chart reads this total instead of
     /// re-deriving a rule from the model name.
     var countedTokens: Int = 0
+    /// The part of `countedTokens` that came from imported remote rows (never priced), so a row
+    /// that mixes local and imported calls can say its USD estimate covers only the local part.
+    var remoteCountedTokens: Int = 0
     var usd: Double?
     var usdEstimate: Double?
     var key: String? = nil
@@ -408,6 +420,7 @@ extension SpendRow {
             "cache_creation_tokens": cacheCreationTokens,
             "reasoning_tokens": reasoningTokens,
             "counted_tokens": countedTokens,
+            "remote_counted_tokens": remoteCountedTokens,
             "model_calls": modelCalls,
             "usd": usd as Any? ?? NSNull(),
             "usd_estimate": usdEstimate as Any? ?? NSNull(),

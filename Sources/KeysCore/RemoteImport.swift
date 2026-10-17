@@ -35,6 +35,14 @@ enum RemoteImport {
     /// A file written this recently may still be growing; the drop folder leaves it for the next pass.
     static let settleSeconds: TimeInterval = 10
 
+    /// Meta keys: the original stream-json total of a session (`remote-total:<session>`), so the
+    /// residual can be recomputed whenever the session's rows change; and the size and time a
+    /// held drop-folder file had when it was last tried (`import-attempt:<name>`).
+    static let totalPrefix = "remote-total:"
+    static let attemptPrefix = "import-attempt:"
+
+    static func isRemote(_ source: String) -> Bool { source == droidSource || source == claudeSource }
+
     private static let badLine = AppError.ingestIO("bad remote usage line")
 
     /// `followSymlinks` is true for a path the user typed, false for the drop folder, where a
@@ -69,62 +77,117 @@ enum RemoteImport {
             let fresh = requests.filter { !known.contains(duplicateKey($0)) }
             report.rowsSkipped += requests.count - fresh.count
 
-            // A session's per-request rows are the better record, so its total only covers
-            // what they do not: the residual, per bucket, kept as one `unattributed` row and
-            // dropped once the rows account for the whole total.
-            let sessions = Set(fresh.filter { $0.source == droidSource }.map(\.sessionId)).union(totals.keys)
-            var before: [String: SessionState] = [:]
-            for session in sessions { before[session] = try sessionState(session, db: db) }
             for event in fresh {
-                if try db.insertUsage(event) { report.rowsInserted += 1 } else { report.rowsUpdated += 1 }
+                switch try db.upsertUsage(event) {
+                case .inserted: report.rowsInserted += 1
+                case .updated: report.rowsUpdated += 1
+                case .unchanged: report.rowsUnchanged += 1
+                }
             }
+            // A session's per-request rows, remote or this Mac's own, are the better record, so
+            // its total only covers what they do not: the residual, per bucket, kept as one
+            // `unattributed` row and dropped once the rows account for the whole total.
+            for total in totals.values { try storeTotal(total, db: db) }
+            let sessions = Set(fresh.filter { $0.source == droidSource }.map(\.sessionId)).union(totals.keys)
             for session in sessions.sorted() {
-                guard let old = before[session] else { continue }
-                let now = try sessionState(session, db: db)
-                let total = totals[session]
-                if total == nil && now.rows == old.rows { continue }
-                let target: Buckets
-                if let total {
-                    target = Buckets(total).minus(now.rows)
-                } else if let stored = old.total {
-                    target = Buckets(stored).minus(now.rows.minus(old.rows, clamp: false), clamp: true)
-                } else {
-                    continue
+                let outcome = try settle(session: session, db: db)
+                if totals[session] != nil {
+                    switch outcome {
+                    case .inserted: report.rowsInserted += 1
+                    case .updated: report.rowsUpdated += 1
+                    case .unchanged: report.rowsUnchanged += 1
+                    case .covered, .deleted: report.rowsSkipped += 1
+                    case .none: break
+                    }
                 }
-                if target.isZero {
-                    try db.deleteUsage(source: droidSource, sessionId: session,
-                                       promptId: completionPrefix + session, model: unattributedModel)
-                    if total != nil { report.rowsSkipped += 1 }
-                    continue
-                }
-                guard var row = total ?? old.total else { continue }
-                target.apply(to: &row)
-                let inserted = try db.insertUsage(row)
-                if total != nil {
-                    if inserted { report.rowsInserted += 1 } else { report.rowsUpdated += 1 }
-                }
+                if outcome == .deleted { report.rowsDeleted += 1 }
             }
         }
         return report
     }
 
-    /// What a session holds under droid-remote: the per-request rows' buckets and the
-    /// `unattributed` total or residual row, if any.
-    private struct SessionState {
-        var rows = Buckets()
-        var total: UsageEvent?
+    private struct StoredTotal: Codable {
+        var input: Int, output: Int, cacheRead: Int, cacheWrite: Int, reasoning: Int
+        var at: String
     }
 
-    private static func sessionState(_ session: String, db: CatalogDB) throws -> SessionState {
-        var state = SessionState()
-        for event in try db.usageRows(source: droidSource, sessionId: session) {
-            if event.promptId == completionPrefix + session && event.model == unattributedModel {
-                state.total = event
-            } else {
-                state.rows = state.rows.plus(Buckets(event))
+    private static func storeTotal(_ total: UsageEvent, db: CatalogDB) throws {
+        let stored = StoredTotal(input: total.inputTokens, output: total.outputTokens, cacheRead: total.cachedReadTokens,
+                                 cacheWrite: total.cacheCreationTokens, reasoning: total.reasoningTokens, at: total.occurredAt)
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        try db.setMeta(totalPrefix + total.sessionId, String(decoding: data, as: UTF8.self))
+    }
+
+    private enum Settled { case none, inserted, updated, unchanged, covered, deleted }
+
+    /// Rewrites a session's residual row from its stored total and the rows it has now (remote
+    /// per-request rows and this Mac's `droid-local` rows of the same session id). Idempotent:
+    /// the same inputs write nothing.
+    private static func settle(session: String, db: CatalogDB) throws -> Settled {
+        guard let raw = try db.metaValue(totalPrefix + session),
+              let stored = try? JSONDecoder().decode(StoredTotal.self, from: Data(raw.utf8))
+        else { return .none }
+        var rows = Buckets()
+        let totalPrompt = completionPrefix + session
+        for source in [droidSource, "droid-local"] {
+            for event in try db.usageRows(source: source, sessionId: session)
+            where !(event.promptId == totalPrompt && event.model == unattributedModel) {
+                rows = rows.plus(Buckets(event))
             }
         }
-        return state
+        var total = Buckets()
+        total.input = stored.input; total.output = stored.output; total.cacheRead = stored.cacheRead
+        total.cacheWrite = stored.cacheWrite; total.reasoning = stored.reasoning
+        let target = total.minus(rows)
+        if target.isZero {
+            guard try db.usageExists(source: droidSource, sessionId: session, promptId: totalPrompt, model: unattributedModel)
+            else { return .covered }
+            try db.deleteUsage(source: droidSource, sessionId: session, promptId: totalPrompt, model: unattributedModel)
+            return .deleted
+        }
+        var row = UsageEvent(source: droidSource, sessionId: session, promptId: totalPrompt, model: unattributedModel,
+                             occurredAt: stored.at, provider: "other", inputTokens: 0, outputTokens: 0)
+        target.apply(to: &row)
+        switch try db.upsertUsage(row) {
+        case .inserted: return .inserted
+        case .updated: return .updated
+        case .unchanged: return .unchanged
+        }
+    }
+
+    /// Run after every local ingest pass. A remote row this Mac has since recorded itself
+    /// (same prompt id and model under the matching local source) is the same call, so the
+    /// remote copy goes; then every stored session total is settled again, since local rows
+    /// that arrived later count as that session's detail. Returns the rows it changed.
+    static func reconcile(db: CatalogDB) throws -> Int {
+        try db.withTransaction {
+            var changes = 0
+            var affected = Set<String>()
+            for (remote, local) in [(droidSource, "droid-local"), (claudeSource, "claude-local")] {
+                let rows = try db.usageRows(source: remote).filter { !$0.promptId.hasPrefix(completionPrefix) }
+                let ids = Array(Set(rows.map(\.promptId)))
+                var held = Set<String>()
+                for start in stride(from: 0, to: ids.count, by: 400) {
+                    let chunk = Array(ids[start..<min(start + 400, ids.count)])
+                    for (prompt, model) in try db.usagePromptModels(source: local, promptIds: chunk) {
+                        held.insert("\(prompt)\u{1f}\(model)")
+                    }
+                }
+                for row in rows where held.contains("\(row.promptId)\u{1f}\(row.model)") {
+                    try db.deleteUsage(source: remote, sessionId: row.sessionId, promptId: row.promptId, model: row.model)
+                    changes += 1
+                    if remote == droidSource { affected.insert(row.sessionId) }
+                }
+            }
+            for (key, _) in try db.metaRows(prefix: totalPrefix) { affected.insert(String(key.dropFirst(totalPrefix.count))) }
+            for session in affected.sorted() {
+                switch try settle(session: session, db: db) {
+                case .inserted, .updated, .deleted: changes += 1
+                case .none, .unchanged, .covered: break
+                }
+            }
+            return changes
+        }
     }
 
     /// The five token buckets, added with saturation and subtracted without going below zero.
@@ -353,23 +416,35 @@ enum RemoteImport {
     /// Imports every regular file in `dir` that has stopped changing and moves it to
     /// `dir/imported/`, so a file is read once and the folder shows what is still waiting.
     /// Only a file that stored rows with no parse errors moves; any other stays where it is and
-    /// is named in the report's `held`. Links, directories, FIFOs and devices are never read.
+    /// is named in the report's `held`. A held file is tried again only after its size or time
+    /// changes (the last attempt is kept in the catalog), so a stuck file costs one read, not
+    /// one per pass. A file dated in the future is held too, named rather than silently passed
+    /// over. Links, directories, FIFOs and devices are never read.
     static func drain(_ dir: URL, db: CatalogDB, now: Date = Date()) -> IngestReport {
         var report = IngestReport()
         let fm = FileManager.default
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return report }
         let done = dir.appendingPathComponent("imported", isDirectory: true)
+        var present = Set<String>()
         for name in names.sorted() where !name.hasPrefix(".") {
             let file = dir.appendingPathComponent(name)
             var info = stat()
             guard lstat(file.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            present.insert(name)
             let modified = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
-            if now.timeIntervalSince1970 - modified < settleSeconds { continue }
+            let age = now.timeIntervalSince1970 - modified
+            // A couple of seconds of slack for clocks that disagree; a file beyond that will not settle.
+            if age < -2 { report.held.append(name); continue }
+            if age < settleSeconds { continue }
+            let signature = "\(info.st_size):\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)"
+            let key = attemptPrefix + name
+            if (try? db.metaValue(key)) == signature { report.held.append(name); continue }
             do {
                 let imported = try importFile(file, db: db, followSymlinks: false)
                 report.add(imported)
                 guard imported.parseErrors == 0, imported.handledRows > 0 else {
+                    try? db.setMeta(key, signature)
                     report.held.append(name)
                     continue
                 }
@@ -379,10 +454,16 @@ enum RemoteImport {
                     target = done.appendingPathComponent("\(UTC.iso(Date()).replacingOccurrences(of: ":", with: "-"))-\(name)")
                 }
                 try fm.moveItem(at: file, to: target)
+                try? db.deleteMeta(key)
             } catch {
                 report.parseErrors += 1
+                try? db.setMeta(key, signature)
                 report.held.append(name)
             }
+        }
+        // A record for a file that is no longer waiting has nothing left to remember.
+        for (key, _) in (try? db.metaRows(prefix: attemptPrefix)) ?? [] where !present.contains(String(key.dropFirst(attemptPrefix.count))) {
+            try? db.deleteMeta(key)
         }
         return report
     }

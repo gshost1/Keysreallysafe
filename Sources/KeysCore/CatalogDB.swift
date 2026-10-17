@@ -305,6 +305,17 @@ final class CatalogDB: @unchecked Sendable {
         try one("SELECT value FROM meta WHERE key = ?;", key) { columnText($0, 0) } ?? nil
     }
 
+    /// Meta rows whose key starts with `prefix` (a literal prefix, not a LIKE pattern).
+    func metaRows(prefix: String) throws -> [(key: String, value: String)] {
+        try query("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ? ORDER BY key;", prefix.count, prefix) {
+            (columnText($0, 0) ?? "", columnText($0, 1) ?? "")
+        }
+    }
+
+    func deleteMeta(_ key: String) throws {
+        try run("DELETE FROM meta WHERE key = ?;", key)
+    }
+
     func setMeta(_ key: String, _ value: String) throws {
         try run("""
             INSERT INTO meta (key, value) VALUES (?, ?)
@@ -759,6 +770,36 @@ final class CatalogDB: @unchecked Sendable {
     /// What a reader stores for a line that carried no time. A re-import of the same row must
     /// not push a row that has a real time back to it, where it would leave every window.
     private static let epochSentinel = "1970-01-01T00:00:00Z"
+
+    enum Upsert { case inserted, updated, unchanged }
+
+    /// `insertUsage` that tells a real change from a replay of identical values, so a re-import
+    /// neither counts rows as updated nor bumps the catalog version for nothing. The epoch
+    /// sentinel is compared the way the upsert applies it: it never replaces a real time.
+    func upsertUsage(_ event: UsageEvent) throws -> Upsert {
+        try withLock {
+            let old = try one(
+                "SELECT \(Self.usageColumns) FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ?;",
+                event.source, event.sessionId, event.promptId, event.model, row: event(from:)
+            )
+            guard let old else {
+                try insertUsage(event)
+                return .inserted
+            }
+            var merged = event
+            if merged.occurredAt == Self.epochSentinel && old.occurredAt != Self.epochSentinel {
+                merged.occurredAt = old.occurredAt
+            }
+            if merged == old { return .unchanged }
+            try insertUsage(event)
+            return .updated
+        }
+    }
+
+    /// Every row under `source`.
+    func usageRows(source: String) throws -> [UsageEvent] {
+        try query("SELECT \(Self.usageColumns) FROM usage_events WHERE source = ?;", source, row: event(from:))
+    }
 
     /// Every row a session has under `source`, for remote import's residual arithmetic.
     func usageRows(source: String, sessionId: String) throws -> [UsageEvent] {

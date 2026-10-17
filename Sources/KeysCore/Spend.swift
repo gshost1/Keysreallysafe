@@ -269,7 +269,7 @@ struct SpendQueries {
             totals.cachedReadTokens.saturatingAdd(event.cachedReadTokens)
             totals.reasoningTokens.saturatingAdd(event.reasoningTokens)
             totals.tokens.saturatingAdd(TokenTotals.normalized(event))
-            if event.source == RemoteImport.droidSource || event.source == RemoteImport.claudeSource {
+            if RemoteImport.isRemote(event.source) {
                 totals.remoteTokens.saturatingAdd(TokenTotals.normalized(event))
             }
             if event.source == "grok-local", let ticks = event.costUsdTicks {
@@ -560,6 +560,7 @@ extension SpendRow {
         // mixes tools (by=model groups on the model id) would otherwise force every reader to
         // guess a rule from the model name, and guess wrong for the second tool.
         countedTokens.saturatingAdd(TokenTotals.normalized(event))
+        if RemoteImport.isRemote(event.source) { remoteCountedTokens.saturatingAdd(TokenTotals.normalized(event)) }
         let cost = SpendQueries.cost(event)
         if let usd = cost.usd { self.usd = (self.usd ?? 0) + usd }
         if let estimate = cost.estimate { usdEstimate = (usdEstimate ?? 0) + estimate }

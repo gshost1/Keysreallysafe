@@ -416,7 +416,7 @@ final class ProductAnalytics: @unchecked Sendable {
         var perDay: [String: [String: Int]] = [:]
         for event in events {
             guard let source = Self.sources[event.source] else { continue }
-            perDay[source, default: [:]][String(event.occurredAt.prefix(10)), default: 0] += TokenTotals.normalized(event)
+            perDay[source, default: [:]][String(event.occurredAt.prefix(10)), default: 0].saturatingAdd(TokenTotals.normalized(event))
         }
         var rows: [[String: Any]] = []
         for daily in table.daily_tokens {
@@ -508,13 +508,13 @@ final class ProductAnalytics: @unchecked Sendable {
             let key = "\(source)|\(provider)|\(model)"
             var row = usage[key] ?? UsageRow(source: source, provider: provider, model: model, prompts: 0, model_calls: 0,
                 input_tokens: 0, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0)
-            row.prompts = clamp(row.prompts + 1)
-            row.model_calls = clamp(row.model_calls + max(0, event.modelCalls ?? 0))
-            row.input_tokens = clamp(row.input_tokens + event.inputTokens)
-            row.output_tokens = clamp(row.output_tokens + event.outputTokens)
-            row.cached_read_tokens = clamp(row.cached_read_tokens + event.cachedReadTokens)
-            row.cache_creation_tokens = clamp(row.cache_creation_tokens + event.cacheCreationTokens)
-            row.reasoning_tokens = clamp(row.reasoning_tokens + event.reasoningTokens)
+            row.prompts = clamp(row.prompts.saturatingAdding(1))
+            row.model_calls = clamp(row.model_calls.saturatingAdding(max(0, event.modelCalls ?? 0)))
+            row.input_tokens = clamp(row.input_tokens.saturatingAdding(event.inputTokens))
+            row.output_tokens = clamp(row.output_tokens.saturatingAdding(event.outputTokens))
+            row.cached_read_tokens = clamp(row.cached_read_tokens.saturatingAdding(event.cachedReadTokens))
+            row.cache_creation_tokens = clamp(row.cache_creation_tokens.saturatingAdding(event.cacheCreationTokens))
+            row.reasoning_tokens = clamp(row.reasoning_tokens.saturatingAdding(event.reasoningTokens))
             usage[key] = row
         }
         var gateway: [String: GatewayRow] = [:]
@@ -528,10 +528,10 @@ final class ProductAnalytics: @unchecked Sendable {
             row.requests = clamp(row.requests + 1)
             row.ok = clamp(row.ok + (ok ? 1 : 0))
             row.failed = clamp(row.failed + (ok ? 0 : 1))
-            row.input_tokens = clamp(row.input_tokens + call.inputTokens)
-            row.output_tokens = clamp(row.output_tokens + call.outputTokens)
-            row.cache_read_tokens = clamp(row.cache_read_tokens + call.cachedReadTokens)
-            row.cache_write_tokens = clamp(row.cache_write_tokens + call.cacheCreationTokens)
+            row.input_tokens = clamp(row.input_tokens.saturatingAdding(call.inputTokens))
+            row.output_tokens = clamp(row.output_tokens.saturatingAdding(call.outputTokens))
+            row.cache_read_tokens = clamp(row.cache_read_tokens.saturatingAdding(call.cachedReadTokens))
+            row.cache_write_tokens = clamp(row.cache_write_tokens.saturatingAdding(call.cacheCreationTokens))
             gateway[key] = row
         }
         // The collector's row limits are 40; the biggest rows are kept, ties by name.
