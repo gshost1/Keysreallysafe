@@ -2825,11 +2825,37 @@ test("the Cloud chip shows imported remote usage, kimi-k3 included, and names it
   await page.goto(`${origin}/?range=week`);
   await page.waitForLoadState("networkidle");
   await page.locator("#usage-totals b").first().waitFor();
-  assert.match(await page.locator("#usage-totals").textContent(), /from local logs and cloud imports/);
+  const usage = await page.locator("#usage-totals").textContent();
+  assert.match(usage, /This month from local logs\s*2\.4K tokens/, "the local share stands alone: " + usage);
+  assert.match(usage, /2\.7K imported from cloud \(not priced\)/, "the imported share is separate: " + usage);
+
+  // USD on Usage: local dollars, with the cloud tokens noted as not priced rather than dropped.
+  await page.locator("#usage-totals").getByText("show USD").click();
+  await page.waitForFunction(() => /tokens imported from cloud \(not priced\)/.test(document.getElementById("usage-totals").textContent));
+  await page.locator("#usage-totals").getByText("show tokens").click().catch(() => {});
 
   await page.getByRole("tab", { name: "Chart" }).click();
+  // All view with imports acknowledges them.
+  await page.waitForFunction(() => /imported from the cloud/.test(document.getElementById("chart-caption").textContent));
   await page.locator('[data-source="cloud"]').click();
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 2);
+  // Tokens view on Cloud: imported wording, never "local logs".
+  const cloudText = async () => (await page.locator("#chart-caption").textContent()) + " " + (await page.locator("#totals").textContent());
+  let ct = await cloudText();
+  assert.match(ct, /imported/i);
+  assert.doesNotMatch(ct, /local logs|Grok's own cost log/, ct);
+  // USD view on Cloud: "not priced", not a measured $0.00.
+  await page.locator('[data-unit="usd"]').click();
+  await page.waitForFunction(() => /not priced/.test(document.getElementById("totals").textContent));
+  ct = await cloudText();
+  assert.doesNotMatch(ct, /\$0\.00|local logs|Grok's own cost log/, ct);
+  await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
+  await page.keyboard.press("Shift+C");
+  await page.waitForFunction(() => window.__copied);
+  const copied = await page.evaluate(() => window.__copied);
+  assert.ok(copied, "Copy totals produced text");
+  assert.doesNotMatch(copied, /\$0\.00|local logs|Grok's own cost log/, copied);
+  await page.locator('[data-unit="tokens"]').click();
   assert.ok(spendSearches().some((s) => s.includes("source=cloud")), "the chip reaches the engine as source=cloud");
   const mix = await page.locator("#mix").textContent();
   assert.match(mix, /kimi-k3/);

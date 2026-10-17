@@ -807,7 +807,7 @@
       ? "calls this Mac routed through the local gateway with a key from the vault"
         + (state.provider ? " · " + providerName(state.provider) : "")
         + " · click a model to see it alone"
-      : "estimated from the tools' own local logs on this Mac, not from plan invoices · click a model to see it alone";
+      : ledgerCaption(data) + " · click a model to see it alone";
     renderInterval(data);
     if (empty) return;
     state.series = buildSeries(rows);
@@ -817,6 +817,13 @@
   }
 
   const projectMode = () => state.group === "project" && !todayMode();
+  // Imported cloud tokens are counted inside totals.tokens but were never read off this Mac, so
+  // every sentence that says "local logs" has to know whether they are in the view.
+  const remoteTokens = (data) => Number(((data || {}).totals || {}).remote_tokens) || 0;
+  const LOCAL_LEDGER = "estimated from the tools' own local logs on this Mac, not from plan invoices";
+  const CLOUD_LEDGER = "imported cloud usage, recorded off this Mac and brought in with keys usage import · no dollar figure, so not priced";
+  const MIXED_LEDGER = "estimated from the tools' own local logs on this Mac, plus usage imported from the cloud, which carries no dollar figure and is not priced";
+  const ledgerCaption = (data) => state.source === "cloud" ? CLOUD_LEDGER : remoteTokens(data) > 0 ? MIXED_LEDGER : LOCAL_LEDGER;
   function renderEmpty(empty, data) {
     const node = $("spend-empty");
     if (!empty) return;
@@ -1012,8 +1019,22 @@
         nodes.push(el("span", { class: "totals-sep", text: "·" }));
         nodes.push(el("span", { class: "totals-note", text: fmtTokens(b.cached) + " cached input", title: CACHE_NOTE }));
       }
-      nodes.push(el("span", { class: "totals-note", text: "counted from the tools' own local logs on this Mac · choose USD above for cost" }));
+      const rt = remoteTokens(data);
+      nodes.push(el("span", { class: "totals-note", text: src === "cloud"
+        ? "imported from the cloud, recorded off this Mac · not priced"
+        : rt > 0 ? `counted from the tools' own local logs on this Mac plus ${fmtTokens(rt)} tokens imported from the cloud · choose USD above for cost`
+        : "counted from the tools' own local logs on this Mac · choose USD above for cost" }));
       $("totals").replaceChildren(...nodes);
+      return;
+    }
+    if (src === "cloud") {
+      // Imported usage has no dollar figure; a measured-looking $0.00 would be a fake number.
+      const tk = state.series.reduce((a, s) => a + s.tokens, 0);
+      $("totals").replaceChildren(
+        el("span", { class: "totals-main none", text: "not priced", title: "Imported cloud usage carries no dollar figure." }),
+        el("span", { class: "totals-sep", text: "·" }),
+        el("span", { class: "totals-part" }, el("b", { text: fmtTokens(tk) }), " tokens"),
+        el("span", { class: "totals-note", text: "imported from the cloud, recorded off this Mac · choose Tokens above to compare" }));
       return;
     }
     const showGrok = src === "all" || src === "grok";
@@ -1048,6 +1069,11 @@
     if (unpriced.length) {
       nodes.push(el("span", { class: "totals-sep", text: "·" }));
       nodes.push(el("span", { class: "totals-note warn", text: `${plural(unpriced.length, "model", "models")} unpriced`, title: "No local price row, left out of the estimate: " + unpriced.join(", ") }));
+    }
+    const rtUsd = remoteTokens(data);
+    if (rtUsd > 0) {
+      nodes.push(el("span", { class: "totals-sep", text: "·" }));
+      nodes.push(el("span", { class: "totals-note warn", text: `${fmtTokens(rtUsd)} tokens imported from the cloud (not priced)`, title: "Imported cloud usage carries no dollar figure, so it is left out of the dollars here rather than counted as zero." }));
     }
     nodes.push(el("span", { class: "totals-note", text: anyEst ? (src === "grok" ? "" : "≈ estimate from list prices, not an invoice") : "from Grok's own cost log" }));
     $("totals").replaceChildren(...nodes);
@@ -2543,6 +2569,8 @@
         : `${tokens} · ${fmtInt(b.input)} in · ${fmtInt(b.output)} out · ${fmtInt(b.cached)} cached input read · ${fmtInt(b.created)} cache writes`;
       const foot = keysMode()
         ? "_Requests routed through the local gateway only; token counts are what the providers reported._"
+        : src === "cloud" ? "_Imported cloud usage, recorded off this Mac; not a plan invoice._"
+        : remoteTokens(data) > 0 ? `_Counted from the tools' own local logs on this Mac plus ${fmtTokens(remoteTokens(data))} tokens imported from the cloud, not a plan invoice._`
         : "_Counted from the tools' own local logs on this Mac, not a plan invoice._";
       return `${head}\n${line}\n${foot}\n`;
     }
@@ -2557,6 +2585,11 @@
       const line = `${money} · ${fmtInt(calls)} ${calls === 1 ? "request" : "requests"} · ${fmtTokens(Number(t.gateway_tokens) || 0)} tokens`
         + (unpriced > 0 ? ` · ${plural(unpriced, "request", "requests")} unpriced` : "");
       return `${head}\n${line}\n_Calls routed through the local gateway only. Receipt where reported, else a list-price estimate; unpriced calls are left out rather than counted as zero._\n`;
+    }
+    if (src === "cloud") {
+      const rangeCloud = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
+        : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
+      return `**Keysrs · Subscriptions · Cloud · ${rangeCloud}**\nnot priced · ${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens\n_Imported cloud usage, recorded off this Mac; it carries no dollar figure._\n`;
     }
     const showGrok = src === "all" || src === "grok";
     const showClaude = src === "all" || src === "claude";
@@ -2574,9 +2607,11 @@
       : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
     const head = `**Keysrs · Subscriptions · ${rangeLabel}${projectMode() ? " · by project" : ""}**`;
     const line = `${anyEst ? "≈ " : ""}${fmtUsd(grok + claude + openai)} total · ${parts.join(" · ")}`;
-    const foot = anyEst
+    const rtMd = remoteTokens(data);
+    const foot = (anyEst
       ? "_Estimated from the tools' own local logs on this Mac, not a plan invoice._"
-      : "_From Grok's own cost log; local logs only, not a plan invoice._";
+      : "_From Grok's own cost log; local logs only, not a plan invoice._")
+      + (rtMd > 0 ? `\n_Plus ${fmtTokens(rtMd)} tokens imported from the cloud (not priced)._` : "");
     return `${head}\n${line}\n${foot}\n`;
   }
   async function copyTotals() {
@@ -3293,15 +3328,20 @@
         cached += (r.cached_read_tokens || 0);
       }
       const total = [...byFamily.values()].reduce((a, n) => a + n, 0);
+      const remote = Number(t.remote_tokens) || 0;
       const parts = [];
       for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["gemini", "Gemini"], ["glm", "GLM"], ["kimi", "Kimi"], ["deepseek", "DeepSeek"], ["other", "other"]]) {
         const n = byFamily.get(fam) || 0;
         if (n > 0) parts.push(el("span", {}, el("b", { text: fmtTokens(n) }), " " + label));
       }
       const nodes = [
-        el("span", { text: t.remote_tokens > 0 ? "This month from local logs and cloud imports " : "This month from local logs " }),
-        el("b", { text: fmtTokens(total) + " tokens", title: cached ? CACHE_NOTE : null }),
+        el("span", { text: "This month from local logs " }),
+        el("b", { text: fmtTokens(Math.max(0, total - remote)) + " tokens", title: cached ? CACHE_NOTE : null }),
       ];
+      if (remote > 0) {
+        nodes.push(el("span", { class: "totals-sep", text: "·" }),
+          el("span", {}, el("b", { text: fmtTokens(remote) }), " imported from cloud (not priced)"));
+      }
       for (const p of parts) { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); }
       nodes.push(el("span", { class: "totals-sep", text: "·" }), toggle,
         el("span", { class: "totals-sep", text: "·" }), chart);
@@ -3311,6 +3351,7 @@
     const grok = Number(t.grok_usd) || 0;
     const claude = Number(t.claude_usd_estimate) || 0;
     const openai = Number(t.openai_usd_estimate) || 0;
+    const remoteUsd = Number(t.remote_tokens) || 0;
     node.replaceChildren(
       el("span", { text: "This month from local logs " }),
       el("b", { text: (claude + openai > 0 ? "≈ " : "") + fmtUsd(grok + claude + openai) }),
@@ -3320,6 +3361,8 @@
       el("span", {}, el("b", { text: "≈ " + fmtUsd(claude) }), " Claude"),
       el("span", { class: "totals-sep", text: "·" }),
       el("span", {}, el("b", { text: "≈ " + fmtUsd(openai) }), " OpenAI"),
+      ...(remoteUsd > 0 ? [el("span", { class: "totals-sep", text: "·" }),
+        el("span", {}, el("b", { text: fmtTokens(remoteUsd) }), " tokens imported from cloud (not priced)")] : []),
       el("span", { class: "totals-sep", text: "·" }),
       toggle,
       el("span", { class: "totals-sep", text: "·" }),
