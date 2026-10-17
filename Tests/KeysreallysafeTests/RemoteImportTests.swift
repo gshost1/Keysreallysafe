@@ -87,23 +87,32 @@ final class RemoteImportTests: XCTestCase {
         XCTAssertFalse(dump.contains("SENTINEL"))
     }
 
+    /// A session total the per-request rows cover bucket for bucket, so nothing of it is left
+    /// over; what a partial set of rows leaves is pinned in RemoteImportHardeningTests.
+    private func coveredCompletion(session: String? = nil) -> String {
+        "{\"type\":\"completion\",\"session_id\":\"\(session ?? self.session)\",\"timestamp\":1792118855901,"
+            + "\"usage\":{\"input_tokens\":5,\"output_tokens\":5,\"cache_read_input_tokens\":5,"
+            + "\"cache_creation_input_tokens\":0,\"thinking_tokens\":5}}"
+    }
+
     func testPerRequestRowsReplaceASessionTotalInEitherOrder() throws {
         // Total first, details later: the total is deleted.
         let (db, dir) = try makeDB()
-        _ = try RemoteImport.importFile(try write([completionLine()], in: dir, name: "a.jsonl"), db: db)
+        _ = try RemoteImport.importFile(try write([coveredCompletion()], in: dir, name: "a.jsonl"), db: db)
+        XCTAssertEqual(try rows(db).map(\.model), ["unattributed"])
         _ = try RemoteImport.importFile(try write([droidLine(model: "kimi-k3", response: "r1")], in: dir, name: "b.jsonl"), db: db)
         XCTAssertEqual(try rows(db).map(\.model), ["kimi-k3"])
 
         // Details first, total later: the total is never stored.
         let (db2, dir2) = try makeDB()
         _ = try RemoteImport.importFile(try write([droidLine(model: "kimi-k3", response: "r1")], in: dir2, name: "b.jsonl"), db: db2)
-        _ = try RemoteImport.importFile(try write([completionLine()], in: dir2, name: "a.jsonl"), db: db2)
+        _ = try RemoteImport.importFile(try write([coveredCompletion()], in: dir2, name: "a.jsonl"), db: db2)
         XCTAssertEqual(try rows(db2).map(\.model), ["kimi-k3"])
 
         // Both in one file: details win; another session's total still counts.
         let (db3, dir3) = try makeDB()
         _ = try RemoteImport.importFile(try write([
-            completionLine(), droidLine(model: "kimi-k3", response: "r1"), completionLine(session: "other-session"),
+            coveredCompletion(), droidLine(model: "kimi-k3", response: "r1"), completionLine(session: "other-session"),
         ], in: dir3), db: db3)
         XCTAssertEqual(try rows(db3).map(\.sessionId).sorted(), ["other-session", session].sorted())
     }
@@ -143,10 +152,10 @@ final class RemoteImportTests: XCTestCase {
                        "beside the catalog, so a test catalog never drains the real folder")
         try FileManager.default.createDirectory(at: imports, withIntermediateDirectories: true)
         _ = try write([droidLine(model: "kimi-k3", response: "r1")], in: imports, name: "run1.jsonl")
-        let report = RemoteImport.drain(imports, db: db)
+        let report = RemoteImport.drain(imports, db: db, now: Date().addingTimeInterval(120))
         XCTAssertEqual(report.rowsInserted, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: imports.appendingPathComponent("run1.jsonl").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: imports.appendingPathComponent("imported/run1.jsonl").path))
-        XCTAssertEqual(RemoteImport.drain(imports, db: db).rowsInserted, 0, "the imported/ folder is not read again")
+        XCTAssertEqual(RemoteImport.drain(imports, db: db, now: Date().addingTimeInterval(120)).rowsInserted, 0, "the imported/ folder is not read again")
     }
 }

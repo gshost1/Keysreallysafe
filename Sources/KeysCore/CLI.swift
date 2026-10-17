@@ -214,6 +214,11 @@ struct UsageImportCommand: ParsableCommand {
             Make the file where the usage happened with scripts/export-remote-usage.py, which keeps \
             only usage fields. Rows are stored as droid-remote and claude-remote and charted under Cloud. \
             Files dropped into the imports folder beside the catalog are imported on the next ingest.
+
+            Every path is attempted, in order, and each prints one line: "<name>: <counts>" or \
+            "<name>: <error>". The exit status is non-zero if any path failed (missing, not a regular \
+            file, unreadable, over the size limit) or any file stored nothing while having lines it \
+            could not read; an empty file or one with no usage lines is not a failure.
             """
     )
 
@@ -221,10 +226,32 @@ struct UsageImportCommand: ParsableCommand {
 
     func run() throws {
         let service = try AppFactory.makeService()
-        for path in files {
-            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-            print("\(url.lastPathComponent): \(try service.importRemote(url).line)")
+        if UsageImportRun.run(paths: files, importer: { try service.importRemote($0) }, emit: { print($0) }) {
+            throw ExitCode.failure
         }
+    }
+}
+
+/// The per-path loop of `keys usage import`, apart from the command so a test can drive it.
+/// A bad path never stops the ones after it; the result says whether any path failed.
+enum UsageImportRun {
+    static func run(paths: [String], importer: (URL) throws -> IngestReport, emit: (String) -> Void) -> Bool {
+        var failed = false
+        for path in paths {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            let name = url.lastPathComponent.isEmpty ? path : url.lastPathComponent
+            do {
+                let report = try importer(url)
+                emit("\(name): \(report.line)")
+                if report.parseErrors > 0 && report.handledRows == 0 { failed = true }
+            } catch {
+                // An AppError is already a sentence; anything else would print a type name.
+                let reason = (error as? AppError)?.description ?? "could not be imported"
+                emit("\(name): \(reason)")
+                failed = true
+            }
+        }
+        return failed
     }
 }
 

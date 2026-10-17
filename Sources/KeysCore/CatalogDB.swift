@@ -756,6 +756,25 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
+    /// What a reader stores for a line that carried no time. A re-import of the same row must
+    /// not push a row that has a real time back to it, where it would leave every window.
+    private static let epochSentinel = "1970-01-01T00:00:00Z"
+
+    /// Every row a session has under `source`, for remote import's residual arithmetic.
+    func usageRows(source: String, sessionId: String) throws -> [UsageEvent] {
+        try query("SELECT \(Self.usageColumns) FROM usage_events WHERE source = ? AND session_id = ?;",
+                  source, sessionId, row: event(from:))
+    }
+
+    /// The (prompt id, model) pairs among `promptIds` that `source` already holds, whatever the session.
+    func usagePromptModels(source: String, promptIds: [String]) throws -> [(prompt: String, model: String)] {
+        guard !promptIds.isEmpty else { return [] }
+        let marks = promptIds.map { _ in "?" }.joined(separator: ", ")
+        let args: [any SQLBindable] = [source] + promptIds
+        return try query("SELECT prompt_id, model FROM usage_events WHERE source = ? AND prompt_id IN (\(marks));",
+                         args) { (columnText($0, 0) ?? "", columnText($0, 1) ?? "") }
+    }
+
     private static let usageColumns = """
         source, session_id, prompt_id, model, occurred_at, provider,
         cwd, session_title, model_calls,
@@ -774,7 +793,9 @@ final class CatalogDB: @unchecked Sendable {
                 INSERT INTO usage_events (\(Self.usageColumns))
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, session_id, prompt_id, model) DO UPDATE SET
-                  occurred_at = excluded.occurred_at,
+                  occurred_at = CASE WHEN excluded.occurred_at = '\(Self.epochSentinel)'
+                                      AND usage_events.occurred_at != '\(Self.epochSentinel)'
+                                     THEN usage_events.occurred_at ELSE excluded.occurred_at END,
                   provider = excluded.provider,
                   cwd = excluded.cwd,
                   session_title = excluded.session_title,

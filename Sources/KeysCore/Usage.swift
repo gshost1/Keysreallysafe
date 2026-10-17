@@ -21,7 +21,8 @@ struct UsageEvent: Equatable {
     var httpStatus: Int? = nil
 
     var tokenCount: Int {
-        inputTokens + outputTokens + cachedReadTokens + cacheCreationTokens + reasoningTokens
+        inputTokens.saturatingAdding(outputTokens).saturatingAdding(cachedReadTokens)
+            .saturatingAdding(cacheCreationTokens).saturatingAdding(reasoningTokens)
     }
 }
 
@@ -41,9 +42,18 @@ struct IngestReport: Equatable {
     var rowsInserted: Int = 0
     var rowsUpdated: Int = 0
     var parseErrors: Int = 0
+    var rowsSkipped: Int = 0
+    var held: [String] = []
+
+    /// Rows this pass dealt with, stored or recognised: a remote file whose rows were all
+    /// skipped (this Mac already holds them) is finished, not stuck.
+    var handledRows: Int { rowsInserted + rowsUpdated + rowsSkipped }
 
     var line: String {
-        "files=\(filesScanned) inserted=\(rowsInserted) updated=\(rowsUpdated) errors=\(parseErrors)"
+        var text = "files=\(filesScanned) inserted=\(rowsInserted) updated=\(rowsUpdated) errors=\(parseErrors)"
+        if rowsSkipped > 0 { text += " skipped=\(rowsSkipped)" }
+        if !held.isEmpty { text += " held=\(held.joined(separator: ","))" }
+        return text
     }
 
     mutating func add(_ other: IngestReport) {
@@ -51,6 +61,8 @@ struct IngestReport: Equatable {
         rowsInserted += other.rowsInserted
         rowsUpdated += other.rowsUpdated
         parseErrors += other.parseErrors
+        rowsSkipped += other.rowsSkipped
+        held += other.held
     }
 }
 
@@ -297,6 +309,10 @@ struct SpendReport: Equatable {
     var catalogVersion: Int = 0
 
     static let captionText = "local tool spend on this Mac — not a subscription remaining bar"
+    /// With imported rows the total is no longer only what this Mac's logs measured, and the
+    /// imported part carries no price, so the caption says both instead of "local".
+    static let captionTextWithCloud =
+        "tool usage on this Mac plus imported cloud usage (not priced) — not a subscription remaining bar"
 
     func jsonObject() -> [String: Any] {
         var totalsObj: [String: Any] = [

@@ -1021,7 +1021,7 @@ final class KeysService: @unchecked Sendable {
         ingestLock.lock()
         defer { ingestLock.unlock() }
         let report = try RemoteImport.importFile(url, db: catalog)
-        if report.rowsInserted + report.rowsUpdated > 0 {
+        if report.handledRows > 0 {
             try catalog.bumpCatalogVersion()
             try catalog.ensureModelColors()
         }
@@ -1059,7 +1059,7 @@ final class KeysService: @unchecked Sendable {
         if source == .all {
             reports.append(("imports", RemoteImport.drain(importsDir, db: catalog)))
         }
-        let changed = reports.reduce(0) { $0 + $1.report.rowsInserted + $1.report.rowsUpdated }
+        let changed = reports.reduce(0) { $0 + $1.report.handledRows }
         if changed > 0 {
             try catalog.bumpCatalogVersion()
         }

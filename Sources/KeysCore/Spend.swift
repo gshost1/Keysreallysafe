@@ -3,7 +3,7 @@ import Foundation
 enum OpenAIEstimate {
     /// Input already includes cached reads; reasoning is billed as output.
     static func usd(model: String, input: Int, output: Int, cacheRead: Int, reasoning: Int) -> Double? {
-        ModelPrices.usd(model: model, input: input, output: output + reasoning, cacheRead: cacheRead, cacheWrite: 0,
+        ModelPrices.usd(model: model, input: input, output: output.saturatingAdding(reasoning), cacheRead: cacheRead, cacheWrite: 0,
                         inputIncludesCacheRead: true)
     }
 }
@@ -16,29 +16,40 @@ enum ClaudeEstimate {
     }
 }
 
+extension Int {
+    /// `self + other`, held at Int.max or Int.min instead of trapping. A stored row can carry any
+    /// count a buggy or hostile source wrote, and one of them must not take `keys spend` or the
+    /// dashboard down for good.
+    func saturatingAdding(_ other: Int) -> Int {
+        let (sum, overflow) = addingReportingOverflow(other)
+        return overflow ? (other > 0 ? Int.max : Int.min) : sum
+    }
+
+    mutating func saturatingAdd(_ other: Int) { self = saturatingAdding(other) }
+}
+
 enum TokenTotals {
     /// Claude includes cache tokens; Codex and Grok exclude cached reads and include reasoning;
     /// Droid's log bills every bucket it reports, so all five count; a gateway call follows its
     /// provider's API.
     static func normalized(_ event: UsageEvent) -> Int {
+        func sum(_ parts: Int...) -> Int { parts.reduce(0) { $0.saturatingAdding($1) } }
+        let (i, o, r, w, t) = (event.inputTokens, event.outputTokens, event.cachedReadTokens,
+                               event.cacheCreationTokens, event.reasoningTokens)
         switch event.source {
         case "claude-local", "claude-remote":
-            return event.inputTokens + event.outputTokens
-                + event.cachedReadTokens + event.cacheCreationTokens
+            return sum(i, o, r, w)
         case "codex-local", "grok-local":
-            return event.inputTokens + event.outputTokens + event.reasoningTokens
+            return sum(i, o, t)
         case "droid-local", "droid-remote":
-            return event.inputTokens + event.outputTokens
-                + event.cachedReadTokens + event.cacheCreationTokens + event.reasoningTokens
+            return sum(i, o, r, w, t)
         case "gateway":
             if Providers.provider(id: event.provider)?.api == "anthropic" {
-                return event.inputTokens + event.outputTokens
-                    + event.cachedReadTokens + event.cacheCreationTokens
+                return sum(i, o, r, w)
             }
-            return event.inputTokens + event.outputTokens + event.reasoningTokens
+            return sum(i, o, t)
         default:
-            return event.inputTokens + event.outputTokens
-                + event.cachedReadTokens + event.cacheCreationTokens + event.reasoningTokens
+            return sum(i, o, r, w, t)
         }
     }
 }
@@ -116,8 +127,8 @@ enum ModelPrices {
                     inputIncludesCacheRead: Bool) -> Double? {
         guard let price = lookup(model) else { return nil }
         let m = 1_000_000.0
-        let billedInput = inputIncludesCacheRead ? max(0, input - cacheRead) : input
-        return (Double(billedInput) / m) * price.inputPerMTok
+        let billedInput = inputIncludesCacheRead ? max(0, Double(input) - Double(cacheRead)) : Double(input)
+        return (billedInput / m) * price.inputPerMTok
             + (Double(output) / m) * price.outputPerMTok
             + (Double(cacheWrite) / m) * price.inputPerMTok * 1.25
             + (Double(cacheRead) / m) * price.cacheReadPerMTok
@@ -230,43 +241,43 @@ struct SpendQueries {
             if event.source == "gateway" {
                 // Separate ledger. See SpendTotals.usdEstimate.
                 let tok = TokenTotals.normalized(event)
-                totals.gatewayTokens += tok
-                totals.gatewayCalls += 1
+                totals.gatewayTokens.saturatingAdd(tok)
+                totals.gatewayCalls.saturatingAdd(1)
                 if keysMode {
                     // This report is the gateway ledger, so its token totals are the headline
                     // ones and agree with the rows and buckets below. Dollars stay in the
                     // gateway fields: unpriced calls must not read as zero.
-                    totals.inputTokens += event.inputTokens
-                    totals.outputTokens += event.outputTokens
-                    totals.cachedReadTokens += event.cachedReadTokens
-                    totals.reasoningTokens += event.reasoningTokens
-                    totals.tokens += tok
+                    totals.inputTokens.saturatingAdd(event.inputTokens)
+                    totals.outputTokens.saturatingAdd(event.outputTokens)
+                    totals.cachedReadTokens.saturatingAdd(event.cachedReadTokens)
+                    totals.reasoningTokens.saturatingAdd(event.reasoningTokens)
+                    totals.tokens.saturatingAdd(tok)
                 }
                 if let est = gatewayUsd(event) {
                     gatewayEstimate += est
                     hasGatewayEstimate = true
-                    totals.gatewayPricedTokens += tok
+                    totals.gatewayPricedTokens.saturatingAdd(tok)
                 } else {
                     gatewayUnpriced.insert(event.model.isEmpty ? "unknown" : event.model)
-                    totals.gatewayUnpricedTokens += tok
-                    totals.gatewayUnpricedCalls += 1
+                    totals.gatewayUnpricedTokens.saturatingAdd(tok)
+                    totals.gatewayUnpricedCalls.saturatingAdd(1)
                 }
                 continue
             }
-            totals.inputTokens += event.inputTokens
-            totals.outputTokens += event.outputTokens
-            totals.cachedReadTokens += event.cachedReadTokens
-            totals.reasoningTokens += event.reasoningTokens
-            totals.tokens += TokenTotals.normalized(event)
+            totals.inputTokens.saturatingAdd(event.inputTokens)
+            totals.outputTokens.saturatingAdd(event.outputTokens)
+            totals.cachedReadTokens.saturatingAdd(event.cachedReadTokens)
+            totals.reasoningTokens.saturatingAdd(event.reasoningTokens)
+            totals.tokens.saturatingAdd(TokenTotals.normalized(event))
             if event.source == RemoteImport.droidSource || event.source == RemoteImport.claudeSource {
-                totals.remoteTokens += TokenTotals.normalized(event)
+                totals.remoteTokens.saturatingAdd(TokenTotals.normalized(event))
             }
             if event.source == "grok-local", let ticks = event.costUsdTicks {
                 grokTicks += ticks
             }
             if event.source == "claude-local" {
                 let tok = TokenTotals.normalized(event)
-                totals.claudeTokens += tok
+                totals.claudeTokens.saturatingAdd(tok)
                 if let est = ClaudeEstimate.usd(
                     model: event.model,
                     input: event.inputTokens,
@@ -276,15 +287,15 @@ struct SpendQueries {
                 ) {
                     claudeEstimate += est
                     hasClaudeEstimate = true
-                    totals.claudePricedTokens += tok
+                    totals.claudePricedTokens.saturatingAdd(tok)
                 } else {
                     claudeUnpriced.insert(event.model)
-                    totals.claudeUnpricedTokens += tok
+                    totals.claudeUnpricedTokens.saturatingAdd(tok)
                 }
             }
             if event.source == "codex-local" {
                 let tok = TokenTotals.normalized(event)
-                totals.openaiTokens += tok
+                totals.openaiTokens.saturatingAdd(tok)
                 if let est = OpenAIEstimate.usd(
                     model: event.model,
                     input: event.inputTokens,
@@ -294,10 +305,10 @@ struct SpendQueries {
                 ) {
                     openaiEstimate += est
                     hasOpenAIEstimate = true
-                    totals.openaiPricedTokens += tok
+                    totals.openaiPricedTokens.saturatingAdd(tok)
                 } else {
                     openaiUnpriced.insert(event.model)
-                    totals.openaiUnpricedTokens += tok
+                    totals.openaiUnpricedTokens.saturatingAdd(tok)
                 }
             }
         }
@@ -333,7 +344,7 @@ struct SpendQueries {
             range: range,
             by: by,
             source: source,
-            caption: SpendReport.captionText,
+            caption: totals.remoteTokens > 0 ? SpendReport.captionTextWithCloud : SpendReport.captionText,
             totals: totals,
             rows: rows,
             daily: daily,
@@ -539,16 +550,16 @@ extension SpendRow {
     /// Adds one event's tokens and cost. `usd` and `usdEstimate` stay nil until a priced event
     /// arrives, so an unpriced row reads as unknown rather than $0.
     mutating func add(_ event: UsageEvent) {
-        inputTokens += event.inputTokens
-        outputTokens += event.outputTokens
-        cachedReadTokens += event.cachedReadTokens
-        cacheCreationTokens += event.cacheCreationTokens
-        reasoningTokens += event.reasoningTokens
-        modelCalls += event.modelCalls ?? 0
+        inputTokens.saturatingAdd(event.inputTokens)
+        outputTokens.saturatingAdd(event.outputTokens)
+        cachedReadTokens.saturatingAdd(event.cachedReadTokens)
+        cacheCreationTokens.saturatingAdd(event.cacheCreationTokens)
+        reasoningTokens.saturatingAdd(event.reasoningTokens)
+        modelCalls.saturatingAdd(event.modelCalls ?? 0)
         // The row's counted total is stated once, here, under the source's own rule: a row that
         // mixes tools (by=model groups on the model id) would otherwise force every reader to
         // guess a rule from the model name, and guess wrong for the second tool.
-        countedTokens += TokenTotals.normalized(event)
+        countedTokens.saturatingAdd(TokenTotals.normalized(event))
         let cost = SpendQueries.cost(event)
         if let usd = cost.usd { self.usd = (self.usd ?? 0) + usd }
         if let estimate = cost.estimate { usdEstimate = (usdEstimate ?? 0) + estimate }
