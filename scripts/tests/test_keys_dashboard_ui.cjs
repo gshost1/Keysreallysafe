@@ -2801,6 +2801,8 @@ test("arrow keys step over the provider header rows", async (page, origin) => {
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator("#keys-body tr[data-name]").first().waitFor();
   await page.locator("#keys-search").focus();
+  // Nothing is selected yet on a fresh load; ArrowDown from the search box still lands on the
+  // first key row rather than doing nothing.
   await page.keyboard.press("ArrowDown");
   const selected = () => page.evaluate(() => document.activeElement.closest("tr")?.dataset.name || null);
   assert.equal(await selected(), "bravo");

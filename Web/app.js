@@ -567,8 +567,10 @@
       state.keySearch = "";
       renderKeys();
     } else if (e.key === "ArrowDown") {
-      const tr = rowFor(state.selected);
-      if (tr) { e.preventDefault(); tr.focus(); }
+      // Nothing may be selected yet (or the selection was filtered out); the first visible
+      // key row is where the arrow should land then, not nowhere.
+      const tr = rowFor(state.selected) || [...$("keys-body").rows].find(isKeyRow);
+      if (tr) { e.preventDefault(); selectRow(tr.dataset.name, true); }
     }
   });
   const usdMode = () => state.unit === "usd";
@@ -1532,9 +1534,12 @@
       const row = keyRow(k);
       return head ? [head, row].flat() : row;
     });
+    // A background refresh replaces the rows; if a row had focus, it would fall to <body> and the
+    // next arrow key would be spent refocusing instead of moving.
+    const hadFocus = body.contains(document.activeElement) && document.activeElement.matches("tr");
     body.replaceChildren(...rows.flat());
     if (state.eventsOpen) loadEvents(state.eventsOpen);
-    if (opts.focus && state.selected) {
+    if ((opts.focus || hadFocus) && state.selected) {
       const tr = rowFor(state.selected);
       if (tr) tr.focus();
     }
