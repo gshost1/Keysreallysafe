@@ -108,7 +108,7 @@ function spend(params) {
   if (provider && source !== "keys") return [400, { error: "provider requires source=keys" }];
   const day = localDay(new Date());
   if (source !== "keys") {
-    if (!localRows.length) return [200, { source, by, start_day: day, end_day: day, totals: {}, rows: [], daily: [], points: [], models: [] }];
+    if (!localRows.length) return [200, { source, by, start_day: day, end_day: day, ...(emptyIngested ? { last_ingest_at: day + "T00:00:00Z" } : {}), totals: {}, rows: [], daily: [], points: [], models: [] }];
     // The vendor families, mirrored from the page's family(): the family decides a row's
     // fallback token rule and where a sourceless row's tool filter looks.
     const fam = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude"
@@ -124,7 +124,7 @@ function spend(params) {
       || (source === "cloud" ? ["droid-remote", "claude-remote"].includes(r.source)
         : r.source ? r.source === wireSource[source] : fam(r.model) === source);
     const rows = localRows.filter(inSource);
-    if (!rows.length) return [200, { source, by, start_day: day, end_day: day, totals: {}, rows: [], daily: [], points: [], models: [] }];
+    if (!rows.length) return [200, { source, by, start_day: day, end_day: day, ...(emptyIngested ? { last_ingest_at: day + "T00:00:00Z" } : {}), totals: {}, rows: [], daily: [], points: [], models: [] }];
     // The engine's own token rule (`TokenTotals.normalized`), applied per source: Claude's
     // cache buckets are billed tokens, Codex's and Grok's reasoning tokens are, and Droid's
     // log bills every bucket it reports. A row with no source follows its model's family.
@@ -144,7 +144,7 @@ function spend(params) {
     for (const r of rows) {
       const m = merged.get(r.model) || {
         model: r.model, input_tokens: 0, output_tokens: 0, cached_read_tokens: 0,
-        cache_creation_tokens: 0, reasoning_tokens: 0, model_calls: 0, counted_tokens: 0,
+        cache_creation_tokens: 0, reasoning_tokens: 0, model_calls: 0, counted_tokens: 0, remote_counted_tokens: 0,
         usd: null, usd_estimate: null,
       };
       m.input_tokens += r.input_tokens || 0;
@@ -154,6 +154,7 @@ function spend(params) {
       m.reasoning_tokens += r.reasoning_tokens || 0;
       m.model_calls += r.model_calls || 0;
       m.counted_tokens += counted(r);
+      if (/-remote$/.test(r.source || "")) m.remote_counted_tokens += counted(r);
       if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
       if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
       merged.set(r.model, m);
@@ -964,6 +965,7 @@ const openKeysSource = async (page, origin, query = "range=week") => {
   await page.waitForFunction(inKeysScope);
   await page.locator("#mix .mix-row").first().waitFor();
 };
+let emptyIngested = false;
 const spendSearches = () => requests.filter((r) => r.pathname === "/api/spend").map((r) => r.search);
 const totalsText = (page) => page.locator("#totals").textContent();
 // Dollars are a price put on the measurement afterwards, so they are on screen only once the
@@ -2871,6 +2873,39 @@ test("the Cloud chip shows imported remote usage, kimi-k3 included, and names it
   await page.waitForFunction(() => /No imported cloud usage/.test(document.getElementById("spend-empty").textContent));
   assert.equal(await page.locator('[data-source="cloud"]').getAttribute("aria-checked"), "true", "?source=cloud boots into the chip");
   assert.match(await page.locator("#spend-empty").textContent(), /keys usage import/);
+});
+
+test("a model with local and imported tokens: families stay local, the dollar row is partly priced", async (page, origin) => {
+  localRows = [
+    ...subscriptionRows(),
+    { source: "claude-local", model: "claude-sonnet-5", input_tokens: 0, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: null },
+    { source: "claude-remote", model: "claude-sonnet-5", input_tokens: 5000, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: null },
+  ];
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#usage-totals b").first().waitFor();
+  const usage = await page.locator("#usage-totals").textContent();
+  assert.match(usage, /1\.7K Claude/, "the Claude part is the local tokens only: " + usage);
+  assert.match(usage, /5K imported from cloud \(not priced\)/, usage);
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator('[data-unit="usd"]').click();
+  await page.waitForFunction(() => /partly priced/.test(document.getElementById("mix").textContent));
+  const row = page.locator('#mix .mix-row[data-model="claude-sonnet-5"]');
+  assert.match(await row.textContent(), /partly priced/);
+  assert.match(await row.locator(".mix-usd").getAttribute("title"), /not priced/);
+  assert.doesNotMatch(await page.locator('#mix .mix-row[data-model="grok-4"]').textContent(), /partly priced/);
+});
+
+test("the All empty state and the ingest wording name imported cloud usage and Droid", async (page, origin) => {
+  localRows = [];
+  emptyIngested = true;
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction(() => /Nothing in this range/.test(document.getElementById("spend-empty").textContent));
+  assert.match(await page.locator("#spend-empty").textContent(), /imported cloud usage/);
+  assert.match(await page.locator("#btn-ingest").getAttribute("title"), /Droid/);
+  emptyIngested = false;
 });
 
 test("without imports the Usage line still says local logs", async (page, origin) => {

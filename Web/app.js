@@ -726,6 +726,7 @@
       // happened to be named first.
       if (!m) { merged.set(id, { ...r, counted: rowCounted(r, projectMode()) }); continue; }
       m.counted += rowCounted(r, projectMode());
+      m.remote_counted_tokens = (m.remote_counted_tokens || 0) + (Number(r.remote_counted_tokens) || 0);
       for (const f of ["input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "reasoning_tokens", "model_calls"]) m[f] = (m[f] || 0) + (r[f] || 0);
       if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
       if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
@@ -750,6 +751,7 @@
       provider: r.provider || null,
       usd: r.usd,
       est: r.usd_estimate,
+      remote: Number(r.remote_counted_tokens) || 0,
     }));
     if (projectMode()) {
       items.sort((a, b) => b.tokens - a.tokens);
@@ -766,10 +768,11 @@
       if (entry) {
         out.push({ ...it, color: entry.color, slot: entry.slot, members: [it.model] });
       } else {
-        if (!other) other = { model: projectMode() ? "Other projects" : OTHER, label: projectMode() ? "Other projects" : OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, reasoning: 0, calls: 0, usd: null, est: null, color: "var(--s-other)", slot: OTHER_SLOT + 1, members: [] };
+        if (!other) other = { model: projectMode() ? "Other projects" : OTHER, label: projectMode() ? "Other projects" : OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, reasoning: 0, calls: 0, usd: null, est: null, remote: 0, color: "var(--s-other)", slot: OTHER_SLOT + 1, members: [] };
         other.tokens += it.tokens; other.input += it.input; other.output += it.output;
         other.cached += it.cached; other.created += it.created; other.calls += it.calls || 0;
         other.reasoning += it.reasoning || 0;
+        other.remote += it.remote || 0;
         if (it.usd != null) other.usd = (other.usd || 0) + it.usd;
         if (it.est != null) other.est = (other.est || 0) + it.est;
         other.members.push(it.model);
@@ -820,6 +823,7 @@
   // Imported cloud tokens are counted inside totals.tokens but were never read off this Mac, so
   // every sentence that says "local logs" has to know whether they are in the view.
   const remoteTokens = (data) => Number(((data || {}).totals || {}).remote_tokens) || 0;
+  const PARTLY_PRICED_NOTE = "Partly priced: this figure covers the local tokens only. Imported cloud tokens carry no dollar figure and are not priced.";
   const LOCAL_LEDGER = "estimated from the tools' own local logs on this Mac, not from plan invoices";
   const CLOUD_LEDGER = "imported cloud usage, recorded off this Mac and brought in with keys usage import · no dollar figure, so not priced";
   const MIXED_LEDGER = "estimated from the tools' own local logs on this Mac, plus usage imported from the cloud, which carries no dollar figure and is not priced";
@@ -853,7 +857,7 @@
     } else if (!ingested) {
       node.append("No sessions ingested yet. ", el("button", { type: "button", class: "link", text: "Ingest now", onclick: ingest }));
     } else {
-      node.append("Nothing in this range. Claude Code, Grok, Codex and Droid logs were read; none fall in ",
+      node.append("Nothing in this range. Claude Code, Grok, Codex and Droid logs were read, and no imported cloud usage falls in ",
         el("span", { text: state.range === "week" ? "this week." : state.range === "month" ? "this month." : "today." }));
     }
   }
@@ -1073,7 +1077,7 @@
     const rtUsd = remoteTokens(data);
     if (rtUsd > 0) {
       nodes.push(el("span", { class: "totals-sep", text: "·" }));
-      nodes.push(el("span", { class: "totals-note warn", text: `${fmtTokens(rtUsd)} tokens imported from the cloud (not priced)`, title: "Imported cloud usage carries no dollar figure, so it is left out of the dollars here rather than counted as zero." }));
+      nodes.push(el("span", { class: "totals-note warn", text: `partly priced · ${fmtTokens(rtUsd)} tokens imported from the cloud (not priced)`, title: "Imported cloud usage carries no dollar figure, so it is left out of the dollars here rather than counted as zero." }));
     }
     nodes.push(el("span", { class: "totals-note", text: anyEst ? (src === "grok" ? "" : "≈ estimate from list prices, not an invoice") : "from Grok's own cost log" }));
     $("totals").replaceChildren(...nodes);
@@ -1123,12 +1127,14 @@
     const items = state.series.map((s) => {
       const d = dollars(s);
       const isEst = s.usd == null && s.est != null;
+      // A dollar figure on a row that also holds imported cloud tokens covers only its local part.
+      const partlyPriced = d != null && (s.remote || 0) > 0;
       const usdNode = d == null
         ? el("span", { class: "mix-usd none", text: "—", title: keysMode() ? "No cost receipt and no list price for this model: unknown, not zero." : null })
         : el("span", {
           class: "mix-usd" + (usd ? " mix-primary" : ""),
-          text: (partial ? "≥ " : "") + (isEst ? "≈ " : "") + fmtUsd(d),
-          title: partial ? partialNote.trim() : null,
+          text: (partlyPriced ? "partly priced · " : "") + (partial ? "≥ " : "") + (isEst ? "≈ " : "") + fmtUsd(d),
+          title: partlyPriced ? PARTLY_PRICED_NOTE + (partial ? partialNote : "") : partial ? partialNote.trim() : null,
         });
       const noTokens = keysMode() && !s.tokens && (s.calls || 0) > 0;
       const tokNode = el("span", {
@@ -1155,6 +1161,7 @@
         + (usd && isEst ? "\nUSD is an estimate from list prices" : "")
         + (usd && keysMode() && d == null ? "\nUSD unknown: no receipt and no list price" : "")
         + (usd && partial && d != null ? partialNote : "")
+        + (usd && partlyPriced ? "\n" + PARTLY_PRICED_NOTE : "")
         + (s.members.length > 1 ? `\n${(s.labels || s.members).join(", ")}` : "");
       const on = state.mixFilter === s.model;
       const li = el("li", {
@@ -2636,7 +2643,7 @@
     const btn = $("btn-ingest");
     btn.disabled = true;
     btn.textContent = "Ingesting…";
-    say("Reading Grok, Claude Code and Codex session logs.", true);
+    say("Reading Grok, Claude Code, Codex and Droid session logs.", true);
     try {
       const r = await api("/api/ingest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "all" }) });
       let inserted = 0, errors = 0, files = 0;
@@ -3321,10 +3328,12 @@
     if (!usdMode()) {
       const rows = data.rows || [];
       const byFamily = new Map();
-      let cached = 0;
+      let cached = 0, hasRemoteField = false;
       for (const r of rows) {
         const f = family(r.model || "");
-        byFamily.set(f, (byFamily.get(f) || 0) + rowCounted(r));
+        // Imported cloud tokens are shown once, as their own share, so the families are local only.
+        byFamily.set(f, (byFamily.get(f) || 0) + Math.max(0, rowCounted(r) - (Number(r.remote_counted_tokens) || 0)));
+        if (r.remote_counted_tokens != null) hasRemoteField = true;
         cached += (r.cached_read_tokens || 0);
       }
       const total = [...byFamily.values()].reduce((a, n) => a + n, 0);
@@ -3336,7 +3345,7 @@
       }
       const nodes = [
         el("span", { text: "This month from local logs " }),
-        el("b", { text: fmtTokens(Math.max(0, total - remote)) + " tokens", title: cached ? CACHE_NOTE : null }),
+        el("b", { text: fmtTokens(hasRemoteField ? total : Math.max(0, total - remote)) + " tokens", title: cached ? CACHE_NOTE : null }),
       ];
       if (remote > 0) {
         nodes.push(el("span", { class: "totals-sep", text: "·" }),
