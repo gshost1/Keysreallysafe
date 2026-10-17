@@ -61,6 +61,8 @@ enum SourceFilter: String {
     case openai
     /// Droid's own per-request ledger, from the Streaming-result records in its log.
     case droid
+    /// Usage imported from off this Mac: Claude Code cloud sessions and Factory droid runs.
+    case cloud
     /// The local gateway's own ledger: calls this Mac routed through an API key in the vault.
     /// Nothing else observes a key, so a provider called directly is not in here.
     case keys
@@ -72,6 +74,7 @@ enum SourceFilter: String {
         case .claude: return ["claude-local"]
         case .openai: return ["codex-local"]
         case .droid: return ["droid-local"]
+        case .cloud: return [RemoteImport.droidSource, RemoteImport.claudeSource]
         case .keys: return ["gateway"]
         }
     }
@@ -179,6 +182,9 @@ struct SpendTotals: Equatable {
     var claudeTokens: Int = 0
     var claudeUsdEstimate: Double?
     var openaiTokens: Int = 0
+    /// Tokens imported from off this Mac (`droid-remote`, `claude-remote`), already inside
+    /// `tokens`; the page uses it to stop calling the total "from local logs".
+    var remoteTokens: Int = 0
     var openaiUsdEstimate: Double?
     var inputTokens: Int = 0
     var outputTokens: Int = 0
@@ -296,6 +302,7 @@ struct SpendReport: Equatable {
         var totalsObj: [String: Any] = [
             "grok_usd": totals.grokUsd,
             "claude_tokens": totals.claudeTokens,
+            "remote_tokens": totals.remoteTokens,
             "openai_tokens": totals.openaiTokens,
             "input_tokens": totals.inputTokens,
             "output_tokens": totals.outputTokens,

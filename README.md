@@ -464,7 +464,8 @@ keys grants [--all] [--json]
 keys revoke <id> | --all [--key <name>]
 keys test <name> [--json]
 keys models <name> [--grep <text>] [--cached] [--json]
-keys ingest [all|grok|claude|openai]
+keys ingest [all|grok|claude|openai|droid]
+keys usage import <file>...
 keys spend [--month|--week] [--json] [--by model|session|project]
 keys status
 keys doctor
@@ -521,6 +522,32 @@ the bytes themselves. Claude turns are counted once per message id even though C
 writes one log line per content block. Prices come from `Fixtures/models.json`
 (OpenRouter's list, refreshed by hand with `scripts/refresh-models.sh`) with a
 few hand-maintained rows that win on exact match.
+
+### Usage from off this Mac
+
+Claude Code cloud sessions and droid runs on another machine write their logs
+there, not here, so nothing above sees them. To count them, make an export
+where the usage happened and bring the file over:
+
+```sh
+python3 scripts/export-remote-usage.py -o usage.jsonl [--stream droid-stream.jsonl]   # in the cloud session
+keys usage import usage.jsonl                                                          # on the Mac
+```
+
+The script copies only usage: droid's Streaming-result token fields with the
+model and session ids, the `usage` block, model and ids of each Claude Code
+assistant turn, and, for a `droid exec -o stream-json` capture passed with
+`--stream`, the closing event's token totals. Prompts, answers, tool output,
+paths and Factory credits stay behind. Rows are stored as `droid-remote` and
+`claude-remote` and appear in the Chart under **Cloud** (and in All); they never
+feed the local Droid or Claude plan windows, carry no dollar estimate, and are
+not part of share-to-compare analytics. Droid's per-request lines keep each
+request's model, so a run that fell back from Claude to `kimi-k3` shows both. A
+stream-json total covers a whole session and is stored under the model
+`unattributed`; if the same session's per-request lines are imported too, they
+replace it. Re-importing a file updates rows rather than adding them twice.
+Files dropped into `~/Library/Application Support/Keysreallysafe/imports/` are
+imported on the next ingest and moved to `imports/imported/`.
 
 The program is `/Applications/Keysrs.app`. Your data lives under
 `~/Library/Application Support/Keysreallysafe/` (SQLite catalog, preferences,

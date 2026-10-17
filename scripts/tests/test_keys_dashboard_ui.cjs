@@ -119,7 +119,10 @@ function spend(params) {
     // (Droid runs Claude and GLM models); a row of the old shape, with no source, keeps being
     // matched by its model's family the way this suite always matched it.
     const wireSource = { grok: "grok-local", claude: "claude-local", openai: "codex-local", droid: "droid-local" };
-    const inSource = (r) => source === "all" || (r.source ? r.source === wireSource[source] : fam(r.model) === source);
+    // Cloud is the two imported sources, mirroring SourceFilter.cloud.
+    const inSource = (r) => source === "all"
+      || (source === "cloud" ? ["droid-remote", "claude-remote"].includes(r.source)
+        : r.source ? r.source === wireSource[source] : fam(r.model) === source);
     const rows = localRows.filter(inSource);
     if (!rows.length) return [200, { source, by, start_day: day, end_day: day, totals: {}, rows: [], daily: [], points: [], models: [] }];
     // The engine's own token rule (`TokenTotals.normalized`), applied per source: Claude's
@@ -129,9 +132,9 @@ function spend(params) {
       const input = r.input_tokens || 0, output = r.output_tokens || 0;
       const cache = (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0);
       const reasoning = r.reasoning_tokens || 0;
-      if (r.source === "claude-local") return input + output + cache;
+      if (r.source === "claude-local" || r.source === "claude-remote") return input + output + cache;
       if (r.source === "codex-local" || r.source === "grok-local") return input + output + reasoning;
-      if (r.source === "droid-local") return input + output + cache + reasoning;
+      if (r.source === "droid-local" || r.source === "droid-remote") return input + output + cache + reasoning;
       return input + output + (fam(r.model) === "claude" ? cache : reasoning);
     };
     // by=model groups by the model id, so the same model from two tools is one row: the raw
@@ -166,7 +169,8 @@ function spend(params) {
     return [200, {
       range: params.get("range") || "today", by, source,
       start_day: day, end_day: day, last_ingest_at: day + "T00:00:00Z",
-      totals: { grok_usd: grokUsd, claude_usd_estimate: claudeEst, openai_usd_estimate: openaiEst },
+      totals: { grok_usd: grokUsd, claude_usd_estimate: claudeEst, openai_usd_estimate: openaiEst,
+        remote_tokens: rows.filter((r) => /-remote$/.test(r.source || "")).reduce((a, r) => a + counted(r), 0) },
       rows: modelRows,
       daily: by === "hour" ? [] : modelRows.map((r) => ({ ...r, day, tokens: r.counted_tokens, usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null })),
       points: by === "hour"
@@ -2806,6 +2810,52 @@ test("arrow keys step over the provider header rows", async (page, origin) => {
   assert.equal(await selected(), "alpha");
 });
 
+
+
+// ---------- imported cloud usage ----------
+
+// Usage from a cloud session or a remote droid run is imported, never read off this Mac, so it
+// has its own chip and the Usage line stops calling the total "from local logs".
+test("the Cloud chip shows imported remote usage, kimi-k3 included, and names it on Usage", async (page, origin) => {
+  localRows = [
+    ...subscriptionRows(),
+    { source: "droid-remote", model: "kimi-k3", input_tokens: 400, output_tokens: 50, cached_read_tokens: 2000, cache_creation_tokens: 0, reasoning_tokens: 10, usd: null, usd_estimate: null },
+    { source: "droid-remote", model: "unattributed", input_tokens: 100, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
+  ];
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#usage-totals b").first().waitFor();
+  assert.match(await page.locator("#usage-totals").textContent(), /from local logs and cloud imports/);
+
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator('[data-source="cloud"]').click();
+  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 2);
+  assert.ok(spendSearches().some((s) => s.includes("source=cloud")), "the chip reaches the engine as source=cloud");
+  const mix = await page.locator("#mix").textContent();
+  assert.match(mix, /kimi-k3/);
+  assert.match(mix, /unattributed/, "a session total that cannot be split says so instead of borrowing a model");
+  assert.doesNotMatch(mix, /claude-sonnet-5|grok-4/, "local rows stay out of Cloud");
+  assert.match(page.url(), /source=cloud/);
+
+  // Nothing imported in range: the empty state says how usage gets here.
+  localRows = subscriptionRows();
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction(() => /No imported cloud usage/.test(document.getElementById("spend-empty").textContent));
+  assert.equal(await page.locator('[data-source="cloud"]').getAttribute("aria-checked"), "true", "?source=cloud boots into the chip");
+  assert.match(await page.locator("#spend-empty").textContent(), /keys usage import/);
+});
+
+test("without imports the Usage line still says local logs", async (page, origin) => {
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#usage-totals b").first().waitFor();
+  const text = await page.locator("#usage-totals").textContent();
+  assert.match(text, /This month from local logs /);
+  assert.doesNotMatch(text, /cloud imports/);
+});
 
 (async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

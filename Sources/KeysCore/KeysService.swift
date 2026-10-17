@@ -1010,6 +1010,24 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
+    /// The drop folder for remote usage exports, beside the catalog so a test catalog in a
+    /// temporary folder never drains the real one.
+    var importsDir: URL {
+        catalog.path.deletingLastPathComponent().appendingPathComponent("imports", isDirectory: true)
+    }
+
+    /// `keys usage import`: the same insert path as an ingest pass, under the ingest lock.
+    func importRemote(_ url: URL) throws -> IngestReport {
+        ingestLock.lock()
+        defer { ingestLock.unlock() }
+        let report = try RemoteImport.importFile(url, db: catalog)
+        if report.rowsInserted + report.rowsUpdated > 0 {
+            try catalog.bumpCatalogVersion()
+            try catalog.ensureModelColors()
+        }
+        return report
+    }
+
     func ingest(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
         ingestLock.lock()
         defer { ingestLock.unlock() }
@@ -1030,7 +1048,7 @@ final class KeysService: @unchecked Sendable {
         // Every ingest path (explicit, scheduled, the dashboard's stale refresh) comes through here.
         var succeeded = false
         defer { analytics?.record(succeeded ? .ingestSuccess : .ingestFailure) }
-        let reports = try Ingest.run(
+        var reports = try Ingest.run(
             source: source,
             grokHome: grokHome,
             claudeHome: claudeHome,
@@ -1038,6 +1056,9 @@ final class KeysService: @unchecked Sendable {
             droidHome: droidHome,
             db: catalog
         )
+        if source == .all {
+            reports.append(("imports", RemoteImport.drain(importsDir, db: catalog)))
+        }
         let changed = reports.reduce(0) { $0 + $1.report.rowsInserted + $1.report.rowsUpdated }
         if changed > 0 {
             try catalog.bumpCatalogVersion()

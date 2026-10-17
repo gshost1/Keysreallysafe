@@ -26,7 +26,7 @@
     const asked = q.get("source");
     const key = q.get("key") || null;
     const provider = q.get("provider") || null;
-    if (["all", "grok", "claude", "openai", "droid"].includes(asked)) return { source: asked, key: null, provider: null, dropped: Boolean(key || provider) };
+    if (["all", "grok", "claude", "openai", "droid", "cloud"].includes(asked)) return { source: asked, key: null, provider: null, dropped: Boolean(key || provider) };
     if (asked === "keys") return { source: "keys", key, provider, dropped: false };
     return { source: key || provider ? "keys" : "all", key, provider, dropped: false };
   })();
@@ -690,7 +690,8 @@
     if (projects || src === "claude-local") return input + output + cache;
     if (src === "codex-local" || src === "grok-local") return input + output + reasoning;
     // Droid's log bills every bucket it reports, cache and thinking included.
-    if (src === "droid-local") return input + output + cache + reasoning;
+    if (src === "droid-local" || src === "droid-remote") return input + output + cache + reasoning;
+    if (src === "claude-remote") return input + output + cache;
     if (src === "gateway" || (!src && r.provider)) return input + output + (anthropicApi(r.provider) ? cache : reasoning);
     return input + output + (family(r.model || "") === "claude" ? cache : reasoning);
   }
@@ -834,7 +835,13 @@
       node.append(`No API key calls in this range. ${onlyRouted} `,
         el("button", { type: "button", class: "link", text: "Show subscriptions", onclick: () => { document.querySelector('[data-scope="subs"]').click(); } }));
     } else if (state.source !== "all") {
-      const name = { grok: "Grok", claude: "Claude Code", openai: "Codex", droid: "Droid" }[state.source] || state.source;
+      const name = { grok: "Grok", claude: "Claude Code", openai: "Codex", droid: "Droid", cloud: "imported cloud" }[state.source] || state.source;
+      if (state.source === "cloud") {
+        // Nothing reaches Cloud on its own; say how usage gets here instead of implying a log was read.
+        node.append("No imported cloud usage in this range. Cloud usage comes from files made with scripts/export-remote-usage.py and brought in with keys usage import. ");
+        node.append(el("button", { type: "button", class: "link", text: "Show all", onclick: () => { document.querySelector('[data-source="all"]').click(); } }));
+        return;
+      }
       node.append(`No ${name} sessions in this range. `, el("button", { type: "button", class: "link", text: "Show all", onclick: () => { document.querySelector('[data-source="all"]').click(); } }));
     } else if (!ingested) {
       node.append("No sessions ingested yet. ", el("button", { type: "button", class: "link", text: "Ingest now", onclick: ingest }));
@@ -3292,7 +3299,7 @@
         if (n > 0) parts.push(el("span", {}, el("b", { text: fmtTokens(n) }), " " + label));
       }
       const nodes = [
-        el("span", { text: "This month from local logs " }),
+        el("span", { text: t.remote_tokens > 0 ? "This month from local logs and cloud imports " : "This month from local logs " }),
         el("b", { text: fmtTokens(total) + " tokens", title: cached ? CACHE_NOTE : null }),
       ];
       for (const p of parts) { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); }

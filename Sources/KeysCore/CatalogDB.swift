@@ -738,6 +738,24 @@ final class CatalogDB: @unchecked Sendable {
         ) { _ in true } ?? false
     }
 
+    /// Whether a session has any row under `source` besides `promptId`; remote import asks it
+    /// before storing a session total next to that session's per-request rows.
+    func usageSessionHasRows(source: String, sessionId: String, excludingPromptId promptId: String) throws -> Bool {
+        try one(
+            "SELECT 1 FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id != ? LIMIT 1;",
+            source, sessionId, promptId
+        ) { _ in true } ?? false
+    }
+
+    func deleteUsage(source: String, sessionId: String, promptId: String, model: String) throws {
+        try withLock {
+            _ = try run(
+                "DELETE FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ?;",
+                source, sessionId, promptId, model
+            )
+        }
+    }
+
     private static let usageColumns = """
         source, session_id, prompt_id, model, occurred_at, provider,
         cwd, session_title, model_calls,

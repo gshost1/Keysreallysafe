@@ -22,12 +22,12 @@ enum TokenTotals {
     /// provider's API.
     static func normalized(_ event: UsageEvent) -> Int {
         switch event.source {
-        case "claude-local":
+        case "claude-local", "claude-remote":
             return event.inputTokens + event.outputTokens
                 + event.cachedReadTokens + event.cacheCreationTokens
         case "codex-local", "grok-local":
             return event.inputTokens + event.outputTokens + event.reasoningTokens
-        case "droid-local":
+        case "droid-local", "droid-remote":
             return event.inputTokens + event.outputTokens
                 + event.cachedReadTokens + event.cacheCreationTokens + event.reasoningTokens
         case "gateway":
@@ -258,6 +258,9 @@ struct SpendQueries {
             totals.cachedReadTokens += event.cachedReadTokens
             totals.reasoningTokens += event.reasoningTokens
             totals.tokens += TokenTotals.normalized(event)
+            if event.source == RemoteImport.droidSource || event.source == RemoteImport.claudeSource {
+                totals.remoteTokens += TokenTotals.normalized(event)
+            }
             if event.source == "grok-local", let ticks = event.costUsdTicks {
                 grokTicks += ticks
             }

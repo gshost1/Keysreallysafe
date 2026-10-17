@@ -18,6 +18,7 @@ public struct KeysCLI: ParsableCommand {
             RmCommand.self,
             RotateCommand.self,
             IngestCommand.self,
+            UsageCommand.self,
             SpendCommand.self,
             StatusCommand.self,
             DoctorCommand.self,
@@ -193,6 +194,36 @@ struct IngestCommand: ParsableCommand {
         let reports = try service.ingest(parsed)
         for (name, report) in reports {
             print("\(name): \(report.line)")
+        }
+    }
+}
+
+struct UsageCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "usage",
+        abstract: "Bring in usage recorded off this Mac.",
+        subcommands: [UsageImportCommand.self]
+    )
+}
+
+struct UsageImportCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "import",
+        abstract: "Import a remote usage export (droid log lines, droid stream-json, Claude Code transcripts).",
+        discussion: """
+            Make the file where the usage happened with scripts/export-remote-usage.py, which keeps \
+            only usage fields. Rows are stored as droid-remote and claude-remote and charted under Cloud. \
+            Files dropped into the imports folder beside the catalog are imported on the next ingest.
+            """
+    )
+
+    @Argument(help: "Export files to import.") var files: [String]
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        for path in files {
+            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            print("\(url.lastPathComponent): \(try service.importRemote(url).line)")
         }
     }
 }
