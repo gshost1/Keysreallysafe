@@ -21,6 +21,16 @@ enum RelayProtocol {
     /// A relayed response may take as long as the gateway allows upstream, plus connect time.
     static let gatewayReadTimeoutSeconds = Int(GatewayListener.resourceTimeout) + Int(GatewayListener.connectTimeout)
     static let headCap = HTTPFrame.headerCap
+    /// How long one response frame may wait for the transport before the replay gives up.
+    static let sendTimeout: TimeInterval = 60
+    /// Bounds on requests whose body is still arriving. The Worker does not check grants, so
+    /// anyone with its URL can start uploads; what the Mac holds for them is capped in number,
+    /// in bytes and in time, whatever the Worker does.
+    static let maxBufferedRequests = 64
+    static let maxBufferedBytes = 4 * bodyCap
+    /// Longer than the Worker's own upload deadline (60 s), so a Worker that cancels is never
+    /// second-guessed and one that does not still cannot park a request here.
+    static let bufferTimeout: TimeInterval = 90
 }
 
 enum RelayFrameType: UInt8 {
@@ -135,12 +145,34 @@ protocol RelaySocket: AnyObject, Sendable {
 }
 
 extension RelaySocket {
-    /// Blocks the calling (background) thread until the frame is handed to the transport.
-    func sendBlocking(_ frame: RelayFrame) -> Bool {
-        let done = MainSafeWait<Bool>()
-        send(frame.encoded()) { done.finish($0 == nil) }
-        return done.wait()
+    /// Blocks the calling thread until the frame is handed to the transport, or `timeout` has
+    /// passed, which counts as a dead socket. Only for replay threads (a GCD queue), never for
+    /// the async receive loop: a semaphore wait there would park a cooperative-pool thread.
+    func sendBlocking(_ frame: RelayFrame, timeout: TimeInterval = RelayProtocol.sendTimeout) -> Bool {
+        let sema = DispatchSemaphore(value: 0)
+        let outcome = LockedValue(false)
+        send(frame.encoded()) { error in
+            outcome.set(error == nil)
+            sema.signal()
+        }
+        guard sema.wait(timeout: .now() + timeout) == .success else { return false }
+        return outcome.get()
     }
+
+    /// Hands the frame to the transport and moves on; for one-off error frames whose failure
+    /// is also the socket's failure, which the receive loop sees on its own.
+    func sendDetached(_ frame: RelayFrame) {
+        send(frame.encoded()) { _ in }
+    }
+}
+
+final class LockedValue<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: T
+
+    init(_ value: T) { self.value = value }
+    func get() -> T { lock.withLock { value } }
+    func set(_ new: T) { lock.withLock { value = new } }
 }
 
 struct RelayDialError: Error, CustomStringConvertible {
@@ -298,10 +330,17 @@ final class RelayRequest: @unchecked Sendable {
         if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
     }
 
-    private var isCancelled: Bool {
+    var isCancelled: Bool {
         lock.lock()
         defer { lock.unlock() }
         return cancelled
+    }
+
+    /// Bytes of request body held so far.
+    var bufferedBytes: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return body.count
     }
 
     /// The bytes written to the gateway: the request as received, re-homed on loopback.
@@ -443,6 +482,15 @@ final class RelayClient: @unchecked Sendable {
         var maxBackoff: TimeInterval = 60
         /// A connection that stayed up this long resets the backoff.
         var stableAfter: TimeInterval = 60
+        var maxBufferedRequests = RelayProtocol.maxBufferedRequests
+        var maxBufferedBytes = RelayProtocol.maxBufferedBytes
+        var bufferTimeout = RelayProtocol.bufferTimeout
+    }
+
+    /// A request whose END has not arrived, with when its REQUEST frame did.
+    private struct Buffered {
+        var request: RelayRequest
+        var since: Date
     }
 
     let options: Options
@@ -452,9 +500,12 @@ final class RelayClient: @unchecked Sendable {
     let sleep: @Sendable (TimeInterval) async throws -> Void
     /// 0.8…1.2 by default; fixed in tests.
     let jitter: @Sendable () -> Double
+    let now: @Sendable () -> Date
     private let lock = NSLock()
-    private var buffering: [UInt32: RelayRequest] = [:]
+    private var buffering: [UInt32: Buffered] = [:]
     private var replaying: [UInt32: RelayRequest] = [:]
+    /// When the last frame of any kind (pong included) arrived on the current socket.
+    private var lastReceived = Date.distantPast
     private let replayQueue = DispatchQueue(label: "keysreallysafe.relay.replay", attributes: .concurrent)
 
     init(
@@ -462,13 +513,15 @@ final class RelayClient: @unchecked Sendable {
         dialer: any RelayDialer = URLSessionRelayDialer(),
         log: @escaping @Sendable (String) -> Void,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
-        jitter: @escaping @Sendable () -> Double = { Double.random(in: 0.8...1.2) }
+        jitter: @escaping @Sendable () -> Double = { Double.random(in: 0.8...1.2) },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.options = options
         self.dialer = dialer
         self.log = log
         self.sleep = sleep
         self.jitter = jitter
+        self.now = now
     }
 
     var connectURL: URL { RelayURL.connectURL(options.url) }
@@ -514,10 +567,27 @@ final class RelayClient: @unchecked Sendable {
 
     /// Reads frames until the socket fails. Every request still open when it does is dropped.
     func serve(_ socket: any RelaySocket) async throws {
-        let pinger = Task { [options, sleep] in
+        lock.withLock { lastReceived = now() }
+        // The keepalive doubles as the liveness check. A socket that is half-open after sleep,
+        // a NAT drop or a Wi-Fi roam accepts sends and never delivers anything, so silence
+        // for two ping intervals, or a ping the transport refuses, closes it here, which
+        // fails the receive below and lands in the reconnect loop.
+        let pinger = Task { [weak self, options, sleep] in
             while !Task.isCancelled {
                 try await sleep(options.pingInterval)
-                socket.sendText("ping") { _ in }
+                guard let self else { return }
+                let silence = self.now().timeIntervalSince(self.lock.withLock { self.lastReceived })
+                if silence > 2 * options.pingInterval {
+                    self.log("nothing heard from the Worker for \(Int(silence.rounded()))s; reconnecting")
+                    socket.close()
+                    return
+                }
+                socket.sendText("ping") { [weak self] error in
+                    guard error != nil, let self else { return }
+                    self.log("keepalive ping failed; reconnecting")
+                    socket.close()
+                }
+                self.expireStale(socket: socket)
             }
         }
         defer {
@@ -527,7 +597,9 @@ final class RelayClient: @unchecked Sendable {
         }
         while true {
             try Task.checkCancellation()
-            switch try await socket.receive() {
+            let message = try await socket.receive()
+            lock.withLock { lastReceived = now() }
+            switch message {
             case .text:
                 continue
             case .binary(let data):
@@ -536,39 +608,89 @@ final class RelayClient: @unchecked Sendable {
         }
     }
 
+    /// Runs on the receive loop: nothing here may block on the transport.
     func handle(_ frame: RelayFrame, socket: any RelaySocket) {
         switch frame.type {
         case .request:
             guard let request = RelayRequest(id: frame.id, head: frame.payload) else {
-                _ = socket.sendBlocking(.json(.error, id: frame.id, ["code": "bad_request_frame", "message": "the relay sent a malformed request head"]))
+                socket.sendDetached(.json(.error, id: frame.id, ["code": "bad_request_frame", "message": "the relay sent a malformed request head"]))
                 return
             }
-            lock.withLock { buffering[frame.id] = request }
+            // The Worker never reuses an id while a request is open, so a repeat means it has
+            // forgotten the first one; the first must not keep running in its place.
+            let stale = lock.withLock { () -> RelayRequest? in
+                let old = buffering.removeValue(forKey: frame.id)?.request ?? replaying.removeValue(forKey: frame.id)
+                buffering[frame.id] = Buffered(request: request, since: now())
+                return old
+            }
+            stale?.cancel()
+            expireStale(socket: socket)
+            enforceBufferBounds(socket: socket)
         case .body:
-            guard let request = lock.withLock({ buffering[frame.id] }) else { return }
+            guard let request = lock.withLock({ buffering[frame.id]?.request }) else { return }
             if !request.append(frame.payload) {
                 lock.withLock { _ = buffering.removeValue(forKey: frame.id) }
-                _ = socket.sendBlocking(.json(.error, id: frame.id, ["code": "payload_too_large", "message": "request body over \(RelayProtocol.bodyCap) bytes"]))
+                socket.sendDetached(.json(.error, id: frame.id, ["code": "payload_too_large", "message": "request body over \(RelayProtocol.bodyCap) bytes"]))
+                return
             }
+            enforceBufferBounds(socket: socket)
         case .end:
-            guard let request = lock.withLock({ buffering.removeValue(forKey: frame.id) }) else { return }
+            guard let request = lock.withLock({ buffering.removeValue(forKey: frame.id)?.request }) else { return }
             lock.withLock { replaying[frame.id] = request }
             replayQueue.async { [weak self] in
-                request.replay(port: self?.options.gatewayPort ?? GatewayListener.port) { socket.sendBlocking($0) }
-                self?.lock.withLock { _ = self?.replaying.removeValue(forKey: frame.id) }
+                request.replay(port: self?.options.gatewayPort ?? GatewayListener.port) { frame in
+                    !request.isCancelled && socket.sendBlocking(frame)
+                }
+                // Only this request's own entry: a newer request may own the id by now.
+                self?.lock.withLock {
+                    if self?.replaying[frame.id] === request { self?.replaying.removeValue(forKey: frame.id) }
+                }
             }
         case .cancel:
-            let request = lock.withLock { buffering.removeValue(forKey: frame.id) ?? replaying[frame.id] }
+            let request = lock.withLock { buffering.removeValue(forKey: frame.id)?.request ?? replaying[frame.id] }
             request?.cancel()
         case .response, .error:
             break
         }
     }
 
+    /// Drops uploads whose END never came within the buffer timeout.
+    private func expireStale(socket: any RelaySocket) {
+        let cutoff = now().addingTimeInterval(-options.bufferTimeout)
+        let expired = lock.withLock { () -> [UInt32] in
+            let ids = buffering.filter { $0.value.since < cutoff }.map(\.key)
+            for id in ids { buffering.removeValue(forKey: id) }
+            return ids
+        }
+        for id in expired {
+            socket.sendDetached(.json(.error, id: id, ["code": "upload_timeout", "message": "the request body did not finish arriving at the Mac within \(Int(options.bufferTimeout))s"]))
+        }
+    }
+
+    /// Evicts the oldest unfinished uploads until count and bytes are within bounds.
+    private func enforceBufferBounds(socket: any RelaySocket) {
+        let evicted = lock.withLock { () -> [UInt32] in
+            var ids: [UInt32] = []
+            var bytes = buffering.values.reduce(0) { $0 + $1.request.bufferedBytes }
+            while buffering.count > options.maxBufferedRequests || bytes > options.maxBufferedBytes,
+                  let oldest = buffering.min(by: { $0.value.since < $1.value.since })
+            {
+                bytes -= oldest.value.request.bufferedBytes
+                buffering.removeValue(forKey: oldest.key)
+                ids.append(oldest.key)
+            }
+            return ids
+        }
+        for id in evicted {
+            socket.sendDetached(.json(.error, id: id, ["code": "relay_buffer_full", "message": "the Mac dropped this request: too many unfinished uploads are already buffered"]))
+        }
+    }
+
     private func dropAll() {
         let open = lock.withLock { () -> [RelayRequest] in
-            let all = Array(buffering.values) + Array(replaying.values)
+            let all = buffering.values.map(\.request) + Array(replaying.values)
             buffering.removeAll()
+            replaying.removeAll()
             return all
         }
         for request in open { request.cancel() }
