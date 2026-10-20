@@ -188,6 +188,20 @@ final class ApiKeyUsageTests: XCTestCase {
         XCTAssertEqual(Set(chart.rows.compactMap(\.key)), ["swarm"])
     }
 
+    /// The audit log names the path a call took. A loopback call (a local agent or a tunnel) is
+    /// the gateway's own doing, not the dashboard's, which is what it used to say.
+    func testGatewayCallsAreAuditedByPathNotAsDashboard() throws {
+        let (db, _) = try makeDB()
+        let service = try service(db, keys: [("alpha", "anthropic")])
+        try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "local"))
+        var relayed = gatewayRow(key: "alpha", requestId: "remote")
+        relayed.via = "relay"
+        try service.recordGatewayUsage(relayed)
+        let callers = try service.keyEvents(name: "alpha").filter { $0.action == "gateway_call" }.map(\.caller)
+        XCTAssertEqual(Set(callers), ["gateway", "relay"])
+        XCTAssertFalse(callers.contains("dashboard"))
+    }
+
     /// TypeSafe's System One protocol reports no cost receipt, and its model names must not pick
     /// up an unrelated catalog price. The requests are still countable, so they are still charted.
     func testTypeSafeCostStaysUnknownWhileRequestsStillChart() throws {

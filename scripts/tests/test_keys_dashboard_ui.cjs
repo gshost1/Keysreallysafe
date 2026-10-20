@@ -92,8 +92,11 @@ function reset() {
   unexpected = [];
   // The engine's catalog version on /api/status; a gateway call bumps it with no one on the page.
   catalogVersion = 1;
+  // The audit rows a key's History drawer shows; invented, like everything else here.
+  keyEvents = [];
 }
 let catalogVersion = 1;
+let keyEvents = [];
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -333,7 +336,7 @@ function handle(method, pathname, body, params) {
     fixtureSecrets.set(name, body.secret);
     return [200, { version: 2 }];
   }
-  if (keyMatch && leaf === "/events") return [200, { events: [] }];
+  if (keyMatch && leaf === "/events") return [200, { events: keyEvents }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
   if (pathname === "/api/grants") return [200, { grants: [] }];
   if (pathname === "/api/providers" && method === "GET") return [200, providersCatalog()];
@@ -2889,6 +2892,26 @@ test("a catalog change while the Keys pane is open refreshes the Via gateway col
   await page.clock.runFor(16000);
   await page.waitForFunction(() => document.getElementById("keys-body").children.length > 0);
   assert.equal(requests.filter((r) => r.pathname === "/api/keys").length, after);
+});
+
+// Every action the engine audits has words here. client_issue, client_revoke and gateway_denied
+// used to fall through as raw names, and a loopback gateway call was credited to the dashboard.
+test("the key History drawer names every audited action and caller in words", async (page, origin) => {
+  keyEvents = [
+    { ts: "2026-09-20T12:04:00Z", action: "client_revoke", caller: "dashboard", detail: "#3" },
+    { ts: "2026-09-20T12:03:00Z", action: "gateway_denied", caller: "gateway", detail: "grant_required" },
+    { ts: "2026-09-20T12:02:00Z", action: "gateway_call", caller: "relay", detail: "claude-sonnet-5" },
+    { ts: "2026-09-20T12:01:00Z", action: "gateway_call", caller: "gateway", detail: "claude-sonnet-5" },
+    { ts: "2026-09-20T12:00:00Z", action: "client_issue", caller: "cli", detail: "#3 my script 30d POST" },
+  ];
+  await openKeys(page, origin);
+  await rowButton(page, "alpha", "history").click();
+  await page.locator("#keys-body .key-events li").first().waitFor();
+  assert.deepEqual(await page.locator("#keys-body .key-events .ev-action").allTextContents(),
+    ["client revoked", "gateway refused", "gateway call", "gateway call", "client issued"]);
+  assert.deepEqual(await page.locator("#keys-body .key-events .ev-caller").allTextContents(),
+    ["dashboard", "local gateway", "relay", "local gateway", "command line"]);
+  assert.doesNotMatch(await page.locator("#keys-body .key-events").textContent(), /client_issue|gateway_denied|client_revoke/);
 });
 
 test("arrow keys step over the provider header rows", async (page, origin) => {

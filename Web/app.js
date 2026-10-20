@@ -2196,7 +2196,15 @@
 
   // ---------- key history (audit log the engine keeps; never the secret) ----------
 
-  const ACTION_LABEL = { add: "added", copy: "copied", reveal: "revealed", env: "used in env", gateway_enable: "gateway on", gateway_disable: "gateway off", gateway_call: "gateway call", grant: "grant issued", grant_revoke: "grant revoked", check: "checked", rotate: "rotated", rm: "deleted", patch: "edited" };
+  // Every action KeysService.recordKeyEvent writes, in plain words. An action missing here shows
+  // its raw name, which is how client_issue and gateway_denied slipped through once.
+  const ACTION_LABEL = {
+    add: "added", copy: "copied", reveal: "revealed", env: "used in env", check: "checked", rotate: "rotated", rm: "deleted", patch: "edited",
+    gateway_enable: "gateway on", gateway_disable: "gateway off", gateway_call: "gateway call", gateway_denied: "gateway refused",
+    grant: "grant issued", grant_revoke: "grant revoked", client_issue: "client issued", client_revoke: "client revoked",
+  };
+  // Who did it, as the engine names it: the loopback gateway, the relay, the dashboard, the CLI.
+  const CALLER_LABEL = { gateway: "local gateway", relay: "relay", dashboard: "dashboard", cli: "command line", system: "system", models: "model check", add: "command line", test: "test" };
   const fmtWhen = (iso) => {
     const t = Date.parse(iso || "");
     if (Number.isNaN(t)) return iso || "";
@@ -2223,7 +2231,7 @@
       cell.append(el("ul", { class: "key-events" }, ...events.map((ev) => el("li", {},
         el("span", { text: fmtWhen(ev.ts), title: ev.ts || "" }),
         el("span", { class: "ev-action", text: ACTION_LABEL[ev.action] || ev.action }),
-        el("span", { text: ev.caller || "" }),
+        el("span", { class: "ev-caller", text: CALLER_LABEL[ev.caller] || ev.caller || "" }),
         el("span", { class: "ev-detail", text: ev.detail || "" }),
       ))));
     } catch (e) {

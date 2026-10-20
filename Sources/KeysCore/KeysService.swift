@@ -778,10 +778,13 @@ final class KeysService: @unchecked Sendable {
             _ = try catalog.insertUsage(event)
             try catalog.bumpCatalogVersion()
             try catalog.ensureModelColors()
+            // The caller is the path the call took: "relay" when keys relay replayed it, else
+            // the loopback gateway itself (a local agent or a tunnel). Nothing here came from
+            // the dashboard, which is what the audit log used to claim.
             try recordKeyEvent(
                 name: row.key,
                 action: "gateway_call",
-                caller: row.via ?? "dashboard",
+                caller: row.via ?? "gateway",
                 detail: row.model,
                 touchLastUsed: true
             )
