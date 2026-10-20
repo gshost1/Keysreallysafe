@@ -177,11 +177,11 @@ secret is meant for one Mac. Run two Macs against two Workers.
 | time for the request body to arrive | 60 s | Worker (408 `upload_timeout`)             |
 | unfinished uploads held on the Mac | 64 requests, 32 MiB, 90 s each | Mac (ERROR `relay_buffer_full` / `upload_timeout`) |
 | body chunk per frame               | 64 KiB| both                                      |
-| time to first response byte        | 120 s | Worker (504 `relay_timeout`)              |
+| time to first response byte        | 960 s | Worker (504 `relay_timeout`)              |
 | silence between response chunks    | 300 s | Worker (stream aborted)                   |
 | one response frame waiting for the socket | 60 s | Mac (replay abandoned)              |
 | silence on the socket              | 60 s  | Mac (closes and reconnects)               |
-| gateway connect + request timeout  | 30 s / 300 s | the gateway's existing limits      |
+| gateway connect + request timeout  | 30 s / 900 s | the gateway (the response head of a non-streaming call can take minutes) |
 
 Response bodies are streamed and not capped; the idle timeout bounds a stalled
 stream. The in-flight slot is taken when the request arrives, before its body,
@@ -201,7 +201,7 @@ top. Agent errors from the Worker itself are JSON with an `error` code and a
 | 502    | `gateway_unreachable` | `keys relay` is up but the gateway on 127.0.0.1:12767 is not |
 | 502    | other Mac codes  | `keys relay` could not serve it: `gateway_read_failed`, `upload_timeout`, `relay_buffer_full`, … |
 | 503    | `relay_busy`     | 32 requests are already in flight                         |
-| 504    | `relay_timeout`  | the Mac sent no response head within 120 s                |
+| 504    | `relay_timeout`  | the Mac sent no response head within 960 s                |
 | 408    | `upload_timeout` | the request body did not finish arriving within 60 s      |
 | 413    | `payload_too_large` | request body over 8 MiB                                |
 | 400    | `client_gone`    | the request body ended before it was complete (normally unseen: the agent has gone) |

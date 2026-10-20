@@ -70,6 +70,13 @@ function head(frame) {
   return JSON.parse(utf8.decode(frame.payload));
 }
 
+describe("limits", () => {
+  it("waits longer for a response head than the gateway's 30 s connect + 900 s request limit", () => {
+    // Non-streaming generations send nothing until the answer is done.
+    expect(LIMITS.headTimeoutMs).toBeGreaterThan((30 + 900) * 1000);
+  });
+});
+
 describe("frames", () => {
   it("round-trip the type, id and payload", () => {
     const f = decodeFrame(encodeFrame(FRAME.BODY, 0xfeedbeef, new Uint8Array([1, 2, 3])));

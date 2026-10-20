@@ -13,9 +13,15 @@ final class GatewayListener: @unchecked Sendable {
     static let port: UInt16 = 12767
     static let bodyCap = 8 * 1024 * 1024
     static let connectTimeout: TimeInterval = 30
-    static let resourceTimeout: TimeInterval = 300
+    // Non-streaming generations send no response head until the whole answer
+    // is written; Kimi runs have taken over 500 s, so the wait is long.
+    static let resourceTimeout: TimeInterval = 900
     static let maxConcurrent = 32
     static let ioTimeoutSeconds = 30
+
+    static func connectStalled(hasResponse: Bool, bodyBytesExpected: Int64, bodyBytesSent: Int64) -> Bool {
+        !hasResponse && bodyBytesExpected > 0 && bodyBytesSent == 0
+    }
 
     let listener: LoopbackListener
     private let service: KeysService
@@ -168,9 +174,19 @@ final class GatewayListener: @unchecked Sendable {
         let session = URLSession(configuration: config, delegate: proxy, delegateQueue: nil)
         let task = session.dataTask(with: urlRequest)
         proxy.sessionTask = task
+        // Only a connection that never opened is cut short here. Waiting on a
+        // slow response head is normal for non-streaming calls and is bounded
+        // by resourceTimeout instead. A request body that has started going
+        // out proves the connection is up; a bodyless request can't show that,
+        // so it is left to the resource timeout too.
         let connectWatch = DispatchWorkItem { [weak task] in
-            if !proxy.hasResponse {
-                task?.cancel()
+            guard let task else { return }
+            if Self.connectStalled(
+                hasResponse: proxy.hasResponse,
+                bodyBytesExpected: task.countOfBytesExpectedToSend,
+                bodyBytesSent: task.countOfBytesSent
+            ) {
+                task.cancel()
             }
         }
         DispatchQueue.global(qos: .utility).asyncAfter(

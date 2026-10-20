@@ -34,6 +34,25 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(hits.count, 0)
     }
 
+    func testSlowResponseHeadIsNotTreatedAsAFailedConnect() {
+        // A non-streaming generation: body fully sent, no head yet after 30 s.
+        XCTAssertFalse(GatewayListener.connectStalled(hasResponse: false, bodyBytesExpected: 4_000, bodyBytesSent: 4_000))
+        // Body not started after 30 s: the connection never opened.
+        XCTAssertTrue(GatewayListener.connectStalled(hasResponse: false, bodyBytesExpected: 4_000, bodyBytesSent: 0))
+        // A bodyless GET can't prove its connection, so it waits for the resource timeout.
+        XCTAssertFalse(GatewayListener.connectStalled(hasResponse: false, bodyBytesExpected: 0, bodyBytesSent: 0))
+        XCTAssertFalse(GatewayListener.connectStalled(hasResponse: true, bodyBytesExpected: 4_000, bodyBytesSent: 0))
+    }
+
+    func testLongCallLimitsCoverMultiMinuteGenerations() {
+        // Observed Kimi calls reach 506 s; the relay must outwait the gateway.
+        XCTAssertGreaterThanOrEqual(GatewayListener.resourceTimeout, 600)
+        XCTAssertGreaterThanOrEqual(
+            RelayProtocol.gatewayReadTimeoutSeconds,
+            Int(GatewayListener.resourceTimeout + GatewayListener.connectTimeout)
+        )
+    }
+
     func testDashboardRequiresLoopbackHostWithPort() throws {
         let (handler, _, _) = try makeHandler()
         let bad = handle(handler, method: "GET", path: "/api/keys", headers: ["host": "evil.example:12765"])
