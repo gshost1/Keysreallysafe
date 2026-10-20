@@ -102,9 +102,12 @@
 
     <section id="pane-keys" role="tabpanel" aria-labelledby="nav-keys" hidden>
       <p id="keys-error" class="err pane-error" role="alert"></p>
+      <!-- The search box comes first and has a fixed basis: the count beside it changes width
+           while you type ("3 keys" → "1 of 3 keys"), and nothing may move the box under the
+           cursor. -->
       <div class="keys-tools">
-        <span id="keys-count" class="count"></span>
         <input type="search" id="keys-search" class="keys-search" placeholder="Search keys" aria-label="Search keys" autocomplete="off" spellcheck="false">
+        <span id="keys-count" class="count"></span>
         <button type="button" id="btn-providers" class="btn-quiet" title="Add, remove or hide providers">Providers</button>
         <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
       </div>

@@ -8,6 +8,7 @@
 - **Claude is the first card on Usage.** The order is now Claude, Grok, Grok Bot (right under Grok, when it has prompts this week), OpenAI · Codex, Droid and then the rest; `keys status` prints the same order.
 - **The "N providers not tracked locally" group and the "N cards hidden" line are gone from Usage.** A tool whose quota is in no local file is not listed on the pane at all; **+ Add subscription** is where a plan for one of them is pinned, and it then appears as the card you made. Cards turned off in Settings → Usage cards are not counted on the pane either; the one line left is "All usage cards are hidden", so an all-off pane is not mistaken for an empty one.
 - **The Chart's key filter is a dropdown.** The "All keys" chip row grew into a long line on a vault with many keys; it is now one labelled `<select>` beside the provider chips, operable from the keyboard, with the same semantics (one key or all, narrowed by the chosen provider, carried in the URL).
+- **The Keys search box no longer jumps while you type.** The "3 keys" count sat before the box and grew to "1 of 3 keys" on the first keystroke, pushing the box right, and the box's grow-to-fit width changed with it. The box now comes first with a fixed basis and the count follows it, so typing, a miss ("No keys match") and the count changing move nothing.
 
 ## 0.11.2 — 2026-10-16
 

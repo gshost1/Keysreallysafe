@@ -2818,6 +2818,36 @@ test("key search filters by name, provider and host, counts what it shows and cl
   assert.doesNotMatch(await page.locator("#keys-body").textContent(), new RegExp(SECRET));
 });
 
+// The box jumped under the cursor: the count before it grew from "3 keys" to "1 of 3 keys" and
+// pushed the box right, and a grow-to-fit width changed with it. Position and size are now fixed
+// whatever the count says, whether results run out, and whatever appears below the table.
+test("the search box keeps its place and size while typing, including on a miss", async (page, origin) => {
+  await openKeys(page, origin);
+  const box = page.locator("#keys-search");
+  const rect = async () => {
+    const r = await box.boundingBox();
+    return { x: Math.round(r.x * 10) / 10, y: Math.round(r.y * 10) / 10, w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10 };
+  };
+  const start = await rect();
+  const seen = [];
+  for (const query of ["o", "open", "CHAR", "nothing-like-this", "", "anthropic", "zzz", ""]) {
+    await box.fill(query);
+    await page.waitForFunction((q) => {
+      const count = document.getElementById("keys-count").textContent;
+      return q ? /of 3 keys/.test(count) : /^3 keys/.test(count);
+    }, query);
+    seen.push([query, await page.locator("#keys-count").textContent(), await rect(), await page.locator("#keys-no-match").isVisible()]);
+  }
+  for (const [query, count, r] of seen) {
+    assert.deepEqual(r, start, `after typing "${query}" (count "${count}") the box moved or resized`);
+  }
+  assert.match(seen[3][1], /0 of 3 keys/);
+  assert.equal(seen[3][3], true, "the miss line showed on the miss and still moved nothing");
+  // The count sits beside the box, never before it, so it cannot push the box around.
+  const countBox = await page.locator("#keys-count").boundingBox();
+  assert.ok(countBox.x > start.x + start.w, "the count follows the box");
+});
+
 test("arrow keys step over the provider header rows", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");

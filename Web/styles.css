@@ -781,9 +781,10 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
   gap: 8px;
   padding: 12px 16px 8px;
 }
+/* A fixed basis, not a grow: the count beside it changes width while you type, and a growing
+   box would shift under the cursor with every keystroke. It still shrinks on a narrow pane. */
 .keys-search {
-  flex: 1 1 160px;
-  max-width: 320px;
+  flex: 0 1 280px;
   height: 26px;
   padding: 0 10px;
   border: 1px solid var(--line-strong);
