@@ -340,7 +340,9 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(idle.usageNote, "No Grok Bot prompts this week. Grok Bot's plan is separate from SuperGrok; its credits and limits are not in local files.")
     }
 
-    func testScanPlacesGrokBotAfterGrok() throws {
+    /// Claude is the first card on Usage; Grok Bot is a separate plan on the Grok account and sits
+    /// right under Grok rather than above everything.
+    func testScanPutsClaudeFirstAndGrokBotAfterGrok() throws {
         let status = LiveStatus.scan(
             grokHome: try TempDir.make(),
             claudeHome: try TempDir.make(),
@@ -349,7 +351,7 @@ final class LiveStatusTests: XCTestCase {
             codexHome: try TempDir.make(),
             grokBotHome: try TempDir.make()
         )
-        XCTAssertEqual(status.plans.prefix(2).map(\.source), ["grok", "grok-bot"])
+        XCTAssertEqual(status.plans.prefix(4).map(\.source), ["claude", "grok", "grok-bot", "openai"])
     }
 
     // The Droid row is catalog-backed now (DroidUsageRowTests covers its windows, limits and

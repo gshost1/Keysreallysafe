@@ -102,9 +102,11 @@ enum PlanCatalog {
             period: weekPeriod
         )
         LiveStatus.applyCodexLimits(to: &openai, home: codexHome, now: now)
+        // Claude leads: it is the row most people open the pane for, and Grok Bot slots in
+        // behind Grok (below) rather than above everything.
         return [
-            grok,
             claude,
+            grok,
             openai,
             ToolStatus(
                 source: "chatgpt",
@@ -195,7 +197,9 @@ struct LiveStatus: Equatable {
             now: now
         )
         if let grokBotHome {
-            plans.insert(GrokBotActivity.row(home: grokBotHome, period: weekPeriod, now: now), at: 1)
+            // Grok Bot is a separate plan on the same account, so it sits right under Grok.
+            let afterGrok = (plans.firstIndex { $0.source == "grok" } ?? 0) + 1
+            plans.insert(GrokBotActivity.row(home: grokBotHome, period: weekPeriod, now: now), at: afterGrok)
         }
         if let droidRow {
             let after = (plans.firstIndex { $0.source == "openai" } ?? plans.count - 1) + 1
