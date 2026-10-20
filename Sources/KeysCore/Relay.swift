@@ -487,10 +487,13 @@ final class RelayClient: @unchecked Sendable {
         var bufferTimeout = RelayProtocol.bufferTimeout
     }
 
-    /// A request whose END has not arrived, with when its REQUEST frame did.
+    /// A request whose END has not arrived, with when its REQUEST frame did. `seq` orders
+    /// arrivals for eviction: the clock may stand still between two frames (it is injected
+    /// in tests and coarse in general), so a timestamp alone cannot say which came first.
     private struct Buffered {
         var request: RelayRequest
         var since: Date
+        var seq: UInt64
     }
 
     let options: Options
@@ -503,6 +506,7 @@ final class RelayClient: @unchecked Sendable {
     let now: @Sendable () -> Date
     private let lock = NSLock()
     private var buffering: [UInt32: Buffered] = [:]
+    private var nextSeq: UInt64 = 0
     private var replaying: [UInt32: RelayRequest] = [:]
     /// When the last frame of any kind (pong included) arrived on the current socket.
     private var lastReceived = Date.distantPast
@@ -620,7 +624,8 @@ final class RelayClient: @unchecked Sendable {
             // forgotten the first one; the first must not keep running in its place.
             let stale = lock.withLock { () -> RelayRequest? in
                 let old = buffering.removeValue(forKey: frame.id)?.request ?? replaying.removeValue(forKey: frame.id)
-                buffering[frame.id] = Buffered(request: request, since: now())
+                nextSeq += 1
+                buffering[frame.id] = Buffered(request: request, since: now(), seq: nextSeq)
                 return old
             }
             stale?.cancel()
@@ -673,7 +678,7 @@ final class RelayClient: @unchecked Sendable {
             var ids: [UInt32] = []
             var bytes = buffering.values.reduce(0) { $0 + $1.request.bufferedBytes }
             while buffering.count > options.maxBufferedRequests || bytes > options.maxBufferedBytes,
-                  let oldest = buffering.min(by: { $0.value.since < $1.value.since })
+                  let oldest = buffering.min(by: { $0.value.seq < $1.value.seq })
             {
                 bytes -= oldest.value.request.bufferedBytes
                 buffering.removeValue(forKey: oldest.key)
