@@ -2914,6 +2914,58 @@ test("the key History drawer names every audited action and caller in words", as
   assert.doesNotMatch(await page.locator("#keys-body .key-events").textContent(), /client_issue|gateway_denied|client_revoke/);
 });
 
+// "from Grok's own cost log" belongs to Grok's receipt alone. With Droid chosen, or Claude at
+// $0.00, the USD totals bar and Copy totals used to say it because no estimate was above zero.
+test("USD totals name Grok's cost log only when Grok alone has dollars, and Droid is not priced", async (page, origin) => {
+  localRows = [
+    { source: "claude-local", model: "claude-sonnet-5", input_tokens: 100, output_tokens: 50, usd: null, usd_estimate: 0 },
+    { source: "droid-local", model: "gpt-6-pro", input_tokens: 400, output_tokens: 100, usd: null, usd_estimate: null },
+    { source: "grok-local", model: "grok-4", input_tokens: 500, output_tokens: 200, usd: 0.01, usd_estimate: null },
+  ];
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.locator("#mix .mix-row").first().waitFor();
+  await chooseUsd(page);
+  await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
+  const copyTotals = async () => {
+    await page.evaluate(() => { window.__copied = ""; });
+    await page.keyboard.press("Shift+C");
+    await page.waitForFunction(() => window.__copied);
+    return page.evaluate(() => window.__copied);
+  };
+  const pick = async (name) => {
+    await page.getByRole("radio", { name, exact: true }).click();
+    await page.waitForFunction((n) => document.querySelector(`#source-chips [data-source="${n.toLowerCase()}"]`).getAttribute("aria-checked") === "true", name);
+  };
+
+  // All: Grok is the only tool with dollars, so its receipt is named.
+  assert.match(await totalsText(page), /from Grok's own cost log/);
+
+  await pick("Claude");
+  await page.waitForFunction(() => !/Grok's own cost log/.test(document.getElementById("totals").textContent));
+  const claude = await totalsText(page);
+  assert.equal(await page.locator("#totals .totals-main").textContent(), "$0", "a zero estimate is still shown as the estimate it is: " + claude);
+  assert.match(claude, /estimate from list prices/);
+  const claudeMd = await copyTotals();
+  assert.match(claudeMd, /Estimated from the tools' own local logs/);
+  assert.doesNotMatch(claudeMd, /Grok's own cost log/);
+
+  await pick("Droid");
+  await page.waitForFunction(() => /not priced/.test(document.getElementById("totals").textContent));
+  const droid = await totalsText(page);
+  assert.match(droid, /Droid's own local log/);
+  assert.doesNotMatch(droid, /\$0\.00|Grok's own cost log|estimate from list prices/, droid);
+  const droidMd = await copyTotals();
+  assert.match(droidMd, /Droid/);
+  assert.match(droidMd, /not priced/);
+  assert.doesNotMatch(droidMd, /\$0\.00|Grok's own cost log/, droidMd);
+
+  await pick("Grok");
+  await page.waitForFunction(() => /from Grok's own cost log/.test(document.getElementById("totals").textContent));
+  assert.match(await copyTotals(), /From Grok's own cost log/);
+});
+
 test("arrow keys step over the provider header rows", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");

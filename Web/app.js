@@ -1053,6 +1053,17 @@
         el("span", { class: "totals-note", text: "imported from the cloud, recorded off this Mac · choose Tokens above to compare" }));
       return;
     }
+    if (src === "droid") {
+      // Droid's log has no cost field and the engine puts no list price on its rows, so there is
+      // no dollar figure to show: not $0.00, and not Grok's receipt either.
+      const tk = state.series.reduce((a, s) => a + s.tokens, 0);
+      $("totals").replaceChildren(
+        el("span", { class: "totals-main none", text: "not priced", title: "Droid's local log carries no dollar figure." }),
+        el("span", { class: "totals-sep", text: "·" }),
+        el("span", { class: "totals-part" }, el("b", { text: fmtTokens(tk) }), " tokens"),
+        el("span", { class: "totals-note", text: "counted from Droid's own local log on this Mac · choose Tokens above to compare" }));
+      return;
+    }
     const showGrok = src === "all" || src === "grok";
     const showClaude = src === "all" || src === "claude";
     const showOpenAI = src === "all" || src === "openai";
@@ -1091,7 +1102,11 @@
       nodes.push(el("span", { class: "totals-sep", text: "·" }));
       nodes.push(el("span", { class: "totals-note warn", text: `partly priced · ${fmtTokens(rtUsd)} tokens imported from the cloud (not priced)`, title: "Imported cloud usage carries no dollar figure, so it is left out of the dollars here rather than counted as zero." }));
     }
-    nodes.push(el("span", { class: "totals-note", text: anyEst ? (src === "grok" ? "" : "≈ estimate from list prices, not an invoice") : "from Grok's own cost log" }));
+    // Grok's receipt is named only when Grok is the only tool with dollars here. Claude or
+    // OpenAI at $0.00 is still an estimate (of nothing), never Grok's log; all-zero says nothing.
+    const grokOnly = src === "grok" || (src === "all" && !anyEst && grok > 0);
+    const note = grokOnly ? "from Grok's own cost log" : (anyEst || src !== "all") ? "≈ estimate from list prices, not an invoice" : "";
+    if (note) nodes.push(el("span", { class: "totals-note", text: note }));
     $("totals").replaceChildren(...nodes);
   }
 
@@ -2621,6 +2636,11 @@
         : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
       return `**Keysrs · Subscriptions · Cloud · ${rangeCloud}**\nnot priced · ${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens\n_Imported cloud usage, recorded off this Mac; it carries no dollar figure._\n`;
     }
+    if (src === "droid") {
+      const rangeDroid = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
+        : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
+      return `**Keysrs · Subscriptions · Droid · ${rangeDroid}**\nnot priced · ${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens\n_Counted from Droid's own local log on this Mac; it carries no dollar figure._\n`;
+    }
     const showGrok = src === "all" || src === "grok";
     const showClaude = src === "all" || src === "claude";
     const showOpenAI = src === "all" || src === "openai";
@@ -2628,6 +2648,8 @@
     const claude = showClaude ? Number(t.claude_usd_estimate) || 0 : 0;
     const openai = showOpenAI ? Number(t.openai_usd_estimate) || 0 : 0;
     const anyEst = claude > 0 || openai > 0;
+    // The same rule as the totals bar: Grok's receipt is named only when Grok alone has dollars.
+    const grokOnly = src === "grok" || (src === "all" && !anyEst && grok > 0);
     const parts = [];
     if (showGrok) parts.push(`${fmtUsd(grok)} Grok`);
     if (showClaude) parts.push(`≈ ${fmtUsd(claude)} Claude`);
@@ -2638,9 +2660,9 @@
     const head = `**Keysrs · Subscriptions · ${rangeLabel}${projectMode() ? " · by project" : ""}**`;
     const line = `${anyEst ? "≈ " : ""}${fmtUsd(grok + claude + openai)} total · ${parts.join(" · ")}`;
     const rtMd = remoteTokens(data);
-    const foot = (anyEst
-      ? "_Estimated from the tools' own local logs on this Mac, not a plan invoice._"
-      : "_From Grok's own cost log; local logs only, not a plan invoice._")
+    const foot = (grokOnly
+      ? "_From Grok's own cost log; local logs only, not a plan invoice._"
+      : "_Estimated from the tools' own local logs on this Mac, not a plan invoice._")
       + (rtMd > 0 ? `\n_Plus ${fmtTokens(rtMd)} tokens imported from the cloud (not priced)._` : "");
     return `${head}\n${line}\n${foot}\n`;
   }
