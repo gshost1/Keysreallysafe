@@ -12,6 +12,14 @@ enum HTTPFrame {
     static let headerCap = 65_536
     static let socketTimeoutSeconds: Int = 30
 
+    /// Fields that may appear once: every header a token or key is read from, and Host.
+    /// (Content-Length is checked separately and refused when repeated.) Only request
+    /// parsing comes through here; response heads keep their repeated fields as a list.
+    static let singleValueHeaders: Set<String> = [
+        "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "api-key",
+        "x-ksf-client", "x-ksf-token", "host",
+    ]
+
     static func setDeadlines(fd: Int32, seconds: Int = socketTimeoutSeconds) {
         var tv = timeval(tv_sec: seconds, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
@@ -56,7 +64,17 @@ enum HTTPFrame {
             } else if key == "transfer-encoding" {
                 transferEncodings.append(String(value))
             }
-            headers[String(key)] = String(value)
+            if let existing = headers[key] {
+                // RFC 9110 §5.3: a repeated field is one comma-separated list (SDKs send
+                // several `anthropic-beta` lines, for instance). Cookie joins with ";"
+                // (RFC 6265 §4.2.1). A second credential or Host line is not a list: the
+                // grant check would read one value and the provider the other, so it is
+                // refused outright.
+                if singleValueHeaders.contains(key) { return .bad }
+                headers[key] = existing + (key == "cookie" ? "; " : ", ") + value
+            } else {
+                headers[key] = String(value)
+            }
         }
 
         let te = transferEncodings.joined(separator: ",").lowercased()
