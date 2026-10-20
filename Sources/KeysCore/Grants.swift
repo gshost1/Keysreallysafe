@@ -107,10 +107,17 @@ enum GrantPath {
         if GatewayClientToken.hasDotSegment(rest) { return false }
         if allowed.isEmpty { return true }
         let path = relative(rest: rest, prefix: providerPrefix)
-        for a in allowed {
-            if path == a || path.hasPrefix(a + "/") { return true }
+        for a in scopes(allowed, prefix: providerPrefix) {
+            if a == "/" || path == a || path.hasPrefix(a + "/") { return true }
         }
         return false
+    }
+
+    /// Grant paths are relative to the provider prefix, but `/v1/messages` is what an SDK
+    /// sends and what people type; it was refused with "outside this grant (allows
+    /// /v1/messages)". A scope that repeats the prefix means the same scope without it.
+    private static func scopes(_ allowed: [String], prefix providerPrefix: String) -> [String] {
+        allowed.map { relative(rest: $0, prefix: providerPrefix) }
     }
 
     /// When a denied path holds an allowed scope further in (`/v1/models` against
@@ -119,7 +126,7 @@ enum GrantPath {
     static func suggestion(rest: String, prefix providerPrefix: String, allowed: [String]) -> String? {
         if GatewayClientToken.hasDotSegment(rest) { return nil }
         let segments = relative(rest: rest, prefix: providerPrefix).split(separator: "/").map(String.init)
-        for a in allowed {
+        for a in scopes(allowed, prefix: providerPrefix) {
             let scope = a.split(separator: "/").map(String.init)
             guard !scope.isEmpty, scope.count < segments.count else { continue }
             for start in 1...(segments.count - scope.count) where Array(segments[start..<start + scope.count]) == scope {

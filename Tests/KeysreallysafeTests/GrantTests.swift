@@ -52,6 +52,19 @@ final class GrantTests: XCTestCase {
         XCTAssertTrue(GrantPath.matches(rest: "anything", prefix: "/v1", allowed: []))
     }
 
+    /// The relay test with Anthropic (prefix /v1) was refused for `--paths /v1/messages`
+    /// with "path /v1/messages is outside this grant (allows /v1/messages)".
+    func testGrantPathThatRepeatsTheProviderPrefixMeansTheSameScope() {
+        XCTAssertTrue(GrantPath.matches(rest: "v1/messages", prefix: "/v1", allowed: ["/v1/messages"]))
+        XCTAssertTrue(GrantPath.matches(rest: "messages", prefix: "/v1", allowed: ["/v1/messages"]))
+        XCTAssertTrue(GrantPath.matches(rest: "v1/messages/count_tokens", prefix: "/v1", allowed: ["/v1/messages"]))
+        XCTAssertFalse(GrantPath.matches(rest: "v1/models", prefix: "/v1", allowed: ["/v1/messages"]))
+        XCTAssertFalse(GrantPath.matches(rest: "v1/messagesx", prefix: "/v1", allowed: ["/v1/messages"]))
+        XCTAssertTrue(GrantPath.matches(rest: "v1/models", prefix: "/v1", allowed: ["/v1"]), "the prefix itself is the whole provider")
+        XCTAssertFalse(GrantPath.matches(rest: "v1/messages/../models", prefix: "/v1", allowed: ["/v1"]))
+        XCTAssertFalse(GrantPath.matches(rest: "v2/messages", prefix: "", allowed: ["/v1/messages"]), "no prefix, nothing stripped")
+    }
+
     // `/models/../responses` passes a prefix check and is forwarded as-is; an upstream that
     // collapses dot segments would then serve a scope the grant never named.
     func testPathScopeRejectsDotSegments() {
