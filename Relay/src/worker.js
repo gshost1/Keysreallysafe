@@ -163,6 +163,10 @@ export class RelayHub extends DurableObject {
       controller: null,
       buffered: [],
       bodyDone: false,
+      // Set when the Mac fails the request after RESPONSE was accepted but
+      // before the stream exists; start() then errors the stream instead of
+      // leaving the agent with a 200 that never ends.
+      failed: null,
       headTimer: null,
       idleTimer: null,
       resolveHead: null,
@@ -262,32 +266,59 @@ export class RelayHub extends DurableObject {
       this.finish(id);
       return new Response(null, { status: head.status, headers: responseHeaders });
     }
+    // The body is an IdentityTransformStream, not a ReadableStream driven by a
+    // controller: workerd pumps it natively, and aborting the writer ends the
+    // agent's download cleanly, whereas controller.error() on a stream the agent
+    // is reading leaves two unhandled rejections behind in this isolate.
     const hub = this;
-    const stream = new ReadableStream({
-      start(controller) {
-        entry.controller = controller;
-        for (const chunk of entry.buffered) controller.enqueue(chunk);
-        entry.buffered = [];
-        if (entry.bodyDone) {
-          controller.close();
-          hub.finish(id);
-        } else {
-          hub.armIdle(id, entry);
-        }
-      },
-      cancel() {
-        hub.cancel(id, "client_gone");
-      },
+    const { readable, writable } = new IdentityTransformStream();
+    const writer = writable.getWriter();
+    const sink = {
+      enqueue(chunk) { writer.write(chunk).catch(() => {}); },
+      close() { writer.close().catch(() => {}); },
+      error(error) { writer.abort(error).catch(() => {}); },
+    };
+    // The agent going away surfaces here, as the writer's side failing; a
+    // request this hub already finished (its own abort included) is left alone.
+    writer.closed.then(() => {}, () => {
+      if (hub.pending.get(id) === entry) hub.cancel(id, "client_gone");
     });
-    return new Response(stream, { status: head.status, headers: responseHeaders });
+    if (entry.failed) {
+      sink.error(entry.failed);
+      this.finish(id);
+    } else {
+      entry.controller = sink;
+      for (const chunk of entry.buffered) sink.enqueue(chunk);
+      entry.buffered = [];
+      if (entry.bodyDone) {
+        sink.close();
+        this.finish(id);
+      } else {
+        this.armIdle(id, entry);
+      }
+    }
+    return new Response(readable, { status: head.status, headers: responseHeaders });
   }
 
   armIdle(id, entry) {
     clearTimeout(entry.idleTimer);
     entry.idleTimer = setTimeout(() => {
-      try { entry.controller?.error(new Error("relay_timeout")); } catch { /* already closed */ }
+      this.fail(entry, "relay_timeout");
       this.cancel(id, "relay_timeout");
     }, this.limits.idleTimeoutMs);
+  }
+
+  /// Ends the agent's side of a request with `code`, whichever stage it is in:
+  /// still waiting for the head, streaming, or between the two (RESPONSE
+  /// accepted, stream not yet constructed), which is the window `failed` covers.
+  fail(entry, code, status, message) {
+    entry.rejectHead(new RelayError(status || 502, code, message || code));
+    const error = new Error(code);
+    if (entry.controller) {
+      try { entry.controller.error(error); } catch { /* already closed */ }
+    } else {
+      entry.failed = error;
+    }
   }
 
   /// Tells the Mac to drop the request and forgets it here.
@@ -309,8 +340,7 @@ export class RelayHub extends DurableObject {
   failAll(ws, status, code, message) {
     for (const [id, entry] of [...this.pending]) {
       if (entry.ws !== ws) continue;
-      entry.rejectHead(new RelayError(status, code, message));
-      try { entry.controller?.error(new Error(code)); } catch { /* already closed */ }
+      this.fail(entry, code, status, message);
       this.finish(id);
     }
   }
@@ -375,8 +405,7 @@ export class RelayHub extends DurableObject {
         }
         const code = typeof detail?.code === "string" && detail.code.length <= 64 ? detail.code : "mac_error";
         const text = typeof detail?.message === "string" && detail.message.length <= 512 ? detail.message : "the Mac could not serve this request";
-        entry.rejectHead(new RelayError(502, code, text));
-        try { entry.controller?.error(new Error(code)); } catch { /* already closed */ }
+        this.fail(entry, code, 502, text);
         this.finish(frame.id);
         return;
       }

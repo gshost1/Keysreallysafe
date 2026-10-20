@@ -303,6 +303,54 @@ describe("relaying", () => {
     expect((await res.json()).error).toBe("bad_response_frame");
   });
 
+  it("ends the agent's stream when the Mac sends ERROR mid-body", async () => {
+    const mac = await connectMac();
+    const agent = SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body: "{}" });
+    const req = await mac.next(FRAME.REQUEST);
+    mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 200, headers: [["content-type", "text/event-stream"]] }));
+    mac.send(FRAME.BODY, req.id, "data: one\n\n");
+    const res = await withTimeout(agent, 5000, "agent response");
+    const reader = res.body.getReader();
+    expect(utf8.decode((await withTimeout(reader.read(), 5000, "first chunk")).value)).toBe("data: one\n\n");
+    mac.send(FRAME.ERROR, req.id, JSON.stringify({ code: "gateway_read_failed", message: "the gateway stopped responding mid-body" }));
+    await expect(withTimeout(reader.read(), 2000, "stream failure")).rejects.toThrow(/gateway_read_failed/);
+  });
+
+  it("does not hang the agent when ERROR follows RESPONSE before the stream exists", async () => {
+    // The head is resolved by RESPONSE; the stream is built when the fetch
+    // continuation runs. An ERROR (or the Mac dropping) in between used to be
+    // lost: rejectHead was a no-op and there was no stream to fail yet.
+    const mac = await connectMac();
+    const agent = SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body: "{}" });
+    const req = await mac.next(FRAME.REQUEST);
+    mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 200, headers: [["content-type", "application/json"]] }));
+    mac.send(FRAME.ERROR, req.id, JSON.stringify({ code: "gateway_read_failed", message: "mid-body" }));
+    const res = await withTimeout(agent, 5000, "agent response");
+    // Either the error won the race (502) or the stream was built first and
+    // must then fail promptly instead of idling until the stream timeout.
+    if (res.status === 200) {
+      await expect(withTimeout(res.text(), 300, "stream failure")).rejects.toThrow(/gateway_read_failed/);
+    } else {
+      expect(res.status).toBe(502);
+      expect((await res.json()).error).toBe("gateway_read_failed");
+    }
+  });
+
+  it("tells the Mac to cancel when the agent stops reading the response", async () => {
+    const mac = await connectMac();
+    const aborter = new AbortController();
+    const agent = SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body: "{}", signal: aborter.signal });
+    const req = await mac.next(FRAME.REQUEST);
+    mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 200, headers: [["content-type", "text/event-stream"]] }));
+    mac.send(FRAME.BODY, req.id, "data: one\n\n");
+    const res = await withTimeout(agent, 5000, "agent response");
+    expect(res.status).toBe(200);
+    aborter.abort();
+    const cancel = await mac.next(FRAME.CANCEL);
+    expect(cancel.id).toBe(req.id);
+    expect(head(cancel).reason).toBe("client_gone");
+  });
+
   it("tells the Mac to cancel when the agent's upload fails mid-body, with no 502 for a healthy Mac", async () => {
     // A body stream that errors is what the Worker's reader sees when the
     // agent's connection drops or is aborted part-way through an upload. The
