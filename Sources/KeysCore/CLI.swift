@@ -38,6 +38,7 @@ public struct KeysCLI: ParsableCommand {
             AgentCommand.self,
             SetupCommand.self,
             TunnelCommand.self,
+            RelayCommand.self,
             PurgeCommand.self,
         ]
     )
@@ -1232,5 +1233,117 @@ struct TunnelCommand: ParsableCommand {
                     + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
             )
         }
+    }
+}
+
+struct RelayCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "relay",
+        abstract: "Reach the gateway from a managed cloud agent through a Worker you deploy yourself.",
+        discussion: """
+            Opens one outbound WebSocket from this Mac to the relay Worker in your own \
+            Cloudflare account (Relay/ in the repository, docs/relay.md). The Worker frames \
+            each agent request back here and keys relay replays it against the gateway on \
+            127.0.0.1:\(GatewayListener.port), so every grant check, key swap and usage row \
+            happens on this Mac exactly as for a local caller. The Worker never sees a key. \
+            The agent calls https://<your worker>/<key name>/… with its ksfc_/ksf_ token.
+            """,
+        subcommands: [RelaySetupCommand.self, RelayRunCommand.self, RelayStatusCommand.self, RelayResetCommand.self],
+        defaultSubcommand: RelayRunCommand.self
+    )
+}
+
+struct RelaySetupCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "setup",
+        abstract: "Mint the relay secret for your Worker URL (one Touch ID). Shown once."
+    )
+
+    @Option(help: "Your Worker's URL, e.g. https://keysrs-relay.<your-subdomain>.workers.dev.") var url: String
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let (origin, secret) = try service.setupRelay(url: url, caller: "cli")
+        print(secret)
+        FileHandle.standardError.write(Data("""
+        relay secret for \(origin.absoluteString) (…\(RelaySecret.hint(secret))), stored in this Mac's Keychain.
+        Give the Worker the same value, pasting it when asked:
+          cd Relay && npx wrangler secret put RELAY_SECRET
+        Then connect with: keys relay
+        Agents use \(RelayURL.baseURL(origin, key: "<key name>")) as the base URL with a token from: keys client issue <key name>
+
+        """.utf8))
+    }
+}
+
+struct RelayRunCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "run",
+        abstract: "Connect to the Worker and relay its requests to the local gateway until Ctrl-C."
+    )
+
+    @Option(help: "Override the stored Worker URL for this run.") var url: String?
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        try requireGatewayUp()
+        let (origin, secret) = try service.relayCredentials(urlOverride: url)
+        let client = RelayClient(
+            options: RelayClient.Options(url: origin, secret: secret),
+            log: { line in
+                FileHandle.standardError.write(Data("relay  \(line)\n".utf8))
+            }
+        )
+        FileHandle.standardError.write(Data(
+            "relay  agents reach the gateway at \(RelayURL.baseURL(origin, key: "<key name>")) with a client token; Ctrl-C stops the relay\n".utf8
+        ))
+        let task = Task { await client.run() }
+        signal(SIGINT, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        source.setEventHandler {
+            task.cancel()
+            FileHandle.standardError.write(Data("relay  stopped\n".utf8))
+            Darwin.exit(0)
+        }
+        source.resume()
+        RunLoop.main.run()
+    }
+
+    /// A relay to a closed gateway would only fail on the first agent call; say so here.
+    private func requireGatewayUp() throws {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(GatewayListener.port)/")!)
+        req.timeoutInterval = 3
+        do {
+            _ = try BlockingHTTP.send(req, timeout: 3)
+        } catch {
+            throw AppError.usage(
+                "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
+                    + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
+            )
+        }
+    }
+}
+
+struct RelayStatusCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show the stored Worker URL and whether a secret exists.")
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let status = service.relayStatus()
+        print("url     \(status.url?.absoluteString ?? "not set")")
+        print("secret  \(status.secretHint.map { "stored (…\($0))" } ?? "none")")
+        if !status.configured {
+            print("set up with: keys relay setup --url https://<your worker>.workers.dev")
+        }
+    }
+}
+
+struct RelayResetCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "reset", abstract: "Forget the Worker URL and delete the relay secret from the Keychain.")
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        try service.resetRelay()
+        print("relay forgotten on this Mac; on the Cloudflare side run: cd Relay && npx wrangler secret delete RELAY_SECRET (or npx wrangler delete)")
     }
 }

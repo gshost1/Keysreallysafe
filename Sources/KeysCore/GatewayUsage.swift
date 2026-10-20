@@ -18,13 +18,16 @@ struct GatewayUsageRow: Equatable {
     /// Provider-reported total USD, at the same precision as local usage costs.
     /// nil means absent/invalid, while zero is an explicit reported zero.
     var reportedCostUsdTicks: Int64? = nil
+    /// "relay" when `keys relay` replayed the call from the user's Worker; nil for loopback.
+    var via: String? = nil
 
     /// The usage_events row this call is stored as. Absent token counts become zero there,
     /// which is why pricing (`SpendQueries.gatewayUsd`) treats an all-zero call as unknown.
+    /// Relayed calls get their own session id so the ledger can tell the two paths apart.
     func usageEvent() -> UsageEvent {
         UsageEvent(
             source: "gateway",
-            sessionId: "gw:" + key,
+            sessionId: (via == "relay" ? "gw-relay:" : "gw:") + key,
             promptId: requestId ?? UUID().uuidString.lowercased(),
             model: model ?? "",
             occurredAt: ts,

@@ -24,6 +24,9 @@ final class KeysService: @unchecked Sendable {
     let grants = GrantStore()
     /// Pauses a key after consecutive upstream 401/403 answers (GatewayBreaker).
     let breaker = GatewayBreaker()
+    /// The relay secret's own store (Keychain service `keysreallysafe.relay` in the app, memory
+    /// in tests). nil means this process has no relay storage, and the relay commands say so.
+    let relaySecrets: (any SecretStore)?
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     var analytics: ProductAnalytics?
     /// First-launch answers: background Claude limit refresh, analytics question asked.
@@ -41,10 +44,12 @@ final class KeysService: @unchecked Sendable {
         grokBotHome: URL = Paths.grokBotHome,
         droidHome: URL = Paths.droidHome,
         runner: any CommandRunner = FoundationCommandRunner(),
-        openRouter: any OpenRouterFetching = OpenRouterHTTP()
+        openRouter: any OpenRouterFetching = OpenRouterHTTP(),
+        relaySecrets: (any SecretStore)? = nil
     ) {
         self.catalog = catalog
         self.secrets = secrets
+        self.relaySecrets = relaySecrets
         self.presence = presence
         self.clipboard = clipboard
         self.grokHome = grokHome
@@ -776,10 +781,93 @@ final class KeysService: @unchecked Sendable {
             try recordKeyEvent(
                 name: row.key,
                 action: "gateway_call",
-                caller: "dashboard",
+                caller: row.via ?? "dashboard",
                 detail: row.model,
                 touchLastUsed: true
             )
+        }
+    }
+
+    // MARK: - Relay (docs/relay.md)
+
+    static let relayURLMetaKey = "relay_url"
+    static let relayKeychainService = "keysreallysafe.relay"
+    /// The one account name under the relay's Keychain service.
+    static let relaySecretName = "relay"
+
+    struct RelayStatus: Equatable {
+        var url: URL?
+        /// Last four characters of the stored secret; nil when none is stored.
+        var secretHint: String?
+        var configured: Bool { url != nil && secretHint != nil }
+    }
+
+    private func relayStore() throws -> any SecretStore {
+        guard let relaySecrets else { throw AppError.usage("relay storage is not available in this process") }
+        return relaySecrets
+    }
+
+    /// What is stored, without reading the secret itself out loud: the hint lives in meta.
+    func relayStatus() -> RelayStatus {
+        let url = (try? catalog.metaValue(Self.relayURLMetaKey)).flatMap { $0 }.flatMap { try? RelayURL.validate($0) }
+        let hint = (try? catalog.metaValue(Self.relayURLMetaKey + "_secret_hint")).flatMap { $0 }
+        return RelayStatus(url: url, secretHint: hint)
+    }
+
+    /// Mints a fresh relay secret for `url`, replacing any earlier one, and returns it once.
+    /// One presence check, like issuing a client token.
+    func setupRelay(url rawURL: String, caller: String = "cli") throws -> (url: URL, secret: String) {
+        let url = try RelayURL.validate(rawURL)
+        let store = try relayStore()
+        try presence.require(reason: "set up the relay to \(url.host ?? rawURL)")
+        let secret = RelaySecret.generate()
+        do {
+            try store.replace(name: Self.relaySecretName, secret: secret)
+        } catch AppError.notFound {
+            try store.add(name: Self.relaySecretName, secret: secret)
+        }
+        try catalog.withTransaction {
+            try catalog.setMeta(Self.relayURLMetaKey, url.absoluteString)
+            try catalog.setMeta(Self.relayURLMetaKey + "_secret_hint", RelaySecret.hint(secret))
+        }
+        return (url, secret)
+    }
+
+    /// The URL and secret `keys relay` connects with. Presence first: the secret is a
+    /// credential and leaves the store only for a connection the person is starting.
+    func relayCredentials(urlOverride: String? = nil) throws -> (url: URL, secret: String) {
+        let status = relayStatus()
+        guard let url = try urlOverride.map(RelayURL.validate) ?? status.url else {
+            throw AppError.usage("no relay is set up; run: keys relay setup --url https://<your worker>.workers.dev")
+        }
+        let store = try relayStore()
+        // The hint says whether setup ever ran, so an unconfigured Mac is refused before
+        // anyone is asked for Touch ID.
+        guard status.secretHint != nil else {
+            throw AppError.usage("no relay secret is stored; run: keys relay setup --url \(url.absoluteString)")
+        }
+        try presence.require(reason: "connect the relay to \(url.host ?? url.absoluteString)")
+        let secret: String
+        do {
+            secret = try store.get(name: Self.relaySecretName)
+        } catch AppError.notFound {
+            throw AppError.usage("no relay secret is stored; run: keys relay setup --url \(url.absoluteString)")
+        }
+        guard RelaySecret.looksLikeSecret(secret) else {
+            throw AppError.usage("the stored relay secret is not one keys relay setup made; run keys relay setup again")
+        }
+        return (url, secret)
+    }
+
+    /// Forgets the URL and deletes the secret. The Worker keeps its copy until
+    /// `wrangler secret delete RELAY_SECRET`, which the command reminds the person of.
+    func resetRelay() throws {
+        if let relaySecrets {
+            do { try relaySecrets.delete(name: Self.relaySecretName) } catch AppError.notFound {}
+        }
+        try catalog.withTransaction {
+            try catalog.deleteMeta(Self.relayURLMetaKey)
+            try catalog.deleteMeta(Self.relayURLMetaKey + "_secret_hint")
         }
     }
 
@@ -949,6 +1037,7 @@ final class KeysService: @unchecked Sendable {
         gatewayLock.withLock { gatewayCache.removeAll() }
         revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
+        try relaySecrets?.deleteAll()
         try analytics?.setEnabled(false, consentVersion: ProductAnalytics.consentVersion)
         try catalog.wipeData()
     }
@@ -1205,7 +1294,8 @@ enum AppFactory {
             catalog: db,
             secrets: KeychainStore(),
             presence: LocalPresenceGate(),
-            clipboard: AppKitClipboard()
+            clipboard: AppKitClipboard(),
+            relaySecrets: KeychainStore(service: KeysService.relayKeychainService)
         )
         service.observeScreenLock()
         service.analytics = ProductAnalytics(catalog: db)

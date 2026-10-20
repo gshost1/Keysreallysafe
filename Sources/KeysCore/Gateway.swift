@@ -135,6 +135,9 @@ final class GatewayListener: @unchecked Sendable {
             return
         }
         if let gatewayClient { service.noteGatewayClientUse(gatewayClient) }
+        // `keys relay` marks what it replays so the ledger can say which way a call came in.
+        // A label only: a local caller that forges it gains nothing, and it never goes upstream.
+        let via = request.headers["x-ksf-via"]?.lowercased() == "relay" ? "relay" : nil
         let path = GatewayPath.join(prefix: target.provider.pathPrefix, rest: request.rest)
         var headers = request.headers.filter { !Self.dropIncoming.contains($0.key.lowercased()) }
         headers["Host"] = target.host
@@ -207,7 +210,8 @@ final class GatewayListener: @unchecked Sendable {
                     status: status,
                     durationMs: durationMs,
                     requestId: proxy.requestId,
-                    reportedCostUsdTicks: (200..<300).contains(status) ? parsed.reportedCostUsdTicks : nil
+                    reportedCostUsdTicks: (200..<300).contains(status) ? parsed.reportedCostUsdTicks : nil,
+                    via: via
                 ),
                 grantId: grant?.id
             )
@@ -266,6 +270,8 @@ final class GatewayListener: @unchecked Sendable {
         "host", "content-length", "accept-encoding", "x-ksf-token", "x-ksf-client",
         // Retired grant alias: no longer read, still never forwarded.
         "x-ksf-grant",
+        // The relay's marker is for this Mac's ledger, not for the provider.
+        "x-ksf-via",
     ])
 
     /// Split on the first `?` in the raw target. Path/query bytes are not decoded.

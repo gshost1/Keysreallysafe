@@ -75,7 +75,8 @@ func makeGatedService(
         codexHome: Fixtures.codexHome,
         droidHome: Fixtures.droidHome,
         runner: runner,
-        openRouter: openRouter
+        openRouter: openRouter,
+        relaySecrets: MemorySecretStore()
     )
     return (service, gate)
 }
