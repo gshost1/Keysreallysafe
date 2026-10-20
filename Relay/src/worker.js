@@ -8,66 +8,11 @@
 // Logging discipline: nothing in this file logs headers or bodies. The only
 // console output is a one-line note on an unexpected frame, without payload.
 
-export const PROTOCOL = "1";
-
-export const FRAME = Object.freeze({
-  REQUEST: 1,
-  BODY: 2,
-  END: 3,
-  RESPONSE: 4,
-  CANCEL: 5,
-  ERROR: 6,
-});
-
-export const LIMITS = Object.freeze({
-  requestBody: 8 * 1024 * 1024,
-  inflight: 32,
-  chunk: 64 * 1024,
-  headTimeoutMs: 120_000,
-  idleTimeoutMs: 300_000,
-});
+import { DurableObject } from "cloudflare:workers";
+import { FRAME, LIMITS, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "./protocol.js";
 
 const DOCS = "https://github.com/gshost1/Keysreallysafe/blob/main/docs/relay.md";
-
-// Hop-by-hop headers, the ones the Mac rewrites, and the ones Cloudflare adds
-// about the agent's connection. Repeated on the Mac in case a Worker is ever
-// replaced by something less careful.
-const STRIP_REQUEST = new Set([
-  "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
-  "trailers", "transfer-encoding", "upgrade", "host", "content-length",
-  "x-ksf-via", "x-real-ip", "cdn-loop", "true-client-ip",
-]);
-
-const STRIP_RESPONSE = new Set([
-  "connection", "keep-alive", "transfer-encoding", "content-length", "upgrade", "trailers", "te",
-]);
-
-export function stripRequestHeader(name) {
-  const n = name.toLowerCase();
-  return STRIP_REQUEST.has(n) || n.startsWith("cf-") || n.startsWith("x-forwarded-");
-}
-
-const utf8 = new TextEncoder();
 const utf8d = new TextDecoder();
-
-export function encodeFrame(type, id, payload) {
-  const body = payload instanceof Uint8Array ? payload : payload ? utf8.encode(payload) : new Uint8Array(0);
-  const out = new Uint8Array(5 + body.byteLength);
-  out[0] = type;
-  new DataView(out.buffer).setUint32(1, id >>> 0, false);
-  out.set(body, 5);
-  return out;
-}
-
-export function decodeFrame(data) {
-  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  if (bytes.byteLength < 5) return null;
-  return {
-    type: bytes[0],
-    id: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(1, false),
-    payload: bytes.subarray(5),
-  };
-}
 
 function json(status, object, extraHeaders) {
   const headers = {
@@ -85,17 +30,6 @@ class RelayError extends Error {
     this.status = status;
     this.code = code;
   }
-}
-
-/// Compares the presented bearer to the configured secret in constant time
-/// over fixed-length digests, so neither the length nor a prefix leaks.
-export async function secretMatches(given, expected) {
-  if (typeof given !== "string" || typeof expected !== "string" || !given || !expected) return false;
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest("SHA-256", utf8.encode(given)),
-    crypto.subtle.digest("SHA-256", utf8.encode(expected)),
-  ]);
-  return crypto.subtle.timingSafeEqual(a, b);
 }
 
 function bearer(request) {
@@ -152,10 +86,9 @@ export default {
   },
 };
 
-export class RelayHub {
+export class RelayHub extends DurableObject {
   constructor(ctx, env) {
-    this.ctx = ctx;
-    this.env = env;
+    super(ctx, env);
     this.limits = limitsFrom(env);
     /** @type {Map<number, object>} request id -> in-flight entry */
     this.pending = new Map();

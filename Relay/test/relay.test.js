@@ -3,7 +3,7 @@
 // provider or Cloudflare account is involved.
 import { SELF, env } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
-import { FRAME, LIMITS, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "../src/worker.js";
+import { FRAME, LIMITS, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "../src/protocol.js";
 
 const ORIGIN = "https://relay.test";
 const utf8 = new TextDecoder();
