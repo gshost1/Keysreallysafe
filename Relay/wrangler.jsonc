@@ -1,0 +1,17 @@
+{
+  // The relay Worker. Deploy this into YOUR OWN Cloudflare account; Keysrs runs
+  // no hosted copy. docs/relay.md has the setup steps and the threat model.
+  // RELAY_SECRET is a Worker secret (`npx wrangler secret put RELAY_SECRET`),
+  // never a var here.
+  "$schema": "https://esm.sh/wrangler/config-schema.json",
+  "name": "keysrs-relay",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-21",
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "RelayHub" }]
+  },
+  // SQLite-backed so the free Workers plan can run it.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayHub"] }],
+  // Bodies and tokens must not end up in Workers Logs; keep observability off.
+  "observability": { "enabled": false }
+}

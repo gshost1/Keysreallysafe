@@ -23,10 +23,19 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: scripts/tests/package-lock.json
+          cache-dependency-path: |
+            scripts/tests/package-lock.json
+            Relay/package-lock.json
       - name: Install the pinned browser test dependencies
         working-directory: scripts/tests
         run: npm ci
+      - name: Install the relay Worker's pinned tooling
+        working-directory: Relay
+        run: npm ci
+      # Runs inside workerd with a throwaway secret: no Cloudflare account, no network.
+      - name: Check the relay Worker offline
+        working-directory: Relay
+        run: npm test
       - name: Check release packaging scripts (no credentials)
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check analytics collector (synthetic loopback requests only)

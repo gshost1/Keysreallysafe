@@ -1,0 +1,17 @@
+{
+  "name": "keysrs-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "User-deployed Cloudflare Worker that pipes framed HTTP from a cloud agent to the Keysrs gateway on the user's Mac. See docs/relay.md.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.5",
+    "vitest": "4.1.12",
+    "wrangler": "4.151.2"
+  }
+}
