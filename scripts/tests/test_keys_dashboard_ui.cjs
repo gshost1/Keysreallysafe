@@ -2024,8 +2024,8 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
     ["grok", "claude", "openai", "gemini", "glm", "kimi", "deepseek", "other"]
       .map((f) => [f, getComputedStyle(document.documentElement).getPropertyValue(`--s-${f}-1`).trim()])
   ));
-  // Dark blue is the default face; Claude's orange there is the lighter shade that reads on it.
-  assert.equal(palette.claude, "#e08a6a", "Claude's shade is orange in the dark-blue face");
+  // Dark is the default face; Claude's orange there is the lighter shade that reads on it.
+  assert.equal(palette.claude, "#e08a6a", "Claude's shade is orange in the dark face");
   const expected = {
     "grok-4": palette.grok, "claude-sonnet-5": palette.claude, "gpt-5": palette.openai,
     "gemini-3-pro": palette.gemini, "glm-5.3": palette.glm, "kimi-k3": palette.kimi,
@@ -2049,8 +2049,8 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
 
 // The dashboard wears the keysrs.com light look and nothing else: the dark block is gone, so a
 // Mac set to Dark (which headless Chrome also inherits) still gets the light palette.
-test("dark blue is the default, Settings switches to the site's light look and it survives a reload", async (page, origin) => {
-  // The OS preference never decides: a light system still opens dark blue.
+test("neutral dark is the default, Settings switches to the site's light look and it survives a reload", async (page, origin) => {
+  // The OS preference never decides: a light system still opens dark.
   await page.emulateMedia({ colorScheme: "light" });
   plans = [droidPlan()];
   await showDroidOnUsage(page);
@@ -2067,15 +2067,31 @@ test("dark blue is the default, Settings switches to the site's light look and i
     paneRadius: getComputedStyle(document.getElementById("pane-usage")).borderRadius,
     blue: getComputedStyle(document.documentElement).getPropertyValue("--blue").trim(),
     claude: getComputedStyle(document.documentElement).getPropertyValue("--s-claude-1").trim(),
+    muted: getComputedStyle(document.documentElement).getPropertyValue("--ink-3").trim(),
+    toolbarBg: getComputedStyle(document.querySelector(".toolbar")).backgroundColor,
   }));
   const dark = await read();
   assert.equal(dark.attr, null);
   assert.equal(dark.meta, "dark light");
   assert.equal(dark.scheme, "dark");
-  assert.equal(dark.bodyBg, "rgb(14, 23, 48)", "the page sits on the dark-blue #0e1730");
-  assert.equal(dark.bodyInk, "rgb(232, 237, 248)");
+  assert.equal(dark.bodyBg, "rgb(17, 17, 19)", "the page sits on 0.11.0's near-black #111113");
+  assert.equal(dark.bodyInk, "rgb(236, 236, 238)", "#ececee ink");
+  assert.equal(dark.paneBg, "rgb(26, 26, 29)", "panes are the raised #1a1a1d");
   assert.equal(dark.paneRadius, "18px", "the pane is still a rounded card");
-  assert.equal(dark.blue, "#4c9aff");
+  assert.equal(dark.blue, "#4c9aff", "the accent blue stays for links and buttons");
+  // Surfaces are neutral grey, not blue-tinted: every channel within a hair of the others.
+  for (const rgb of [dark.bodyBg, dark.paneBg, dark.toolbarBg]) {
+    const [r, g, b] = rgb.match(/\d+/g).map(Number);
+    assert.ok(Math.max(r, g, b) - Math.min(r, g, b) <= 3, `${rgb} is a neutral surface`);
+  }
+  // Muted text still reads: WCAG contrast of --ink-3 against the pane is at least 4.5:1.
+  const lum = (hex) => {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const contrast = (lum(dark.muted) + 0.05) / (lum("#1a1a1d") + 0.05);
+  assert.ok(contrast >= 4.5, `--ink-3 ${dark.muted} on the pane is ${contrast.toFixed(2)}:1`);
 
   await page.getByRole("tab", { name: "Settings" }).click();
   const sw = page.locator("#theme-switch");

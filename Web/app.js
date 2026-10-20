@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  // First, before anything paints: dark blue unless this browser chose light. An attribute plus
+  // First, before anything paints: dark unless this browser chose light. An attribute plus
   // CSS variables, because the CSP allows no inline style to switch with.
   const readTheme = () => { try { return localStorage.getItem("ksf.theme") === "light" ? "light" : "dark"; } catch { return "dark"; } };
   const applyTheme = (name) => {

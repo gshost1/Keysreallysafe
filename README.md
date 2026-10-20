@@ -151,7 +151,7 @@ Touch ID), then move the app to the Trash.
 The Keysrs window has four panes, switched with the segmented control or `⌘1` through `⌘4`:
 Usage, Chart, Keys and Settings.
 
-The dashboard is dark blue by default. **Settings → Light theme** switches it to the
+The dashboard is dark by default (neutral grey, not blue-tinted). **Settings → Light theme** switches it to the
 keysrs.com light look; the choice is remembered on this Mac and does not follow the
 system appearance.
 

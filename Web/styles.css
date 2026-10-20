@@ -1,38 +1,40 @@
-/* Keysrs — dark blue by default, the keysrs.com light look on request.
+/* Keysrs — dark by default, the keysrs.com light look on request.
    The light face shares the site's tokens (Site/styles.css): white cards on a #f5f5f7 page,
-   #1d1d1f ink, #e6e6eb hairlines, #0071e3 blue, the two-layer shadow. The default face is a
-   dark-blue variant of the same layout. Settings → Appearance sets html[data-theme="light"]
-   and remembers it in this browser (ksf.theme); app.js applies it before first paint. The
-   page never follows the OS appearance: the choice is the viewer's. Density
-   stays a tool's: 13px type, full-width panes, no external resources (the served CSP is
-   default-src 'self'). */
+   #1d1d1f ink, #e6e6eb hairlines, #0071e3 blue, the two-layer shadow. The default face is the
+   neutral near-black dark of 0.11.0 (#111113 page, #1a1a1d raised, #242428 selection, #ececee
+   ink): grey surfaces, never blue-tinted, with the accent blue kept for links, buttons and
+   focus. Settings → Appearance sets html[data-theme="light"] and remembers it in this browser
+   (ksf.theme); app.js applies it before first paint. The page never follows the OS appearance:
+   the choice is the viewer's. Density stays a tool's: 13px type, full-width panes, no external
+   resources (the served CSP is default-src 'self'). */
 
-/* Shared by both faces, plus the dark-blue default. */
+/* Shared by both faces, plus the dark default. Contrast on the #1a1a1d card: --ink 14.7:1,
+   --ink-2 6.3:1, --ink-3 4.8:1 (0.11.0's #6a6a70 muted grey was 3.2:1, so it is lifted). */
 :root {
   color-scheme: dark;
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --bg: #0b1324;
-  --bg-2: #0e1730;
-  --bg-3: #172544;
-  --card: #121d38;
-  --ink: #e8edf8;
-  --ink-2: #aab6d0;
-  --ink-3: #7f8cab;
+  --bg: #0c0c0e;
+  --bg-2: #111113;
+  --bg-3: #242428;
+  --card: #1a1a1d;
+  --ink: #ececee;
+  --ink-2: #9b9ba2;
+  --ink-3: #86868e;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
   --blue: #4c9aff;
   --blue-2: #62a8ff;
-  --blue-tint: rgba(76, 154, 255, 0.14);
+  --blue-tint: rgba(76, 154, 255, 0.16);
   --blue-ink: #8fc1ff;
   --green: #34c759;
   --red: #ff6b5e;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 28px -10px rgba(0, 0, 0, 0.65);
-  --focus: rgba(76, 154, 255, 0.6);
-  --scrim: rgba(2, 6, 18, 0.65);
+  --focus: rgba(76, 154, 255, 0.75);
+  --scrim: rgba(0, 0, 0, 0.6);
   --seg-track: rgba(255, 255, 255, 0.07);
-  --seg-shadow: rgba(0, 0, 0, 0.45);
+  --seg-shadow: rgba(0, 0, 0, 0.5);
   --on-blue: #ffffff;
   --s-grok-1: #409cff;
   --s-grok-2: #70d7ff;
@@ -62,14 +64,14 @@
   --s-deepseek-2: #a3b0ff;
   --s-deepseek-3: #4d6bfe;
   --s-deepseek-4: #c9d2ff;
-  --s-other-1: #6b7694;
-  --s-other-2: #8791ad;
-  --s-other-3: #4d5771;
-  --s-other-4: #a7afc6;
-  --s-other: #6b7694;
+  --s-other-1: #6c6c70;
+  --s-other-2: #8a8a90;
+  --s-other-3: #48484a;
+  --s-other-4: #a4a4aa;
+  --s-other: #6c6c70;
   --live-claude: #e08a6a;
   --live-droid: #4c9aff;
-  --live-track: rgba(255, 255, 255, 0.10);
+  --live-track: #2a2a2e;
 }
 
 html[data-theme="light"] {
