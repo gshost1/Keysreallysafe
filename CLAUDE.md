@@ -156,7 +156,7 @@ relay Worker in `Relay/` is user-deployed into the user's own account and is
 not a Keysrs service.
 The Stripe account stays open but idle (kept on purpose, 2026-09-24): the
 Payment Link is deactivated, the webhook deleted and the restricted key
-expired. The license D1 database is deleted and Workers Paid ends 2026-10-23.
+expired. The license D1 database is deleted. Workers Paid stays active (kept on purpose, 2026-10-19).
 
 ## Conventions
 
