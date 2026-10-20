@@ -153,7 +153,7 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(gate.reasons, [])
         _ = try service.setGateway(name: "demo", enabled: true, host: nil)
         XCTAssertTrue(service.isGatewayEnabled("demo"))
-        XCTAssertEqual(gate.reasons, ["unlock demo"])
+        XCTAssertEqual(gate.reasons, ["send the key demo to OpenAI at api.openai.com through the gateway"])
 
         try service.add(name: "bedrock-key", provider: "bedrock", kind: "runtime", notes: "", secret: fixtureSecret)
         XCTAssertThrowsError(try service.setGateway(name: "bedrock-key", enabled: true, host: "example.com")) { error in
@@ -254,7 +254,7 @@ final class GatewayTests: XCTestCase {
         defer { rig.stop() }
         let (dir, service, gate, stub) = (rig.dir, rig.service, rig.gate, rig.stub)
         try rig.key(secret: "sk-test-secret")
-        XCTAssertEqual(gate.reasons, ["unlock demo"])
+        XCTAssertEqual(gate.reasons, ["send the key demo to OpenAI at 127.0.0.1:\(stub.boundPort) through the gateway"])
         // Gateway already on: the grant costs one more prompt, naming task, provider and host.
         let token = try grantFor(service, "demo", task: "unit round trip")
         XCTAssertEqual(gate.reasons.count, 2)

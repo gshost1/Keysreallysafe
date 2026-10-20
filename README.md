@@ -337,7 +337,9 @@ itself still needs Touch ID in the app.
 
 **A client** is for a program you keep: a capability that lives in the
 catalog as a hash, expires in days (default 30, at most 365), and is scoped
-to HTTP methods and an upstream path prefix.
+to HTTP methods and an upstream path prefix. It is bound to the host the key
+pointed at when it was issued: change the key's host and the client stops
+working until the host is back or you issue a new one.
 
 ```sh
 keys client issue <key name> --label "my script" --days 30 --method POST --path-prefix v1/messages
