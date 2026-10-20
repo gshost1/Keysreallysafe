@@ -454,7 +454,8 @@ final class KeysService: @unchecked Sendable {
         enabled: Bool,
         host: String?,
         caller: String = "dashboard",
-        reason: String? = nil
+        reason: String? = nil,
+        presenceChecked: Bool = false
     ) throws -> CatalogRow {
         try requireGatewayOwner()
         let row = try existingRow(name)
@@ -470,7 +471,8 @@ final class KeysService: @unchecked Sendable {
             {
                 disableGatewayMemory(name: name, reason: "target_changed")
             }
-            try presence.require(reason: reason ?? "unlock \(name)")
+            // A batch (keys wrap, client issue with the gateway) asked once for all of its keys.
+            if !presenceChecked { try presence.require(reason: reason ?? "unlock \(name)") }
             let target = GatewayTarget(
                 name: name, secret: try secrets.get(name: name), provider: provider, host: resolved, version: row.version
             )
@@ -673,7 +675,9 @@ final class KeysService: @unchecked Sendable {
     // MARK: gateway clients
 
     /// Issuing a capability to spend a key is a key use, so it asks for presence like copy does.
-    /// The token is returned once and only its hash is stored.
+    /// The token is returned once and only its hash is stored. With `enableGateway` the same
+    /// prompt also turns the gateway on, since a token for a key the gateway does not hold
+    /// only ever gets 404.
     func issueGatewayClient(
         name: String,
         label: String,
@@ -681,14 +685,37 @@ final class KeysService: @unchecked Sendable {
         methods: [String]? = nil,
         pathPrefix: String? = nil,
         caller: String = "dashboard",
+        enableGateway: Bool = false,
         now: Date = Date()
     ) throws -> (token: String, client: GatewayClient) {
-        _ = try existingRow(name)
+        let row = try existingRow(name)
         let ttlDays = try GatewayClientToken.validateDays(days)
         let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
         let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
-        let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        if enableGateway {
+            try requireGatewayOwner()
+            guard let provider = Providers.provider(id: row.provider), provider.gateway else {
+                throw AppError.usage("gateway is not available for provider \(row.provider)")
+            }
+            guard row.gatewayHost ?? provider.host != nil else {
+                throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
+            }
+        }
         try presence.require(reason: "issue gateway client for \(name)")
+        if enableGateway {
+            _ = try setGateway(name: name, enabled: true, host: nil, caller: caller, presenceChecked: true)
+        }
+        return try mintGatewayClient(
+            name: name, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix, caller: caller, now: now
+        )
+    }
+
+    /// Mints after presence was already taken by the caller; arguments are validated.
+    private func mintGatewayClient(
+        name: String, label: String, days ttlDays: Int, methods allowed: [String], pathPrefix prefix: String?,
+        caller: String, now: Date
+    ) throws -> (token: String, client: GatewayClient) {
+        let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
         let token = GatewayClientToken.generate()
         let client = try catalog.insertGatewayClient(
             keyName: name,
@@ -707,6 +734,116 @@ final class KeysService: @unchecked Sendable {
             detail: "#\(client.id) \(trimmedLabel) \(ttlDays)d \(allowed.joined(separator: "/"))"
         )
         return (token, client)
+    }
+
+    // MARK: keys wrap
+
+    /// Wrap plans waiting for the user's yes. Each holds the secrets of keys it will add, in
+    /// memory only, and dies after `WrapPlan.lifetime`.
+    private let wrapLock = NSLock()
+    private var wrapPending: [String: (plan: WrapPlan, secrets: [String: String], file: String, expires: Date)] = [:]
+
+    /// One presence prompt covers the whole batch: reading every vault secret to compare with
+    /// the file's values here, and later adding keys, turning the gateway on and minting tokens
+    /// in `wrapApply`. Values never leave this process; the plan carries names only.
+    func wrapPlan(file: String, candidates: [WrapCandidate], now: Date = Date()) throws -> WrapPlan {
+        try requireGatewayOwner()
+        guard !candidates.isEmpty else { throw AppError.usage("nothing to wrap") }
+        guard candidates.count <= WrapPlan.maxCandidates else {
+            throw AppError.usage("too many variables to wrap at once (at most \(WrapPlan.maxCandidates))")
+        }
+        let label = String(file.prefix(120))
+        let rows = try catalog.listCatalog()
+        try presence.require(reason: "match \(candidates.count) value\(candidates.count == 1 ? "" : "s") in \(label) against the vault and wrap them")
+        var vault: [(name: String, secret: Data)] = []
+        for row in rows {
+            // A catalog row whose Keychain item is gone cannot match; it is not this command's problem.
+            if let secret = try? secrets.get(name: row.name) { vault.append((row.name, Data(secret.utf8))) }
+        }
+        var taken = Set(rows.map(\.name))
+        var newByValue: [Data: String] = [:]
+        var newSecrets: [String: String] = [:]
+        var items: [WrapPlan.Item] = []
+        for c in candidates {
+            try EnvVar.validate(c.variable)
+            let value = Data(c.value.utf8)
+            var match: String?
+            for entry in vault where ConstantTime.equal(entry.secret, value) { match = match ?? entry.name }
+            if let match, let row = rows.first(where: { $0.name == match }) {
+                let provider = Providers.provider(id: row.provider)
+                guard let provider, provider.gateway else {
+                    items.append(.init(variable: c.variable, key: match, provider: row.provider, isNew: false,
+                                       skip: "the gateway does not proxy \(provider?.name ?? row.provider)"))
+                    continue
+                }
+                guard row.gatewayHost ?? provider.host != nil else {
+                    items.append(.init(variable: c.variable, key: match, provider: row.provider, isNew: false,
+                                       skip: "set a gateway host for \(match) first"))
+                    continue
+                }
+                items.append(.init(variable: c.variable, key: match, provider: row.provider, isNew: false, skip: nil))
+                continue
+            }
+            if let name = newByValue[value] {
+                items.append(.init(variable: c.variable, key: name, provider: items.first { $0.key == name }?.provider,
+                                   isNew: true, skip: nil))
+                continue
+            }
+            guard let pid = c.provider, let provider = Providers.provider(id: pid) else {
+                items.append(.init(variable: c.variable, key: nil, provider: nil, isNew: true,
+                                   skip: "not in the vault and no provider recognised; add it with keys add, then rerun"))
+                continue
+            }
+            guard provider.gateway, provider.host != nil else {
+                items.append(.init(variable: c.variable, key: nil, provider: pid, isNew: true,
+                                   skip: "the gateway cannot proxy \(provider.name) without a per-key host; add it with keys add"))
+                continue
+            }
+            let name = WrapNames.suggest(provider: pid, hint: c.nameHint, taken: taken)
+            taken.insert(name)
+            newByValue[value] = name
+            newSecrets[name] = c.value
+            items.append(.init(variable: c.variable, key: name, provider: pid, isNew: true, skip: nil))
+        }
+        let plan = WrapPlan(id: Hex.encode(SecureRandom.bytes(16)), items: items)
+        wrapLock.withLock {
+            wrapPending = wrapPending.filter { $0.value.expires > now }
+            wrapPending[plan.id] = (plan, newSecrets, label, now.addingTimeInterval(WrapPlan.lifetime))
+        }
+        return plan
+    }
+
+    /// Carries out a plan the user said yes to, without another prompt: adds the new keys,
+    /// turns the gateway on for every key and mints one client token per key.
+    func wrapApply(
+        id: String, label: String = "", days: Int? = nil, caller: String = "wrap", now: Date = Date()
+    ) throws -> [WrapIssued] {
+        try requireGatewayOwner()
+        guard let pending = wrapLock.withLock({ wrapPending.removeValue(forKey: id) }), pending.expires > now else {
+            throw AppError.usage("the wrap plan expired or was already used; run keys wrap again")
+        }
+        let ttlDays = try GatewayClientToken.validateDays(days)
+        let methods = ["POST", "GET"]
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientLabel = trimmed.isEmpty ? "keys wrap \(pending.file)" : trimmed
+        var issued: [WrapIssued] = []
+        for item in pending.plan.items where item.skip == nil {
+            guard let key = item.key, !issued.contains(where: { $0.key == key }) else { continue }
+            if item.isNew, let secret = pending.secrets[key], let provider = item.provider {
+                try add(name: key, provider: provider, kind: "runtime", notes: "added by keys wrap from \(pending.file)",
+                        secret: secret, caller: caller)
+            }
+            _ = try setGateway(name: key, enabled: true, host: nil, caller: caller, presenceChecked: true)
+            let minted = try mintGatewayClient(
+                name: key, label: clientLabel, days: ttlDays, methods: methods, pathPrefix: nil, caller: caller, now: now
+            )
+            issued.append(WrapIssued(key: key, token: minted.token, clientID: minted.client.id, isNew: item.isNew))
+        }
+        return issued
+    }
+
+    func wrapCancel(id: String) {
+        _ = wrapLock.withLock { wrapPending.removeValue(forKey: id) }
     }
 
     func gatewayClients(name: String) throws -> [GatewayClient] {

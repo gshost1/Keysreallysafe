@@ -33,6 +33,8 @@ public struct KeysCLI: ParsableCommand {
             MenubarCommand.self,
             AutostartCommand.self,
             ClientCommand.self,
+            GatewayCommand.self,
+            WrapCommand.self,
             ProvidersCommand.self,
             ProviderCommand.self,
             AgentCommand.self,
@@ -750,19 +752,42 @@ struct ClientIssueCommand: ParsableCommand {
     @Option(name: .customLong("path-prefix"), help: "Only this upstream path prefix, e.g. v1/messages.") var pathPrefix: String?
 
     func run() throws {
-        let service = try AppFactory.makeService()
-        let issued = try service.issueGatewayClient(
-            name: name,
-            label: label,
-            days: days,
-            methods: methods.isEmpty ? nil : methods,
-            pathPrefix: pathPrefix,
-            caller: "cli"
-        )
-        print(issued.token)
-        let scope = issued.client.methods.joined(separator: ",") + " " + (issued.client.pathPrefix ?? "*")
+        try KeyName.validate(name)
+        // A token is only useful once the gateway holds the key, and only the process that
+        // owns the gateway can turn it on, so the running app issues it under one prompt.
+        let token: String, id: Int64, scope: String, expires: String
+        var note = ""
+        if let control = try? ControlClient.connect() {
+            fputs("Touch ID in Keysrs…\n", stderr)
+            var body: [String: Any] = ["label": label, "days": days, "gateway": true, "caller": "cli"]
+            if !methods.isEmpty { body["methods"] = methods }
+            if let pathPrefix { body["path_prefix"] = pathPrefix }
+            let obj = try control.call(method: "POST", path: "/api/keys/\(name)/clients", body: body, expect: 201)
+            let client = JSONValue.object(obj["client"]) ?? [:]
+            token = JSONValue.string(obj["token"]) ?? ""
+            guard !token.isEmpty else { throw AppError.usage("the site returned no token") }
+            id = Int64(JSONValue.int(client["id"]) ?? 0)
+            scope = ((client["methods"] as? [Any])?.compactMap { $0 as? String }.joined(separator: ",") ?? "")
+                + " " + (JSONValue.string(client["path_prefix"]) ?? "*")
+            expires = JSONValue.string(client["expires_at"]) ?? ""
+            if JSONValue.bool(obj["gateway_enabled"]) != true {
+                note = " The running Keysrs.app did not turn the gateway on; run: keys gateway on \(name)"
+            }
+        } else {
+            let service = try AppFactory.makeService()
+            let issued = try service.issueGatewayClient(
+                name: name, label: label, days: days, methods: methods.isEmpty ? nil : methods,
+                pathPrefix: pathPrefix, caller: "cli"
+            )
+            token = issued.token
+            id = issued.client.id
+            scope = issued.client.methods.joined(separator: ",") + " " + (issued.client.pathPrefix ?? "*")
+            expires = issued.client.expiresAt
+            note = " Keysrs is not running, so the gateway is off; open it, then run: keys gateway on \(name)"
+        }
+        print(token)
         FileHandle.standardError.write(Data(
-            "client #\(issued.client.id) for \(name), \(scope), expires \(issued.client.expiresAt). Put it where the SDK expects the API key; base URL http://127.0.0.1:\(GatewayListener.port)/\(name)\n".utf8
+            "client #\(id) for \(name), \(scope), expires \(expires). Put it where the SDK expects the API key; base URL http://127.0.0.1:\(GatewayListener.port)/\(name).\(note)\n".utf8
         ))
     }
 }
@@ -792,6 +817,91 @@ struct ClientRevokeCommand: ParsableCommand {
         let service = try AppFactory.makeService()
         let c = try service.revokeGatewayClient(name: name, id: id, caller: "cli")
         print("revoked client #\(c.id) for \(name)")
+    }
+}
+
+struct GatewayCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "gateway",
+        abstract: "Turn the local gateway on or off for a key in the running Keysrs (on asks for Touch ID).",
+        usage: "keys gateway on|off <key>",
+        discussion: """
+            The gateway holds a key in the memory of the running app only, so it forgets every \
+            key when Keysrs quits; client tokens stay valid but are refused until the key is \
+            turned on again. Off also revokes the key's active grants.
+            """
+    )
+
+    @Argument(help: "on or off.") var state: String
+    @Argument(help: "Key name.") var name: String
+
+    func run() throws {
+        let enabled: Bool
+        switch state.lowercased() {
+        case "on": enabled = true
+        case "off": enabled = false
+        default: throw AppError.usage("say on or off, e.g. keys gateway on \(name)")
+        }
+        try KeyName.validate(name)
+        let control = try ControlClient.connect()
+        if enabled { fputs("Touch ID in Keysrs…\n", stderr) }
+        let obj = try control.call(method: "POST", path: "/api/keys/\(name)/gateway", body: ["enabled": enabled], expect: 200)
+        if enabled {
+            print("gateway on for \(name): \(JSONValue.string(obj["gateway_url"]) ?? "http://127.0.0.1:\(GatewayListener.port)/\(name)")")
+        } else {
+            print("gateway off for \(name); its grants are revoked, client tokens are refused until it is on again")
+        }
+    }
+}
+
+struct WrapCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "wrap",
+        abstract: "Swap the provider keys in an env file for gateway client tokens (one Touch ID).",
+        usage: "keys wrap <path-to-env-file> [--dry-run] [--yes] [--relay <worker url>] [--label <text>] [--days N]",
+        discussion: """
+            Finds values that look like provider keys, matches each to a vault key by comparing \
+            secrets inside the running Keysrs (values are never printed), and offers to add the \
+            ones the vault lacks under a suggested name. After you confirm the plan, each key \
+            gets the gateway turned on and one client token, the value in the file becomes that \
+            token, and OPENAI_BASE_URL, ANTHROPIC_BASE_URL or GROQ_BASE_URL is set to the \
+            gateway (or to the relay with --relay) where the key's variable has one. The file is \
+            backed up first beside itself (0600, holding the original values), replaced in one \
+            rename with its permissions kept, and always ends with a newline. Comments, blank \
+            lines, export and quotes stay as written. The Touch ID comes before the plan, because \
+            telling an existing key from a new one means reading the vault; --dry-run stops after \
+            the plan. Needs the running Keysrs.app, which owns the gateway.
+            """
+    )
+
+    @Argument(help: "The env file to rewrite.") var path: String
+    @Flag(name: .customLong("dry-run"), help: "Show the plan; add nothing, issue nothing, change nothing.") var dryRun = false
+    @Flag(help: "Do not ask before applying the plan.") var yes = false
+    @Option(help: "Your relay Worker's URL; base URLs then point at it instead of 127.0.0.1.") var relay: String?
+    @Option(help: "Label for the client tokens. Default: keys wrap <file>.") var label: String = ""
+    @Option(help: "Days until the tokens expire (1 to \(GatewayClientToken.maxDays)).") var days: Int = GatewayClientToken.defaultDays
+
+    func run() throws {
+        var options = WrapRunner.Options(file: URL(fileURLWithPath: path))
+        options.dryRun = dryRun
+        options.yes = yes
+        options.relay = try relay.map(RelayURL.validate)
+        options.label = label
+        options.days = try GatewayClientToken.validateDays(days)
+        if !dryRun, !yes, isatty(STDIN_FILENO) == 0 {
+            throw AppError.usage("keys wrap asks before changing the file; pass --yes when stdin is not a terminal")
+        }
+        let runner = WrapRunner(
+            backend: ControlWrapBackend(connect: { try ControlClient.connect() }),
+            out: { print($0); fflush(stdout) },
+            confirm: {
+                fputs("Apply this plan? [y/N] ", stderr)
+                fflush(stderr)
+                let answer = readLine(strippingNewline: true)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return answer == "y" || answer == "yes"
+            }
+        )
+        _ = try runner.run(options)
     }
 }
 
