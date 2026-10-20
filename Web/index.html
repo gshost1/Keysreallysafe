@@ -73,7 +73,8 @@
           <button type="button" role="radio" data-source="cloud" aria-checked="false" tabindex="-1" title="Usage imported from cloud sessions and remote droid runs (keys usage import)">Cloud</button>
         </div>
         <div class="chips" role="radiogroup" aria-label="Provider" id="provider-filter" hidden title="One provider or all of them"></div>
-        <div class="chips" role="radiogroup" aria-label="API key" id="keys-filter" hidden title="One key or all of them"></div>
+        <!-- A dropdown, not a chip row: a vault with many keys made this a long line. -->
+        <label class="picker" id="keys-filter" hidden title="One key or all of them">Key <select id="keys-filter-select" aria-label="API key"></select></label>
         <div class="chips" role="radiogroup" aria-label="Group by" id="group-chips" hidden title="Models or projects (P)">
           <button type="button" role="radio" data-group="model" aria-checked="true">Models</button>
           <button type="button" role="radio" data-group="project" aria-checked="false" tabindex="-1">Projects</button>

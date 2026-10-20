@@ -224,7 +224,7 @@ test("the API keys scope charts the real gateway ledger and keeps an unpriced co
   assert.equal((await get(page, "/api/spend?range=month&by=model&source=all&provider=typesafe")).status, 400);
 
   // The per-key picker offers the real key by name, and filtering asks the real engine for it.
-  await page.getByRole("radio", { name: "Show only key contract-typesafe" }).click();
+  await page.locator("#keys-filter-select").selectOption("contract-typesafe");
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "contract-typesafe");
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
   const keyed = await get(page, "/api/spend?range=month&by=model&source=keys&key=contract-typesafe");

@@ -488,19 +488,29 @@
     renderPicker("provider-filter", "data-provider-filter", "All providers",
       "Show every provider these keys reached", options, state.provider, setProvider);
   }
-  // One chip per key with gateway usage, plus "All keys". Names only; a key value never appears.
-  // With a provider chosen the list is that provider's keys, so the two rows read as one path.
+  // One option per key with gateway usage, "All keys" first, in a native dropdown: a vault with
+  // many keys made a chip row a long line, and a <select> is keyboard-operable as it stands.
+  // Names only; a key value never appears. With a provider chosen the list is that provider's
+  // keys, so the provider chips and this picker read as one path.
   function renderKeysFilter() {
+    const box = $("keys-filter");
+    const select = $("keys-filter-select");
     const names = [...new Set(state.keyIndex
       .filter((e) => !state.provider || e.provider === state.provider)
       .map((e) => e.key)
       .concat(state.key ? [state.key] : []))].sort();
-    renderPicker("keys-filter", "data-key-filter", "All keys",
-      "Show every key", names.map((n) => ({ value: n, label: n, hint: "Show only key " + n })),
-      state.key, setKey);
+    box.hidden = !keysMode() || !names.length;
+    select.replaceChildren(
+      el("option", { value: "", "data-key-filter": "", text: "All keys", title: "Show every key" }),
+      ...names.map((n) => el("option", { value: n, "data-key-filter": n, text: n, title: "Show only key " + n })),
+    );
+    select.value = state.key || "";
   }
+  $("keys-filter-select").addEventListener("change", (e) => {
+    const value = e.target.value || null;
+    if (value !== state.key) setKey(value);
+  });
   wirePickerKeys("provider-filter", "data-provider-filter");
-  wirePickerKeys("keys-filter", "data-key-filter");
 
   // Projects are a Claude-only grouping (the only source with a project path). The chips hide otherwise.
   const groupChips = wireChips("data-group", (value) => setGroup(value));

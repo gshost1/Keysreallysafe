@@ -945,14 +945,18 @@ test("a link that names a key boots into the API keys scope with that key chosen
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#keys-filter:visible").waitFor();
   assert.equal(await page.evaluate(inKeysScope), true, "a key only means anything in that scope");
-  assert.equal(await page.locator('#keys-filter [data-key-filter="alpha"]').getAttribute("aria-checked"), "true");
+  assert.equal(await keyPicked(page), "alpha");
   const filtered = requests.filter((r) => r.pathname === "/api/spend" && r.search.includes("key=alpha"));
   assert.ok(filtered.length > 0, "the key filter must reach the engine");
 
-  await page.getByRole("radio", { name: "Show every key" }).click();
+  await page.locator("#keys-filter-select").selectOption("");
   await page.waitForFunction(() => !new URL(location.href).searchParams.get("key"));
-  assert.equal(await page.locator('#keys-filter [data-key-filter=""]').getAttribute("aria-checked"), "true");
+  assert.equal(await keyPicked(page), "");
 });
+
+// The key picker is a dropdown; its value is the key chosen, "" for all keys.
+const keyPicked = (page) => page.locator("#keys-filter-select").inputValue();
+const keyOptions = (page) => page.locator("#keys-filter [data-key-filter]").evaluateAll((els) => els.map((e) => e.textContent));
 
 // ---------- API keys usage ----------
 
@@ -1063,20 +1067,30 @@ test("choosing a provider drops a key that belongs to another one", async (page,
   assert.ok(provided.length > 0, "the provider filter must reach the engine");
   assert.ok(provided.every((s) => !s.includes("key=")),
     `alpha is a Vercel key and cannot survive a TypeSafe filter: ${provided.join(" | ")}`);
-  assert.equal(await page.locator('#keys-filter [data-key-filter=""]').getAttribute("aria-checked"), "true");
+  assert.equal(await keyPicked(page), "");
 });
 
 test("the per-key picker names every key and filters to one, all keys included", async (page, origin) => {
   await openKeysSource(page, origin);
   await chooseUsd(page);
-  const chips = page.locator("#keys-filter [data-key-filter]");
-  assert.deepEqual(await chips.evaluateAll((els) => els.map((e) => e.textContent)), ["All keys", "alpha", "charlie"]);
-  assert.equal(await chips.first().getAttribute("aria-checked"), "true", "all keys is the default");
+  assert.deepEqual(await keyOptions(page), ["All keys", "alpha", "charlie"]);
+  assert.equal(await keyPicked(page), "", "all keys is the default");
+  // A compact dropdown, one control, reachable and operable from the keyboard.
+  const select = page.locator("#keys-filter-select");
+  assert.equal(await select.getAttribute("aria-label"), "API key");
+  assert.equal(await page.locator("#keys-filter [role='radio']").count(), 0, "no chip row");
   // A key is named, never its value.
   assert.equal((await page.locator("#keys-filter").textContent()).includes(SECRET), false);
 
-  await page.getByRole("radio", { name: "Show only key charlie" }).click();
+  // Keyboard: the picker is a native select in the tab order (Chromium's arrow-key handling on
+  // a closed select differs by platform, so the choice itself is made through the select API),
+  // and it keeps focus when the chart redraws it with the new choice.
+  await select.focus();
+  assert.equal(await page.evaluate(() => document.activeElement.id), "keys-filter-select");
+  assert.notEqual(await select.getAttribute("tabindex"), "-1");
+  await select.selectOption("charlie");
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "keys-filter-select", "focus stays on the picker after it redraws");
   assert.ok(spendSearches().some((s) => s.includes("key=charlie") && s.includes("source=keys")));
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
   assert.equal(await page.locator("#mix .mix-name").textContent(), "system-one");
@@ -1084,7 +1098,7 @@ test("the per-key picker names every key and filters to one, all keys included",
   assert.match(await totalsText(page), /2 requests/);
 
   // Back to every key, from the picker itself.
-  await page.getByRole("radio", { name: "Show every key" }).click();
+  await select.selectOption("");
   await page.waitForFunction(() => !new URL(location.href).searchParams.get("key"));
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 2);
   assert.equal(await page.evaluate(inKeysScope), true, "clearing a key stays in the API keys scope");
@@ -1154,7 +1168,7 @@ test("a key opened from the Keys pane cannot inherit another provider's filter",
   // provider, so choosing a key there must not throw that provider away.
   await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
-  await page.getByRole("radio", { name: "Show only key charlie" }).click();
+  await page.locator("#keys-filter-select").selectOption("charlie");
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
   assert.equal(new URL(await page.url()).searchParams.get("provider"), "typesafe", "an ordinary key pick keeps its provider");
 });
@@ -1357,7 +1371,7 @@ test("a key's gateway cell opens that key in the API keys scope", async (page, o
   await rowCell(page, "charlie", "usd").click();
   await page.waitForFunction(() => document.getElementById("pane-chart").hidden === false);
   assert.equal(await page.evaluate(inKeysScope), true);
-  assert.equal(await page.locator('#keys-filter [data-key-filter="charlie"]').getAttribute("aria-checked"), "true");
+  assert.equal(await keyPicked(page), "charlie");
   assert.equal(new URL(await page.url()).searchParams.get("key"), "charlie");
 });
 
