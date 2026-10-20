@@ -27,6 +27,12 @@ Swift 6 package, macOS 14+. Executable `keys`, core in `Sources/KeysCore`,
 tests in `Tests/KeysreallysafeTests`. `Web/` is the local dashboard (plain
 HTML/CSS/JS, no build step, no external resources), not a marketing site.
 `Analytics/` is the self-hosted aggregate collector.
+`Relay/` is the relay Worker (plain JS, no build step; `npm ci && npm test`
+runs it offline in workerd) that a *user* deploys into their *own* Cloudflare
+account for `keys relay`; Keysrs hosts no copy of it, and it is unrelated to
+the `Site/` Worker. Its protocol and threat model are `docs/relay.md`, and
+`Relay/src/worker.js`, `Sources/KeysCore/Relay.swift` and that document must
+keep matching.
 `Fixtures/` holds synthetic session logs and the price table; the provider catalog is `Web/providers.json`, and providers the user adds are rows in the catalog DB that merge on top of it (`Providers.setOverlay`), so the shipped file and `ProductAnalytics.providers`/`collector.py PROVIDERS` stay pinned to each other by tests on both sides.
 `Site/` is the public marketing site at https://keysrs.com (static; the only script is `Site/posthog.js`, and Google Fonts is the only external resource). It is served by a
 Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
@@ -107,7 +113,11 @@ describe a build as notarized or published unless the release process ran.
 
 The README's "Privacy boundaries" section is the contract. In short:
 
-- Everything binds to `127.0.0.1`. No scraping, no provider websites, never
+- Everything binds to `127.0.0.1`. The one outbound exception is `keys relay`,
+  which holds a single WebSocket from the Mac to a Worker the user deployed
+  themselves and pipes what arrives into that same loopback gateway; keys
+  never go over it and the relay secret is never a substitute for a grant or
+  client token. No scraping, no provider websites, never
   read `~/.codex/auth.json` or `~/.grok/auth.json`.
 - Key values never appear on screen, in logs, in tests or in fixtures. Copy,
   reveal, env and rotate require user presence every time. `keys setup` and
@@ -140,7 +150,9 @@ describes the packager).
 
 Free, decided 2026-09-24: no trial, license key, payments or legal entity.
 0.9.0 removed the license gate that 0.6–0.8 shipped; don't reintroduce
-anything that phones home. keysrs.com is static (no Worker code, no D1).
+anything that phones home. keysrs.com is static (no Worker code, no D1); the
+relay Worker in `Relay/` is user-deployed into the user's own account and is
+not a Keysrs service.
 The Stripe account stays open but idle (kept on purpose, 2026-09-24): the
 Payment Link is deactivated, the webhook deleted and the restricted key
 expired. The license D1 database is deleted and Workers Paid ends 2026-10-23.

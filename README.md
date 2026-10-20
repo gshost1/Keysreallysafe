@@ -63,7 +63,12 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
 ## Privacy boundaries
 
 - The dashboard and its API bind to `127.0.0.1` only; the Keysrs window loads
-  the dashboard from there, and nothing off this Mac can reach it.
+  the dashboard from there, and nothing off this Mac can reach it. Nothing
+  else listens either: the one optional way in from outside is `keys relay`,
+  which holds a single **outbound** connection from this Mac to a Cloudflare
+  Worker **you** deployed into your own account, only while the command runs,
+  and feeds what arrives into the same loopback gateway with the same token
+  checks. Keys never leave the Mac over it; see [docs/relay.md](docs/relay.md).
   Optional product analytics
   ("share to compare") is off until the user opts in. Then, once a day, it
   sends one aggregate report to `analytics.keysrs.com`: feature counters, token
@@ -102,7 +107,11 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   Copy, reveal, env and rotate ask for user presence every time.
 - No open gateway. A request through the gateway needs a grant token: one
   Touch ID per task, bound to one key, one host, a method and path scope and
-  an expiry. Screen lock, revoke, gateway off or a restart kills it.
+  an expiry. Screen lock, revoke, gateway off or a restart kills it. That
+  holds for a relayed request too: the relay secret lets a Worker talk to
+  this Mac, never to a provider. After five consecutive upstream 401/403
+  answers the gateway pauses the key for a minute and says so, instead of
+  letting an agent retry against a dead key.
 
 ## Build from source
 
@@ -449,6 +458,25 @@ runners cannot reach your Mac; run the agent on a machine you can SSH to
 (Tailscale hosts work with the same command). [docs/cloud-agents.md](docs/cloud-agents.md)
 has the details and the per-agent remote snippets.
 
+For a managed agent that accepts no inbound SSH at all — GitHub Actions,
+Claude Code or Codex cloud sessions, Modal, E2B — `keys relay` is the other
+route: you deploy the small Worker in [`Relay/`](Relay/) into your own
+Cloudflare account, and the Mac keeps one outbound WebSocket to it. The
+Worker is a pipe and nothing more; every request it carries still lands in
+the loopback gateway with the same token checks, key swap and usage row, and
+the Worker never sees a key. Agents call `https://<your worker>/<key name>`
+with their usual token.
+
+```sh
+(cd Relay && npm ci && npx wrangler login && npx wrangler deploy)   # your account
+keys relay setup --url https://keysrs-relay.<you>.workers.dev        # prints the secret once
+(cd Relay && npx wrangler secret put RELAY_SECRET)                  # paste it
+keys relay                                                           # one Touch ID; Ctrl-C stops
+```
+
+[docs/relay.md](docs/relay.md) has the protocol, the limits, the threat model
+and what a compromised Worker can and cannot do.
+
 ## Commands
 
 ```text
@@ -483,6 +511,7 @@ keys provider unhide <id>
 keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]
 keys agent <agent> <key> [--minutes N] [--client] [--label <text>] [--] [args...]
 keys tunnel <user@host> [--remote-port N] [--key <name>] [--print]
+keys relay [run] [--url <worker url>] | setup --url <worker url> | status | reset
 keys purge
 ```
 

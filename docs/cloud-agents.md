@@ -3,7 +3,10 @@
 An agent that runs somewhere else — a server, a VM, a container, a self-hosted
 CI runner, a Droid computer you can SSH into — can use a key from the Keysrs
 vault without the key ever leaving the Mac. The mechanism is the same gateway a
-local agent uses, carried over an SSH reverse forward.
+local agent uses, carried over an SSH reverse forward. For an agent you cannot
+SSH into (a managed runner or cloud sandbox), [relay.md](relay.md) describes
+`keys relay`, which carries the same gateway through a Worker you deploy
+yourself; the token rules below apply to it unchanged.
 
 The rules that make this safe are the same ones the local gateway follows:
 
@@ -77,9 +80,11 @@ client list shows which one to pull.
 - **Self-hosted CI runners**: start the tunnel from the Mac in one terminal, or
   run `ssh -R` as a service on the runner's side pointing at your Mac over
   Tailscale, and put the token in the runner's secret store.
-- **GitHub-hosted runners do not work**: they cannot reach your Mac and you
-  cannot hold a tunnel open to them. Use a self-hosted runner, or run the agent
-  on a machine you control.
+- **GitHub-hosted runners and other managed agents** (Claude Code and Codex
+  cloud sessions, Modal, E2B) accept no inbound ssh, so the tunnel cannot
+  reach them. Use `keys relay` instead: a Worker you deploy into your own
+  Cloudflare account that the Mac connects *out* to, carrying the same
+  gateway with the same tokens. See [relay.md](relay.md).
 - **Containers**: tunnel into the host; from inside a container on that host
   use the host's `127.0.0.1:12767` (or publish the forwarded port to the
   container's loopback).
@@ -98,3 +103,8 @@ client list shows which one to pull.
   never reach the usage catalog, key values never appear on screen or in logs,
   and the gateway forgets the secret when the app restarts until you turn it
   on again.
+- A key that keeps getting 401/403 from the provider is paused by the gateway
+  for a minute after five such answers in a row (`503 upstream_auth_blocked`,
+  with `Retry-After`), so a remote agent's retry loop stops at one clear error
+  instead of burning calls. Turn the gateway on again for the key after
+  rotating it to clear the pause early.
