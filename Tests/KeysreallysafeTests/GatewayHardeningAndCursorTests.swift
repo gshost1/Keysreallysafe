@@ -34,6 +34,34 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(hits.count, 0)
     }
 
+    func testSilentUpstreamPastThirtySecondsStillAnswers() async throws {
+        // A non-streaming generation sends no head until it is done; a 30 s
+        // watchdog used to turn these into 502 upstream_error. Slow on purpose.
+        let rig = try GatewayRig { _ in
+            Thread.sleep(forTimeInterval: 32)
+            return HTTPResponse.json(200, ["ok": true])
+        }
+        defer { rig.stop() }
+        try rig.key()
+        let grant = try grantFor(rig.service, "demo", task: "slow head")
+        var request = URLRequest(url: rig.url("v1/responses"))
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"model":"m","input":"hi"}"#.utf8)
+        request.setValue("Bearer \(grant)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 90
+        let (_, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    }
+
+    func testLongCallLimitsCoverMultiMinuteGenerations() {
+        // Observed Kimi calls reach 506 s; the relay must outwait the gateway.
+        XCTAssertGreaterThanOrEqual(GatewayListener.resourceTimeout, 600)
+        XCTAssertGreaterThanOrEqual(
+            RelayProtocol.gatewayReadTimeoutSeconds,
+            Int(GatewayListener.resourceTimeout + GatewayListener.connectTimeout)
+        )
+    }
+
     func testDashboardRequiresLoopbackHostWithPort() throws {
         let (handler, _, _) = try makeHandler()
         let bad = handle(handler, method: "GET", path: "/api/keys", headers: ["host": "evil.example:12765"])
