@@ -148,7 +148,7 @@ final class KeysService: @unchecked Sendable {
         var trimmedPath = pathPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedPath.hasPrefix("/") { trimmedPath = String(trimmedPath.dropFirst()) }
         guard trimmedPath.count <= 200,
-              !trimmedPath.contains(where: { $0.isNewline || $0 == "\0" }),
+              GatewayClientToken.isPlainPath(trimmedPath),
               !GatewayClientToken.hasDotSegment(trimmedPath) else {
             throw AppError.usage("path prefix must be a clean path, e.g. v1")
         }
@@ -618,7 +618,10 @@ final class KeysService: @unchecked Sendable {
         // The unlocked secret was approved for one provider and host. lookupGateway drops it
         // if the catalog changed since (another process can rewrite it), so a changed target
         // needs a fresh approval instead of inheriting the old one.
-        if let target = lookupGateway(name: name), target.provider.id == provider.id, target.host == host {
+        // The whole record must match, not just the id: a provider override (no prompt) that
+        // keeps the id and host but changes the path or auth header would otherwise point
+        // the approved secret at a different request.
+        if let target = lookupGateway(name: name), target.provider == provider, target.host == host {
             secret = target.secret
         } else {
             try presence.require(reason: "check \(name) against \(provider.name) at \(host) (read-only)")

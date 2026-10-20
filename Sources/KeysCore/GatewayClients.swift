@@ -107,10 +107,19 @@ enum GatewayClientToken {
         while p.hasPrefix("/") { p.removeFirst() }
         while p.hasSuffix("/") { p.removeLast() }
         if p.isEmpty { return nil }
-        if hasDotSegment(p) || p.contains("?") || p.contains("#") || p.contains("\0") || p.count > 200 {
+        if hasDotSegment(p) || !isPlainPath(p) || p.count > 200 {
             throw AppError.usage("invalid path prefix")
         }
         return p
+    }
+
+    /// Path characters only (RFC 3986 pchar and `/`, without percent-encoding). `?` and `#`
+    /// would end the path when a prefix is joined into a URL, and `%` would let an encoded
+    /// form mean something other than what a prefix check compared.
+    static func isPlainPath(_ path: String) -> Bool {
+        path.unicodeScalars.allSatisfy { c in
+            c.isASCII && (CharacterSet.alphanumerics.contains(c) || "-._~/:@!$&'()*+,;=".unicodeScalars.contains(c))
+        }
     }
 
     /// True when any `/`-separated segment is `.` or `..`, before or after percent-decoding.
