@@ -1,7 +1,7 @@
 // Offline tests: everything runs inside workerd with the throwaway secret from
 // vitest.config.js. The "Mac" is a WebSocket the test holds; no real gateway,
 // provider or Cloudflare account is involved.
-import { SELF, env } from "cloudflare:test";
+import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import { FRAME, LIMITS, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "../src/protocol.js";
 
@@ -301,6 +301,63 @@ describe("relaying", () => {
     const res = await withTimeout(agent, 5000, "agent response");
     expect(res.status).toBe(502);
     expect((await res.json()).error).toBe("bad_response_frame");
+  });
+
+  it("tells the Mac to cancel when the agent's upload fails mid-body, with no 502 for a healthy Mac", async () => {
+    // A body stream that errors is what the Worker's reader sees when the
+    // agent's connection drops or is aborted part-way through an upload. The
+    // in-process fetch of the test harness turns such an error into a clean
+    // end of body before it reaches the Durable Object, so the request is
+    // handed to the hub directly, erroring stream and all.
+    const mac = await connectMac();
+    const url = new URL(`${ORIGIN}/router/v1/messages`);
+    const stub = env.RELAY.get(env.RELAY.idFromName("mac"));
+    // The stream has to be made inside the object: I/O objects do not cross
+    // Durable Object contexts, even inside one isolate.
+    const agent = runInDurableObject(stub, async (hub) => {
+      let feed;
+      const body = new ReadableStream({ start(controller) { feed = controller; } });
+      feed.enqueue(new TextEncoder().encode('{"partial":'));
+      const answer = hub.relay(new Request(url, { method: "POST", body, duplex: "half" }), url);
+      await new Promise((r) => setTimeout(r, 100));
+      feed.error(new Error("connection reset"));
+      return answer;
+    });
+    const req = await mac.next(FRAME.REQUEST);
+    const chunk = await mac.next(FRAME.BODY);
+    expect(chunk.id).toBe(req.id);
+    const res = await withTimeout(agent, 5000, "hub answer");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("client_gone");
+    const cancel = await mac.next(FRAME.CANCEL);
+    expect(cancel.id).toBe(req.id);
+    expect(head(cancel).reason).toBe("client_gone");
+    expect(mac.frames.filter((f) => f.type === FRAME.END && f.id === req.id)).toHaveLength(0);
+    // The slot is free again and the socket is still good.
+    const next = SELF.fetch(`${ORIGIN}/router/v1/models`);
+    const again = await mac.next(FRAME.REQUEST);
+    mac.send(FRAME.RESPONSE, again.id, JSON.stringify({ status: 204, headers: [] }));
+    expect((await withTimeout(next, 5000, "next response")).status).toBe(204);
+  });
+
+  it("gives up on an upload that does not finish in time and frees the slot", async () => {
+    const mac = await connectMac();
+    let feed;
+    const body = new ReadableStream({ start(controller) { feed = controller; } });
+    feed.enqueue(new TextEncoder().encode('{"slow":'));
+    const started = Date.now();
+    const res = await withTimeout(SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body, duplex: "half" }), 5000, "upload timeout");
+    expect(res.status).toBe(408);
+    expect((await res.json()).error).toBe("upload_timeout");
+    expect(Date.now() - started).toBeLessThan(3000);
+    const req = await mac.next(FRAME.REQUEST);
+    const cancel = await mac.next(FRAME.CANCEL);
+    expect(cancel.id).toBe(req.id);
+    expect(head(cancel).reason).toBe("upload_timeout");
+    const next = SELF.fetch(`${ORIGIN}/router/v1/models`);
+    const again = await mac.next(FRAME.REQUEST);
+    mac.send(FRAME.RESPONSE, again.id, JSON.stringify({ status: 204, headers: [] }));
+    expect((await withTimeout(next, 5000, "next response")).status).toBe(204);
   });
 
   it("closes the socket on an unexpected text frame", async () => {

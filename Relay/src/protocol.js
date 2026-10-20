@@ -18,6 +18,9 @@ export const LIMITS = Object.freeze({
   requestBody: 8 * 1024 * 1024,
   inflight: 32,
   chunk: 64 * 1024,
+  // An in-flight slot is taken before the body arrives, so the upload itself
+  // needs a deadline or a few slow senders hold every slot.
+  uploadTimeoutMs: 60_000,
   headTimeoutMs: 120_000,
   idleTimeoutMs: 300_000,
 });

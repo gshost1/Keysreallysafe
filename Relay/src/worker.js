@@ -47,6 +47,7 @@ function limitsFrom(env) {
   };
   return {
     ...LIMITS,
+    uploadTimeoutMs: num(env.RELAY_UPLOAD_TIMEOUT_MS, LIMITS.uploadTimeoutMs),
     headTimeoutMs: num(env.RELAY_HEAD_TIMEOUT_MS, LIMITS.headTimeoutMs),
     idleTimeoutMs: num(env.RELAY_IDLE_TIMEOUT_MS, LIMITS.idleTimeoutMs),
   };
@@ -180,34 +181,63 @@ export class RelayHub extends DurableObject {
     for (const [name, value] of request.headers) {
       if (!stripRequestHeader(name)) headers.push([name, value]);
     }
+    // Three things can end the upload early and each needs its own answer: the
+    // Mac's socket failing (502), the agent stopping mid-body (an abort or a
+    // dropped connection: nobody is left to answer, but the Mac must be told
+    // to drop what it buffered) and the upload outrunning its deadline (408).
+    // In every case the Mac gets a CANCEL, so a half-sent request never stays
+    // in its buffer for the life of the socket.
+    const toMac = (frame) => {
+      try {
+        mac.send(frame);
+      } catch {
+        throw new RelayError(502, "mac_disconnected", "the Mac dropped while this request was being sent");
+      }
+    };
+    let reader = null;
+    let uploadTimer = null;
     try {
-      mac.send(encodeFrame(FRAME.REQUEST, id, JSON.stringify({
+      toMac(encodeFrame(FRAME.REQUEST, id, JSON.stringify({
         method: request.method,
         target: url.pathname + url.search,
         headers,
       })));
       if (request.body) {
-        const reader = request.body.getReader();
+        reader = request.body.getReader();
+        const deadline = new Promise((_, reject) => {
+          uploadTimer = setTimeout(() => {
+            reject(new RelayError(408, "upload_timeout", `the request body did not finish arriving within ${this.limits.uploadTimeoutMs} ms`));
+          }, this.limits.uploadTimeoutMs);
+        });
+        deadline.catch(() => {});
         let total = 0;
         for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          total += value.byteLength;
-          if (total > this.limits.requestBody) {
-            reader.cancel().catch(() => {});
-            this.cancel(id, "payload_too_large");
-            return json(413, { error: "payload_too_large", message: `request body over ${this.limits.requestBody} bytes` });
+          let step;
+          try {
+            step = await Promise.race([reader.read(), deadline]);
+          } catch (error) {
+            if (error instanceof RelayError) throw error;
+            throw new RelayError(400, "client_gone", "the request body ended before it was complete");
           }
-          for (let off = 0; off < value.byteLength; off += this.limits.chunk) {
-            mac.send(encodeFrame(FRAME.BODY, id, value.subarray(off, Math.min(off + this.limits.chunk, value.byteLength))));
+          if (step.done) break;
+          total += step.value.byteLength;
+          if (total > this.limits.requestBody) {
+            throw new RelayError(413, "payload_too_large", `request body over ${this.limits.requestBody} bytes`);
+          }
+          for (let off = 0; off < step.value.byteLength; off += this.limits.chunk) {
+            toMac(encodeFrame(FRAME.BODY, id, step.value.subarray(off, Math.min(off + this.limits.chunk, step.value.byteLength))));
           }
         }
       }
-      mac.send(encodeFrame(FRAME.END, id));
-    } catch {
-      this.finish(id);
-      return json(502, { error: "mac_disconnected", message: "the Mac dropped while this request was being sent" });
+      toMac(encodeFrame(FRAME.END, id));
+    } catch (error) {
+      clearTimeout(uploadTimer);
+      if (reader) reader.cancel().catch(() => {});
+      const relayError = error instanceof RelayError ? error : new RelayError(500, "relay_error", "the relay could not forward this request");
+      this.cancel(id, relayError.code);
+      return json(relayError.status, { error: relayError.code, message: relayError.message });
     }
+    clearTimeout(uploadTimer);
 
     entry.headTimer = setTimeout(() => {
       entry.rejectHead(new RelayError(504, "relay_timeout", `the Mac sent no response within ${this.limits.headTimeoutMs} ms`));
