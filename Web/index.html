@@ -186,6 +186,10 @@
       <section class="settings-group" aria-labelledby="set-agents">
         <h2 id="set-agents">Agents and privacy</h2>
         <div class="setting">
+          <span class="setting-label">Getting started<span class="setting-hint">The command line, a key, an agent, tokens and the relay, step by step.</span></span>
+          <button type="button" id="btn-guide" class="btn-quiet" aria-haspopup="dialog" title="Open the guide (also under ?)">Guide</button>
+        </div>
+        <div class="setting">
           <span class="setting-label">Coding agents<span class="setting-hint">Wire Claude Code, Codex, Grok or Droid to the vault.</span></span>
           <button type="button" id="btn-agents" class="btn-quiet" title="Wire a coding agent (Claude Code, Codex, Grok, Droid) to the vault">Agents</button>
         </div>
@@ -595,6 +599,55 @@
           from this vault; the credential itself is revoked with the provider that issued it. The
           <b>Subscriptions</b> scope is a separate ledger: what Claude Code, Codex and Grok wrote to their own
           logs on this Mac.</span>
+        </li>
+      </ol>
+      <!-- The walkthrough for people who got the app and want their agent on it. Every command is
+           the real CLI syntax (keys --help) and is copied verbatim; none of them prints a secret. -->
+      <h4 class="guide-sub" id="guide-agents-title">Use with coding agents</h4>
+      <ol class="guide-steps guide-cmds" aria-labelledby="guide-agents-title">
+        <li>
+          <b>Put <code>keys</code> on your PATH.</b> <span class="guide-body">The app and the command line are
+          one program. Keysrs menu → <b>Install Command Line Tool…</b> links <code>~/.local/bin/keys</code> to the
+          app; add <code>~/.local/bin</code> to your shell's PATH if it is not there. Check it:</span>
+          <div class="cmd"><code>keys --help</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys --help">Copy</button></div>
+        </li>
+        <li>
+          <b>Add a key.</b> <span class="guide-body"><b>Add key</b> in the Keys pane, or from the terminal; the value is
+          typed at a hidden prompt and goes straight to the Keychain, never to a file.</span>
+          <div class="cmd"><code>keys add work-anthropic --provider anthropic</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys add">Copy</button></div>
+        </li>
+        <li>
+          <b>Connect an agent.</b> <span class="guide-body">Claude Code needs no setup; Codex, Grok and Droid get their own
+          config written once by <code>keys setup</code> (no secret in it). <code>keys agent</code> launches the agent on
+          one Touch ID with a grant that is revoked when it exits. Settings → <b>Agents</b> shows these with your key names.</span>
+          <div class="cmd"><code>keys agent claude work-anthropic</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys agent claude">Copy</button></div>
+          <div class="cmd"><code>keys setup droid --key work-anthropic
+keys agent droid work-anthropic -- droid</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys setup droid">Copy</button></div>
+          <div class="cmd"><code>keys setup codex --key router --model &lt;model id&gt;
+keys agent codex router -- codex</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys setup codex">Copy</button></div>
+        </li>
+        <li>
+          <b>Anything else gets a token, not the key.</b> <span class="guide-body">For one task, a grant: short-lived, one
+          Touch ID, scoped to methods and paths (paths are relative to the provider's prefix, so <code>--paths /messages</code>;
+          <code>/v1/messages</code> means the same). For a program you keep, a client token that lives for days and is
+          revoked from the Keys pane.</span>
+          <div class="cmd"><code>keys grant work-anthropic --task "run evals" --minutes 60 --methods POST --paths /messages</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys grant">Copy</button></div>
+          <div class="cmd"><code>keys client issue work-anthropic --label "my script" --days 30</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys client issue">Copy</button></div>
+          <span class="guide-body">Either token goes where the SDK expects the API key, and the gateway's URL replaces the
+          provider's host; the real key is swapped in on this Mac and never leaves it.</span>
+          <div class="cmd"><code>export ANTHROPIC_BASE_URL=http://127.0.0.1:12767/work-anthropic
+export ANTHROPIC_AUTH_TOKEN=&lt;token&gt;</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy the base URL and token exports">Copy</button></div>
+        </li>
+        <li>
+          <b>From the cloud.</b> <span class="guide-body">A machine you can ssh to gets the gateway through
+          <code>keys tunnel user@host</code>. A managed agent that takes no ssh (GitHub Actions, a Claude Code or Codex
+          cloud session, Modal, E2B) reaches it through a small Worker you deploy in your own Cloudflare account
+          (<code>Relay/</code> in the repo, <code>docs/relay.md</code>): the Mac keeps one outbound connection to it,
+          every call still lands in this gateway, and the Worker never sees a key.</span>
+          <div class="cmd"><code>keys relay setup --url https://keysrs-relay.&lt;you&gt;.workers.dev
+keys relay</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys relay setup">Copy</button></div>
+          <span class="guide-body">The agent then uses <code>https://&lt;your worker&gt;/work-anthropic</code> as the base
+          URL with its client token.</span>
         </li>
       </ol>
       <p class="guide-note">Figures are shown in tokens and requests by default. Choose <b>USD</b> in the chart's

@@ -753,6 +753,25 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
 .guide-steps li { line-height: 1.45; }
 .guide-body { color: var(--ink-2); }
 .guide-note { margin: 6px 0 0; color: var(--ink-2); font-size: 12px; line-height: 1.45; }
+/* The agent walkthrough: a sub-heading under the three steps, and one command block per step
+   with its Copy button beside it. The block wraps long lines rather than scrolling. */
+.guide-sub { font-size: 13px; margin: 14px 0 8px; }
+.guide-cmds li + li { margin-top: 4px; }
+.cmd { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0 4px; }
+.cmd code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 12px/18px var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.cmd .btn-row { flex: 0 0 auto; margin-top: 3px; }
 /* A grey inset card like the site's "not tracked" box, inside the white pane. */
 .onboard {
   margin: 0 0 14px;

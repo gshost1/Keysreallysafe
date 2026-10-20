@@ -2052,7 +2052,9 @@
           { text: "Create a long-lived token (one Touch ID, revocable from the Keys pane):", cmd: `keys client issue ${key} --label "cloud agent" --days 30` },
           { text: "From this Mac, forward the gateway to the machine the agent runs on:", cmd: `keys tunnel user@server.example.com` },
           { text: "On that machine, the vault is a plain local URL — token as the API key:", cmd: `export OPENAI_BASE_URL=http://127.0.0.1:12767/${key}\nexport OPENAI_API_KEY=<token>` },
-          { text: "Same recipe over Tailscale (ssh to the server's tailnet name) or for a self-hosted CI runner; a GitHub-hosted runner cannot reach this Mac, so run the agent on a machine you can ssh to." },
+          { text: "Same recipe over Tailscale (ssh to the server's tailnet name) or for a self-hosted CI runner." },
+          { text: "No ssh in (GitHub Actions, a Claude Code or Codex cloud session, Modal, E2B)? Use the relay: a small Worker you deploy in your own Cloudflare account (Relay/ in the repo, docs/relay.md). The Mac keeps one outbound connection to it and the Worker never sees a key:", cmd: "keys relay setup --url https://keysrs-relay.<you>.workers.dev\nkeys relay" },
+          { text: "The agent then calls the Worker instead of a forwarded port, with the same client token:", cmd: `export OPENAI_BASE_URL=https://<your worker>/${key}\nexport OPENAI_API_KEY=<token>` },
         ];
     }
     return [];
@@ -2720,6 +2722,16 @@
   });
   const openHelp = () => { if (!$("dlg-help").open) $("dlg-help").showModal(); };
   $("btn-help").addEventListener("click", openHelp);
+  $("btn-guide").addEventListener("click", openHelp);
+  // The guide's Copy buttons copy the static command written in the HTML beside them, in the
+  // help dialog and in its first-use clone alike. Nothing from the vault or a response is ever
+  // in those blocks, so nothing else can be copied this way.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-copy-cmd]");
+    if (!btn) return;
+    const code = btn.parentElement?.querySelector("code");
+    if (code) copyText(code.textContent, btn);
+  });
 
   // ---------- first use ----------
 

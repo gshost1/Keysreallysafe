@@ -2441,6 +2441,12 @@ test("the agents dialog personalizes each recipe to the chosen key", async (page
   const cloud = page.locator("#agents-body .agent:has(summary:has-text('A cloud agent'))");
   assert.match(await cloud.textContent(), /keys client issue alpha/);
   assert.match(await cloud.textContent(), /keys tunnel/);
+  // Both routes out: ssh for a machine you can reach, the relay for a managed agent you cannot.
+  const cloudText = await cloud.textContent();
+  assert.match(cloudText, /keys relay setup --url/);
+  assert.match(cloudText, /docs\/relay\.md/);
+  assert.match(cloudText, /https:\/\/<your worker>\/alpha/, "the Worker is the base URL, the key name its path");
+  assert.doesNotMatch(cloudText, /cannot reach this Mac/, "the relay is the answer to that, not a dead end");
 
   // Choosing another key rewrites every recipe; the model field feeds the setup commands.
   await page.locator("#agents-key").selectOption("bravo");
@@ -2964,6 +2970,46 @@ test("USD totals name Grok's cost log only when Grok alone has dollars, and Droi
   await pick("Grok");
   await page.waitForFunction(() => /from Grok's own cost log/.test(document.getElementById("totals").textContent));
   assert.match(await copyTotals(), /From Grok's own cost log/);
+});
+
+// First run: an empty vault gets the walkthrough, every step a command you can copy as is; the
+// same section lives under ? and behind Settings → Guide afterwards.
+test("the first-use guide walks through the command line, a key, an agent, tokens and the relay", async (page, origin) => {
+  keys = [];
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#onboard:visible").waitFor();
+  const text = await page.locator("#onboard").textContent();
+  assert.match(text, /Use with coding agents/);
+  for (const needle of ["Install Command Line Tool", "keys --help", "keys add ", "keys agent claude", "keys setup codex", "keys setup droid",
+    "keys grant ", "--paths /messages", "/v1/messages", "keys client issue", "http://127.0.0.1:12767/", "ANTHROPIC_BASE_URL",
+    "keys relay setup --url", "docs/relay.md"]) {
+    assert.ok(text.includes(needle), `the guide names ${JSON.stringify(needle)}`);
+  }
+  assert.doesNotMatch(text, /sk-|ksf_[0-9a-f]|ksfc_[0-9a-f]/, "no token or key value, real or invented");
+
+  // Each Copy button copies exactly the static command beside it, never anything else.
+  await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
+  const buttons = page.locator("#onboard [data-copy-cmd]");
+  const n = await buttons.count();
+  assert.ok(n >= 7, `copyable commands: ${n}`);
+  for (let i = 0; i < n; i++) {
+    await page.evaluate(() => { window.__copied = ""; });
+    await buttons.nth(i).click();
+    await page.waitForFunction(() => window.__copied);
+    const copied = await page.evaluate(() => window.__copied);
+    assert.equal(copied, await page.locator("#onboard .cmd code").nth(i).textContent());
+    assert.match(copied, /^(keys |export )/, copied);
+  }
+  assert.equal(await page.locator("#onboard .cmd code").evaluateAll((els) => els.filter((e) => e.id).length), 0, "the clone carries no ids");
+
+  // Still there after the card is dismissed: under ?, and from Settings.
+  await page.locator("#onboard-dismiss").click();
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Guide", exact: true }).click();
+  await waitDialog(page, "dlg-help", true);
+  assert.match(await page.locator("#dlg-help").textContent(), /Use with coding agents/);
+  assert.equal(await page.locator("#guide-agents-title").count(), 1, "one copy of the id, in the dialog");
 });
 
 test("arrow keys step over the provider header rows", async (page, origin) => {
