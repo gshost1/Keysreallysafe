@@ -22,6 +22,8 @@ final class KeysService: @unchecked Sendable {
     private var gatewayListener: GatewayListener?
     var openRouter: any OpenRouterFetching
     let grants = GrantStore()
+    /// Pauses a key after consecutive upstream 401/403 answers (GatewayBreaker).
+    let breaker = GatewayBreaker()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     var analytics: ProductAnalytics?
     /// First-launch answers: background Claude limit refresh, analytics question asked.
@@ -468,6 +470,9 @@ final class KeysService: @unchecked Sendable {
                 name: name, secret: try secrets.get(name: name), provider: provider, host: resolved, version: row.version
             )
             gatewayLock.withLock { gatewayCache[name] = target }
+            // Turning the gateway on is how a rotated key comes back into use; a pause earned
+            // by the old value must not outlive it.
+            breaker.reset(key: name)
             let updated = try catalog.updateGatewayHost(name: name, host: resolved)
             try recordKeyEvent(name: name, action: "gateway_enable", caller: caller)
             return updated

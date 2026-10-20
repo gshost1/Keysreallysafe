@@ -125,6 +125,15 @@ final class GatewayListener: @unchecked Sendable {
                 return
             }
         }
+        if case .open(let retryAfter) = service.breaker.check(key: target.name) {
+            Self.writeJSON(fd: client, status: 503, object: [
+                "error": GatewayBreaker.code,
+                "message": GatewayBreaker.message(key: keyName, retryAfterSeconds: retryAfter),
+                "key": keyName,
+                "retry_after_s": retryAfter,
+            ], extraHeaders: ["Retry-After": String(retryAfter)])
+            return
+        }
         if let gatewayClient { service.noteGatewayClientUse(gatewayClient) }
         let path = GatewayPath.join(prefix: target.provider.pathPrefix, rest: request.rest)
         var headers = request.headers.filter { !Self.dropIncoming.contains($0.key.lowercased()) }
@@ -179,6 +188,9 @@ final class GatewayListener: @unchecked Sendable {
             requestBody: request.body,
             requestModel: evaluation ? request.headers["ai-model-id"] : nil
         )
+        if service.breaker.record(key: target.name, status: status) {
+            service.recordGatewayDenial(name: target.name, reason: GatewayBreaker.code)
+        }
         do {
             try service.recordGatewayUsage(
                 GatewayUsageRow(
@@ -295,9 +307,10 @@ final class GatewayListener: @unchecked Sendable {
     }
 
     @discardableResult
-    static func writeJSON(fd: Int32, status: Int, object: [String: Any]) -> Bool {
+    static func writeJSON(fd: Int32, status: Int, object: [String: Any], extraHeaders: [String: String] = [:]) -> Bool {
         var headers = ["Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"]
         if status == 401 { headers["WWW-Authenticate"] = "Bearer realm=\"keysreallysafe-gateway\"" }
+        headers.merge(extraHeaders) { _, new in new }
         let body = (try? JSONValue.data(object)) ?? Data("{}".utf8)
         return HTTPFrame.write(fd: fd, status: status, headers: headers, body: body)
     }
