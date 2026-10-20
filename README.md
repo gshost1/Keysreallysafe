@@ -348,6 +348,39 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:12767/<key name>
 export ANTHROPIC_API_KEY=ksfc_…
 ```
 
+When Keysrs is running, `keys client issue` asks it for the token and turns
+the gateway on for the key under the same Touch ID; without the app it still
+issues the token and tells you to turn the gateway on later with
+`keys gateway on <key>`. The gateway holds keys in the app's memory only, so
+it forgets every key when Keysrs quits: client tokens stay valid across a
+relaunch but get `404 not_found` until `keys gateway on <key>` (or the
+dashboard toggle) runs again. `keys gateway off <key>` turns it off and
+revokes the key's grants.
+
+**Wrapping an env file.** `keys wrap path/to/.env` does the whole client
+setup for a project in one step. It finds the values that look like provider
+keys (by variable name, key prefix, or a base URL already in the file),
+matches each to a vault key by comparing secrets inside the running app
+(nothing is printed), and offers to add the ones the vault lacks under a
+suggested name. One Touch ID covers the batch; it comes before the plan,
+because telling an existing key from a new one means reading the vault. The
+plan lists variable, key name and new/existing, never a value. After you
+confirm (or with `--yes`), each key gets the gateway turned on and one client
+token (POST and GET, 30 days unless `--days`), the value in the file becomes
+that token, and `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL` or `GROQ_BASE_URL` is
+set to `http://127.0.0.1:12767/<key>` for the matching key variable (to your
+relay Worker with `--relay https://…`). The original file is copied beside
+itself as `<file>.keysrs-backup-<time>` (0600; it still holds the real
+values, so delete it once the agent works), then replaced in one rename with
+its permissions kept. Comments, blank lines, `export`, quotes and inline
+comments stay as written, and the file always ends with a newline.
+`--dry-run` stops after the plan.
+
+```sh
+keys wrap ~/code/agent/.env --dry-run
+keys wrap ~/code/agent/.env
+```
+
 Either token goes where the SDK expects the API key. A client is bound to one
 key and revoked with `keys client revoke`. The dashboard's per-launch token
 is never accepted as either. Both narrow accidental or unauthorized local
@@ -505,6 +538,8 @@ keys autostart --remove
 keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path-prefix <prefix>]
 keys client list <name>
 keys client revoke <name> <id>
+keys gateway on|off <name>
+keys wrap <env file> [--dry-run] [--yes] [--relay <worker url>] [--label <text>] [--days N]
 keys providers [--json]
 keys provider add <id> --name <name> [--host <host>] [--api openai|anthropic|gemini|other] [--auth-header <header>] [--auth-prefix <prefix>] [--path-prefix <path>] [--key-prefix <hint>] [--note <text>] [--no-gateway]
 keys provider rm <id>

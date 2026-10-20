@@ -152,6 +152,10 @@ final class APIHandler: @unchecked Sendable {
                 return try keysAdd(request)
             case (_, let p) where p.hasPrefix("/api/keys/"):
                 return try keyRequest(request, path: p)
+            case ("POST", "/api/wrap"):
+                return try wrapPlan(request)
+            case (_, let p) where p.hasPrefix("/api/wrap/"):
+                return try wrapItem(request, path: p)
             case ("GET", "/api/providers"):
                 return HTTPResponse.json(200, try service.providersJSONObject())
             case ("POST", "/api/providers"):
@@ -544,10 +548,62 @@ final class APIHandler: @unchecked Sendable {
             guard let p = obj["path_prefix"] as? String else { return HTTPResponse.json(400, ["error": "invalid path_prefix"]) }
             prefix = p
         }
+        // `keys client issue` asks for the gateway too, under the same prompt; the dashboard's
+        // own Issue button leaves the toggle to the user.
+        let enable = JSONValue.bool(obj["gateway"]) ?? false
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "dashboard"
         let issued = try service.issueGatewayClient(
-            name: name, label: label, days: days, methods: methods, pathPrefix: prefix, caller: "dashboard"
+            name: name, label: label, days: days, methods: methods, pathPrefix: prefix, caller: caller,
+            enableGateway: enable
         )
-        return HTTPResponse.json(201, ["token": issued.token, "client": issued.client.jsonObject()])
+        return HTTPResponse.json(201, [
+            "token": issued.token, "client": issued.client.jsonObject(), "gateway_enabled": service.isGatewayEnabled(name),
+        ])
+    }
+
+    /// The values arrive here only to be compared with the vault and, for the ones the user
+    /// adds, stored; the response carries names only.
+    private func wrapPlan(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let raw = obj["candidates"] as? [Any] else {
+            return HTTPResponse.json(400, ["error": "candidates are required"])
+        }
+        let candidates = try raw.map { any -> WrapCandidate in
+            guard let o = JSONValue.object(any), let variable = JSONValue.string(o["variable"]),
+                  let value = JSONValue.string(o["value"])
+            else { throw AppError.usage("each candidate needs a variable and a value") }
+            return WrapCandidate(
+                variable: variable, value: value, provider: JSONValue.string(o["provider"]),
+                nameHint: JSONValue.string(o["name_hint"])
+            )
+        }
+        let plan = try service.wrapPlan(file: JSONValue.string(obj["file"]) ?? "env file", candidates: candidates)
+        return HTTPResponse.json(200, plan.jsonObject())
+    }
+
+    /// POST /api/wrap/<id> carries the plan out; DELETE drops it. The tokens appear in this one
+    /// response and nowhere else.
+    private func wrapItem(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
+        let id = String(path.dropFirst("/api/wrap/".count))
+        guard id.wholeMatch(of: /^[0-9a-f]{32}$/) != nil else { throw AppError.notFound("wrap plan") }
+        switch request.method {
+        case "DELETE":
+            service.wrapCancel(id: id)
+            return HTTPResponse.json(200, ["ok": true])
+        case "POST":
+            let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) ?? [:]
+            var days: Int?
+            if obj.keys.contains("days") {
+                guard let d = obj["days"] as? Int else { return HTTPResponse.json(400, ["error": "invalid days"]) }
+                days = d
+            }
+            let issued = try service.wrapApply(id: id, label: JSONValue.string(obj["label"]) ?? "", days: days, caller: "wrap")
+            return HTTPResponse.json(201, [
+                "issued": issued.map { ["key": $0.key, "token": $0.token, "client_id": Int($0.clientID), "new": $0.isNew] }
+            ])
+        default:
+            return HTTPResponse.json(405, ["error": "method_not_allowed"])
+        }
     }
 
     private func clientsRevoke(_ name: String, id raw: String) throws -> HTTPResponse {
