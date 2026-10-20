@@ -1512,12 +1512,16 @@ test("Grok Bot shows this week's prompt count, and an idle week is not tracked",
   assert.match(await card.textContent(), /12 prompts sent · limit not tracked/);
   assert.match(await card.textContent(), /plan is separate from SuperGrok/);
 
+  // An idle week is not a card: nothing is measured, so nothing is shown, and no "not tracked"
+  // list stands in for it.
   plans = [{ source: "grok-bot", title: "Grok Bot", kind: "subscription", weekly_prompts: 0, usage_note: "No Grok Bot prompts this week." }];
   await page.reload();
   await page.waitForLoadState("networkidle");
-  await page.locator("#live-status .live-more").waitFor();
+  await page.locator("#usage-totals b").first().waitFor();
   assert.equal(await page.locator('#live-status .live-row[data-source="grok-bot"]').count(), 0);
-  assert.match(await page.locator("#live-status .live-absent").textContent(), /Grok Bot/);
+  assert.equal(await page.locator("#live-status").isHidden(), true);
+  assert.equal(await page.locator("#pane-usage details").count(), 0, "no collapsed 'not tracked locally' group");
+  assert.doesNotMatch(await page.locator("#pane-usage").textContent(), /not tracked locally|cards? hidden/);
 });
 
 // The Droid row is catalog-backed: three windows (5-hour rolling, calendar week, calendar month),
@@ -1744,11 +1748,11 @@ test("a built-in subscription shows its plan, limit text and honest note, and hi
   assert.doesNotMatch(text, /%/);
   assert.doesNotMatch(text, /tokens/);
   assert.equal(await card.locator(".live-track").count(), 0);
-  // The placeholder Cursor row is gone from the collapsed group; a tool without a subscription
-  // keeps its own placeholder.
-  const absent = await page.locator("#live-status .live-absent").textContent();
-  assert.doesNotMatch(absent, /Cursor/);
-  assert.match(absent, /Gemini/);
+  // A tool nobody pinned and nothing measures is not on the pane at all: no placeholder row and
+  // no collapsed "not tracked locally" group for it to sit in.
+  assert.equal(await page.locator("#live-status .live-row").count(), 1, "the pinned Cursor card is the only row");
+  assert.doesNotMatch(await page.locator("#live-status").textContent(), /Gemini/);
+  assert.equal(await page.locator("#pane-usage details").count(), 0);
   assert.equal(await card.locator('button[title="Edit this subscription"]').count(), 1);
   assert.equal(await card.locator('button[title="Remove this subscription"]').count(), 1);
 });
@@ -1847,7 +1851,11 @@ test("Edit and Remove go through PATCH and a confirmed DELETE, and the placehold
   assert.equal(del.token, "test-token");
   assert.equal(subscriptions.length, 0);
   await page.waitForFunction(() => document.querySelectorAll("#live-status .live-row[data-sub-id]").length === 0);
-  assert.match(await page.locator("#live-status .live-absent").textContent(), /Cursor/, "the placeholder Cursor returns to the collapsed group");
+  // The engine's placeholder row is back, but a tool nothing measures is not a card: the pane
+  // shows no Cursor and no "not tracked" group, only the way to pin a plan again.
+  assert.equal(await page.locator('#live-status .live-row[data-source="cursor"]').count(), 0);
+  assert.equal(await page.locator("#pane-usage details").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "+ Add subscription" }).isVisible(), true);
 });
 
 test("a Factory subscription attaches to the Droid row, its token limit becoming a window meter", async (page, origin) => {
@@ -2699,7 +2707,9 @@ test("hiding a usage card in Settings takes it off Usage only and survives a rel
   assert.equal(await page.locator("#live-status .live-row").count(), 1);
   assert.match(await page.locator("#live-status").textContent(), /Copilot/);
   assert.doesNotMatch(await page.locator("#live-status").textContent(), /Cursor/);
-  assert.match(await page.locator("#usage-hidden").textContent(), /1 card hidden/);
+  // No "N cards hidden" count on the pane: Settings is where the choice lives and is undone.
+  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
+  assert.doesNotMatch(await page.locator("#pane-usage").innerText(), /hidden/);
   assert.equal(requests.filter((r) => r.method === "DELETE").length, 0, "hiding deletes nothing");
 
   await page.reload();
@@ -2714,9 +2724,8 @@ test("hiding a usage card in Settings takes it off Usage only and survives a rel
   assert.ok(requests.filter((r) => r.pathname === "/api/spend").length >= before);
   assert.equal(await page.locator("#mix .mix-row").count() > 0, true);
 
-  // The link on Usage goes back to Settings, where the card can be turned on again.
-  await page.getByRole("tab", { name: "Usage" }).click();
-  await page.locator("#usage-hidden").getByRole("button", { name: "Settings" }).click();
+  // Settings is where the card is turned on again.
+  await page.getByRole("tab", { name: "Settings" }).click();
   assert.equal(await page.locator("#pane-settings").isVisible(), true);
   await page.locator('#usage-cards-list [data-usage-id="sub-1"]').click();
   await page.getByRole("tab", { name: "Usage" }).click();
@@ -2741,8 +2750,8 @@ test("Droid stays off Usage until Settings turns it on, and is never removed", a
   await page.waitForLoadState("networkidle");
   await page.locator("#live-status .live-row").first().waitFor();
   assert.equal(await page.locator('#live-status .live-row[data-source="droid"]').count(), 0);
-  // Off by default still counts as hidden, so a Droid user has a pointer to where it lives.
-  assert.match(await page.locator("#usage-hidden").textContent(), /1 card hidden/);
+  // Off by default is not announced on the pane; the switch in Settings is where it lives.
+  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
 
   await page.getByRole("tab", { name: "Settings" }).click();
   const sw = page.locator("#droid-switch");

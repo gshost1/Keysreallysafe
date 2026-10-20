@@ -461,48 +461,6 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
 .live-open { color: var(--ink-2); text-decoration: none; }
 .live-open:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 .live-fill-over { background: var(--red) !important; }
-.live-more {
-  font-size: 12px;
-  color: var(--ink-3);
-  border-top: 1px solid var(--line);
-  padding-top: 6px;
-}
-.live-more summary {
-  list-style: none;
-  cursor: default;
-  color: var(--ink-3);
-}
-.live-more summary::-webkit-details-marker { display: none; }
-.live-more summary::before {
-  content: "";
-  display: inline-block;
-  width: 0;
-  height: 0;
-  margin-right: 6px;
-  border-style: solid;
-  border-width: 4px 0 4px 5px;
-  border-color: transparent transparent transparent var(--ink-3);
-  transform: translateY(-1px);
-}
-.live-more[open] summary::before {
-  border-width: 5px 4px 0 4px;
-  border-color: var(--ink-3) transparent transparent transparent;
-}
-.live-absent {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 0 0;
-}
-.live-absent-row {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 8px 12px;
-  font-size: 12px;
-  line-height: 16px;
-}
-.live-absent-name { font-weight: 500; color: var(--ink-2); }
-.live-absent-why { color: var(--ink-3); }
 /* The quiet way in to the subscription list, one line under the plan rows. */
 .subs-add { display: flex; padding: 0 16px 12px; }
 
@@ -955,7 +913,6 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
   .live-meter-label { flex-direction: column; align-items: flex-start; gap: 2px; }
   .mix-row { grid-template-columns: 16px 1fr 72px 72px; padding: 0 12px; }
   .mix-bar { display: none; }
-  .live-absent-row { grid-template-columns: 1fr; gap: 2px; }
   .key-events li { grid-template-columns: 1fr 1fr; }
   .keys td { white-space: normal; }
   .key-name, .key-notes, .key-host { max-width: 100%; }

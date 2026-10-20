@@ -6,6 +6,7 @@
 - **The gateway pauses a key after five consecutive upstream 401/403 answers.** An agent given a revoked or wrong key retried forever, each retry reaching the provider and becoming a usage row. For the next 60 seconds the gateway now answers such a key itself with `503 upstream_auth_blocked`, a `Retry-After` header and a message naming the key and the fix; any other upstream status resets the count, turning the gateway on again for the key clears the pause, and the trip is written to the key's audit log once. This applies to loopback, tunnel and relay callers alike.
 - **A grant path may include the provider prefix.** For Anthropic (prefix `/v1`), `keys grant … --paths /v1/messages` refused `/v1/messages` with "outside this grant (allows /v1/messages)"; it now means the same scope as `--paths /messages`.
 - **Claude is the first card on Usage.** The order is now Claude, Grok, Grok Bot (right under Grok, when it has prompts this week), OpenAI · Codex, Droid and then the rest; `keys status` prints the same order.
+- **The "N providers not tracked locally" group and the "N cards hidden" line are gone from Usage.** A tool whose quota is in no local file is not listed on the pane at all; **+ Add subscription** is where a plan for one of them is pinned, and it then appears as the card you made. Cards turned off in Settings → Usage cards are not counted on the pane either; the one line left is "All usage cards are hidden", so an all-off pane is not mistaken for an empty one.
 
 ## 0.11.2 — 2026-10-16
 

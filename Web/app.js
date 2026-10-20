@@ -2835,17 +2835,6 @@
     return false;
   }
 
-  // Where "open dashboard" goes for a vendor we cannot read locally. Plain links, no requests.
-  const DASHBOARDS = {
-    chatgpt: "https://chatgpt.com/#settings",
-    cursor: "https://cursor.com/dashboard",
-    gemini: "https://aistudio.google.com/usage",
-    copilot: "https://github.com/settings/copilot",
-    perplexity: "https://www.perplexity.ai/settings/account",
-    openrouter: "https://openrouter.ai/activity",
-    "xai-api": "https://console.x.ai",
-  };
-
   // ---------- Droid row: three windows, optional limits ----------
 
   const LIMIT_WINDOWS = ["five_hour", "weekly", "monthly"];
@@ -3180,17 +3169,6 @@
     );
   }
 
-  function renderAbsent(row) {
-    const url = DASHBOARDS[row.source];
-    const why = el("span", { class: "live-absent-why" }, el("span", { text: "not tracked" }));
-    if (url) why.append(" · ", el("a", { class: "live-open", href: url, target: "_blank", rel: "noopener noreferrer", text: "open dashboard" }));
-    if (row.usage_note) why.title = row.usage_note;
-    return el("div", { class: "live-absent-row" },
-      el("span", { class: "live-absent-name", text: row.title || row.source }),
-      why,
-    );
-  }
-
   async function loadStatus() {
     try {
       const data = await api("/api/status");
@@ -3218,28 +3196,15 @@
     const isHidden = (r) => (r.source === "droid" && !showDroid()) || hidden.has(usageId(r));
     const all = data.plans || [];
     const hiddenCount = all.filter(isHidden).length;
-    const list = all.filter((r) => !isHidden(r));
-    const useful = [];
-    const absent = [];
-    for (const row of list) {
-      if (hasLocalMeasure(row)) useful.push(row);
-      else absent.push(row);
-    }
-    const nodes = useful.map(renderLiveRow).filter(Boolean);
-    if (absent.length) {
-      const details = el("details", { class: "live-more" },
-        el("summary", { text: plural(absent.length, "provider", "providers") + " not tracked locally" }),
-        el("div", { class: "live-absent" }, ...absent.map(renderAbsent)),
-      );
-      if (box.querySelector(".live-more")?.open) details.open = true;
-      nodes.push(details);
-    }
+    // Only what this Mac measures is a card. A tool whose quota is in no local file is not
+    // listed as "not tracked": + Add subscription is where a plan for one of those is pinned,
+    // and it then appears here as the card the user made. Cards turned off in Settings are not
+    // counted on this pane either; the one case that needs a word is every card being off,
+    // which must not read as "nothing yet".
+    const nodes = all.filter((r) => !isHidden(r) && hasLocalMeasure(r)).map(renderLiveRow).filter(Boolean);
     const allHidden = nodes.length === 0 && hiddenCount > 0;
     $("usage-empty").hidden = nodes.length > 0 || allHidden;
-    $("usage-hidden").hidden = hiddenCount === 0;
-    $("usage-hidden-text").textContent = allHidden
-      ? "All usage cards are hidden. Turn them back on in"
-      : plural(hiddenCount, "card", "cards") + " hidden.";
+    $("usage-hidden").hidden = !allHidden;
     box.hidden = nodes.length === 0;
     box.replaceChildren(...nodes);
   }

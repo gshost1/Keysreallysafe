@@ -34,7 +34,8 @@
       <div id="live-status" class="live-status" hidden></div>
       <!-- The quiet way in to the subscription list; the rows above stay the point of the pane. -->
       <p class="subs-add"><button type="button" id="btn-add-sub" class="btn-quiet" title="Pin a plan Keysrs does not measure locally, or a Factory plan onto the Droid row">+ Add subscription</button></p>
-      <p id="usage-hidden" class="muted usage-hidden" hidden><span id="usage-hidden-text"></span> <button type="button" class="link" data-action="settings">Settings</button></p>
+      <!-- Only when every card is off: hidden must not read as "nothing yet". -->
+      <p id="usage-hidden" class="muted usage-hidden" hidden>All usage cards are hidden. Turn them back on in <button type="button" class="link" data-action="settings">Settings</button></p>
       <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac. <button type="button" class="link" id="usage-empty-help">See how Keys works</button></p>
       <!-- First use only: an empty vault with nothing dismissed yet. It is filled from the help
            dialog's guide so the two can never drift apart, and it stays reachable from ? later. -->
