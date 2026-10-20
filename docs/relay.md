@@ -108,7 +108,12 @@ bytes 5–      payload (raw bytes, or UTF-8 JSON where the type says so)
 
 `target` is the request path and query as the Worker received them, with the
 Worker's origin removed (`/router/v1/messages?beta=true`). `headers` is a
-list of pairs so repeated headers survive; names are lower-cased. The Worker
+list of pairs so repeated headers survive; names are lower-cased. The
+gateway reads a repeated header as one comma-separated list (RFC 9110 §5.3),
+so several `anthropic-beta` lines reach the provider as one, and answers 400
+when a credential header (`Authorization`, `x-api-key`, `x-goog-api-key`,
+`api-key`, `X-KSF-Client`) or `Host` appears twice, so a second token cannot
+ride past the grant check in a line the check did not read. The Worker
 strips hop-by-hop headers and the `cf-*`, `x-forwarded-*`, `x-real-ip` and
 `cdn-loop` headers Cloudflare adds before framing; the Mac strips them again,
 sets `Host`, `Content-Length`, `Connection: close` and `X-KSF-Via: relay`,
@@ -121,15 +126,37 @@ A request is REQUEST, zero or more BODY frames, END. The Mac buffers the body
 response is RESPONSE, zero or more BODY frames as the gateway produces them,
 END. If the Mac cannot reach the gateway it sends ERROR with code
 `gateway_unreachable` and the Worker answers the agent with 502. After
-RESPONSE has been sent, an ERROR aborts the stream mid-body.
+RESPONSE has been sent, an ERROR aborts the stream mid-body; the Worker
+fails the agent's download at once whether the stream is already being read
+or is still being set up. A RESPONSE with status 204, 205 or 304, or to a
+HEAD request, is answered without a body and needs no END. Statuses below
+200 are not part of the protocol (the gateway never produces one) and are
+refused as a malformed head.
+
+CANCEL carries why the Worker gave up, for the Mac's log only:
+`client_gone` (the agent stopped reading, or its upload ended early),
+`upload_timeout`, `payload_too_large`, `relay_timeout`. Whatever the reason,
+the Mac drops the buffered body or shuts down its gateway connection, and the
+gateway then treats the call like any dropped loopback client. Besides
+`gateway_unreachable`, the Mac's ERROR codes are `bad_request_frame`,
+`payload_too_large`, `gateway_write_failed`, `gateway_read_failed`,
+`upload_timeout` (a REQUEST whose END did not arrive within the Mac's buffer
+timeout) and `relay_buffer_full` (the oldest unfinished upload, evicted to
+stay within the Mac's buffer bounds).
 
 Request ids are chosen by the Worker (random 32-bit, unique among requests
 in flight on that socket) and echoed by the Mac. Frames for an unknown id are
-ignored.
+ignored. A REQUEST that repeats an id still open on the Mac cancels the
+earlier request: the Worker never reuses an id while it is in flight, so a
+repeat means the Worker has already forgotten the first one.
 
 Keepalive: the Mac sends the text frame `ping` every 30 seconds and the
 Worker answers `pong` from the Durable Object's auto-response table, which
-does not wake it from hibernation. Any other text frame closes the socket.
+does not wake it from hibernation. The Mac treats a ping the transport
+refuses, or 60 seconds (two intervals) without any frame, pong included, as a
+dead socket: it closes it and reconnects, so a connection left half-open by
+sleep, a NAT timeout or a Wi-Fi roam does not hang. Any other text frame
+closes the socket.
 
 Connecting: `GET /connect` with `Upgrade: websocket`,
 `Authorization: Bearer <relay secret>` and `X-Keysrs-Relay-Protocol: 1`. A
@@ -147,24 +174,37 @@ secret is meant for one Mac. Run two Macs against two Workers.
 |------------------------------------|-------|-------------------------------------------|
 | request body                       | 8 MiB | Worker (413 `payload_too_large`) and Mac  |
 | requests in flight per connection  | 32    | Worker (503 `relay_busy`)                 |
+| time for the request body to arrive | 60 s | Worker (408 `upload_timeout`)             |
+| unfinished uploads held on the Mac | 64 requests, 32 MiB, 90 s each | Mac (ERROR `relay_buffer_full` / `upload_timeout`) |
 | body chunk per frame               | 64 KiB| both                                      |
 | time to first response byte        | 120 s | Worker (504 `relay_timeout`)              |
 | silence between response chunks    | 300 s | Worker (stream aborted)                   |
+| one response frame waiting for the socket | 60 s | Mac (replay abandoned)              |
+| silence on the socket              | 60 s  | Mac (closes and reconnects)               |
 | gateway connect + request timeout  | 30 s / 300 s | the gateway's existing limits      |
 
 Response bodies are streamed and not capped; the idle timeout bounds a stalled
-stream. The Worker's own platform limits (request headers, CPU time per
-invocation, free-plan request counts) apply on top. Agent errors from the
-Worker itself are JSON with an `error` code and a `message`:
+stream. The in-flight slot is taken when the request arrives, before its body,
+which is why the upload has its own deadline: without it, 32 agents sending a
+byte a minute would hold every slot. The Mac's bounds exist because the Worker
+checks no grant, so anyone who knows its URL can start uploads; whatever the
+Worker does, what the Mac keeps for a request that has not finished arriving
+is capped in number, in bytes and in time. The Worker's own platform limits
+(request headers, CPU time per invocation, free-plan request counts) apply on
+top. Agent errors from the Worker itself are JSON with an `error` code and a
+`message`:
 
 | status | error            | meaning                                                   |
 |--------|------------------|-----------------------------------------------------------|
 | 503    | `mac_offline`    | no `keys relay` is connected: the Mac is off, asleep or offline |
 | 502    | `mac_disconnected` | the Mac dropped while this request was in flight         |
 | 502    | `gateway_unreachable` | `keys relay` is up but the gateway on 127.0.0.1:12767 is not |
+| 502    | other Mac codes  | `keys relay` could not serve it: `gateway_read_failed`, `upload_timeout`, `relay_buffer_full`, … |
 | 503    | `relay_busy`     | 32 requests are already in flight                         |
 | 504    | `relay_timeout`  | the Mac sent no response head within 120 s                |
+| 408    | `upload_timeout` | the request body did not finish arriving within 60 s      |
 | 413    | `payload_too_large` | request body over 8 MiB                                |
+| 400    | `client_gone`    | the request body ended before it was complete (normally unseen: the agent has gone) |
 
 Everything else (401 `client_required`, 403 grant denials, upstream statuses)
 comes from the gateway on the Mac and is unchanged.
@@ -173,7 +213,12 @@ comes from the gateway on the Mac and is unchanged.
 
 `keys relay` reconnects after any close or failure with exponential backoff:
 1 s, 2 s, 4 s … capped at 60 s, with ±20 % jitter, reset after a connection
-that stayed up for a minute. A 401 from the Worker (wrong secret) is reported
+that stayed up for a minute. A socket that goes quiet counts as a failure
+(see Keepalive above), so a Mac coming back from sleep is relaying again
+within about a minute plus one backoff step instead of waiting for the kernel
+to notice. Every request open on the old socket is cancelled on the Mac,
+buffered or replaying; the Worker has already answered those agents with 502
+`mac_disconnected`. A 401 from the Worker (wrong secret) is reported
 on stderr with the fix (`keys relay setup` again, then `wrangler secret put`)
 and still retried at the capped interval, so a secret rotated on one side
 first does not strand the process. Ctrl-C stops it.
@@ -186,9 +231,12 @@ Mac side with a fake socket against the real gateway on loopback. Both are in
 CI. The real transport end to end is opt-in: start `npx wrangler dev --port
 8787` in `Relay/` with a `.dev.vars` holding `RELAY_SECRET=…` (git-ignored),
 then run `swift test --filter RelayEndToEndTests` with `KEYS_RELAY_E2E_URL`
-and `KEYS_RELAY_E2E_SECRET` set. `RELAY_HEAD_TIMEOUT_MS` and
-`RELAY_IDLE_TIMEOUT_MS` are Worker knobs for that test suite only; a deployed
-Worker leaves them unset.
+and `KEYS_RELAY_E2E_SECRET` set. `RELAY_UPLOAD_TIMEOUT_MS`,
+`RELAY_HEAD_TIMEOUT_MS` and `RELAY_IDLE_TIMEOUT_MS` are Worker knobs for that
+test suite only; a deployed Worker leaves them unset. The Worker suite must
+finish with no `Uncaught (in promise)` line from workerd: the response body
+is an `IdentityTransformStream` precisely because erroring a controller-driven
+`ReadableStream` the agent is reading leaves two such rejections behind.
 
 ## The 401/403 circuit breaker
 
@@ -197,7 +245,8 @@ upstream 401 or 403 responses**: for the next **60 seconds** every call with
 that key is answered locally with 503 `upstream_auth_blocked`, a
 `Retry-After` header and a message naming the key, without reaching the
 provider. Any other upstream status resets the count; turning the gateway off
-and on for the key clears the pause. The trip is written to the key's audit
+and on for the key clears the pause, and so does rotating the key (the pause
+was earned by the old value). The trip is written to the key's audit
 log once (`gateway_denied`, `upstream_auth_blocked`). The point is to stop an
 agent's infinite retry loop against a revoked or wrong key, whether it arrives
 over loopback, a tunnel or the relay.

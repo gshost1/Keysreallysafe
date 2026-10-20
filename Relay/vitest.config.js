@@ -11,6 +11,7 @@ export default defineConfig({
         bindings: {
           RELAY_SECRET: "ksfr_test_secret_for_offline_tests_only",
           // Shorter than production so the timeout tests finish quickly.
+          RELAY_UPLOAD_TIMEOUT_MS: "400",
           RELAY_HEAD_TIMEOUT_MS: "400",
           RELAY_IDLE_TIMEOUT_MS: "400",
         },

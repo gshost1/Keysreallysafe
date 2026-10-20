@@ -1016,6 +1016,8 @@ final class KeysService: @unchecked Sendable {
             gatewayCache[name]?.secret = secret
             gatewayCache[name]?.version = version
         }
+        // The pause was earned by the old value; the new one gets to prove itself at once.
+        breaker.reset(key: name)
         try recordKeyEvent(name: name, action: "rotate", caller: caller)
         guard let row = try catalog.catalogRow(name: name) else {
             throw AppError.notFound(name)

@@ -11,6 +11,8 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
     private var iterator: AsyncStream<RelayMessage>.Iterator
     private let feed: AsyncStream<RelayMessage>.Continuation
     private(set) var closed = false
+    /// When set, every keepalive text send fails as a dead transport would.
+    var failPings = false
 
     init() {
         let (stream, continuation) = AsyncStream<RelayMessage>.makeStream()
@@ -35,8 +37,9 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
     func sendText(_ text: String, completion: @escaping @Sendable (Error?) -> Void) {
         lock.lock()
         texts.append(text)
+        let fail = failPings
         lock.unlock()
-        completion(nil)
+        completion(fail ? RelayDialError(status: nil, message: "send failed") : nil)
     }
 
     func receive() async throws -> RelayMessage {
@@ -44,10 +47,12 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
         return message
     }
 
+    /// Like URLSession's cancel: a pending receive fails once the socket is closed.
     func close() {
         lock.lock()
         closed = true
         lock.unlock()
+        feed.finish()
     }
 
     var frames: [RelayFrame] { lock.lock(); defer { lock.unlock() }; return sent }
@@ -104,6 +109,14 @@ final class RecordingSleeper: @unchecked Sendable {
     }
 }
 
+/// A clock the test moves; the client's `now` reads it.
+final class RelayClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date = Date(timeIntervalSince1970: 1_700_000_000)
+    var now: Date { lock.withLock { date } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { date = date.addingTimeInterval(seconds) } }
+}
+
 final class RelayTests: XCTestCase {
     private let token = "ksfc_0123456789abcdef0123456789abcdef0123456789abcdef"
 
@@ -113,19 +126,32 @@ final class RelayTests: XCTestCase {
 
     private func makeClient(
         port: UInt16, dialer: FakeRelayDialer, sleeper: RecordingSleeper = RecordingSleeper(),
-        logs: LogSink = LogSink()
+        logs: LogSink = LogSink(), clock: RelayClock = RelayClock(),
+        configure: (inout RelayClient.Options) -> Void = { _ in }
     ) -> RelayClient {
-        RelayClient(
-            options: RelayClient.Options(
-                url: URL(string: "https://keysrs-relay.example.workers.dev")!,
-                secret: "ksfr_" + String(repeating: "a", count: 48),
-                gatewayPort: port, pingInterval: 3600
-            ),
+        var options = RelayClient.Options(
+            url: URL(string: "https://keysrs-relay.example.workers.dev")!,
+            secret: "ksfr_" + String(repeating: "a", count: 48),
+            gatewayPort: port, pingInterval: 3600
+        )
+        configure(&options)
+        return RelayClient(
+            options: options,
             dialer: dialer,
             log: { logs.add($0) },
             sleep: { try await sleeper.sleep($0) },
-            jitter: { 1.0 }
+            jitter: { 1.0 },
+            now: { clock.now }
         )
+    }
+
+    /// Polls (boundedly) until the client has no request open.
+    private func waitUntilIdle(_ client: RelayClient, timeout: TimeInterval = 5) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while client.inflightCount > 0, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(client.inflightCount, 0)
     }
 
     final class LogSink: @unchecked Sendable {
@@ -420,6 +446,136 @@ final class RelayTests: XCTestCase {
         XCTAssertEqual(dialer.attempts.count, 2)
         XCTAssertEqual(sleeper.delays.filter { $0 != 3600 }, [1], "one backoff; the rest are the keepalive timer")
         XCTAssertEqual(client.inflightCount, 0, "the half-received request died with its socket")
+    }
+
+    // MARK: liveness and bounds
+
+    func testSilentSocketIsClosedAfterTwoPingIntervalsAndReconnected() async throws {
+        // Each keepalive tick moves the clock 2.5 intervals: the first tick already finds the
+        // socket silent, and the same happens to the replacement, after which the dialer runs
+        // out and the loop ends.
+        let first = FakeRelaySocket()
+        let second = FakeRelaySocket()
+        let dialer = FakeRelayDialer([.success(first), .success(second)])
+        let clock = RelayClock()
+        let logs = LogSink()
+        let client = RelayClient(
+            options: RelayClient.Options(
+                url: URL(string: "https://keysrs-relay.example.workers.dev")!,
+                secret: "ksfr_" + String(repeating: "a", count: 48), gatewayPort: 1, pingInterval: 10
+            ),
+            dialer: dialer, log: { logs.add($0) },
+            sleep: { seconds in
+                clock.advance(seconds * 2.5)
+                try await Task.sleep(nanoseconds: 1_000_000)
+            },
+            jitter: { 1.0 }, now: { clock.now }
+        )
+        await client.run()
+        XCTAssertTrue(first.closed)
+        XCTAssertTrue(second.closed)
+        XCTAssertEqual(dialer.attempts.count, 3)
+        XCTAssertEqual(first.pings, [], "a socket already silent for two intervals is not pinged, it is dropped")
+        XCTAssertEqual(logs.all.filter { $0.contains("nothing heard from the Worker for 25s") }.count, 2, "\(logs.all)")
+    }
+
+    func testFailedKeepalivePingClosesTheSocketAndReconnects() async throws {
+        let first = FakeRelaySocket()
+        first.failPings = true
+        let second = FakeRelaySocket()
+        second.failPings = true
+        let dialer = FakeRelayDialer([.success(first), .success(second)])
+        let logs = LogSink()
+        let clock = RelayClock()
+        let client = RelayClient(
+            options: RelayClient.Options(
+                url: URL(string: "https://keysrs-relay.example.workers.dev")!,
+                secret: "ksfr_" + String(repeating: "a", count: 48), gatewayPort: 1, pingInterval: 10
+            ),
+            dialer: dialer, log: { logs.add($0) },
+            // Real time stands still, so the only way out of a socket is the refused ping.
+            sleep: { _ in try await Task.sleep(nanoseconds: 1_000_000) },
+            jitter: { 1.0 }, now: { clock.now }
+        )
+        await client.run()
+        XCTAssertEqual(first.pings, ["ping"])
+        XCTAssertTrue(first.closed)
+        XCTAssertTrue(second.closed)
+        XCTAssertEqual(dialer.attempts.count, 3)
+        XCTAssertEqual(logs.all.filter { $0.contains("keepalive ping failed") }.count, 2, "\(logs.all)")
+    }
+
+    func testRepeatedRequestIdCancelsTheEarlierReplayWithoutLosingTheNewOne() async throws {
+        let hits = RequestLog()
+        let rig = try GatewayRig { request in
+            hits.record(request)
+            Thread.sleep(forTimeInterval: 0.6)
+            return HTTPResponse.json(200, ["ok": true])
+        }
+        defer { rig.stop() }
+        try rig.key()
+        let grant = try grantFor(rig.service, "demo", task: "repeated id")
+        let socket = FakeRelaySocket()
+        let client = makeClient(port: rig.gateway.boundPort, dialer: FakeRelayDialer([.success(socket)]))
+        let run = Task { await client.run() }
+        defer { run.cancel() }
+
+        let head = requestHead("POST", "/demo/v1/chat/completions", headers: [["authorization", "Bearer \(grant)"], ["content-type", "application/json"]])
+        socket.push(RelayFrame(type: .request, id: 11, payload: head))
+        socket.push(RelayFrame(type: .end, id: 11))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(client.inflightCount, 1)
+        // The Worker reuses the id: the first replay is cancelled, the second owns the id.
+        socket.push(RelayFrame(type: .request, id: 11, payload: head))
+        socket.push(RelayFrame(type: .end, id: 11))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(client.inflightCount, 1, "the cancelled replay finishing must not remove the newer request")
+
+        _ = try await socket.frame(.response, id: 11)
+        _ = try await socket.frame(.end, id: 11)
+        try await waitUntilIdle(client)
+        XCTAssertEqual(socket.frames.filter { $0.type == .response }.count, 1, "only the second replay answers")
+        XCTAssertEqual(socket.frames.filter { $0.type == .error }.count, 0, "a cancelled replay stays quiet")
+        XCTAssertEqual(hits.count, 2)
+    }
+
+    func testUnfinishedUploadsAreBoundedInCountBytesAndTime() async throws {
+        let clock = RelayClock()
+        let socket = FakeRelaySocket()
+        let client = makeClient(port: 1, dialer: FakeRelayDialer([.success(socket)]), clock: clock) {
+            $0.maxBufferedRequests = 2
+            $0.maxBufferedBytes = 150
+            $0.bufferTimeout = 10
+        }
+        let run = Task { await client.run() }
+        defer { run.cancel() }
+        let head = requestHead("POST", "/demo/v1/x", headers: [])
+
+        // Count: a third unfinished upload evicts the oldest.
+        for id: UInt32 in [1, 2, 3] { socket.push(RelayFrame(type: .request, id: id, payload: head)) }
+        let full = try socket.json(try await socket.frame(.error, id: 1))
+        XCTAssertEqual(full["code"] as? String, "relay_buffer_full")
+        XCTAssertEqual(client.inflightCount, 2)
+
+        // Bytes: 100 for the newest fits; 100 more for the older one tips the total over.
+        socket.push(RelayFrame(type: .body, id: 3, payload: Data(repeating: 0x61, count: 100)))
+        socket.push(RelayFrame(type: .body, id: 2, payload: Data(repeating: 0x62, count: 100)))
+        let overflow = try socket.json(try await socket.frame(.error, id: 2))
+        XCTAssertEqual(overflow["code"] as? String, "relay_buffer_full")
+        XCTAssertEqual(client.inflightCount, 1)
+
+        // Time: uploads older than the buffer timeout are dropped when the next frame comes.
+        socket.push(RelayFrame(type: .request, id: 4, payload: head))
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(client.inflightCount, 2)
+        clock.advance(11)
+        socket.push(RelayFrame(type: .request, id: 5, payload: head))
+        for id: UInt32 in [3, 4] {
+            let expired = try socket.json(try await socket.frame(.error, id: id))
+            XCTAssertEqual(expired["code"] as? String, "upload_timeout")
+        }
+        XCTAssertEqual(client.inflightCount, 1, "only the fresh request survives")
+        XCTAssertTrue(socket.frames.filter { $0.id == 5 }.isEmpty)
     }
 
     // MARK: settings

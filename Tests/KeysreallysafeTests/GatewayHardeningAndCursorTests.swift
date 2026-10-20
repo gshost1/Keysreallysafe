@@ -44,6 +44,43 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(ok.status, 200)
     }
 
+    func testRepeatedHeadersAreCombinedButASecondCredentialIsRefused() throws {
+        let captured = RequestLog()
+        let rig = try GatewayRig { request in
+            captured.record(request)
+            return HTTPResponse.json(200, ["ok": true])
+        }
+        defer { rig.stop() }
+        try rig.key()
+        let grant = try grantFor(rig.service, "demo", task: "repeated headers")
+        let port = rig.gateway.boundPort
+
+        // Two anthropic-beta lines, as an SDK sends them, reach the provider as one list.
+        let combined = try sendRaw(
+            port: port,
+            request: "POST /demo/v1/x HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nAuthorization: Bearer \(grant)\r\n"
+                + "anthropic-beta: one\r\nanthropic-beta: two\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+        )
+        XCTAssertEqual(combined.status, 200)
+        XCTAssertEqual(captured.last?.headers["anthropic-beta"], "one, two")
+        XCTAssertEqual(captured.count, 1)
+
+        // A second credential line never gets as far as the grant check.
+        for (name, first, second) in [
+            ("Authorization", "Bearer \(grant)", "Bearer sk-other"),
+            ("x-api-key", grant, grant),
+            ("Host", "127.0.0.1:\(port)", "127.0.0.1:\(port)"),
+        ] {
+            let hostLine = name == "Host" ? "" : "Host: 127.0.0.1:\(port)\r\n"
+            let refused = try sendRaw(
+                port: port,
+                request: "POST /demo/v1/x HTTP/1.1\r\n\(hostLine)\(name): \(first)\r\n\(name): \(second)\r\nContent-Length: 2\r\n\r\n{}"
+            )
+            XCTAssertEqual(refused.status, 400, name)
+        }
+        XCTAssertEqual(captured.count, 1, "nothing with a repeated credential reached the provider")
+    }
+
     func testContentLengthNegativeDuplicateShortAndChunked() async throws {
         let captured = RequestLog()
         let rig = try GatewayRig { request in

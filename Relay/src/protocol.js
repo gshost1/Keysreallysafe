@@ -18,9 +18,17 @@ export const LIMITS = Object.freeze({
   requestBody: 8 * 1024 * 1024,
   inflight: 32,
   chunk: 64 * 1024,
+  // An in-flight slot is taken before the body arrives, so the upload itself
+  // needs a deadline or a few slow senders hold every slot.
+  uploadTimeoutMs: 60_000,
   headTimeoutMs: 120_000,
   idleTimeoutMs: 300_000,
 });
+
+// Statuses whose response has no body (RFC 9110 §15.3.5, §15.3.6, §15.4.5);
+// the Response constructor throws when given a stream for one of them. 1xx
+// never reaches here: the Mac's head is refused below 200.
+export const BODYLESS_STATUS = new Set([204, 205, 304]);
 
 // Hop-by-hop headers, the ones the Mac rewrites, and the ones Cloudflare adds
 // about the agent's connection. Repeated on the Mac in case a Worker is ever

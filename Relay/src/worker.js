@@ -9,7 +9,7 @@
 // console output is a one-line note on an unexpected frame, without payload.
 
 import { DurableObject } from "cloudflare:workers";
-import { FRAME, LIMITS, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "./protocol.js";
+import { BODYLESS_STATUS, FRAME, LIMITS, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "./protocol.js";
 
 const DOCS = "https://github.com/gshost1/Keysreallysafe/blob/main/docs/relay.md";
 const utf8d = new TextDecoder();
@@ -47,6 +47,7 @@ function limitsFrom(env) {
   };
   return {
     ...LIMITS,
+    uploadTimeoutMs: num(env.RELAY_UPLOAD_TIMEOUT_MS, LIMITS.uploadTimeoutMs),
     headTimeoutMs: num(env.RELAY_HEAD_TIMEOUT_MS, LIMITS.headTimeoutMs),
     idleTimeoutMs: num(env.RELAY_IDLE_TIMEOUT_MS, LIMITS.idleTimeoutMs),
   };
@@ -162,6 +163,10 @@ export class RelayHub extends DurableObject {
       controller: null,
       buffered: [],
       bodyDone: false,
+      // Set when the Mac fails the request after RESPONSE was accepted but
+      // before the stream exists; start() then errors the stream instead of
+      // leaving the agent with a 200 that never ends.
+      failed: null,
       headTimer: null,
       idleTimer: null,
       resolveHead: null,
@@ -180,34 +185,63 @@ export class RelayHub extends DurableObject {
     for (const [name, value] of request.headers) {
       if (!stripRequestHeader(name)) headers.push([name, value]);
     }
+    // Three things can end the upload early and each needs its own answer: the
+    // Mac's socket failing (502), the agent stopping mid-body (an abort or a
+    // dropped connection: nobody is left to answer, but the Mac must be told
+    // to drop what it buffered) and the upload outrunning its deadline (408).
+    // In every case the Mac gets a CANCEL, so a half-sent request never stays
+    // in its buffer for the life of the socket.
+    const toMac = (frame) => {
+      try {
+        mac.send(frame);
+      } catch {
+        throw new RelayError(502, "mac_disconnected", "the Mac dropped while this request was being sent");
+      }
+    };
+    let reader = null;
+    let uploadTimer = null;
     try {
-      mac.send(encodeFrame(FRAME.REQUEST, id, JSON.stringify({
+      toMac(encodeFrame(FRAME.REQUEST, id, JSON.stringify({
         method: request.method,
         target: url.pathname + url.search,
         headers,
       })));
       if (request.body) {
-        const reader = request.body.getReader();
+        reader = request.body.getReader();
+        const deadline = new Promise((_, reject) => {
+          uploadTimer = setTimeout(() => {
+            reject(new RelayError(408, "upload_timeout", `the request body did not finish arriving within ${this.limits.uploadTimeoutMs} ms`));
+          }, this.limits.uploadTimeoutMs);
+        });
+        deadline.catch(() => {});
         let total = 0;
         for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          total += value.byteLength;
-          if (total > this.limits.requestBody) {
-            reader.cancel().catch(() => {});
-            this.cancel(id, "payload_too_large");
-            return json(413, { error: "payload_too_large", message: `request body over ${this.limits.requestBody} bytes` });
+          let step;
+          try {
+            step = await Promise.race([reader.read(), deadline]);
+          } catch (error) {
+            if (error instanceof RelayError) throw error;
+            throw new RelayError(400, "client_gone", "the request body ended before it was complete");
           }
-          for (let off = 0; off < value.byteLength; off += this.limits.chunk) {
-            mac.send(encodeFrame(FRAME.BODY, id, value.subarray(off, Math.min(off + this.limits.chunk, value.byteLength))));
+          if (step.done) break;
+          total += step.value.byteLength;
+          if (total > this.limits.requestBody) {
+            throw new RelayError(413, "payload_too_large", `request body over ${this.limits.requestBody} bytes`);
+          }
+          for (let off = 0; off < step.value.byteLength; off += this.limits.chunk) {
+            toMac(encodeFrame(FRAME.BODY, id, step.value.subarray(off, Math.min(off + this.limits.chunk, step.value.byteLength))));
           }
         }
       }
-      mac.send(encodeFrame(FRAME.END, id));
-    } catch {
-      this.finish(id);
-      return json(502, { error: "mac_disconnected", message: "the Mac dropped while this request was being sent" });
+      toMac(encodeFrame(FRAME.END, id));
+    } catch (error) {
+      clearTimeout(uploadTimer);
+      if (reader) reader.cancel().catch(() => {});
+      const relayError = error instanceof RelayError ? error : new RelayError(500, "relay_error", "the relay could not forward this request");
+      this.cancel(id, relayError.code);
+      return json(relayError.status, { error: relayError.code, message: relayError.message });
     }
+    clearTimeout(uploadTimer);
 
     entry.headTimer = setTimeout(() => {
       entry.rejectHead(new RelayError(504, "relay_timeout", `the Mac sent no response within ${this.limits.headTimeoutMs} ms`));
@@ -228,36 +262,63 @@ export class RelayHub extends DurableObject {
       if (STRIP_RESPONSE.has(String(name).toLowerCase())) continue;
       try { responseHeaders.append(name, value); } catch { /* an invalid header name or value is dropped */ }
     }
-    if (request.method === "HEAD" || head.status === 204 || head.status === 304) {
+    if (request.method === "HEAD" || BODYLESS_STATUS.has(head.status)) {
       this.finish(id);
       return new Response(null, { status: head.status, headers: responseHeaders });
     }
+    // The body is an IdentityTransformStream, not a ReadableStream driven by a
+    // controller: workerd pumps it natively, and aborting the writer ends the
+    // agent's download cleanly, whereas controller.error() on a stream the agent
+    // is reading leaves two unhandled rejections behind in this isolate.
     const hub = this;
-    const stream = new ReadableStream({
-      start(controller) {
-        entry.controller = controller;
-        for (const chunk of entry.buffered) controller.enqueue(chunk);
-        entry.buffered = [];
-        if (entry.bodyDone) {
-          controller.close();
-          hub.finish(id);
-        } else {
-          hub.armIdle(id, entry);
-        }
-      },
-      cancel() {
-        hub.cancel(id, "client_gone");
-      },
+    const { readable, writable } = new IdentityTransformStream();
+    const writer = writable.getWriter();
+    const sink = {
+      enqueue(chunk) { writer.write(chunk).catch(() => {}); },
+      close() { writer.close().catch(() => {}); },
+      error(error) { writer.abort(error).catch(() => {}); },
+    };
+    // The agent going away surfaces here, as the writer's side failing; a
+    // request this hub already finished (its own abort included) is left alone.
+    writer.closed.then(() => {}, () => {
+      if (hub.pending.get(id) === entry) hub.cancel(id, "client_gone");
     });
-    return new Response(stream, { status: head.status, headers: responseHeaders });
+    if (entry.failed) {
+      sink.error(entry.failed);
+      this.finish(id);
+    } else {
+      entry.controller = sink;
+      for (const chunk of entry.buffered) sink.enqueue(chunk);
+      entry.buffered = [];
+      if (entry.bodyDone) {
+        sink.close();
+        this.finish(id);
+      } else {
+        this.armIdle(id, entry);
+      }
+    }
+    return new Response(readable, { status: head.status, headers: responseHeaders });
   }
 
   armIdle(id, entry) {
     clearTimeout(entry.idleTimer);
     entry.idleTimer = setTimeout(() => {
-      try { entry.controller?.error(new Error("relay_timeout")); } catch { /* already closed */ }
+      this.fail(entry, "relay_timeout");
       this.cancel(id, "relay_timeout");
     }, this.limits.idleTimeoutMs);
+  }
+
+  /// Ends the agent's side of a request with `code`, whichever stage it is in:
+  /// still waiting for the head, streaming, or between the two (RESPONSE
+  /// accepted, stream not yet constructed), which is the window `failed` covers.
+  fail(entry, code, status, message) {
+    entry.rejectHead(new RelayError(status || 502, code, message || code));
+    const error = new Error(code);
+    if (entry.controller) {
+      try { entry.controller.error(error); } catch { /* already closed */ }
+    } else {
+      entry.failed = error;
+    }
   }
 
   /// Tells the Mac to drop the request and forgets it here.
@@ -279,8 +340,7 @@ export class RelayHub extends DurableObject {
   failAll(ws, status, code, message) {
     for (const [id, entry] of [...this.pending]) {
       if (entry.ws !== ws) continue;
-      entry.rejectHead(new RelayError(status, code, message));
-      try { entry.controller?.error(new Error(code)); } catch { /* already closed */ }
+      this.fail(entry, code, status, message);
       this.finish(id);
     }
   }
@@ -345,8 +405,7 @@ export class RelayHub extends DurableObject {
         }
         const code = typeof detail?.code === "string" && detail.code.length <= 64 ? detail.code : "mac_error";
         const text = typeof detail?.message === "string" && detail.message.length <= 512 ? detail.message : "the Mac could not serve this request";
-        entry.rejectHead(new RelayError(502, code, text));
-        try { entry.controller?.error(new Error(code)); } catch { /* already closed */ }
+        this.fail(entry, code, 502, text);
         this.finish(frame.id);
         return;
       }

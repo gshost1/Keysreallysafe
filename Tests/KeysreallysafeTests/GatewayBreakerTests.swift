@@ -40,6 +40,19 @@ final class GatewayBreakerTests: XCTestCase {
         XCTAssertEqual(breaker.check(key: "k"), .closed)
     }
 
+    func testRotatingTheKeyClearsThePause() throws {
+        let (db, _) = try makeDB()
+        let (service, _) = makeGatedService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "old-synthetic")
+        _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:9")
+        for _ in 0..<GatewayBreaker.threshold { service.breaker.record(key: "demo", status: 401) }
+        XCTAssertNotEqual(service.breaker.check(key: "demo"), .closed)
+        // Rotating is the fix the pause message suggests; it must not stay paused for the
+        // rest of the cool-down with a value that was never tried.
+        _ = try service.rotate(name: "demo", secret: "new-synthetic")
+        XCTAssertEqual(service.breaker.check(key: "demo"), .closed)
+    }
+
     func testGatewayStopsForwardingAfterRepeatedUpstreamDenialsAndLogsTheTripOnce() async throws {
         let hits = RequestLog()
         let rig = try GatewayRig { request in
