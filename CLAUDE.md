@@ -51,6 +51,7 @@ swift build -c release
 swift test                      # synthetic fixtures only, no network
 swift test --filter Menubar     # one area
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+(cd Relay && npm ci && npm test)   # relay Worker in workerd, offline
 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 python3 scripts/build-app.py    # release build assembled and signed as Keysrs.app
 ```

@@ -178,6 +178,18 @@ on stderr with the fix (`keys relay setup` again, then `wrangler secret put`)
 and still retried at the capped interval, so a secret rotated on one side
 first does not strand the process. Ctrl-C stops it.
 
+## Testing it
+
+`cd Relay && npm test` runs the Worker inside workerd with a throwaway
+secret (no account, no network); `swift test --filter RelayTests` drives the
+Mac side with a fake socket against the real gateway on loopback. Both are in
+CI. The real transport end to end is opt-in: start `npx wrangler dev --port
+8787` in `Relay/` with a `.dev.vars` holding `RELAY_SECRET=…` (git-ignored),
+then run `swift test --filter RelayEndToEndTests` with `KEYS_RELAY_E2E_URL`
+and `KEYS_RELAY_E2E_SECRET` set. `RELAY_HEAD_TIMEOUT_MS` and
+`RELAY_IDLE_TIMEOUT_MS` are Worker knobs for that test suite only; a deployed
+Worker leaves them unset.
+
 ## The 401/403 circuit breaker
 
 Independent of the relay, the gateway now pauses a key after **5 consecutive
