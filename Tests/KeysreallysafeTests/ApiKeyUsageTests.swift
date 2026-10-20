@@ -161,6 +161,33 @@ final class ApiKeyUsageTests: XCTestCase {
         XCTAssertEqual(alpha.totals.gatewayTokens + bravo.totals.gatewayTokens, all.totals.gatewayTokens)
     }
 
+    /// A call `keys relay` replayed is stored under `gw-relay:<key>` so the ledger can tell the
+    /// path apart, and it is still that key's call: the Keys pane's month and the Chart's API-keys
+    /// view count it exactly like a loopback one.
+    func testRelayedCallsCountInTheKeysMonthAndTheChart() throws {
+        let (db, _) = try makeDB()
+        let service = try service(db, keys: [("swarm", "anthropic")])
+        for id in ["r1", "r2"] {
+            var row = gatewayRow(key: "swarm", requestId: id)
+            row.via = "relay"
+            try service.recordGatewayUsage(row)
+        }
+        let events = try db.usageEvents(from: "2026-09-01T00:00:00Z", to: "2026-10-01T00:00:00Z", source: .keys)
+        XCTAssertEqual(events.map(\.sessionId), ["gw-relay:swarm", "gw-relay:swarm"])
+        XCTAssertEqual(events.map(\.keyName), ["swarm", "swarm"])
+
+        let month = try XCTUnwrap(try service.monthGatewayByKey(now: now, timeZone: utc)["swarm"])
+        XCTAssertEqual(month.calls, 2)
+        let listed = try XCTUnwrap(try service.listJSONObject().first { $0["name"] as? String == "swarm" })
+        let row = try XCTUnwrap(db.catalogRow(name: "swarm"))
+        XCTAssertEqual(service.keyJSONObject(row, month: month)["gateway_month_calls"] as? Int, 2)
+        XCTAssertNotNil(listed["gateway_month_calls"])
+
+        let chart = try report(db, key: "swarm")
+        XCTAssertEqual(chart.totals.gatewayCalls, 2)
+        XCTAssertEqual(Set(chart.rows.compactMap(\.key)), ["swarm"])
+    }
+
     /// TypeSafe's System One protocol reports no cost receipt, and its model names must not pick
     /// up an unrelated catalog price. The requests are still countable, so they are still charted.
     func testTypeSafeCostStaysUnknownWhileRequestsStillChart() throws {

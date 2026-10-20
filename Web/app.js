@@ -3186,7 +3186,13 @@
       if (version != null && state.catalogVersion != null && version !== state.catalogVersion && state.pane === "chart") {
         loadModels().then(loadSpend);
       }
-      if (version != null && state.catalogVersion != null && version !== state.catalogVersion) loadUsageTotals();
+      if (version != null && state.catalogVersion != null && version !== state.catalogVersion) {
+        loadUsageTotals();
+        // A gateway call bumps the version without anyone touching this page: a relayed or
+        // tunnelled call arrives while the Keys pane sits open, and its "Via gateway" cell
+        // and "Last used" would otherwise show the vault as it was when the pane was entered.
+        if (state.pane === "keys" && !state.busy) loadKeys({ quiet: true });
+      }
       state.catalogVersion = version;
       state.status = data;
       renderStatus();

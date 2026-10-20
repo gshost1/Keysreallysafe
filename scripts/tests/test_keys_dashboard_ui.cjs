@@ -90,7 +90,10 @@ function reset() {
   delays = new Map();     // "METHOD /path" -> milliseconds
   requests = [];
   unexpected = [];
+  // The engine's catalog version on /api/status; a gateway call bumps it with no one on the page.
+  catalogVersion = 1;
 }
+let catalogVersion = 1;
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -364,7 +367,7 @@ function handle(method, pathname, body, params) {
     return [200, { removed: id }];
   }
   if (pathname === "/api/models") return [200, []];
-  if (pathname === "/api/status") return [200, { plans }];
+  if (pathname === "/api/status") return [200, { plans, catalog_version: catalogVersion }];
   // The per-window token limits, mirroring the engine's usage_limits: only the Droid row is
   // tracked, the windows are fixed, and a limit is a positive whole number and nothing else.
   if (pathname === "/api/limits" && method === "GET") {
@@ -2862,6 +2865,30 @@ test("the search box keeps its place and size while typing, including on a miss"
   // The count sits beside the box, never before it, so it cannot push the box around.
   const countBox = await page.locator("#keys-count").boundingBox();
   assert.ok(countBox.x > start.x + start.w, "the count follows the box");
+});
+
+// A relayed or tunnelled call lands in the catalog with nobody touching the page. The Keys pane
+// used to show the vault as it was when the pane was entered, so a key with fresh gateway calls
+// kept saying "—" in Via gateway until a reload or a pane switch.
+test("a catalog change while the Keys pane is open refreshes the Via gateway column", async (page, origin) => {
+  await page.clock.install();
+  await openKeys(page, origin);
+  assert.equal((await rowCell(page, "bravo", "usd").textContent()).trim(), "—");
+  const before = requests.filter((r) => r.pathname === "/api/keys").length;
+
+  // Two calls arrive through the relay for bravo: the engine's month count and version move.
+  keys.find((k) => k.name === "bravo").gateway_month_calls = 2;
+  keys.find((k) => k.name === "bravo").last_used_at = "2026-09-20T12:30:00Z";
+  catalogVersion += 1;
+  await page.clock.runFor(16000);
+  await page.waitForFunction(() => /2 requests/.test(document.querySelector('#keys-body tr[data-name="bravo"] .td-usd').textContent));
+  assert.ok(requests.filter((r) => r.pathname === "/api/keys").length > before, "the list was fetched again");
+
+  // An unchanged version fetches nothing: the poll is not a reload loop.
+  const after = requests.filter((r) => r.pathname === "/api/keys").length;
+  await page.clock.runFor(16000);
+  await page.waitForFunction(() => document.getElementById("keys-body").children.length > 0);
+  assert.equal(requests.filter((r) => r.pathname === "/api/keys").length, after);
 });
 
 test("arrow keys step over the provider header rows", async (page, origin) => {
