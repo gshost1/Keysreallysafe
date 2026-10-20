@@ -34,14 +34,23 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(hits.count, 0)
     }
 
-    func testSlowResponseHeadIsNotTreatedAsAFailedConnect() {
-        // A non-streaming generation: body fully sent, no head yet after 30 s.
-        XCTAssertFalse(GatewayListener.connectStalled(hasResponse: false, bodyBytesExpected: 4_000, bodyBytesSent: 4_000))
-        // Body not started after 30 s: the connection never opened.
-        XCTAssertTrue(GatewayListener.connectStalled(hasResponse: false, bodyBytesExpected: 4_000, bodyBytesSent: 0))
-        // A bodyless GET can't prove its connection, so it waits for the resource timeout.
-        XCTAssertFalse(GatewayListener.connectStalled(hasResponse: false, bodyBytesExpected: 0, bodyBytesSent: 0))
-        XCTAssertFalse(GatewayListener.connectStalled(hasResponse: true, bodyBytesExpected: 4_000, bodyBytesSent: 0))
+    func testSilentUpstreamPastThirtySecondsStillAnswers() async throws {
+        // A non-streaming generation sends no head until it is done; a 30 s
+        // watchdog used to turn these into 502 upstream_error. Slow on purpose.
+        let rig = try GatewayRig { _ in
+            Thread.sleep(forTimeInterval: 32)
+            return HTTPResponse.json(200, ["ok": true])
+        }
+        defer { rig.stop() }
+        try rig.key()
+        let grant = try grantFor(rig.service, "demo", task: "slow head")
+        var request = URLRequest(url: rig.url("v1/responses"))
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"model":"m","input":"hi"}"#.utf8)
+        request.setValue("Bearer \(grant)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 90
+        let (_, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
     }
 
     func testLongCallLimitsCoverMultiMinuteGenerations() {

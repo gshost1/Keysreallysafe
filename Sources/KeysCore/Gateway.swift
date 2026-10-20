@@ -19,10 +19,6 @@ final class GatewayListener: @unchecked Sendable {
     static let maxConcurrent = 32
     static let ioTimeoutSeconds = 30
 
-    static func connectStalled(hasResponse: Bool, bodyBytesExpected: Int64, bodyBytesSent: Int64) -> Bool {
-        !hasResponse && bodyBytesExpected > 0 && bodyBytesSent == 0
-    }
-
     let listener: LoopbackListener
     private let service: KeysService
 
@@ -174,34 +170,21 @@ final class GatewayListener: @unchecked Sendable {
         let session = URLSession(configuration: config, delegate: proxy, delegateQueue: nil)
         let task = session.dataTask(with: urlRequest)
         proxy.sessionTask = task
-        // Only a connection that never opened is cut short here. Waiting on a
-        // slow response head is normal for non-streaming calls and is bounded
-        // by resourceTimeout instead. A request body that has started going
-        // out proves the connection is up; a bodyless request can't show that,
-        // so it is left to the resource timeout too.
-        let connectWatch = DispatchWorkItem { [weak task] in
-            guard let task else { return }
-            if Self.connectStalled(
-                hasResponse: proxy.hasResponse,
-                bodyBytesExpected: task.countOfBytesExpectedToSend,
-                bodyBytesSent: task.countOfBytesSent
-            ) {
-                task.cancel()
-            }
-        }
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + Self.connectTimeout,
-            execute: connectWatch
-        )
+        // No separate connect watchdog: a 30 s one cut off non-streaming calls
+        // whose response head takes minutes, and a refused or unresolvable
+        // host already fails at once. The request limit bounds everything else.
         task.resume()
         proxy.wait()
-        connectWatch.cancel()
         session.finishTasksAndInvalidate()
 
         let durationMs = Int((Date().timeIntervalSince(started) * 1000.0).rounded())
         let status = proxy.statusCode ?? 502
         if !proxy.wroteHead {
-            Self.writeJSON(fd: client, status: 502, object: ["error": "upstream_error"])
+            // The URL error code (never a header or body) says whether it was a
+            // timeout, a refused connection or TLS, which the bare 502 could not.
+            var object: [String: Any] = ["error": "upstream_error"]
+            if let failure = proxy.failure { object["detail"] = failure }
+            Self.writeJSON(fd: client, status: 502, object: object)
         }
         let parsed = tee.result(
             requestBody: request.body,
@@ -354,6 +337,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     private(set) var hasResponse = false
     private(set) var statusCode: Int?
     private(set) var requestId: String?
+    private(set) var failure: String?
 
     init(clientFD: Int32, tee: GatewayTee) {
         self.clientFD = clientFD
@@ -411,6 +395,11 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error as NSError? {
+            lock.lock()
+            failure = "\(error.domain) \(error.code)"
+            lock.unlock()
+        }
         finish()
     }
 
