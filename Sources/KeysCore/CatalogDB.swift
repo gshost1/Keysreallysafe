@@ -162,9 +162,17 @@ final class CatalogDB: @unchecked Sendable {
               created_at TEXT NOT NULL,
               expires_at TEXT NOT NULL,
               revoked_at TEXT,
-              last_used_at TEXT
+              last_used_at TEXT,
+              host TEXT
             );
             """)
+        // A client is bound to the upstream host it was issued for. Clients from before the
+        // column existed get the key's current host once, at the first start that knows the
+        // provider table (KeysService), so they keep working only while the host stays put.
+        if try !tableHasColumn("gateway_clients", "host") {
+            try exec("ALTER TABLE gateway_clients ADD COLUMN host TEXT;")
+            try exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('\(Self.clientHostBackfillKey)', 'pending');")
+        }
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
         try exec("""
             CREATE TABLE IF NOT EXISTS custom_providers (
@@ -574,15 +582,16 @@ final class CatalogDB: @unchecked Sendable {
         hint: String,
         methods: [String],
         pathPrefix: String?,
+        host: String,
         createdAt: String,
         expiresAt: String
     ) throws -> GatewayClient {
         try withLock {
             try run("""
                 INSERT INTO gateway_clients
-                  (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """, keyName, label, tokenHash, hint, methods.joined(separator: ","), pathPrefix, createdAt, expiresAt)
+                  (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at, host)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """, keyName, label, tokenHash, hint, methods.joined(separator: ","), pathPrefix, createdAt, expiresAt, host)
             return GatewayClient(
                 id: sqlite3_last_insert_rowid(db),
                 keyName: keyName,
@@ -593,13 +602,28 @@ final class CatalogDB: @unchecked Sendable {
                 expiresAt: expiresAt,
                 revokedAt: nil,
                 lastUsedAt: nil,
-                hint: hint
+                hint: hint,
+                host: host
             )
         }
     }
 
+    static let clientHostBackfillKey = "gateway_clients_host_backfill"
+
+    /// Clients with no stored host, i.e. issued before host binding existed.
+    func unboundGatewayClients() throws -> [GatewayClient] {
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE host IS NULL ORDER BY id;",
+            row: decodeGatewayClient
+        )
+    }
+
+    func bindGatewayClient(id: Int64, host: String) throws {
+        try run("UPDATE gateway_clients SET host = ? WHERE id = ? AND host IS NULL;", host, id)
+    }
+
     private static let gatewayClientColumns =
-        "id, key_name, label, hint, methods, path_prefix, created_at, expires_at, revoked_at, last_used_at"
+        "id, key_name, label, hint, methods, path_prefix, created_at, expires_at, revoked_at, last_used_at, host"
 
     private func decodeGatewayClient(_ stmt: OpaquePointer) -> GatewayClient {
         GatewayClient(
@@ -612,7 +636,8 @@ final class CatalogDB: @unchecked Sendable {
             expiresAt: columnText(stmt, 7) ?? "",
             revokedAt: columnText(stmt, 8),
             lastUsedAt: columnText(stmt, 9),
-            hint: columnText(stmt, 3) ?? ""
+            hint: columnText(stmt, 3) ?? "",
+            host: columnText(stmt, 10)
         )
     }
 

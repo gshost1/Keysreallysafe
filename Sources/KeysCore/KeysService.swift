@@ -67,6 +67,24 @@ final class KeysService: @unchecked Sendable {
         // resolver; reinstalling it here is what keeps it in step with this catalog.
         let custom = (try? catalog.listCustomProviders()) ?? []
         Providers.setOverlay(Dictionary(custom.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
+        bindLegacyGatewayClients()
+    }
+
+    /// The host a key's gateway sends to: the per-key host, else the provider's one host.
+    static func effectiveHost(_ row: CatalogRow) -> String? {
+        row.gatewayHost ?? Providers.provider(id: row.provider)?.host
+    }
+
+    /// Runs once after the migration that added `gateway_clients.host`: binds each older client
+    /// to its key's host as of the upgrade. It needs the provider table, which the catalog
+    /// migration has no access to. A client left unbound (its key had no host) is refused.
+    private func bindLegacyGatewayClients() {
+        guard (try? catalog.metaValue(CatalogDB.clientHostBackfillKey)) == "pending" else { return }
+        for client in (try? catalog.unboundGatewayClients()) ?? [] {
+            guard let row = try? catalog.catalogRow(name: client.keyName), let host = Self.effectiveHost(row) else { continue }
+            try? catalog.bindGatewayClient(id: client.id, host: host)
+        }
+        try? catalog.deleteMeta(CatalogDB.clientHostBackfillKey)
     }
 
     func add(
@@ -470,7 +488,7 @@ final class KeysService: @unchecked Sendable {
             {
                 disableGatewayMemory(name: name, reason: "target_changed")
             }
-            try presence.require(reason: reason ?? "unlock \(name)")
+            try presence.require(reason: reason ?? Self.gatewayReason(key: name, provider: provider, host: resolved))
             let target = GatewayTarget(
                 name: name, secret: try secrets.get(name: name), provider: provider, host: resolved, version: row.version
             )
@@ -486,6 +504,12 @@ final class KeysService: @unchecked Sendable {
         revokeGrants(key: name, reason: "gateway_off", caller: caller)
         try recordKeyEvent(name: name, action: "gateway_disable", caller: caller)
         return row
+    }
+
+    /// Names where the key will be sent: the prompt is the only line a local process that
+    /// rewrote the host cannot cross, so it must show the destination.
+    static func gatewayReason(key: String, provider: Providers.Record, host: String) -> String {
+        "send the key \(key) to \(provider.name) at \(host) through the gateway"
     }
 
     // MARK: - Grants (temporary, narrowly scoped access)
@@ -686,12 +710,15 @@ final class KeysService: @unchecked Sendable {
         caller: String = "dashboard",
         now: Date = Date()
     ) throws -> (token: String, client: GatewayClient) {
-        _ = try existingRow(name)
+        let row = try existingRow(name)
         let ttlDays = try GatewayClientToken.validateDays(days)
         let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
         let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
         let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        try presence.require(reason: "issue gateway client for \(name)")
+        guard let host = Self.effectiveHost(row) else {
+            throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
+        }
+        try presence.require(reason: "issue gateway client for \(name) at \(host)")
         let token = GatewayClientToken.generate()
         let client = try catalog.insertGatewayClient(
             keyName: name,
@@ -700,6 +727,7 @@ final class KeysService: @unchecked Sendable {
             hint: GatewayClientToken.hint(token),
             methods: allowed,
             pathPrefix: prefix,
+            host: host,
             createdAt: UTC.iso(now),
             expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
         )
@@ -747,6 +775,10 @@ final class KeysService: @unchecked Sendable {
         guard client.keyName == name else { return .denied("wrong_key") }
         guard client.revokedAt == nil else { return .denied("revoked") }
         guard client.isActive(now: now) else { return .denied("expired") }
+        // lookupGateway then holds the unlocked target to this same catalog host.
+        guard let row = try? catalog.catalogRow(name: name), let host = client.host, host == Self.effectiveHost(row) else {
+            return .denied("target_changed")
+        }
         guard client.allows(method: method, rest: rest) else { return .denied("out_of_scope") }
         return .allowed(client)
     }

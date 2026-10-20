@@ -17,6 +17,9 @@ struct GatewayClient: Equatable {
     var lastUsedAt: String?
     /// Last four characters of the token, for recognising it in a list. Never the token.
     var hint: String
+    /// Upstream host the client was issued for. A key retargeted since then refuses it, so a
+    /// host change cannot inherit capabilities approved for the old destination.
+    var host: String? = nil
 
     func isActive(now: Date) -> Bool {
         if revokedAt != nil { return false }
