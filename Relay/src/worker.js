@@ -9,7 +9,7 @@
 // console output is a one-line note on an unexpected frame, without payload.
 
 import { DurableObject } from "cloudflare:workers";
-import { FRAME, LIMITS, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "./protocol.js";
+import { BODYLESS_STATUS, FRAME, LIMITS, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "./protocol.js";
 
 const DOCS = "https://github.com/gshost1/Keysreallysafe/blob/main/docs/relay.md";
 const utf8d = new TextDecoder();
@@ -262,7 +262,7 @@ export class RelayHub extends DurableObject {
       if (STRIP_RESPONSE.has(String(name).toLowerCase())) continue;
       try { responseHeaders.append(name, value); } catch { /* an invalid header name or value is dropped */ }
     }
-    if (request.method === "HEAD" || head.status === 204 || head.status === 304) {
+    if (request.method === "HEAD" || BODYLESS_STATUS.has(head.status)) {
       this.finish(id);
       return new Response(null, { status: head.status, headers: responseHeaders });
     }

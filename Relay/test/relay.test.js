@@ -336,6 +336,19 @@ describe("relaying", () => {
     }
   });
 
+  it("returns no body for 205 (and 204, 304) instead of failing to build the response", async () => {
+    const mac = await connectMac();
+    for (const status of [205, 204, 304]) {
+      const agent = SELF.fetch(`${ORIGIN}/router/v1/reset`, { method: "POST", body: "{}" });
+      const req = await mac.next(FRAME.REQUEST);
+      mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status, headers: [["x-note", "none"]] }));
+      const res = await withTimeout(agent, 5000, `status ${status}`);
+      expect(res.status).toBe(status);
+      expect(res.headers.get("x-note")).toBe("none");
+      expect(await res.text()).toBe("");
+    }
+  });
+
   it("tells the Mac to cancel when the agent stops reading the response", async () => {
     const mac = await connectMac();
     const aborter = new AbortController();
