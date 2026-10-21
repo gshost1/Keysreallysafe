@@ -164,6 +164,10 @@ final class APIHandler: @unchecked Sendable {
                 return try providersItem(request, path: p)
             case ("POST", "/api/ingest"):
                 return try ingest(request)
+            case ("GET", "/api/relay"):
+                return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
+            case ("POST", "/api/relay"):
+                return try relaySet(request)
             case ("GET", "/api/limits"):
                 return try limitsList()
             case ("PUT", let p) where p.hasPrefix("/api/limits/"):
@@ -520,6 +524,55 @@ final class APIHandler: @unchecked Sendable {
         }
         let row = try service.setGateway(name: name, enabled: enabled, host: host, caller: "dashboard")
         return HTTPResponse.json(200, try service.keyJSONObject(row))
+    }
+
+    /// `enabled` turns this process's relay on (Touch ID here) or off, `stay_awake` is the
+    /// idle-sleep choice; either or both, and nothing else.
+    private func relaySet(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard !obj.isEmpty, Set(obj.keys).isSubset(of: ["enabled", "stay_awake"]) else {
+            return HTTPResponse.json(400, ["error": "send enabled, stay_awake or both"])
+        }
+        func flag(_ key: String) throws -> Bool? {
+            guard obj.keys.contains(key) else { return nil }
+            guard let value = JSONValue.bool(obj[key]) else { throw AppError.usage("\(key) must be true or false") }
+            return value
+        }
+        let enabled = try flag("enabled")
+        if let stayAwake = try flag("stay_awake") { try service.setRelayStayAwake(stayAwake) }
+        if let enabled { _ = try service.setRelay(enabled: enabled) }
+        return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
+    }
+
+    /// What Settings and `keys relay on|status` read. The URL is the one agents already use;
+    /// the secret and its hint are not here.
+    static func relayJSON(_ report: KeysService.RelayReport) -> [String: Any] {
+        let state = report.host.state
+        var phase = "off", since: Any = NSNull(), retryAt: Any = NSNull()
+        if report.host.on {
+            switch state.phase {
+            case .stopped: phase = "off"
+            case .connecting: phase = "connecting"
+            case .connected(let at): phase = "connected"; since = UTC.iso(at)
+            case .waiting(let until): phase = "waiting"; retryAt = UTC.iso(until)
+            }
+        }
+        let lastError: String? = report.host.on ? state.lastError : nil
+        return [
+            "configured": report.configured,
+            "url": report.url?.absoluteString ?? NSNull(),
+            "on": report.host.on,
+            "state": phase,
+            "connected_since": since,
+            "retry_at": retryAt,
+            "last_error": lastError ?? NSNull(),
+            "inflight": report.host.on ? state.inflight : 0,
+            // Another process (keys relay in a Terminal) holds the one relay this Mac may run.
+            "elsewhere": report.elsewhere != nil,
+            "elsewhere_pid": report.elsewhere?.pid.map { Int($0) } ?? NSNull(),
+            "stay_awake": report.stayAwake,
+            "awake": report.host.awake,
+        ]
     }
 
     private func clientsList(_ name: String) throws -> HTTPResponse {

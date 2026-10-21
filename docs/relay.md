@@ -11,7 +11,8 @@ key, and it makes no decision about who may use one. Every relayed request
 lands in the same local gateway that answers `127.0.0.1:12767`, is checked
 against the same grants and client tokens, has the real secret swapped in by
 the same code, and is metered into the same catalog. If the Mac is off, asleep
-or offline, the Worker says so and nothing is served.
+or offline, nothing is served: the Worker holds a new request for up to a
+minute in case the Mac comes back, then says so.
 
 Keysrs runs no hosted relay. keysrs.com stays static, and the `Site/` Worker
 is unrelated to this one. The Worker source lives in `Relay/` in this
@@ -20,22 +21,24 @@ repository so you can read every line of what you deploy.
 ## How a call travels
 
 ```
-cloud agent ──HTTPS──▶ your Worker ──WebSocket (opened by the Mac)──▶ keys relay ──loopback──▶ gateway ──▶ provider
-   ksfc_…/ksf_… token          relay secret                               127.0.0.1:12767      real key
+cloud agent ──HTTPS──▶ your Worker ──WebSocket (opened by the Mac)──▶ the relay ──loopback──▶ gateway ──▶ provider
+   ksfc_…/ksf_… token          relay secret                                 127.0.0.1:12767      real key
 ```
 
-1. `keys relay` on the Mac opens `wss://<your worker>/connect`, presenting the
-   relay secret. The Worker keeps that one socket in a Durable Object.
+1. The relay on the Mac — inside Keysrs.app once you turn it on, or
+   `keys relay` in a Terminal — opens `wss://<your worker>/connect`,
+   presenting the relay secret. The Worker keeps that one socket in a Durable
+   Object.
 2. The agent calls `https://<your worker>/<key name>/v1/…` with its usual
    `ksfc_…` client token or `ksf_…` grant as the API key, exactly as it would
    call `http://127.0.0.1:12767/<key name>/v1/…` through a tunnel.
-3. The Worker frames the request over the socket. `keys relay` replays it as
+3. The Worker frames the request over the socket. The relay replays it as
    an HTTP request to the local gateway on loopback, with the `Host` header
    rewritten to `127.0.0.1:12767` and a marker header (`X-KSF-Via: relay`) so
    the audit log can show the path the call took.
 4. The gateway does what it always does: refuses without a valid token,
    checks scope, swaps in the Keychain secret, forwards, streams the response
-   and records usage. `keys relay` streams the response back through the
+   and records usage. The relay streams the response back through the
    Worker as it arrives, so SSE and other streaming bodies work.
 
 Nothing on the Mac listens on a new port. The gateway keeps its loopback bind;
@@ -62,9 +65,27 @@ keys relay setup --url https://keysrs-relay.<your-subdomain>.workers.dev
 #    Worker secret, never in wrangler.jsonc or in the repo).
 npx wrangler secret put RELAY_SECRET
 
-# 4. Connect. One Touch ID; Ctrl-C stops the relay.
-keys relay
+# 4. Connect, in Keysrs.app: one Touch ID, then it stays on until off or quit.
+keys relay on                           # or: menu bar → Relay for Cloud Agents
 ```
+
+The relay runs inside Keysrs.app from then on, without a Terminal: **Relay
+for Cloud Agents** in the menu bar, Settings → Relay in the dashboard, and
+`keys relay on` / `keys relay off` are the same switch. It lasts until you
+turn it off or quit Keysrs, reconnects on its own after a dropped socket or
+sleep ([Reconnection](#reconnection)), and writes its lines to
+`~/Library/Application Support/Keysreallysafe/menubar.log`. The menu and
+Settings show whether it is connected, how many calls are open and the last
+connection error. Each launch starts with it off, like the gateway forgets
+its keys: the secret leaves the Keychain only after Touch ID.
+
+`keys relay` on its own runs the same relay in the foreground of a Terminal
+instead, logging to stderr, until Ctrl-C. Only one relay runs per Mac,
+because the Worker keeps a single Mac connection and gives it to whichever
+connected last: `keys relay` refuses to start while the app's relay is on,
+and the app's switch refuses while `keys relay` runs. Both hold `relay.lock`
+beside the catalog while they run, and the kernel releases it if either
+crashes.
 
 Then, for the agent, issue a token as for any remote machine and point it at
 the Worker instead of a forwarded port:
@@ -76,16 +97,45 @@ export ANTHROPIC_BASE_URL=https://keysrs-relay.<your-subdomain>.workers.dev/rout
 export ANTHROPIC_AUTH_TOKEN=ksfc_…
 ```
 
-`keys relay status` shows the stored URL and whether a secret exists (its last
-four characters, never the secret). `keys relay reset` forgets both; run
+`keys relay status` shows the stored URL, whether a secret exists (its last
+four characters, never the secret) and which relay is running. `keys relay
+setup` run again mints a new secret; a relay that is on keeps the old one until
+it is turned off and on. `keys relay reset` turns the app's relay off and
+forgets the URL and the secret; run
 `npx wrangler secret delete RELAY_SECRET` or `npx wrangler delete` on the
 Cloudflare side to finish. `keys purge` removes the relay secret and URL with
 everything else.
 
-The `keys relay` process needs the gateway to be running (Keysrs.app or
-`keys dashboard`) and turned on for the key, the same precondition as
-`keys tunnel`. It reconnects on its own when the socket drops (see
-[Reconnection](#reconnection)).
+The relay needs the gateway running (it always is inside Keysrs.app; for
+`keys relay`, Keysrs.app or `keys dashboard`) and turned on for the key, the
+same precondition as `keys tunnel`. It reconnects on its own when the socket
+drops (see [Reconnection](#reconnection)).
+
+## Sleep
+
+The Mac has to be awake and online for a call to get through; the relay does
+not serve anything while the Mac sleeps. A call in flight when the Mac sleeps
+or loses its network fails with 502 `mac_disconnected` (marked retryable),
+because the gateway's call to the provider dies with the socket. A call that
+arrives while the Mac sleeps waits in the Worker for the window (60 s by
+default, [While the Mac is away](#while-the-mac-is-away)) and then gets 503
+`mac_offline`. Sleep does not turn the app's relay off, though: after the Mac
+wakes it notices the dead socket (the keepalive below, or the transport
+failing first), redials, and is relaying again within about a minute plus one
+retry step ([Reconnection](#reconnection)); requests still waiting in the
+Worker are sent to it then.
+
+**Keep Mac Awake for Relay Calls** (menu bar and Settings → Relay, off by
+default, remembered across launches) takes the `PreventUserIdleSystemSleep`
+power assertion, the one `caffeinate -i` takes, while a relayed call is open
+and for five minutes after the last one closes, so an idle Mac does not fall
+asleep under a long generation or between an agent's calls. The display can
+still sleep, and closing the lid, choosing Sleep or a critical battery still
+sleeps the Mac. While the assertion is held the menu's relay line and
+Settings say "keeping the Mac awake", `pmset -g assertions` lists it, and
+menubar.log notes when it is taken and released. `keys relay` in a Terminal
+never takes it; `caffeinate -i keys relay` keeps an idle Mac awake for as
+long as it runs.
 
 ## The protocol
 
@@ -156,25 +206,76 @@ does not wake it from hibernation. The Mac treats a ping the transport
 refuses, or 60 seconds (two intervals) without any frame, pong included, as a
 dead socket: it closes it and reconnects, so a connection left half-open by
 sleep, a NAT timeout or a Wi-Fi roam does not hang. Any other text frame
-closes the socket.
+closes the socket. The Worker reads the same pings from the other side: the
+auto-response records when it last answered one, and a socket with no ping
+for 45 seconds (one and a half intervals) is sent no new request, because a
+Mac that fell asleep or lost its network leaves its socket open on the
+Cloudflare side until TCP gives up. Such a request waits as if no Mac were
+connected (see [While the Mac is away](#while-the-mac-is-away)) and goes to
+the socket after all if a ping arrives in time; requests already in flight on
+it are left alone.
 
 Connecting: `GET /connect` with `Upgrade: websocket`,
 `Authorization: Bearer <relay secret>` and `X-Keysrs-Relay-Protocol: 1`. A
 wrong or missing secret gets 401 with no further detail; a missing upgrade
 426; an unknown protocol version 400 `unsupported_protocol`. **A new Mac
 connection replaces the previous one**, which is closed with code 4000
-(`replaced`) and whose in-flight requests fail with 502 `mac_disconnected`.
-This is deliberate: a Mac that crashed or changed networks must be able to
-reconnect without waiting for the stale socket to time out, and one relay
-secret is meant for one Mac. Run two Macs against two Workers.
+(`replaced`) and whose in-flight requests fail with 502 `mac_disconnected`
+(marked retryable). This is deliberate: a Mac that crashed or changed
+networks must be able to reconnect without waiting for the stale socket to
+time out, and one relay secret is meant for one Mac. Run two Macs against two
+Workers. For the Mac, the dial ends at the 101: it does not wait for a pong
+first, because a Worker that kept requests for it sends them right behind the
+101, and URLSession hands over no pong while data frames sit unread ahead of
+it.
+
+## While the Mac is away
+
+A request that arrives while no Mac is connected — the relay on the Mac is
+redialing, the Mac is asleep or offline, or its socket has gone silent — is
+not refused at once. The Worker reads its body as usual (8 MiB at most, within
+the 60-second upload deadline, which keeps running from arrival) and keeps it
+in the Durable Object's memory, never in its storage, then waits for a Mac
+until 60 seconds after the request arrived. If a Mac connects in that window
+it is sent the request whole (REQUEST, BODY…, END in one go) and the agent is
+answered as if nothing had happened; every request waiting at that moment
+goes to it together. If the window passes first, the agent gets the 503
+`mac_offline` with `Retry-After: 30` it would otherwise have got at once.
+
+What waiting can hold is bounded: each waiting request takes one of the 32
+in-flight slots (503 `relay_busy` beyond them), the bodies of all waiting
+requests together are capped at 32 MiB (`relay_busy` again), and none waits
+past its window, so a slot is never held longer than the longer of the
+window and the upload deadline before its request is sent. Once sent, the
+Mac's own buffer bounds apply as for any request.
+
+The window is for new requests only. A request already sent to a Mac whose
+socket then drops cannot be resumed: the gateway's call to the provider died
+with that socket, and the provider may already have started, and billed,
+it. Such a request still fails with 502 `mac_disconnected`, whose JSON says
+`"retryable": true`; an agent that sends it again while the Mac is still
+reconnecting has its retry wait in the window like any new request. Nor can
+the Worker tell whether a waiting request's agent has given up: such a
+request is still sent when the Mac comes back, the gateway makes the call,
+and the Worker, finding nobody to stream the answer to, cancels it on the
+Mac.
+
+`RELAY_OFFLINE_GRACE_MS` sets the window in milliseconds. `0` turns waiting
+off and restores the immediate 503; values above 600000 (ten minutes, the
+default request timeout of the Anthropic and OpenAI SDKs) are held to that.
+It is a plain Worker variable, not a secret: `npx wrangler deploy --var
+RELAY_OFFLINE_GRACE_MS:0`, or a `vars` entry in `Relay/wrangler.jsonc`.
 
 ## Limits and timeouts
 
 | what                               | limit | who enforces                              |
 |------------------------------------|-------|-------------------------------------------|
 | request body                       | 8 MiB | Worker (413 `payload_too_large`) and Mac  |
-| requests in flight per connection  | 32    | Worker (503 `relay_busy`)                 |
+| requests in flight or waiting for the Mac | 32 | Worker (503 `relay_busy`)            |
 | time for the request body to arrive | 60 s | Worker (408 `upload_timeout`)             |
+| time a request waits for a Mac when none is connected | 60 s from arrival; `RELAY_OFFLINE_GRACE_MS`, 0 to 600 s | Worker (503 `mac_offline`) |
+| bodies kept for waiting requests   | 32 MiB in total | Worker (503 `relay_busy`)       |
+| no ping on a socket                | 45 s  | Worker (sends it no new request)          |
 | unfinished uploads held on the Mac | 64 requests, 32 MiB, 90 s each | Mac (ERROR `relay_buffer_full` / `upload_timeout`) |
 | body chunk per frame               | 64 KiB| both                                      |
 | time to first response byte        | 960 s | Worker (504 `relay_timeout`)              |
@@ -186,21 +287,24 @@ secret is meant for one Mac. Run two Macs against two Workers.
 Response bodies are streamed and not capped; the idle timeout bounds a stalled
 stream. The in-flight slot is taken when the request arrives, before its body,
 which is why the upload has its own deadline: without it, 32 agents sending a
-byte a minute would hold every slot. The Mac's bounds exist because the Worker
+byte a minute would hold every slot. A request waiting for the Mac keeps its
+slot too, which is what stops the wait from growing into a queue. The Mac's
+bounds exist because the Worker
 checks no grant, so anyone who knows its URL can start uploads; whatever the
 Worker does, what the Mac keeps for a request that has not finished arriving
 is capped in number, in bytes and in time. The Worker's own platform limits
 (request headers, CPU time per invocation, free-plan request counts) apply on
 top. Agent errors from the Worker itself are JSON with an `error` code and a
-`message`:
+`message`, and the three an agent may simply send again (`mac_offline`,
+`mac_disconnected`, `relay_busy`) also carry `"retryable": true`:
 
 | status | error            | meaning                                                   |
 |--------|------------------|-----------------------------------------------------------|
-| 503    | `mac_offline`    | no `keys relay` is connected: the Mac is off, asleep or offline |
-| 502    | `mac_disconnected` | the Mac dropped while this request was in flight         |
-| 502    | `gateway_unreachable` | `keys relay` is up but the gateway on 127.0.0.1:12767 is not |
-| 502    | other Mac codes  | `keys relay` could not serve it: `gateway_read_failed`, `upload_timeout`, `relay_buffer_full`, … |
-| 503    | `relay_busy`     | 32 requests are already in flight                         |
+| 503    | `mac_offline`    | no Mac connected within the window (60 s by default, at once with `RELAY_OFFLINE_GRACE_MS=0`): the relay is not running, or the Mac is off, asleep or offline; `Retry-After: 30` |
+| 502    | `mac_disconnected` | the Mac dropped while this request was in flight; it may be retried (see [While the Mac is away](#while-the-mac-is-away)) |
+| 502    | `gateway_unreachable` | the relay is up but the gateway on 127.0.0.1:12767 is not |
+| 502    | other Mac codes  | the relay on the Mac could not serve it: `gateway_read_failed`, `upload_timeout`, `relay_buffer_full`, … |
+| 503    | `relay_busy`     | 32 requests are already in flight or waiting, or the waiting ones hold 32 MiB of bodies; `Retry-After: 5` |
 | 504    | `relay_timeout`  | the Mac sent no response head within 960 s                |
 | 408    | `upload_timeout` | the request body did not finish arriving within 60 s      |
 | 413    | `payload_too_large` | request body over 8 MiB                                |
@@ -217,32 +321,48 @@ through the relay.
 
 ## Reconnection
 
-`keys relay` reconnects after any close or failure with exponential backoff:
+The relay, in the app or in a Terminal, reconnects after any close or failure
+with exponential backoff:
 1 s, 2 s, 4 s … capped at 60 s, with ±20 % jitter, reset after a connection
 that stayed up for a minute. A socket that goes quiet counts as a failure
 (see Keepalive above), so a Mac coming back from sleep is relaying again
 within about a minute plus one backoff step instead of waiting for the kernel
 to notice. Every request open on the old socket is cancelled on the Mac,
 buffered or replaying; the Worker has already answered those agents with 502
-`mac_disconnected`. A 401 from the Worker (wrong secret) is reported
-on stderr with the fix (`keys relay setup` again, then `wrangler secret put`)
-and still retried at the capped interval, so a secret rotated on one side
-first does not strand the process. Ctrl-C stops it.
+`mac_disconnected`. Requests that arrived while the Mac was away have been
+waiting in the Worker and arrive the moment the new socket is up, at most 32
+of them at once, each one whole. A 401 from the Worker (wrong secret) is reported
+with the fix (`keys relay setup` again, then `wrangler secret put`) in the
+relay's log, menubar.log for the app and stderr for `keys relay`, and as the
+last error in the menu and Settings, and still retried at the capped
+interval, so a secret rotated on one side first does not strand the relay.
+Turning it off, quitting Keysrs or Ctrl-C closes the socket at once, even
+mid-dial, and the Worker fails what was in flight on it with 502
+`mac_disconnected`.
 
 ## Testing it
 
 `cd Relay && npm test` runs the Worker inside workerd with a throwaway
 secret (no account, no network); `swift test --filter RelayTests` drives the
-Mac side with a fake socket against the real gateway on loopback. Both are in
+Mac side with a fake socket against the real gateway on loopback, and
+`RelayHostTests` the app's relay (the lock, turning it on and off, the
+idle-sleep assertion with a fake in place of IOKit, `/api/relay`). All are in
 CI. The real transport end to end is opt-in: start `npx wrangler dev --port
 8787` in `Relay/` with a `.dev.vars` holding `RELAY_SECRET=…` (git-ignored),
 then run `swift test --filter RelayEndToEndTests` with `KEYS_RELAY_E2E_URL`
-and `KEYS_RELAY_E2E_SECRET` set. `RELAY_UPLOAD_TIMEOUT_MS`,
+and `KEYS_RELAY_E2E_SECRET` set. Add `--var RELAY_OFFLINE_GRACE_MS:3000` to
+`wrangler dev` and `KEYS_RELAY_E2E_GRACE_MS=3000` to the test to cover the
+outage case: a call made while the app's relay is off waits and is answered
+once it is on again, and one made with the relay off past the window gets the
+JSON 503. `RELAY_UPLOAD_TIMEOUT_MS`,
 `RELAY_HEAD_TIMEOUT_MS` and `RELAY_IDLE_TIMEOUT_MS` are Worker knobs for that
-test suite only; a deployed Worker leaves them unset. The Worker suite must
-finish with no `Uncaught (in promise)` line from workerd: the response body
-is an `IdentityTransformStream` precisely because erroring a controller-driven
+test suite only; a deployed Worker leaves them unset (`RELAY_OFFLINE_GRACE_MS`
+is the one meant for deployments). The Worker suite must finish with no
+`Uncaught (in promise)` line from workerd: the response body is an
+`IdentityTransformStream` precisely because erroring a controller-driven
 `ReadableStream` the agent is reading leaves two such rejections behind.
+`npm test` runs the suite through `test/run.mjs`, which fails the run when
+such a line appears.
 
 ## The 401/403 circuit breaker
 
@@ -277,7 +397,7 @@ Cloudflare's edge, can and cannot do.
 - Exceed a token's scope: key, methods, path prefix, expiry, grant request and
   dollar caps are all enforced on the Mac per request, and revoking the token
   stops the Worker's requests at the next call.
-- Reach anything on the Mac but the gateway. `keys relay` only ever connects
+- Reach anything on the Mac but the gateway. The relay only ever connects
   to `127.0.0.1:12767` and only replays an HTTP request there; the frame
   format has no way to name another port, host or path root.
 - Read the usage catalog, the audit log, the dashboard, or other keys. The
@@ -296,8 +416,8 @@ Cloudflare's edge, can and cannot do.
   revocation bound the damage; `keys client list` shows `last used`.
 - Deny service: drop or delay frames, answer the agent with errors, or hold
   the socket. The Mac keeps reconnecting; nothing persistent breaks.
-- Learn when the Mac is online (503 `mac_offline` versus a gateway answer)
-  and how many requests flow. The Worker does not log request or response
+- Learn when the Mac is online (a gateway answer versus 503 `mac_offline`
+  once the window passes) and how many requests flow. The Worker does not log request or response
   bodies, tokens or `Authorization` headers, and `observability` is disabled
   in `Relay/wrangler.jsonc`; what Cloudflare records about requests to a
   Worker is governed by your account settings.
@@ -308,16 +428,26 @@ including their tokens. They still cannot reach the gateway with those tokens
 unless they can also reach your Mac's loopback. Keep the secret out of CI
 logs; `keys relay setup` shows it once, stores it in the Mac's Keychain under
 its own service, and `keys relay status` only ever shows its last four
-characters.
+characters. While a relay is on, the secret is in the memory of the process
+running it, as a key is while the gateway holds it; the dashboard's
+`/api/relay` reports the state and the Worker URL, never the secret or its
+hint.
 
 Someone who learns the **Worker URL** alone can send it requests and burn
 your Cloudflare request quota, and will be told whether the Mac is online.
-Every one of those requests is refused on the Mac without a token.
+While the Mac is away they can also fill the 32 waiting slots and the 32 MiB
+of kept bodies, a minute at a time, so that your agents get `relay_busy`
+instead of waiting; that is all the window adds. Every one of those requests
+is refused on the Mac without a token, the waiting ones included once it is
+back.
 
 ## What changes in the privacy contract
 
-- The Mac may hold **one outbound** connection, opened by `keys relay` and
-  only while it runs, to a Worker URL you chose and deployed yourself.
+- The Mac may hold **one outbound** connection, to a Worker URL you chose and
+  deployed yourself, and only while the relay is on: in Keysrs.app from the
+  moment you turn it on (one Touch ID) until you turn it off or quit, never
+  at launch by itself, or while `keys relay` runs in a Terminal. One relay
+  at a time.
   Nothing new binds on the Mac; the gateway and dashboard stay on
   `127.0.0.1`.
 - Key values still never leave the Mac. Request bodies still never reach the

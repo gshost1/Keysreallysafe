@@ -61,6 +61,9 @@
     keyIndex: [],
     catalogVersion: null,
     status: null,
+    // The app's relay (GET /api/relay) and what a toggle in progress is waiting for.
+    relay: null,
+    relayPending: null,
     // Session-only: a search is a momentary lookup, not a view to come back to.
     keySearch: "",
   };
@@ -290,7 +293,7 @@
     if (name === "usage") loadStatus();
     else if (name === "chart") loadSpend();
     else if (name === "keys") loadKeys({ focus: !!opts.keyboard && !opts.focusTab });
-    else if (name === "settings") { renderSettings(); loadStatus(); }
+    else if (name === "settings") { renderSettings(); loadStatus(); loadRelay(); }
   }
 
   for (const [name, tab] of Object.entries(tabs)) {
@@ -2053,7 +2056,7 @@
           { text: "From this Mac, forward the gateway to the machine the agent runs on:", cmd: `keys tunnel user@server.example.com` },
           { text: "On that machine, the vault is a plain local URL — token as the API key:", cmd: `export OPENAI_BASE_URL=http://127.0.0.1:12767/${key}\nexport OPENAI_API_KEY=<token>` },
           { text: "Same recipe over Tailscale (ssh to the server's tailnet name) or for a self-hosted CI runner." },
-          { text: "No ssh in (GitHub Actions, a Claude Code or Codex cloud session, Modal, E2B)? Use the relay: a small Worker you deploy in your own Cloudflare account (Relay/ in the repo, docs/relay.md). The Mac keeps one outbound connection to it and the Worker never sees a key:", cmd: "keys relay setup --url https://keysrs-relay.<you>.workers.dev\nkeys relay" },
+          { text: "No ssh in (GitHub Actions, a Claude Code or Codex cloud session, Modal, E2B)? Use the relay: a small Worker you deploy in your own Cloudflare account (Relay/ in the repo, docs/relay.md). The Mac keeps one outbound connection to it while the relay is on in Keysrs (Settings → Relay), and the Worker never sees a key:", cmd: "keys relay setup --url https://keysrs-relay.<you>.workers.dev\nkeys relay on" },
           { text: "The agent then calls the Worker instead of a forwarded port, with the same client token:", cmd: `export OPENAI_BASE_URL=https://<your worker>/${key}\nexport OPENAI_API_KEY=<token>` },
         ];
     }
@@ -3333,6 +3336,84 @@
   });
   document.querySelectorAll('[data-action="settings"]').forEach((b) => b.addEventListener("click", () => showPane("settings")));
 
+  // ---------- relay (the app's own: one Touch ID to turn on, off again at every launch) ----------
+
+  async function loadRelay() {
+    try {
+      state.relay = await api("/api/relay");
+    } catch (e) {
+      state.relay = null;
+      $("relay-hint").textContent = e.message === UNREACHABLE ? "" : e.message;
+      $("relay-switch").disabled = true;
+      return;
+    }
+    renderRelay();
+  }
+
+  const hostOf = (url) => { try { return new URL(url).host; } catch { return "the Worker"; } };
+  const clockOf = (iso) => {
+    const t = Date.parse(iso || "");
+    return Number.isNaN(t) ? "" : new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  };
+
+  function relayHint(r) {
+    if (!r.on) {
+      if (r.elsewhere) return "keys relay is running in a Terminal" + (r.elsewhere_pid ? ` (process ${r.elsewhere_pid})` : "") + "; stop it there to run the relay here. The Worker keeps one Mac connection.";
+      if (!r.configured) return "Not set up yet: deploy the Worker (docs/relay.md), then run keys relay setup --url https://<your worker> in Terminal.";
+      return `Off. One Touch ID connects to ${hostOf(r.url)} until you turn it off or quit Keysrs.`;
+    }
+    const host = hostOf(r.url);
+    let line;
+    if (r.state === "connected") {
+      line = `Connected to ${host}` + (r.connected_since ? ` since ${clockOf(r.connected_since)}` : "");
+      if (r.inflight > 0) line += ` · ${plural(r.inflight, "call", "calls")} open`;
+    } else if (r.state === "connecting") {
+      line = `Connecting to ${host}…`;
+    } else {
+      line = "Not connected; retrying" + (r.retry_at ? ` at ${clockOf(r.retry_at)}` : "") + (r.last_error ? `. ${r.last_error}` : "");
+    }
+    if (r.awake) line += " · keeping the Mac awake";
+    return line;
+  }
+
+  function renderRelay() {
+    const r = state.relay;
+    if (!r) return;
+    const sw = $("relay-switch");
+    setSwitch(sw, r.on);
+    sw.disabled = !!state.relayPending || (!r.on && (!r.configured || r.elsewhere));
+    // The hint is a live region and the page polls: an unchanged line must not be read again.
+    const hint = state.relayPending || relayHint(r);
+    if ($("relay-hint").textContent !== hint) $("relay-hint").textContent = hint;
+    const awake = $("relay-awake-switch");
+    setSwitch(awake, r.stay_awake);
+    awake.disabled = !!state.relayPending;
+  }
+
+  async function setRelay(body, pending) {
+    if (state.relayPending) return;
+    state.relayPending = pending;
+    renderRelay();
+    try {
+      state.relay = await api("/api/relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    } catch (e) {
+      say(e.message);
+    } finally {
+      state.relayPending = null;
+    }
+    // A refused toggle leaves the page's copy stale (a Terminal relay, a cancelled Touch ID).
+    await loadRelay();
+  }
+  $("relay-switch").addEventListener("click", () => {
+    if (!state.relay) return;
+    const on = state.relay.on;
+    setRelay({ enabled: !on }, on ? "Turning off…" : "Touch ID…");
+  });
+  $("relay-awake-switch").addEventListener("click", () => {
+    if (!state.relay) return;
+    setRelay({ stay_awake: !state.relay.stay_awake }, "Saving…");
+  });
+
   // One quiet line under the plan rows: this month from the local logs, in the unit this page is
   // in. It is never a subscription invoice, and no dollar figure appears unless USD was chosen.
   async function loadUsageTotals() {
@@ -3418,6 +3499,8 @@
   loadUsageTotals();
   loadKeys({ quiet: true });
   setInterval(loadStatus, 15000);
+  // The relay's line moves on its own (a reconnect, a call opening), so it is read again while shown.
+  setInterval(() => { if (state.pane === "settings" && !document.hidden && !state.relayPending) loadRelay(); }, 5000);
   setInterval(() => { if (state.pane === "chart" && !document.hidden && !state.busy) loadSpend(); }, 60000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && state.pane === "chart") loadSpend(); });
 })();

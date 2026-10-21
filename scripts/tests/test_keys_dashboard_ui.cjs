@@ -94,9 +94,16 @@ function reset() {
   catalogVersion = 1;
   // The audit rows a key's History drawer shows; invented, like everything else here.
   keyEvents = [];
+  // The app's relay as GET /api/relay reports it: set up, off, no relay in a Terminal.
+  relay = {
+    configured: true, url: "https://keysrs-relay.example.workers.dev", on: false, state: "off",
+    connected_since: null, retry_at: null, last_error: null, inflight: 0,
+    elsewhere: false, elsewhere_pid: null, stay_awake: false, awake: false,
+  };
 }
 let catalogVersion = 1;
 let keyEvents = [];
+let relay;
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -431,6 +438,26 @@ function handle(method, pathname, body, params) {
       return [200, { removed: subMatch[1] }];
     }
     return [405, { error: "method_not_allowed" }];
+  }
+  // The app's relay, mirroring the engine: the body is enabled and/or stay_awake, booleans and
+  // nothing else; on needs a relay that is set up and no relay running in a Terminal.
+  if (pathname === "/api/relay" && method === "GET") return [200, relay];
+  if (pathname === "/api/relay" && method === "POST") {
+    const fields = Object.keys(body);
+    if (!fields.length || fields.some((f) => f !== "enabled" && f !== "stay_awake")) {
+      return [400, { error: "send enabled, stay_awake or both" }];
+    }
+    for (const f of fields) if (typeof body[f] !== "boolean") return [400, { error: `${f} must be true or false` }];
+    if ("stay_awake" in body) relay.stay_awake = body.stay_awake;
+    if (body.enabled === true && !relay.on) {
+      if (!relay.configured) return [400, { error: "no relay is set up; deploy the Worker (docs/relay.md), then run: keys relay setup --url https://<your worker>.workers.dev" }];
+      if (relay.elsewhere) return [400, { error: "keys relay is already running on this Mac (process 4242), and the Worker keeps only one Mac connection; stop it with Ctrl-C in its Terminal, then turn the relay on here" }];
+      Object.assign(relay, { on: true, state: "connected", connected_since: new Date().toISOString() });
+    }
+    if (body.enabled === false) {
+      Object.assign(relay, { on: false, state: "off", connected_since: null, retry_at: null, last_error: null, inflight: 0, awake: false });
+    }
+    return [200, relay];
   }
   if (pathname.startsWith("/api/spend")) return spend(params);
 
@@ -2726,6 +2753,88 @@ if (require.main === module && process.env.KEYS_FIXTURE_PORT) {
   reset();
   server.listen(Number(process.env.KEYS_FIXTURE_PORT), "127.0.0.1");
 } else if (require.main === module) {
+
+// ---------- Settings: the app's relay ----------
+
+// Settings reads the relay when it opens; going to another pane and back is a fresh read.
+async function reopenSettings(page) {
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.getByRole("tab", { name: "Settings" }).click();
+}
+const relayHintMatches = (page, pattern) =>
+  page.waitForFunction((source) => new RegExp(source).test(document.getElementById("relay-hint").textContent), pattern.source);
+
+test("Settings turns the app's relay on and off with the page token and says where it stands", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  const sw = page.locator("#relay-switch");
+  const awake = page.locator("#relay-awake-switch");
+  await relayHintMatches(page, /^Off\. One Touch ID connects to keysrs-relay\.example\.workers\.dev until you turn it off or quit Keysrs\.$/);
+  assert.equal(await sw.getAttribute("aria-checked"), "false");
+  assert.equal(await sw.isDisabled(), false);
+  assert.equal(await awake.getAttribute("aria-checked"), "false", "keeping the Mac awake is off by default");
+
+  await sw.click();
+  await page.waitForFunction(() => document.getElementById("relay-switch").getAttribute("aria-checked") === "true");
+  await relayHintMatches(page, /^Connected to keysrs-relay\.example\.workers\.dev since \d\d:\d\d$/);
+  const posts = requests.filter((r) => r.method === "POST" && r.pathname === "/api/relay");
+  assert.equal(posts.length, 1, "one toggle, one call");
+  assert.ok(posts[0].token, "the toggle carries the page token");
+  assert.equal(relay.on, true);
+
+  await awake.click();
+  await page.waitForFunction(() => document.getElementById("relay-awake-switch").getAttribute("aria-checked") === "true");
+  assert.equal(relay.stay_awake, true);
+  assert.equal(relay.on, true, "the awake choice leaves the relay as it was");
+
+  // Open calls and a held assertion are on the same line.
+  Object.assign(relay, { inflight: 2, awake: true });
+  await reopenSettings(page);
+  await relayHintMatches(page, /since \d\d:\d\d · 2 calls open · keeping the Mac awake$/);
+
+  // A dropped socket: the line says it is retrying, when, and why.
+  Object.assign(relay, {
+    state: "waiting", connected_since: null, inflight: 0, awake: false,
+    retry_at: new Date(Date.now() + 8000).toISOString(),
+    last_error: "connection to keysrs-relay.example.workers.dev lost: The network connection was lost.",
+  });
+  await reopenSettings(page);
+  await relayHintMatches(page, /^Not connected; retrying at \d\d:\d\d\. connection to keysrs-relay\.example\.workers\.dev lost/);
+
+  await sw.click();
+  await page.waitForFunction(() => document.getElementById("relay-switch").getAttribute("aria-checked") === "false");
+  assert.equal(relay.on, false);
+  await relayHintMatches(page, /^Off\./);
+  // The choice to keep the Mac awake outlives the relay being off.
+  assert.equal(await awake.getAttribute("aria-checked"), "true");
+});
+
+test("the relay switch says why it cannot turn on: not set up, a Terminal relay, a refusal", async (page, origin) => {
+  Object.assign(relay, { configured: false, url: null });
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  const sw = page.locator("#relay-switch");
+  await relayHintMatches(page, /^Not set up yet: deploy the Worker \(docs\/relay\.md\), then run keys relay setup --url/);
+  assert.equal(await sw.isDisabled(), true);
+
+  Object.assign(relay, { configured: true, url: "https://keysrs-relay.example.workers.dev", elsewhere: true, elsewhere_pid: 4242 });
+  await reopenSettings(page);
+  await relayHintMatches(page, /^keys relay is running in a Terminal \(process 4242\); stop it there/);
+  assert.equal(await sw.isDisabled(), true);
+
+  // The Terminal relay is gone by the time the page looks, and back by the time it asks.
+  relay.elsewhere = false;
+  await reopenSettings(page);
+  await relayHintMatches(page, /^Off\./);
+  relay.elsewhere = true;
+  await sw.click();
+  await page.waitForFunction(() => /keys relay is already running on this Mac \(process 4242\)/.test(document.getElementById("status").textContent));
+  assert.equal(await sw.getAttribute("aria-checked"), "false");
+  await relayHintMatches(page, /^keys relay is running in a Terminal \(process 4242\)/);
+  assert.equal(relay.on, false);
+});
 
 // ---------- Settings: which cards Usage shows ----------
 

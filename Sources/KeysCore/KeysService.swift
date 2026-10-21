@@ -27,6 +27,12 @@ final class KeysService: @unchecked Sendable {
     /// The relay secret's own store (Keychain service `keysreallysafe.relay` in the app, memory
     /// in tests). nil means this process has no relay storage, and the relay commands say so.
     let relaySecrets: (any SecretStore)?
+    /// The relay this process runs when it is turned on from the menu, the dashboard or
+    /// `keys relay on`. AppRuntime swaps in one that logs to menubar.log before the site serves.
+    var relayHost = RelayHost()
+    /// Held while the relay is turned on or off, so two toggles at once (menu and dashboard)
+    /// cannot both find it off and race for the lock.
+    private let relayToggleLock = NSLock()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     var analytics: ProductAnalytics?
     /// First-launch answers: background Claude limit refresh, analytics question asked.
@@ -1049,6 +1055,75 @@ final class KeysService: @unchecked Sendable {
             throw AppError.usage("the stored relay secret is not one keys relay setup made; run keys relay setup again")
         }
         return (url, secret)
+    }
+
+    var relayLockURL: URL { RelayLock.url(beside: catalog.path) }
+
+    /// The relay as the menu, the dashboard and `keys relay status` show it.
+    struct RelayReport: Equatable {
+        var configured: Bool
+        var url: URL?
+        var host: RelayHost.Status
+        /// A relay this process does not run holds the lock: `keys relay` in a Terminal.
+        var elsewhere: RelayLock.Held?
+        var stayAwake: Bool
+    }
+
+    func relayReport() -> RelayReport {
+        let stored = relayStatus()
+        let host = relayHost.status
+        return RelayReport(
+            configured: stored.configured,
+            url: host.origin ?? stored.url,
+            host: host,
+            elsewhere: host.on ? nil : RelayLock.holder(at: relayLockURL),
+            stayAwake: preferences.relayStayAwake
+        )
+    }
+
+    /// Turns this process's relay on, with one presence check because the secret leaves the
+    /// Keychain, or off. It stays on until turned off or the process quits; nothing turns it
+    /// back on at launch, like the gateway forgets its keys.
+    func setRelay(enabled: Bool) throws -> RelayReport {
+        try requireGatewayOwner()
+        try relayToggleLock.withLock {
+            guard enabled else {
+                relayHost.stop()
+                return
+            }
+            if relayHost.isOn { return }
+            // Everything that can be refused without the secret is refused before Touch ID.
+            guard relayStatus().configured else {
+                throw AppError.usage(
+                    "no relay is set up; deploy the Worker (docs/relay.md), then run: keys relay setup --url https://<your worker>.workers.dev"
+                )
+            }
+            guard let port = gatewayLock.withLock({ gatewayListener?.boundPort }) else {
+                throw AppError.usage("the gateway is not running in this process, so the relay would have nothing to reach")
+            }
+            let held: RelayLock
+            do {
+                held = try RelayLock(at: relayLockURL)
+            } catch let busy as RelayLock.Held {
+                throw AppError.usage(busy.appRefusal)
+            }
+            let (origin, secret) = try relayCredentials()
+            relayHost.setStayAwake(preferences.relayStayAwake)
+            relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held)
+        }
+        return relayReport()
+    }
+
+    /// Whether the relay keeps the Mac from idle sleep while relayed calls are open. Off
+    /// unless the person turns it on; stored, so it applies the next time the relay is on.
+    func setRelayStayAwake(_ on: Bool) throws {
+        try preferences.setRelayStayAwake(on)
+        relayHost.setStayAwake(on)
+    }
+
+    /// For quitting: no presence, no owner check, whatever is in progress.
+    func stopRelay() {
+        relayHost.stop()
     }
 
     /// Forgets the URL and deletes the secret. The Worker keeps its copy until

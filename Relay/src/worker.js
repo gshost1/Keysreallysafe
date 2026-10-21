@@ -1,15 +1,16 @@
 // The Keysrs relay Worker: a dumb pipe between a cloud agent and the gateway
 // on the user's Mac. The Mac opens one WebSocket to /connect; every other
 // request is framed over that socket and answered with whatever the Mac
-// streams back. No provider key, grant check or usage record lives here:
-// docs/relay.md describes the protocol, the limits and the threat model, and
-// this file must keep matching it.
+// streams back, and a request that arrives while no Mac is connected waits a
+// bounded while for one. No provider key, grant check or usage record lives
+// here: docs/relay.md describes the protocol, the limits and the threat model,
+// and this file must keep matching it.
 //
 // Logging discipline: nothing in this file logs headers or bodies. The only
 // console output is a one-line note on an unexpected frame, without payload.
 
 import { DurableObject } from "cloudflare:workers";
-import { BODYLESS_STATUS, FRAME, LIMITS, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "./protocol.js";
+import { BODYLESS_STATUS, FRAME, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, limitsFrom, secretMatches, stripRequestHeader } from "./protocol.js";
 
 const DOCS = "https://github.com/gshost1/Keysreallysafe/blob/main/docs/relay.md";
 const utf8d = new TextDecoder();
@@ -24,6 +25,23 @@ function json(status, object, extraHeaders) {
   return new Response(JSON.stringify(object), { status, headers });
 }
 
+// The Worker's own answers an agent may simply send again, and how long to wait
+// first where a wait makes sense (docs/relay.md, the error table).
+const RETRY_AFTER = { mac_offline: "30", relay_busy: "5" };
+const RETRYABLE = new Set(["mac_offline", "relay_busy", "mac_disconnected"]);
+const NOT_RUNNING = "the Keysrs relay is off (Relay for Cloud Agents in its menu, or `keys relay on`) and `keys relay` is not running, or the Mac is asleep or offline";
+const NO_MAC = `no Mac is connected to this relay: ${NOT_RUNNING}`;
+
+const MiB = 1024 * 1024;
+const duration = (ms) => (ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`);
+const size = (n) => (n % MiB === 0 ? `${n / MiB} MiB` : `${n} bytes`);
+
+function refusal(status, code, message) {
+  const body = { error: code, message };
+  if (RETRYABLE.has(code)) body.retryable = true;
+  return json(status, body, RETRY_AFTER[code] ? { "retry-after": RETRY_AFTER[code] } : undefined);
+}
+
 class RelayError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -36,21 +54,6 @@ function bearer(request) {
   const auth = request.headers.get("authorization") || "";
   const parts = auth.trim().split(/\s+/, 2);
   return parts.length === 2 && parts[0].toLowerCase() === "bearer" ? parts[1] : "";
-}
-
-function limitsFrom(env) {
-  // The timeout knobs exist for the offline test suite only; production
-  // deployments leave them unset and get the documented values.
-  const num = (raw, fallback) => {
-    const n = Number(raw);
-    return Number.isInteger(n) && n > 0 ? n : fallback;
-  };
-  return {
-    ...LIMITS,
-    uploadTimeoutMs: num(env.RELAY_UPLOAD_TIMEOUT_MS, LIMITS.uploadTimeoutMs),
-    headTimeoutMs: num(env.RELAY_HEAD_TIMEOUT_MS, LIMITS.headTimeoutMs),
-    idleTimeoutMs: num(env.RELAY_IDLE_TIMEOUT_MS, LIMITS.idleTimeoutMs),
-  };
 }
 
 export default {
@@ -91,8 +94,12 @@ export class RelayHub extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.limits = limitsFrom(env);
-    /** @type {Map<number, object>} request id -> in-flight entry */
+    /** @type {Map<number, object>} request id -> in-flight entry, waiting ones included */
     this.pending = new Map();
+    /** Bytes of request body kept for requests that are waiting for a Mac. */
+    this.heldBytes = 0;
+    /** @type {Set<() => void>} wakes the requests waiting for a Mac */
+    this.waiters = new Set();
     // Answered by the runtime without waking a hibernated object.
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
@@ -103,13 +110,18 @@ export class RelayHub extends DurableObject {
     return this.relay(request, url);
   }
 
-  /// The Mac's socket: the most recently accepted one that is still open.
+  /// The Mac's socket: the most recently accepted one that is still open and
+  /// that the Mac has shown itself on within the silence limit. A Mac that went
+  /// to sleep or lost its network leaves its socket open here, and a request sent
+  /// into it would hang until the Mac came back only to fail.
   mac() {
+    const now = Date.now();
     let best = null;
     let bestAt = -1;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws.readyState !== 1 /* OPEN */) continue;
       const at = ws.deserializeAttachment()?.connectedAt ?? 0;
+      if (!this.heardRecently(ws, at, now)) continue;
       if (at > bestAt) {
         best = ws;
         bestAt = at;
@@ -118,17 +130,51 @@ export class RelayHub extends DurableObject {
     return best;
   }
 
+  /// Whether the Mac has shown itself on `ws` within the silence limit, by its
+  /// last keepalive ping (the auto-response records when it answered one,
+  /// without waking this object) or by the connect itself. A runtime that
+  /// cannot say is trusted, as every socket was before this check.
+  heardRecently(ws, connectedAt, now) {
+    if (typeof this.ctx.getWebSocketAutoResponseTimestamp !== "function") return true;
+    const pinged = this.ctx.getWebSocketAutoResponseTimestamp(ws);
+    return now - Math.max(connectedAt, pinged ? pinged.getTime() : 0) <= this.limits.macSilenceMs;
+  }
+
+  /// A Mac to send a waiting request to, as soon as one is connected and
+  /// alive, or null once `until` has passed. A connecting Mac wakes every
+  /// waiting request at once.
+  async awaitMac(until) {
+    for (;;) {
+      const mac = this.mac();
+      if (mac) return mac;
+      const left = until - Date.now();
+      if (left <= 0) return null;
+      await new Promise((resolve) => {
+        let timer = null;
+        const wake = () => {
+          clearTimeout(timer);
+          this.waiters.delete(wake);
+          resolve();
+        };
+        timer = setTimeout(wake, Math.min(left, this.limits.holdRecheckMs));
+        this.waiters.add(wake);
+      });
+    }
+  }
+
   connect() {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     // One Mac per relay: a reconnecting Mac must not wait for a stale socket
     // to time out, so the newcomer wins and the old socket is told why.
     for (const old of this.ctx.getWebSockets()) {
-      this.failAll(old, 502, "mac_disconnected", "the Mac reconnected while this request was in flight");
+      this.failAll(old, 502, "mac_disconnected", "the Mac reconnected while this request was in flight; it may be retried");
       try { old.close(4000, "replaced"); } catch { /* already gone */ }
     }
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ connectedAt: Date.now() });
+    // The requests that arrived while no Mac was here go to this one.
+    for (const wake of [...this.waiters]) wake();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -142,24 +188,29 @@ export class RelayHub extends DurableObject {
   }
 
   async relay(request, url) {
+    const arrived = Date.now();
     const mac = this.mac();
-    if (!mac) {
-      return json(503, {
-        error: "mac_offline",
-        message: "no Mac is connected to this relay: `keys relay` is not running, or the Mac is asleep or offline",
-      }, { "retry-after": "30" });
-    }
+    if (!mac && this.limits.offlineGraceMs === 0) return refusal(503, "mac_offline", NO_MAC);
+    // A request waiting for a Mac holds its slot like one in flight, so the
+    // wait cannot grow into an unbounded queue.
     if (this.pending.size >= this.limits.inflight) {
-      return json(503, { error: "relay_busy", message: `${this.limits.inflight} requests are already in flight` }, { "retry-after": "5" });
+      return refusal(503, "relay_busy", `${this.limits.inflight} requests are already in flight or waiting for the Mac`);
     }
     const declared = Number(request.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > this.limits.requestBody) {
-      return json(413, { error: "payload_too_large", message: `request body over ${this.limits.requestBody} bytes` });
+      return refusal(413, "payload_too_large", `request body over ${this.limits.requestBody} bytes`);
+    }
+    if (!mac && Number.isFinite(declared) && declared > this.limits.heldBytes - this.heldBytes) {
+      return refusal(503, "relay_busy", this.holdFullMessage());
     }
 
     const id = this.allocId();
     const entry = {
+      // null while the request waits for a Mac; its body is then kept in
+      // `upload` and sent whole once one connects.
       ws: mac,
+      upload: mac ? null : [],
+      heldBytes: 0,
       controller: null,
       buffered: [],
       bodyDone: false,
@@ -190,22 +241,30 @@ export class RelayHub extends DurableObject {
     // dropped connection: nobody is left to answer, but the Mac must be told
     // to drop what it buffered) and the upload outrunning its deadline (408).
     // In every case the Mac gets a CANCEL, so a half-sent request never stays
-    // in its buffer for the life of the socket.
+    // in its buffer for the life of the socket. A request waiting for a Mac has
+    // sent nothing yet; its deadline still runs from arrival, and when no Mac
+    // comes within the grace window the answer is 503.
+    const requestFrame = encodeFrame(FRAME.REQUEST, id, JSON.stringify({
+      method: request.method,
+      target: url.pathname + url.search,
+      headers,
+    }));
     const toMac = (frame) => {
       try {
-        mac.send(frame);
+        entry.ws.send(frame);
       } catch {
-        throw new RelayError(502, "mac_disconnected", "the Mac dropped while this request was being sent");
+        throw new RelayError(502, "mac_disconnected", "the Mac dropped while this request was being sent; it may be retried");
+      }
+    };
+    const bodyToMac = (bytes) => {
+      for (let off = 0; off < bytes.byteLength; off += this.limits.chunk) {
+        toMac(encodeFrame(FRAME.BODY, id, bytes.subarray(off, Math.min(off + this.limits.chunk, bytes.byteLength))));
       }
     };
     let reader = null;
     let uploadTimer = null;
     try {
-      toMac(encodeFrame(FRAME.REQUEST, id, JSON.stringify({
-        method: request.method,
-        target: url.pathname + url.search,
-        headers,
-      })));
+      if (entry.ws) toMac(requestFrame);
       if (request.body) {
         reader = request.body.getReader();
         const deadline = new Promise((_, reject) => {
@@ -228,10 +287,21 @@ export class RelayHub extends DurableObject {
           if (total > this.limits.requestBody) {
             throw new RelayError(413, "payload_too_large", `request body over ${this.limits.requestBody} bytes`);
           }
-          for (let off = 0; off < step.value.byteLength; off += this.limits.chunk) {
-            toMac(encodeFrame(FRAME.BODY, id, step.value.subarray(off, Math.min(off + this.limits.chunk, step.value.byteLength))));
-          }
+          if (entry.ws) bodyToMac(step.value);
+          else this.hold(entry, step.value);
         }
+      }
+      clearTimeout(uploadTimer);
+      if (!entry.ws) {
+        // The whole body is here; what is missing is a Mac to give it to. It
+        // goes over in one piece, so the Mac never buffers it half-finished.
+        entry.ws = await this.awaitMac(arrived + this.limits.offlineGraceMs);
+        if (!entry.ws) {
+          throw new RelayError(503, "mac_offline", `no Mac connected to this relay within ${duration(this.limits.offlineGraceMs)}: ${NOT_RUNNING}`);
+        }
+        toMac(requestFrame);
+        for (const chunk of entry.upload) bodyToMac(chunk);
+        this.release(entry);
       }
       toMac(encodeFrame(FRAME.END, id));
     } catch (error) {
@@ -239,9 +309,8 @@ export class RelayHub extends DurableObject {
       if (reader) reader.cancel().catch(() => {});
       const relayError = error instanceof RelayError ? error : new RelayError(500, "relay_error", "the relay could not forward this request");
       this.cancel(id, relayError.code);
-      return json(relayError.status, { error: relayError.code, message: relayError.message });
+      return refusal(relayError.status, relayError.code, relayError.message);
     }
-    clearTimeout(uploadTimer);
 
     entry.headTimer = setTimeout(() => {
       entry.rejectHead(new RelayError(504, "relay_timeout", `the Mac sent no response within ${this.limits.headTimeoutMs} ms`));
@@ -251,8 +320,8 @@ export class RelayHub extends DurableObject {
       head = await entry.head;
     } catch (error) {
       this.cancel(id, error.code || "error");
-      if (error instanceof RelayError) return json(error.status, { error: error.code, message: error.message });
-      return json(502, { error: "mac_disconnected", message: "the Mac dropped while this request was in flight" });
+      if (error instanceof RelayError) return refusal(error.status, error.code, error.message);
+      return refusal(502, "mac_disconnected", "the Mac dropped while this request was in flight; it may be retried");
     } finally {
       clearTimeout(entry.headTimer);
     }
@@ -321,11 +390,14 @@ export class RelayHub extends DurableObject {
     }
   }
 
-  /// Tells the Mac to drop the request and forgets it here.
+  /// Tells the Mac to drop the request and forgets it here. A request still
+  /// waiting for a Mac has nothing on any Mac to drop.
   cancel(id, reason) {
     const entry = this.pending.get(id);
     if (!entry) return;
-    try { entry.ws.send(encodeFrame(FRAME.CANCEL, id, JSON.stringify({ reason }))); } catch { /* socket gone */ }
+    if (entry.ws) {
+      try { entry.ws.send(encodeFrame(FRAME.CANCEL, id, JSON.stringify({ reason }))); } catch { /* socket gone */ }
+    }
     this.finish(id);
   }
 
@@ -334,7 +406,30 @@ export class RelayHub extends DurableObject {
     if (!entry) return;
     clearTimeout(entry.headTimer);
     clearTimeout(entry.idleTimer);
+    this.release(entry);
     this.pending.delete(id);
+  }
+
+  /// Keeps a chunk of a waiting request's body, within the budget every waiting
+  /// request shares.
+  hold(entry, chunk) {
+    if (this.heldBytes + chunk.byteLength > this.limits.heldBytes) {
+      throw new RelayError(503, "relay_busy", this.holdFullMessage());
+    }
+    entry.upload.push(chunk);
+    entry.heldBytes += chunk.byteLength;
+    this.heldBytes += chunk.byteLength;
+  }
+
+  /// Returns a request's kept body to the shared budget: sent, or given up on.
+  release(entry) {
+    this.heldBytes -= entry.heldBytes;
+    entry.heldBytes = 0;
+    entry.upload = null;
+  }
+
+  holdFullMessage() {
+    return `the relay is already keeping ${size(this.limits.heldBytes)} of request bodies until the Mac is back`;
   }
 
   failAll(ws, status, code, message) {
@@ -415,10 +510,10 @@ export class RelayHub extends DurableObject {
   }
 
   webSocketClose(ws) {
-    this.failAll(ws, 502, "mac_disconnected", "the Mac dropped while this request was in flight");
+    this.failAll(ws, 502, "mac_disconnected", "the Mac dropped while this request was in flight; it may be retried");
   }
 
   webSocketError(ws) {
-    this.failAll(ws, 502, "mac_disconnected", "the Mac's connection failed while this request was in flight");
+    this.failAll(ws, 502, "mac_disconnected", "the Mac's connection failed while this request was in flight; it may be retried");
   }
 }

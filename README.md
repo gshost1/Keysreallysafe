@@ -64,11 +64,14 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
 
 - The dashboard and its API bind to `127.0.0.1` only; the Keysrs window loads
   the dashboard from there, and nothing off this Mac can reach it. Nothing
-  else listens either: the one optional way in from outside is `keys relay`,
+  else listens either: the one optional way in from outside is the relay,
   which holds a single **outbound** connection from this Mac to a Cloudflare
-  Worker **you** deployed into your own account, only while the command runs,
-  and feeds what arrives into the same loopback gateway with the same token
-  checks. Keys never leave the Mac over it; see [docs/relay.md](docs/relay.md).
+  Worker **you** deployed into your own account, only while it is on (in
+  Keysrs from the moment you turn it on, with Touch ID, until you turn it off
+  or quit; never at launch by itself; or while `keys relay` runs in a
+  Terminal), and feeds what arrives into the same loopback gateway with the
+  same token checks. Keys never leave the Mac over it; see
+  [docs/relay.md](docs/relay.md).
   Optional product analytics
   ("share to compare") is off until the user opts in. Then, once a day, it
   sends one aggregate report to `analytics.keysrs.com`: feature counters, token
@@ -495,20 +498,44 @@ runners cannot reach your Mac; run the agent on a machine you can SSH to
 has the details and the per-agent remote snippets.
 
 For a managed agent that accepts no inbound SSH at all — GitHub Actions,
-Claude Code or Codex cloud sessions, Modal, E2B — `keys relay` is the other
+Claude Code or Codex cloud sessions, Modal, E2B — the relay is the other
 route: you deploy the small Worker in [`Relay/`](Relay/) into your own
 Cloudflare account, and the Mac keeps one outbound WebSocket to it. The
 Worker is a pipe and nothing more; every request it carries still lands in
 the loopback gateway with the same token checks, key swap and usage row, and
 the Worker never sees a key. Agents call `https://<your worker>/<key name>`
-with their usual token.
+with their usual token. If the Mac drops off for a moment (the relay redialing,
+a short sleep), the Worker holds new requests for up to a minute and sends
+them once the Mac is back.
 
 ```sh
 (cd Relay && npm ci && npx wrangler login && npx wrangler deploy)   # your account
 keys relay setup --url https://keysrs-relay.<you>.workers.dev        # prints the secret once
 (cd Relay && npx wrangler secret put RELAY_SECRET)                  # paste it
-keys relay                                                           # one Touch ID; Ctrl-C stops
+keys relay on                                                        # in Keysrs.app; one Touch ID
 ```
+
+The relay then runs inside Keysrs, with no Terminal open: **Relay for Cloud
+Agents** in the menu bar (or Settings → Relay in the dashboard, or `keys relay
+on` / `keys relay off`) turns it on and off, its lines go to `menubar.log`,
+and it stays on until you turn it off or quit; each launch starts with it off,
+because the secret leaves the Keychain only after Touch ID. `keys relay` alone
+still runs it in the foreground of a Terminal until Ctrl-C. Only one of the two
+runs at a time, since the Worker keeps a single Mac connection: each refuses
+to start while the other is on.
+
+The Mac has to be awake and online for a call to get through. A call in
+flight when the Mac sleeps or loses its network fails (502 `mac_disconnected`,
+marked retryable), and one that arrives while it sleeps waits the Worker's
+minute and then gets 503 `mac_offline`. Sleep does not turn the app's relay
+off, though: it reconnects by itself once the Mac is awake and online again,
+within about a minute plus one retry step, since it first has to notice that
+the old socket went quiet (Reconnection in [docs/relay.md](docs/relay.md)),
+and the requests still waiting in the Worker are sent to it then. **Keep Mac
+Awake for Relay Calls** (menu bar and Settings, off by default) stops idle
+sleep while a relayed call is open and for five minutes after the last one,
+so a long generation or an agent's next call does not find the Mac asleep;
+the display can still sleep, and closing the lid still sleeps the Mac.
 
 [docs/relay.md](docs/relay.md) has the protocol, the limits, the threat model
 and what a compromised Worker can and cannot do.
@@ -550,7 +577,7 @@ keys provider unhide <id>
 keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]
 keys agent <agent> <key> [--minutes N] [--client] [--label <text>] [--] [args...]
 keys tunnel <user@host> [--remote-port N] [--key <name>] [--print]
-keys relay [run] [--url <worker url>] | setup --url <worker url> | status | reset
+keys relay [run] [--url <worker url>] | on | off | setup --url <worker url> | status | reset
 keys purge
 ```
 

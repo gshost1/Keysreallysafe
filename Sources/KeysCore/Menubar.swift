@@ -149,6 +149,12 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var claudeRefreshItem: NSMenuItem?
     private var appOnlyItems: [NSMenuItem] = []
     private var loginMenuItem: NSMenuItem?
+    private var relayItem: NSMenuItem?
+    private var relayStatusItem: NSMenuItem?
+    private var relayAwakeItem: NSMenuItem?
+    /// What a toggle in progress is waiting for (Touch ID, the loop to stop); clicks meanwhile
+    /// are ignored.
+    private var relayPending: String?
     private static let tabKey = "menubar.tab"
 
     init(service: KeysService, server: LoopbackHTTPServer, url: URL) {
@@ -187,6 +193,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         itemController.stop()
+        service.stopRelay()
         service.stopGateway()
         server.stop()
     }
@@ -216,6 +223,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func quit() {
+        service.stopRelay()
         service.stopGateway()
         server.stop()
         NSApp.terminate(nil)
@@ -228,6 +236,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The legacy menubar CLI has no app window, login item or bundle to link to.
         appOnlyItems.forEach { $0.isHidden = appWindow == nil }
         loginMenuItem?.state = appWindow?.startsAtLogin == true ? .on : .off
+        updateRelayItems()
         refresh()
     }
 
@@ -293,6 +302,89 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? service.preferences.setClaudeUsageRefresh(on)
         claudeRefreshItem?.state = on ? .on : .off
         if on { refresh() }
+    }
+
+    // MARK: relay
+
+    /// Turning it on asks for Touch ID in the service, so it runs off the main thread and the
+    /// menu bar keeps drawing meanwhile.
+    @objc func toggleRelay() {
+        guard relayPending == nil else { return }
+        let report = service.relayReport()
+        if !report.host.on && !report.configured {
+            showRelaySetup()
+            return
+        }
+        let enable = !report.host.on
+        relayPending = enable ? "Waiting for Touch ID…" : "Turning off…"
+        let service = self.service
+        DispatchQueue.global(qos: .userInitiated).async {
+            var failure: Error?
+            do { _ = try service.setRelay(enabled: enable) } catch { failure = error }
+            let error = failure
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.relayPending = nil
+                self.updateRelayItems()
+                if let error { self.relayAlert(error) }
+            }
+        }
+    }
+
+    @objc func toggleRelayAwake() {
+        let on = !service.preferences.relayStayAwake
+        do { try service.setRelayStayAwake(on) } catch { relayAlert(error) }
+        updateRelayItems()
+    }
+
+    private func updateRelayItems() {
+        let report = service.relayReport()
+        relayItem?.state = report.host.on ? .on : .off
+        let line = relayPending ?? Self.relayLine(report)
+        relayStatusItem?.title = line
+        relayStatusItem?.isHidden = line.isEmpty
+        relayStatusItem?.toolTip = report.host.state.lastError
+        relayAwakeItem?.state = report.stayAwake ? .on : .off
+    }
+
+    /// The disabled line under the toggle; empty hides it.
+    nonisolated static func relayLine(_ report: KeysService.RelayReport) -> String {
+        guard report.host.on else {
+            guard let held = report.elsewhere else { return "" }
+            return "keys relay is running in a Terminal" + (held.pid.map { " (process \($0))" } ?? "")
+        }
+        let host = report.url?.host ?? "the Worker"
+        var line: String
+        switch report.host.state.phase {
+        case .connected:
+            line = "Connected to \(host)"
+            let open = report.host.state.inflight
+            if open > 0 { line += " · \(open) call\(open == 1 ? "" : "s") open" }
+        case .connecting:
+            line = "Connecting to \(host)…"
+        case .waiting, .stopped:
+            line = "Not connected; retrying"
+        }
+        if report.host.awake { line += " · keeping the Mac awake" }
+        return line
+    }
+
+    private func showRelaySetup() {
+        let alert = NSAlert()
+        alert.messageText = "Set up the relay first"
+        alert.informativeText = "The relay connects this Mac to a small Worker you deploy in your own Cloudflare account (Relay/ in the Keysrs repository, docs/relay.md), so cloud agents can reach the gateway. Once it is deployed, run in Terminal:\n\nkeys relay setup --url https://keysrs-relay.<you>.workers.dev\n\nGive the Worker the printed secret with npx wrangler secret put RELAY_SECRET, then turn the relay on here."
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    private func relayAlert(_ error: Error) {
+        // Cancelling Touch ID is an answer, not a failure.
+        if case AppError.authCancelled = error { return }
+        let alert = NSAlert()
+        alert.messageText = "Relay for Cloud Agents"
+        alert.informativeText = (error as? AppError)?.description ?? error.localizedDescription
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     /// First launch, and once per new analytics consent version: one window, every
@@ -390,6 +482,23 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         claude.state = service.preferences.claudeUsageRefresh ? .on : .off
         claudeRefreshItem = claude
         menu.addItem(claude)
+        menu.addItem(.separator())
+        let relay = NSMenuItem(title: "Relay for Cloud Agents", action: #selector(toggleRelay), keyEquivalent: "")
+        relay.target = self
+        relay.toolTip = "Hold one outbound connection to your relay Worker so cloud agents reach this gateway (docs/relay.md). One Touch ID to turn on; it stays on until you turn it off or quit."
+        relayItem = relay
+        menu.addItem(relay)
+        let relayStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        relayStatus.indentationLevel = 1
+        relayStatus.isHidden = true
+        relayStatusItem = relayStatus
+        menu.addItem(relayStatus)
+        let awake = NSMenuItem(title: "Keep Mac Awake for Relay Calls", action: #selector(toggleRelayAwake), keyEquivalent: "")
+        awake.target = self
+        awake.toolTip = "While a relayed call is open, and for 5 minutes after the last one, the Mac does not sleep when idle. The display can still sleep, and closing the lid still sleeps the Mac."
+        relayAwakeItem = awake
+        menu.addItem(awake)
+        menu.addItem(.separator())
         // Also in the app menu, which is only visible while the window is frontmost.
         let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self

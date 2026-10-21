@@ -14,6 +14,9 @@ export default defineConfig({
           RELAY_UPLOAD_TIMEOUT_MS: "400",
           RELAY_HEAD_TIMEOUT_MS: "400",
           RELAY_IDLE_TIMEOUT_MS: "400",
+          // Short too, so a request one test leaves waiting for a Mac cannot
+          // live on into the next; tests that need a longer wait raise it.
+          RELAY_OFFLINE_GRACE_MS: "500",
         },
       },
     }),

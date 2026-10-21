@@ -1,7 +1,7 @@
-// The wire protocol shared by the Worker and its tests (docs/relay.md, and
-// Sources/KeysCore/Relay.swift on the Mac). Kept out of worker.js because the
-// Workers runtime accepts only handlers and Durable Object classes as named
-// exports of the entry module.
+// The wire protocol and limits shared by the Worker and its tests
+// (docs/relay.md, and Sources/KeysCore/Relay.swift on the Mac). Kept out of
+// worker.js because the Workers runtime accepts only handlers and Durable
+// Object classes as named exports of the entry module.
 
 export const PROTOCOL = "1";
 
@@ -25,7 +25,50 @@ export const LIMITS = Object.freeze({
   // slow non-streaming generation ends with the gateway's answer, not ours.
   headTimeoutMs: 960_000,
   idleTimeoutMs: 300_000,
+  // How long a request that arrives while no Mac is connected waits for one,
+  // counted from its arrival: long enough for the Mac to redial after a dropped
+  // socket (1, 2, 4 … s) or a short sleep. RELAY_OFFLINE_GRACE_MS changes it
+  // and 0 turns it off.
+  offlineGraceMs: 60_000,
+  // A longer wait would only hold requests nobody is waiting for: the Anthropic
+  // and OpenAI SDKs give up on a request after ten minutes by default.
+  maxOfflineGraceMs: 600_000,
+  // The bodies of waiting requests sit in the Durable Object's memory, so they
+  // are bounded together as well as one by one, like the Mac bounds its own
+  // unfinished uploads.
+  heldBytes: 32 * 1024 * 1024,
+  // The Mac pings every 30 s. A socket it abandoned without closing (sleep, a
+  // dropped network) stays open here until TCP gives up, so a socket that has
+  // missed a ping is given no new request.
+  macSilenceMs: 45_000,
+  // Besides being woken by a connecting Mac, a waiting request looks again this
+  // often, which is how it notices a silent socket that has resumed pinging.
+  holdRecheckMs: 1_000,
 });
+
+/// The limits a deployment runs with. The timeout knobs exist for the offline
+/// test suite only; RELAY_OFFLINE_GRACE_MS is a real setting, where 0 means
+/// "answer mac_offline at once" and anything above the cap is held to it.
+export function limitsFrom(env) {
+  const positive = (raw, fallback) => {
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : fallback;
+  };
+  const grace = () => {
+    const raw = env.RELAY_OFFLINE_GRACE_MS;
+    if (raw === undefined || raw === null || String(raw).trim() === "") return LIMITS.offlineGraceMs;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) return LIMITS.offlineGraceMs;
+    return Math.min(n, LIMITS.maxOfflineGraceMs);
+  };
+  return {
+    ...LIMITS,
+    uploadTimeoutMs: positive(env.RELAY_UPLOAD_TIMEOUT_MS, LIMITS.uploadTimeoutMs),
+    headTimeoutMs: positive(env.RELAY_HEAD_TIMEOUT_MS, LIMITS.headTimeoutMs),
+    idleTimeoutMs: positive(env.RELAY_IDLE_TIMEOUT_MS, LIMITS.idleTimeoutMs),
+    offlineGraceMs: grace(),
+  };
+}
 
 // Statuses whose response has no body (RFC 9110 §15.3.5, §15.3.6, §15.4.5);
 // the Response constructor throws when given a stream for one of them. 1xx

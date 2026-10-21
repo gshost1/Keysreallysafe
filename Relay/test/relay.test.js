@@ -3,11 +3,13 @@
 // provider or Cloudflare account is involved.
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
-import { FRAME, LIMITS, decodeFrame, encodeFrame, secretMatches, stripRequestHeader } from "../src/protocol.js";
+import { FRAME, LIMITS, decodeFrame, encodeFrame, limitsFrom, secretMatches, stripRequestHeader } from "../src/protocol.js";
 
 const ORIGIN = "https://relay.test";
 const utf8 = new TextDecoder();
+const utf8e = new TextEncoder();
 const open = [];
+const hub = () => env.RELAY.get(env.RELAY.idFromName("mac"));
 
 afterEach(() => {
   for (const ws of open.splice(0)) {
@@ -70,10 +72,74 @@ function head(frame) {
   return JSON.parse(utf8.decode(frame.payload));
 }
 
+/// Starts a test with no Mac connected. A socket an earlier test closed from its
+/// end can still look open to the Durable Object for a moment, so close them
+/// from the inside as well.
+async function noMac() {
+  await runInDurableObject(hub(), (h) => {
+    for (const ws of h.ctx.getWebSockets()) {
+      try { ws.close(1000, "test reset"); } catch { /* already closing */ }
+    }
+  });
+}
+
+/// Runs `body` with some of the hub's limits changed and puts them back after.
+async function withLimits(changes, body) {
+  const saved = await runInDurableObject(hub(), (h) => {
+    const before = { ...h.limits };
+    Object.assign(h.limits, changes);
+    return before;
+  });
+  try {
+    return await body();
+  } finally {
+    await runInDurableObject(hub(), (h) => { h.limits = saved; });
+  }
+}
+
+const hubState = () => runInDurableObject(hub(), (h) => ({ pending: h.pending.size, heldBytes: h.heldBytes }));
+
+async function until(check, what, ms = 5000) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (await check()) return;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+function streamOf(text) {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(utf8e.encode(text));
+      controller.close();
+    },
+  });
+}
+
 describe("limits", () => {
   it("waits longer for a response head than the gateway's 30 s connect + 900 s request limit", () => {
     // Non-streaming generations send nothing until the answer is done.
     expect(LIMITS.headTimeoutMs).toBeGreaterThan((30 + 900) * 1000);
+  });
+
+  it("trusts a socket through one late ping but not past the Mac's own two-interval rule", () => {
+    // Relay.swift pings every 30 s and drops a socket silent for 60 s.
+    expect(LIMITS.macSilenceMs).toBeGreaterThan(30_000);
+    expect(LIMITS.macSilenceMs).toBeLessThan(60_000);
+  });
+
+  it("reads RELAY_OFFLINE_GRACE_MS: 0 turns the wait off, nonsense falls back, the cap holds", () => {
+    expect(limitsFrom({}).offlineGraceMs).toBe(60_000);
+    expect(limitsFrom({ RELAY_OFFLINE_GRACE_MS: "0" }).offlineGraceMs).toBe(0);
+    expect(limitsFrom({ RELAY_OFFLINE_GRACE_MS: 0 }).offlineGraceMs).toBe(0);
+    expect(limitsFrom({ RELAY_OFFLINE_GRACE_MS: "15000" }).offlineGraceMs).toBe(15_000);
+    for (const nonsense of ["", " ", "-1", "1.5", "soon", null]) {
+      expect(limitsFrom({ RELAY_OFFLINE_GRACE_MS: nonsense }).offlineGraceMs, String(nonsense)).toBe(60_000);
+    }
+    expect(limitsFrom({ RELAY_OFFLINE_GRACE_MS: String(24 * 3600 * 1000) }).offlineGraceMs).toBe(LIMITS.maxOfflineGraceMs);
+    // The knobs for the test suite still ignore what is not a positive integer.
+    expect(limitsFrom({ RELAY_UPLOAD_TIMEOUT_MS: "0" }).uploadTimeoutMs).toBe(LIMITS.uploadTimeoutMs);
   });
 });
 
@@ -135,6 +201,7 @@ describe("the front door", () => {
   });
 
   it("answers 503 mac_offline when no Mac is connected", async () => {
+    await noMac();
     const res = await SELF.fetch(`${ORIGIN}/router/v1/messages`, {
       method: "POST",
       headers: { authorization: "Bearer ksfc_whatever" },
@@ -275,14 +342,16 @@ describe("relaying", () => {
     expect(cancel.id).toBe(req.id);
   });
 
-  it("fails in-flight requests with 502 mac_disconnected when the Mac drops", async () => {
+  it("fails in-flight requests with 502 mac_disconnected when the Mac drops, and says they may be retried", async () => {
     const mac = await connectMac();
     const agent = SELF.fetch(`${ORIGIN}/router/v1/models`);
     await mac.next(FRAME.REQUEST);
     mac.ws.close(1001, "sleep");
     const res = await withTimeout(agent, 5000, "agent response");
     expect(res.status).toBe(502);
-    expect((await res.json()).error).toBe("mac_disconnected");
+    const body = await res.json();
+    expect(body).toMatchObject({ error: "mac_disconnected", retryable: true });
+    expect(body.message).toMatch(/may be retried/);
   });
 
   it("lets a new Mac connection replace the old one, closing it with code 4000", async () => {
@@ -433,5 +502,225 @@ describe("relaying", () => {
     mac.ws.send("hello");
     const closed = await withTimeout(mac.closed, 5000, "close");
     expect(closed.code).toBe(1003);
+  });
+});
+
+describe("while the Mac is away", () => {
+  afterEach(async () => {
+    // Whatever a test left waiting must not reach the next test's Mac.
+    await until(async () => (await hubState()).pending === 0, "no request left waiting");
+    expect((await hubState()).heldBytes).toBe(0);
+  });
+
+  it("holds a request until a Mac connects, then sends it with its body and serves it", async () => {
+    await noMac();
+    await withLimits({ offlineGraceMs: 5000 }, async () => {
+      const agent = SELF.fetch(`${ORIGIN}/router/v1/messages?beta=true`, {
+        method: "POST",
+        headers: { authorization: "Bearer ksfc_whatever", "content-type": "application/json" },
+        body: '{"model":"claude","stream":true}',
+      });
+      let answered = false;
+      agent.then(() => { answered = true; }, () => { answered = true; });
+      await until(async () => (await hubState()).pending === 1, "the request to be held");
+      await new Promise((r) => setTimeout(r, 100));
+      expect(answered).toBe(false);
+      expect((await hubState()).heldBytes).toBe(32);
+
+      const mac = await connectMac();
+      const req = await mac.next(FRAME.REQUEST);
+      expect(head(req)).toMatchObject({ method: "POST", target: "/router/v1/messages?beta=true" });
+      expect(head(req).headers.map(([n]) => n)).toContain("authorization");
+      const body = await mac.next(FRAME.BODY);
+      expect(body.id).toBe(req.id);
+      expect(utf8.decode(body.payload)).toBe('{"model":"claude","stream":true}');
+      expect((await mac.next(FRAME.END)).id).toBe(req.id);
+      expect((await hubState()).heldBytes).toBe(0);
+
+      mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 200, headers: [["content-type", "text/event-stream"]] }));
+      mac.send(FRAME.BODY, req.id, "data: one\n\n");
+      mac.send(FRAME.END, req.id);
+      const res = await withTimeout(agent, 5000, "agent response");
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("data: one\n\n");
+    });
+  });
+
+  it("answers 503 mac_offline with retry guidance once the window passes without a Mac", async () => {
+    await noMac();
+    const started = Date.now();
+    const res = await withTimeout(SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body: "{}" }), 5000, "offline answer");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(450);
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("30");
+    const body = await res.json();
+    expect(body).toMatchObject({ error: "mac_offline", retryable: true });
+    expect(body.message).toMatch(/within 500 ms: .*asleep or offline/);
+    expect(await hubState()).toEqual({ pending: 0, heldBytes: 0 });
+    // A Mac that connects afterwards is sent nothing for it.
+    const mac = await connectMac();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mac.frames.filter((f) => f.type === FRAME.REQUEST)).toHaveLength(0);
+  });
+
+  it("answers mac_offline at once, as before, when the window is turned off", async () => {
+    await noMac();
+    await withLimits({ offlineGraceMs: 0 }, async () => {
+      const started = Date.now();
+      const res = await SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body: "{}" });
+      expect(Date.now() - started).toBeLessThan(250);
+      expect(res.status).toBe(503);
+      expect(res.headers.get("retry-after")).toBe("30");
+      const body = await res.json();
+      expect(body.error).toBe("mac_offline");
+      expect(body.message).toMatch(/^no Mac is connected to this relay: .*asleep or offline$/);
+    });
+  });
+
+  it("counts waiting requests against the in-flight limit and sends them all when the Mac connects", async () => {
+    await noMac();
+    await withLimits({ offlineGraceMs: 5000 }, async () => {
+      const agents = [];
+      for (let i = 0; i < LIMITS.inflight; i++) agents.push(SELF.fetch(`${ORIGIN}/router/v1/models?n=${i}`));
+      await until(async () => (await hubState()).pending === LIMITS.inflight, "every request to be held");
+      const busy = await SELF.fetch(`${ORIGIN}/router/v1/models?n=over`);
+      expect(busy.status).toBe(503);
+      expect(busy.headers.get("retry-after")).toBe("5");
+      expect(await busy.json()).toMatchObject({ error: "relay_busy", retryable: true });
+
+      const mac = await connectMac();
+      const targets = new Set();
+      for (let i = 0; i < LIMITS.inflight; i++) {
+        const req = await mac.next(FRAME.REQUEST);
+        targets.add(head(req).target);
+        mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 204, headers: [] }));
+      }
+      expect(targets.size).toBe(LIMITS.inflight);
+      expect(targets.has("/router/v1/models?n=over")).toBe(false);
+      const answers = await withTimeout(Promise.all(agents), 5000, "every held request");
+      expect(answers.map((r) => r.status)).toEqual(new Array(LIMITS.inflight).fill(204));
+    });
+  });
+
+  it("keeps a waiting request's body within the per-request cap and the budget all waiting requests share", async () => {
+    await noMac();
+    await withLimits({ offlineGraceMs: 5000, requestBody: 600, heldBytes: 1000 }, async () => {
+      const url = `${ORIGIN}/router/v1/messages`;
+      // Over the per-request cap, declared and streamed.
+      let res = await SELF.fetch(url, { method: "POST", body: "x".repeat(601) });
+      expect(res.status).toBe(413);
+      res = await SELF.fetch(url, { method: "POST", body: streamOf("x".repeat(601)), duplex: "half" });
+      expect(res.status).toBe(413);
+      expect(await hubState()).toEqual({ pending: 0, heldBytes: 0 });
+
+      const first = SELF.fetch(url, { method: "POST", body: "a".repeat(500) });
+      await until(async () => (await hubState()).heldBytes === 500, "the first body to be kept");
+      // Within the per-request cap but over what is left of the shared budget,
+      // declared and streamed.
+      res = await SELF.fetch(url, { method: "POST", body: "b".repeat(501) });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ error: "relay_busy", retryable: true });
+      res = await SELF.fetch(url, { method: "POST", body: streamOf("c".repeat(501)), duplex: "half" });
+      expect(res.status).toBe(503);
+      expect((await res.json()).error).toBe("relay_busy");
+      expect(await hubState()).toEqual({ pending: 1, heldBytes: 500 });
+
+      // The one that fit is still delivered whole.
+      const mac = await connectMac();
+      const req = await mac.next(FRAME.REQUEST);
+      expect(utf8.decode((await mac.next(FRAME.BODY)).payload)).toBe("a".repeat(500));
+      expect((await mac.next(FRAME.END)).id).toBe(req.id);
+      mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 204, headers: [] }));
+      expect((await withTimeout(first, 5000, "held request")).status).toBe(204);
+    });
+  });
+
+  it("splits a kept body into protocol-sized frames when it is sent", async () => {
+    await noMac();
+    await withLimits({ offlineGraceMs: 5000 }, async () => {
+      const bytes = new Uint8Array(LIMITS.chunk * 2 + 10).fill(0x61);
+      const agent = SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body: bytes });
+      await until(async () => (await hubState()).heldBytes === bytes.byteLength, "the body to be kept");
+      const mac = await connectMac();
+      const req = await mac.next(FRAME.REQUEST);
+      let got = 0;
+      for (;;) {
+        const frame = await mac.next();
+        if (frame.type === FRAME.END) break;
+        expect(frame.type).toBe(FRAME.BODY);
+        expect(frame.payload.byteLength).toBeLessThanOrEqual(LIMITS.chunk);
+        got += frame.payload.byteLength;
+      }
+      expect(got).toBe(bytes.byteLength);
+      mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 204, headers: [] }));
+      expect((await withTimeout(agent, 5000, "agent response")).status).toBe(204);
+    });
+  });
+
+  it("gives a waiting request's upload the same deadline and frees its slot", async () => {
+    await noMac();
+    await withLimits({ offlineGraceMs: 5000 }, async () => {
+      let feed;
+      const body = new ReadableStream({ start(controller) { feed = controller; } });
+      feed.enqueue(utf8e.encode('{"slow":'));
+      const started = Date.now();
+      const res = await withTimeout(SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body, duplex: "half" }), 5000, "upload timeout");
+      expect(res.status).toBe(408);
+      expect((await res.json()).error).toBe("upload_timeout");
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(await hubState()).toEqual({ pending: 0, heldBytes: 0 });
+    });
+  });
+
+  it("returns a waiting request's budget when its agent gives up mid-upload", async () => {
+    // As in the healthy-Mac case above, the erroring stream has to be made
+    // inside the object and handed to the hub directly.
+    await noMac();
+    await withLimits({ offlineGraceMs: 5000 }, async () => {
+      const url = new URL(`${ORIGIN}/router/v1/messages`);
+      const res = await runInDurableObject(hub(), async (h) => {
+        let feed;
+        const body = new ReadableStream({ start(controller) { feed = controller; } });
+        feed.enqueue(new TextEncoder().encode('{"partial":'));
+        const answer = h.relay(new Request(url, { method: "POST", body, duplex: "half" }), url);
+        await new Promise((r) => setTimeout(r, 50));
+        const kept = h.heldBytes;
+        feed.error(new Error("connection reset"));
+        const r = await answer;
+        return { status: r.status, error: (await r.json()).error, kept };
+      });
+      expect(res).toEqual({ status: 400, error: "client_gone", kept: 11 });
+      expect(await hubState()).toEqual({ pending: 0, heldBytes: 0 });
+    });
+  });
+
+  it("sends no new request into a socket the Mac has stopped pinging, and sends it once a ping arrives", async () => {
+    const mac = await connectMac();
+    await withLimits({ macSilenceMs: 300, holdRecheckMs: 20, offlineGraceMs: 5000 }, async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      const agent = SELF.fetch(`${ORIGIN}/router/v1/models`);
+      await until(async () => (await hubState()).pending === 1, "the request to be held");
+      await new Promise((r) => setTimeout(r, 100));
+      expect(mac.frames.filter((f) => f.type === FRAME.REQUEST)).toHaveLength(0);
+      mac.ws.send("ping");
+      const req = await mac.next(FRAME.REQUEST);
+      mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 204, headers: [] }));
+      expect((await withTimeout(agent, 5000, "agent response")).status).toBe(204);
+    });
+  });
+
+  it("sends a waiting request to the Mac that replaces a silent socket", async () => {
+    const silent = await connectMac();
+    await withLimits({ macSilenceMs: 300, offlineGraceMs: 5000 }, async () => {
+      await new Promise((r) => setTimeout(r, 400));
+      const agent = SELF.fetch(`${ORIGIN}/router/v1/models`);
+      await until(async () => (await hubState()).pending === 1, "the request to be held");
+      const fresh = await connectMac();
+      expect((await withTimeout(silent.closed, 5000, "the silent socket to close")).code).toBe(4000);
+      const req = await fresh.next(FRAME.REQUEST);
+      fresh.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 204, headers: [] }));
+      expect((await withTimeout(agent, 5000, "agent response")).status).toBe(204);
+      expect(silent.frames.filter((f) => f.type === FRAME.REQUEST)).toHaveLength(0);
+    });
   });
 });

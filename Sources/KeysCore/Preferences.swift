@@ -30,6 +30,16 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta("pref_update_checks", on ? "on" : "off") }
     }
 
+    static let relayStayAwakeKey = "pref_relay_stay_awake"
+
+    /// Keeping the Mac from idle sleep for relayed calls costs battery, so it is off until
+    /// the person turns it on in the menu or in Settings.
+    var relayStayAwake: Bool { (try? catalog.metaValue(Self.relayStayAwakeKey)) == "on" }
+
+    func setRelayStayAwake(_ on: Bool) throws {
+        try catalog.withTransaction { try catalog.setMeta(Self.relayStayAwakeKey, on ? "on" : "off") }
+    }
+
     var loginRegistrationAttempted: Bool { (try? catalog.metaValue("app_login_registered")) == "yes" }
 
     func recordLoginRegistration() throws {

@@ -91,20 +91,12 @@ enum AppRuntime {
         // A previous one-click update can leave its set-aside bundle behind if the helper died;
         // the names are the updater's own, so this never touches anything a person created.
         AppUpdater.sweepStaleInstall(around: Bundle.main.bundleURL)
-        let logURL = root.appendingPathComponent("menubar.log")
-        func log(_ message: String) {
-            let data = Data((UTC.iso(Date()) + " " + message + "\n").utf8)
-            if !FileManager.default.fileExists(atPath: logURL.path) {
-                FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
-            }
-            if let handle = try? FileHandle(forWritingTo: logURL) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-            }
-        }
+        let logFile = AppLogFile(url: root.appendingPathComponent("menubar.log"))
+        func log(_ message: String) { logFile.write(message) }
         _ = try WebRoot.find()
         let service = try AppFactory.makeService()
+        // Before the site serves, so every relay the menu or the dashboard turns on logs here.
+        service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
         var startedServer: LoopbackHTTPServer?
         do {
             try LegacyAppMigration(root: root, plist: LoginItem.agentPlist, run: LoginItem.run, log: log).migrate {
@@ -206,6 +198,31 @@ final class UpdateCheck: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+}
+
+/// menubar.log, 0600: the app's own lines and its relay's, which arrive from the relay's
+/// threads, so each line is written whole under a lock.
+final class AppLogFile: @unchecked Sendable {
+    let url: URL
+    private let lock = NSLock()
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func write(_ message: String) {
+        let data = Data((UTC.iso(Date()) + " " + message + "\n").utf8)
+        lock.withLock {
+            if !FileManager.default.fileExists(atPath: url.path) {
+                FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            }
+        }
     }
 }
 

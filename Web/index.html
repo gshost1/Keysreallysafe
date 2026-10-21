@@ -198,6 +198,18 @@
           <button type="button" id="btn-privacy" class="btn-quiet" aria-haspopup="dialog" title="Product analytics privacy settings">Privacy</button>
         </div>
       </section>
+      <section class="settings-group" aria-labelledby="set-relay">
+        <h2 id="set-relay">Relay</h2>
+        <p class="setting-note">For cloud agents that cannot reach this Mac: one outbound connection to the Worker you deployed (docs/relay.md). Calls get through only while the Mac is awake and online; after sleep the relay reconnects by itself.</p>
+        <div class="setting">
+          <span class="setting-label" id="relay-label">Relay for cloud agents<span class="setting-hint" id="relay-hint" aria-live="polite"></span></span>
+          <button type="button" role="switch" id="relay-switch" class="switch" aria-checked="false" aria-labelledby="relay-label"></button>
+        </div>
+        <div class="setting">
+          <span class="setting-label" id="relay-awake-label">Keep the Mac awake for relay calls<span class="setting-hint">While a call is open and for 5 minutes after the last one, the Mac does not sleep when idle. Closing the lid still sleeps it.</span></span>
+          <button type="button" role="switch" id="relay-awake-switch" class="switch" aria-checked="false" aria-labelledby="relay-awake-label"></button>
+        </div>
+      </section>
     </section>
   </main>
 
@@ -645,9 +657,10 @@ export ANTHROPIC_AUTH_TOKEN=&lt;token&gt;</code><button type="button" class="btn
           (<code>Relay/</code> in the repo, <code>docs/relay.md</code>): the Mac keeps one outbound connection to it,
           every call still lands in this gateway, and the Worker never sees a key.</span>
           <div class="cmd"><code>keys relay setup --url https://keysrs-relay.&lt;you&gt;.workers.dev
-keys relay</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys relay setup">Copy</button></div>
-          <span class="guide-body">The agent then uses <code>https://&lt;your worker&gt;/work-anthropic</code> as the base
-          URL with its client token.</span>
+keys relay on</code><button type="button" class="btn-row" data-copy-cmd aria-label="Copy keys relay setup">Copy</button></div>
+          <span class="guide-body">The relay then runs inside Keysrs until you turn it off or quit (Settings → Relay,
+          or Relay for Cloud Agents in the menu bar), as long as the Mac is awake. The agent uses
+          <code>https://&lt;your worker&gt;/work-anthropic</code> as the base URL with its client token.</span>
         </li>
       </ol>
       <p class="guide-note">Figures are shown in tokens and requests by default. Choose <b>USD</b> in the chart's
