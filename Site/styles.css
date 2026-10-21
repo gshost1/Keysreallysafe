@@ -195,7 +195,7 @@ code { font-family: var(--mono); font-size: .86em; background: var(--bg-2); bord
 .node.core { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .node.core b { display: flex; align-items: center; gap: 10px; font-size: 17px; }
 .node.core b img { width: 28px; height: 28px; }
-.out { position: relative; padding-left: 40px; }
+.out { position: relative; padding-left: 40px; display: grid; gap: 12px; }
 .out::before { content: ""; position: absolute; left: 0; top: 50%; width: 40px; border-top: 1.5px dashed var(--ink-3); }
 .out .node { box-shadow: none; border: 1.5px dashed #c7c7cc; background: transparent; }
 .out .node p { font-size: 13px; color: var(--ink-3); margin-top: 6px; line-height: 1.45; }
@@ -269,8 +269,10 @@ pre .cu { color: #1d1d1f; font-weight: 600; background: #f2f2f5; }
 .fence li { background: var(--bg-2); border-radius: 14px; padding: 14px 16px; }
 .fence b { display: block; font-size: 15px; font-weight: 600; }
 .fence span { font-size: 13.5px; color: var(--ink-2); line-height: 1.4; display: block; margin-top: 2px; }
-#agents .bento { margin-top: 72px; }
-#agents .card { box-shadow: 0 0 0 1px var(--line), 0 8px 28px -14px rgba(0,0,0,.12); }
+#agents .bento, #relay .bento { margin-top: 72px; }
+#agents .card, #relay .card { box-shadow: 0 0 0 1px var(--line), 0 8px 28px -14px rgba(0,0,0,.12); }
+/* keys wrap prints lines longer than the mock Terminal; wrap them like a real one would */
+.term.wrapdemo pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 980px) { .ask { grid-template-columns: 1fr; } }
 @media (max-width: 680px) { .askvis { height: 520px; } .win.chat { left: 10px; right: 10px; } .win.chat pre { font-size: 11px; } .touch.t2 { display: block; right: 14px; left: 14px; width: auto; } .fence { grid-template-columns: 1fr; } }
 

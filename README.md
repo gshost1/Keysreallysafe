@@ -5,6 +5,11 @@ Keychain service and the signing identifier keep the old name on purpose.
 
 A local spend meter and API-key vault for the AI command-line tools on your Mac.
 
+Scripts, coding agents and cloud VMs get scoped dummy keys instead of the real
+ones. A gateway on loopback swaps the real key in, and for a machine that cannot
+reach your Mac, a small relay Worker you deploy into your own Cloudflare account
+carries the call home. The real keys never leave the Mac.
+
 It reads the usage numbers that Claude Code, Grok and Codex already write to
 your home folder, prices them from a checked-in list-price table, and shows the
 result in the Keysrs window and in the menu bar. Secrets live in the macOS

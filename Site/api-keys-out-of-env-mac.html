@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Keep API keys out of .env files on a Mac — Keysrs</title>
-<meta name="description" content="How to stop keeping API keys in plain-text .env files on macOS: store them in the Keychain, require Touch ID to read them, and give scripts scoped, expiring access.">
+<meta name="description" content="How to stop keeping API keys in plain-text .env files on macOS: store them in the Keychain, require Touch ID to read them, give scripts scoped, expiring access, and hand VMs dummy keys that only work through your Mac.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap">
@@ -15,7 +15,7 @@
 <meta property="og:type" content="article">
 <meta property="og:site_name" content="Keysrs">
 <meta property="og:title" content="Keep API keys out of .env files on a Mac — Keysrs">
-<meta property="og:description" content="How to stop keeping API keys in plain-text .env files on macOS: store them in the Keychain, require Touch ID to read them, and give scripts scoped, expiring access.">
+<meta property="og:description" content="How to stop keeping API keys in plain-text .env files on macOS: store them in the Keychain, require Touch ID to read them, give scripts scoped, expiring access, and hand VMs dummy keys that only work through your Mac.">
 <meta property="og:url" content="https://keysrs.com/api-keys-out-of-env-mac">
 <meta property="og:image" content="https://keysrs.com/og.png">
 <meta property="og:image:width" content="1200">
@@ -29,7 +29,7 @@
 
 <article class="legal">
 <h1>How to keep API keys out of .env files on a Mac</h1>
-<p class="meta">Checked against the sources linked on this page on 2026-09-25.</p>
+<p class="meta">Checked against the sources linked on this page on 2026-10-21.</p>
 
 <h2>Why is a .env file risky?</h2>
 <p>A <code>.env</code> file is plain text. Any program running as you can read it, and so can anything that indexes, syncs or backs up the folder, or a coding agent asked to look around the project. One stray <code>git add .</code> and it is in history.</p>
@@ -48,6 +48,12 @@
 <h2>How do I give a script or agent a key without handing it over?</h2>
 <p>Give it a grant instead of the key. <code>keys grant</code> asks for Touch ID once, then prints a short-lived token and a local base URL. The script uses the token where it would put the API key, and the local gateway on <code>127.0.0.1</code> swaps in the real key for that one provider host. The grant can be limited to HTTP methods, paths, a request count and a time limit, and it ends when the screen locks. The real key never leaves the Keychain and the app. For a program you keep running, <code>keys client issue</code> makes a longer-lived token with the same kind of scope.</p>
 <p>This narrows accidental and unauthorized use on your Mac. It is not a wall against a program that can already read your memory. The <a href="https://github.com/gshost1/Keysreallysafe#the-gateway">README</a> spells out the limits.</p>
+
+<h2>I already have a .env file. How do I get the keys out of it?</h2>
+<p><code>keys wrap .env</code> finds the values that look like provider keys, asks for Touch ID once, stores each one in the Keychain under a name, and rewrites the file: the key's line now holds a dummy client token, and the matching base URL variable points at the gateway on <code>127.0.0.1</code>, so the SDK picks both up without a code change. The original is kept beside it as a backup with mode 0600, for you to delete once the program works. A token is bound to one key and its provider, expires after 30 days by default and can be revoked at any time; the real key never needs rotating because of it.</p>
+
+<h2>What about a VM or a cloud agent that can't reach my Mac?</h2>
+<p>Add <code>--relay https://&lt;your worker&gt;</code> and the base URLs point at a small Cloudflare Worker that you deploy into your own account from the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/relay.md">repo</a>. Copy the wrapped file to the VM. Its calls reach the Worker, travel down one WebSocket your Mac opened, get the real key swapped in on your Mac and go on to the provider; the Worker never sees a key. The Mac has to be on: a call that arrives while it is away waits up to a minute, then gets a 503 the client can retry.</p>
 
 <p><a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download Keysrs for Mac</a></p>
 <p class="meta">Free and MIT licensed. macOS 14 or newer on Apple Silicon. Open the disk image and drag Keysrs to Applications.</p>

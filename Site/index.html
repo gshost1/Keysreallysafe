@@ -3,19 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Keysrs — know your AI limits, lock up your API keys</title>
-<meta name="description" content="A free, open-source Mac menu bar app that shows your Claude Code, Codex and Grok plan limits from the files they already write, and keeps your API keys in the macOS Keychain behind Touch ID. Nothing leaves your Mac.">
+<title>Keysrs — dummy API keys for your VMs, the real ones stay on your Mac</title>
+<meta name="description" content="A free, open-source Mac app. Paste an API key once; your scripts, agents and cloud VMs get dummy keys that only work through your Mac, on loopback or through a relay Worker in your own Cloudflare account. The real key stays in the Keychain behind Touch ID. Plus a menu bar meter for Claude Code, Codex and Grok limits.">
 <link rel="canonical" href="https://keysrs.com/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Keysrs">
-<meta property="og:title" content="Keysrs — know your AI limits, lock up your API keys">
-<meta property="og:description" content="A free, open-source Mac menu bar app that shows your Claude Code, Codex and Grok plan limits from the files they already write, and keeps your API keys in the macOS Keychain behind Touch ID. Nothing leaves your Mac.">
+<meta property="og:title" content="Keysrs — dummy API keys for your VMs, the real ones stay on your Mac">
+<meta property="og:description" content="A free, open-source Mac app. Paste an API key once; your scripts, agents and cloud VMs get dummy keys that only work through your Mac, on loopback or through a relay Worker in your own Cloudflare account. The real key stays in the Keychain behind Touch ID. Plus a menu bar meter for Claude Code, Codex and Grok limits.">
 <meta property="og:url" content="https://keysrs.com/">
 <meta property="og:image" content="https://keysrs.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Keysrs", "url": "https://keysrs.com/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS 14 or later (Apple Silicon)", "description": "A free, open-source Mac menu bar app that shows Claude Code, Codex and Grok plan limits and keeps API keys in the macOS Keychain behind Touch ID.", "license": "https://opensource.org/licenses/MIT", "downloadUrl": "https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg", "image": "https://keysrs.com/og.png", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Keysrs", "url": "https://keysrs.com/", "applicationCategory": "DeveloperApplication", "operatingSystem": "macOS 14 or later (Apple Silicon)", "description": "A free, open-source Mac app that keeps API keys in the macOS Keychain behind Touch ID, gives scripts, agents and cloud VMs dummy keys that only work through your Mac, and shows Claude Code, Codex and Grok plan limits in the menu bar.", "license": "https://opensource.org/licenses/MIT", "downloadUrl": "https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg", "image": "https://keysrs.com/og.png", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}</script>
 <link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -42,6 +42,7 @@
     <nav>
       <a href="#features">Features</a>
       <a href="#agents">Key vault</a>
+      <a href="#relay">Cloud VMs</a>
       <a href="#privacy">Privacy</a>
       <a href="#faq">FAQ</a>
       <a href="https://github.com/gshost1/Keysreallysafe">GitHub</a>
@@ -53,9 +54,9 @@
 <main>
 <div class="hero">
   <div class="wrap">
-    <div class="badge"><b>New</b>Keysrs is now free and open source</div>
-    <h1>Stop hitting AI limits <span class="g">by surprise.</span></h1>
-    <p class="lead">A menu bar usage meter for Claude Code, Codex and Grok, plus a Keychain vault for your API keys. See every plan window at a glance, unlock keys with Touch ID, and nothing leaves your Mac.</p>
+    <div class="badge"><b>New in 0.12</b>Dummy keys for your VMs, through a Worker in your own Cloudflare account</div>
+    <h1>Dummy keys for your VMs. <span class="g">Real ones stay on your Mac.</span></h1>
+    <p class="lead">Paste a key into Keysrs once. Your scripts, agents and cloud VMs get dummy keys that only work through your Mac: on loopback, or through a small Worker in your own Cloudflare account. The real key stays in the Keychain behind Touch ID. And the menu bar shows your Claude Code, Codex and Grok limits before they bite.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8m-3.5-3.5L8 10l3.5-3.5M2.5 13.5h11"/></svg>
@@ -67,30 +68,34 @@
   </div>
 
   <div class="wrap">
-    <div class="mac" role="img" aria-label="A Mac screen: the Keysrs dropdown shows Claude at 94% of its 5-hour window while Claude Code asks for a key by name and the macOS Touch ID prompt asks to grant “run evals” the key codex-astra for OpenAI for 30 minutes.">
+    <div class="mac" role="img" aria-label="A Mac screen: a Terminal runs keys wrap on a project's .env file with the relay URL, the macOS Touch ID prompt asks to match the value against the vault and wrap it, and the Keysrs dropdown shows Claude at 94% of its 5-hour window.">
       <div class="screen">
         <div class="mbar">
           <span class="b">Terminal</span><span class="hs">Shell</span><span class="hs">Edit</span><span class="hs">View</span><span class="hs">Window</span><span class="hs">Help</span>
           <span class="gap"></span>
-          <span class="it us"><svg viewBox="0 0 16 16"><path d="M2 12a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 12l4-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>94%</span><span class="it hs">Wed 23 Sep</span><span class="it">11:13 PM</span>
+          <span class="it us"><svg viewBox="0 0 16 16"><path d="M2 12a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 12l4-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>94%</span><span class="it hs">Tue 21 Oct</span><span class="it">11:13 PM</span>
         </div>
 
-        <div class="win term">
-          <div class="tb"><i></i><i></i><i></i><span>claude — ~/evals</span></div>
-<pre><span class="cu">&gt; run the eval suite with codex-astra from Keysrs</span>
-
-<span class="cd">⏺</span> <b>Bash</b>(keys grant codex-astra --task "run evals")
-  <span class="ct">⎿  Touch ID in the Keysrs site…</span>
-     <span class="ct">grant 3f9c2a71  codex-astra -&gt; OpenAI (api.openai.com)</span>
-       <span class="ct">expires  2026-09-24T06:43:00Z  (30 min)</span>
-<span class="cd">⏺</span> <span class="ok">Granted for 30 min. I never see the key.</span>
-<span class="cd">⏺</span> Running 48 evals through the grant… <span class="cur"></span></pre>
+        <div class="win term wrapdemo">
+          <div class="tb"><i></i><i></i><i></i><span>zsh — ~/evals</span></div>
+<pre><span class="cu">$ keys wrap .env --relay https://keysrs-relay.you.workers.dev</span>
+1 value in .env looks like a provider key: OPENAI_API_KEY
+<span class="ct">Touch ID in Keysrs to compare them with the vault…</span>
+plan for .env:
+  wrap  OPENAI_API_KEY -&gt; evals-openai  (new vault key, OpenAI at api.openai.com)
+  set   OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
+each wrapped key gets a client token (POST and GET, 30 days) and the gateway turned on
+Apply this plan? [y/N] y
+<span class="ok">wrapped 1 variable in .env:</span>
+  OPENAI_API_KEY -&gt; evals-openai (added to the vault) client #4
+  OPENAI_BASE_URL -&gt; relay
+<span class="ct">backup with the original values: .env.keysrs-backup-20261021-231342 (0600)</span><span class="cur"></span></pre>
         </div>
 
         <div class="touch">
           <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
           <b>Keysrs</b>
-          <p>“Keysrs” is trying to grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.</p>
+          <p>“Keysrs” is trying to match 1 value in .env against the vault and wrap them.</p>
           <p>Touch ID or enter your password to allow this.</p>
           <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
         </div>
@@ -249,6 +254,62 @@
   </div>
 </section>
 
+<section id="relay" class="gray">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Cloud VMs and agents</p>
+      <h2 class="sh">Your VMs get a dummy key.<br>The real one never leaves.</h2>
+      <p class="sp">A VM, a GitHub Actions job or a cloud coding session can't reach your Mac's loopback. Deploy the small relay Worker into your own Cloudflare account and it can. <code>keys wrap</code> rewrites a project's <code>.env</code> so every provider key becomes a dummy token and a URL at your Worker.</p>
+    </div>
+
+    <div class="ask">
+      <ol class="steps">
+        <li><b>Wrap the env file.</b><span>One Touch ID. The real keys go into the Keychain; the file gets dummy tokens and your Worker's URL, and the original is backed up beside it.</span></li>
+        <li><b>Ship the file.</b><span>Copy it to the VM, the Actions secret, the cloud session. Nothing in it works without your Mac.</span></li>
+        <li><b>Calls come home.</b><span>Each call reaches your Worker, rides one WebSocket your Mac opened, gets the real key swapped in on loopback and goes to the provider. It lands in your usage chart like any other.</span></li>
+      </ol>
+      <div class="askvis">
+        <div class="win chat">
+          <div class="tb"><i></i><i></i><i></i><span>ubuntu@vm — ~/evals</span></div>
+<pre><span class="cu">$ cat .env</span>
+OPENAI_API_KEY=ksfc_8f1c…d27e
+OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
+
+<span class="cu">$ python run_evals.py</span>
+48 prompts · gpt-5 · keysrs-relay.you.workers.dev
+<span class="ok">48/48 ok in 3m 12s</span>
+
+<span class="cu">$ grep -c sk- .env</span>
+0<span class="cur"></span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="bento">
+      <div class="card s3">
+        <h3>If a dummy key leaks.</h3>
+        <p>It can call that one provider, through your Mac, until you revoke it or it expires. The real key is unchanged, so there is nothing to rotate.</p>
+        <ul class="fence">
+          <li><b>One key, one host</b><span>A token is bound to one vault key and its provider.</span></li>
+          <li><b>Expires on its own</b><span>30 days by default, a year at most. <code>keys client revoke</code> ends it now.</span></li>
+          <li><b>Only while your Mac is on</b><span>No Mac, no gateway, no calls.</span></li>
+          <li><b>Every call counted</b><span>Each one is a row in your usage. Request bodies never are.</span></li>
+        </ul>
+      </div>
+      <div class="card s3">
+        <h3>The Worker is a pipe.</h3>
+        <p>You deploy it from the repo into your own account and can read every line. The free Workers plan is enough, and Keysrs hosts nothing.</p>
+        <ul class="fence">
+          <li><b>Never sees a key</b><span>The swap happens on your Mac. The Worker carries requests and answers.</span></li>
+          <li><b>Holds one secret</b><span>The relay secret only lets your Mac connect. It is never a stand-in for a token.</span></li>
+          <li><b>Your Mac has to be on</b><span>Off or asleep, nothing is served: a call waits up to a minute for the Mac, then gets a retryable 503.</span></li>
+          <li><b>Cloudflare only, for now</b><span>One Worker with a SQLite-backed Durable Object. The protocol is in the repo; other routes are welcome.</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="privacy">
   <div class="wrap">
     <div class="head">
@@ -273,6 +334,11 @@
           <span>Share to compare, only if you turn it on</span>
           <p>One report a day of usage totals per tool and public model. Off by default. Leave it off and the app never calls us.</p>
         </div>
+        <div class="node">
+          <b>Your Worker</b>
+          <span>The relay, only if you turn it on</span>
+          <p>One WebSocket from your Mac to a Worker in your own Cloudflare account, carrying your VMs' requests and the answers. Never a key. Off at every launch until you turn it on.</p>
+        </div>
       </div>
     </div>
 
@@ -286,6 +352,7 @@
         <h3>Your data stays on your Mac</h3>
         <ul>
           <li>Dashboard and API bind to <code>127.0.0.1</code> only.</li>
+          <li>The relay is the one optional connection out: your Mac dials a Worker you deployed, and keys never go over it.</li>
           <li>No account, no sign-up, no license check.</li>
           <li>Optional “share to compare” is off by default. Turned on, it sends daily usage totals per tool and public model, never prompts, keys, key or project names, paths or device IDs.</li>
         </ul>
@@ -338,6 +405,7 @@
           <li><svg><use href="#check"/></svg><span><b>Usage meter</b> for Claude Code, Codex and Grok</span></li>
           <li><svg><use href="#check"/></svg><span><b>Key vault</b> in the Keychain, behind Touch ID</span></li>
           <li><svg><use href="#check"/></svg><span><b>Scoped gateway</b> grants for scripts and agents</span></li>
+          <li><svg><use href="#check"/></svg><span><b>Relay Worker</b> for VMs and cloud agents, in your own Cloudflare account</span></li>
           <li><svg><use href="#check"/></svg><span><b>Chart and CSV export</b> of what your Mac measured</span></li>
           <li><svg><use href="#check"/></svg><span><b>MIT licensed</b>, source on GitHub</span></li>
         </ul>
@@ -353,6 +421,10 @@
     <div class="faq">
       <details><summary>Which tools does it read?</summary><p>Claude Code, OpenAI Codex CLI and Grok CLI, from the session logs and usage caches they already keep in your home folder. Anything else shows as <em>not tracked</em> with a link to that provider's dashboard.</p></details>
       <details><summary>Does it need my provider passwords?</summary><p>No. It reads files your tools already wrote and never touches their login or auth files. For the vault you paste an API key once; it comes out only after Touch ID.</p></details>
+      <details><summary>How does a VM get a dummy key?</summary><p>Run <code>keys wrap</code> on the project's env file with your Worker's URL. After one Touch ID, every provider key in it is in the Keychain and the file holds a dummy token plus a base URL at your Worker. Copy that file to the VM. Each call goes Worker, your Mac, provider, with the real key added on your Mac. The gateway forgets its keys when Keysrs quits; <code>keys gateway on</code> brings one back after a relaunch.</p></details>
+      <details><summary>What if my Mac is off?</summary><p>Nothing is served. A call that arrives while the Mac is away waits in the Worker for up to a minute, then gets a 503 marked retryable. Sleep doesn't turn the relay off: it redials when the Mac is awake again, and the waiting calls follow. Keep Mac Awake for Relay Calls, off by default, holds off idle sleep while a call is open.</p></details>
+      <details><summary>Does the Worker see my keys?</summary><p>No. It is a pipe you deploy from the repo into your own Cloudflare account; Keysrs hosts none. It holds one relay secret that lets your Mac connect, carries requests and answers, and never has a provider key. If a dummy key leaks, it works for that one provider through your Mac until you revoke it or it expires, 30 days by default, and the real key is untouched.</p></details>
+      <details><summary>Why Cloudflare only?</summary><p>It's the one host the relay knows today: a Worker with a SQLite-backed Durable Object, which the free plan includes. The protocol is documented in the repo, and other routes are welcome.</p></details>
       <details><summary>Is the dollar figure real?</summary><p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table, hidden until you choose USD. Anything unpriced reads as unknown, not $0.</p></details>
       <details><summary>Is it really free?</summary><p>Yes. Keysrs is MIT-licensed open source with no trial, license key or paid tier.</p></details>
       <details><summary>What Macs does it run on?</summary><p>macOS 14 Sonoma or newer on Apple Silicon. The download is Developer ID signed and notarized by Apple. No Intel build yet.</p></details>
