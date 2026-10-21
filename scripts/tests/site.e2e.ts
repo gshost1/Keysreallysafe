@@ -5,11 +5,13 @@ test('marketing navigation, release links, privacy and terms', async ({ app, bro
   await app.open('/');
   await expect(screen.getByRole('heading', /Dummy keys for your VMs/)).toBeVisible();
   // The mock prompts read exactly as macOS shows the app's Touch ID reasons.
-  const wrapPrompt = '“Keysrs” is trying to match 1 value in .env against the vault and wrap them.';
-  const grantPrompt = '“Keysrs” is trying to grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.';
-  await expect(browser.locator('.touch p:first-of-type')).toHaveCount(2);
-  await expect(browser.locator('.touch p:first-of-type').first()).toHaveText(wrapPrompt);
-  await expect(browser.locator('.touch p:first-of-type').last()).toHaveText(grantPrompt);
+  const relayPrompt = 'Keysrs is trying to connect the relay to keysrs-relay.you.workers.dev.';
+  const grantPrompt = 'Keysrs is trying to grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.';
+  const wrapPrompt = 'Keysrs is trying to match 1 value in .env against the vault and wrap them.';
+  await expect(browser.locator('.touch p:first-of-type')).toHaveCount(3);
+  await expect(browser.locator('.touch p:first-of-type').nth(0)).toHaveText(relayPrompt);
+  await expect(browser.locator('.touch p:first-of-type').nth(1)).toHaveText(grantPrompt);
+  await expect(browser.locator('.touch p:first-of-type').nth(2)).toHaveText(wrapPrompt);
   await expect(browser.locator('#relay')).toBeVisible();
   await expect(browser.locator('body')).not.toContainText('is trying to Grant');
   const download = browser.locator('a[href$="Keysrs-arm64.dmg"]');

@@ -68,34 +68,32 @@
   </div>
 
   <div class="wrap">
-    <div class="mac" role="img" aria-label="A Mac screen: a Terminal runs keys wrap on a project's .env file with the relay URL, the macOS Touch ID prompt asks to match the value against the vault and wrap it, and the Keysrs dropdown shows Claude at 94% of its 5-hour window.">
+    <div class="mac" role="img" aria-label="A Mac screen: a Terminal on a VM prints a .env that holds only a dummy key and runs an eval through the relay Worker, the macOS Touch ID prompt asks to connect the relay, and the Keysrs dropdown shows Claude at 94% of its 5-hour window.">
       <div class="screen">
         <div class="mbar">
           <span class="b">Terminal</span><span class="hs">Shell</span><span class="hs">Edit</span><span class="hs">View</span><span class="hs">Window</span><span class="hs">Help</span>
           <span class="gap"></span>
-          <span class="it us"><svg viewBox="0 0 16 16"><path d="M2 12a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8 12l4-2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>94%</span><span class="it hs">Tue 21 Oct</span><span class="it">11:13 PM</span>
+          <span class="it us">C 94%</span><span class="it hs">Tue 21 Oct</span><span class="it">11:13 PM</span>
         </div>
 
         <div class="win term wrapdemo">
-          <div class="tb"><i></i><i></i><i></i><span>zsh — ~/evals</span></div>
-<pre><span class="cu">$ keys wrap .env --relay https://keysrs-relay.you.workers.dev</span>
-1 value in .env looks like a provider key: OPENAI_API_KEY
-<span class="ct">Touch ID in Keysrs to compare them with the vault…</span>
-plan for .env:
-  wrap  OPENAI_API_KEY -&gt; evals-openai  (new vault key, OpenAI at api.openai.com)
-  set   OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
-each wrapped key gets a client token (POST and GET, 30 days) and the gateway turned on
-Apply this plan? [y/N] y
-<span class="ok">wrapped 1 variable in .env:</span>
-  OPENAI_API_KEY -&gt; evals-openai (added to the vault) client #4
-  OPENAI_BASE_URL -&gt; relay
-<span class="ct">backup with the original values: .env.keysrs-backup-20261021-231342 (0600)</span><span class="cur"></span></pre>
+          <div class="tb"><i></i><i></i><i></i><span>ssh — ubuntu@vm</span></div>
+<pre><span class="cu">$ cat .env</span>
+OPENAI_API_KEY=ksfc_8f1c…d27e
+OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
+
+<span class="cu">$ python run_evals.py</span>
+48 prompts · gpt-5 · via keysrs-relay.you.workers.dev
+<span class="ok">48/48 ok in 3m 12s</span>
+
+<span class="cu">$ grep -c sk- .env</span>
+0<span class="cur"></span></pre>
         </div>
 
         <div class="touch">
           <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
           <b>Keysrs</b>
-          <p>“Keysrs” is trying to match 1 value in .env against the vault and wrap them.</p>
+          <p>Keysrs is trying to connect the relay to keysrs-relay.you.workers.dev.</p>
           <p>Touch ID or enter your password to allow this.</p>
           <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
         </div>
@@ -220,7 +218,7 @@ Apply this plan? [y/N] y
         <div class="touch t2">
           <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
           <b>Keysrs</b>
-          <p>“Keysrs” is trying to grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.</p>
+          <p>Keysrs is trying to grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.</p>
           <p>Touch ID or enter your password to allow this.</p>
           <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
         </div>
@@ -269,18 +267,26 @@ Apply this plan? [y/N] y
         <li><b>Calls come home.</b><span>Each call reaches your Worker, rides one WebSocket your Mac opened, gets the real key swapped in on loopback and goes to the provider. It lands in your usage chart like any other.</span></li>
       </ol>
       <div class="askvis">
-        <div class="win chat">
-          <div class="tb"><i></i><i></i><i></i><span>ubuntu@vm — ~/evals</span></div>
-<pre><span class="cu">$ cat .env</span>
-OPENAI_API_KEY=ksfc_8f1c…d27e
-OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
-
-<span class="cu">$ python run_evals.py</span>
-48 prompts · gpt-5 · keysrs-relay.you.workers.dev
-<span class="ok">48/48 ok in 3m 12s</span>
-
-<span class="cu">$ grep -c sk- .env</span>
-0<span class="cur"></span></pre>
+        <div class="win chat wrapdemo">
+          <div class="tb"><i></i><i></i><i></i><span>zsh — ~/evals</span></div>
+<pre><span class="cu">$ keys wrap .env --relay https://keysrs-relay.you.workers.dev</span>
+1 value in .env looks like a provider key: OPENAI_API_KEY
+<span class="ct">Touch ID in Keysrs to compare them with the vault…</span>
+plan for .env:
+  wrap  OPENAI_API_KEY -&gt; evals-openai  (new vault key, OpenAI at api.openai.com)
+  set   OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
+each wrapped key gets a client token (POST and GET, 30 days) and the gateway turned on
+Apply this plan? [y/N] y
+<span class="ok">wrapped 1 variable in .env:</span>
+  OPENAI_API_KEY -&gt; evals-openai (added to the vault) client #4
+  OPENAI_BASE_URL -&gt; relay<span class="cur"></span></pre>
+        </div>
+        <div class="touch t2">
+          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
+          <b>Keysrs</b>
+          <p>Keysrs is trying to match 1 value in .env against the vault and wrap them.</p>
+          <p>Touch ID or enter your password to allow this.</p>
+          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
         </div>
       </div>
     </div>
