@@ -41,8 +41,8 @@
     <a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a>
     <nav>
       <a href="#relay">Cloud VMs</a>
-      <a href="#features">Features</a>
       <a href="#agents">Key vault</a>
+      <a href="#features">Features</a>
       <a href="#privacy">Privacy</a>
       <a href="#faq">FAQ</a>
       <a href="https://github.com/gshost1/Keysreallysafe">GitHub</a>
@@ -191,68 +191,7 @@ Apply this plan? [y/N] y
   </div>
 </section>
 
-<section id="features">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Usage meter</p>
-      <h2 class="sh">Every plan limit,<br>before it bites.</h2>
-      <p class="sp">Reads the files Claude Code, Codex and Grok already write. No logins, no scraping, no provider websites.</p>
-    </div>
-
-    <div class="bento">
-      <div class="card s4">
-        <h3>Every plan window at a glance.</h3>
-        <p>Five-hour, weekly and model windows as “% used · resets in”, straight from the files each tool keeps on your Mac.</p>
-        <div class="viz meters">
-          <div class="prov">Claude</div>
-          <div class="m"><div class="l"><b>5-hour</b><span class="warn">94% · 22m left</span></div><div class="track"><i class="hot" style="--w:94%"></i></div></div>
-          <div class="m"><div class="l"><b>Weekly</b><span>71% · resets Sun</span></div><div class="track"><i style="--w:71%"></i></div></div>
-          <div class="prov">Codex</div>
-          <div class="m"><div class="l"><b>5-hour</b><span>48% · 3h 02m left</span></div><div class="track"><i style="--w:48%"></i></div></div>
-          <div class="m"><div class="l"><b>Weekly</b><span>67% · resets Thu</span></div><div class="track"><i style="--w:67%"></i></div></div>
-          <div class="prov">Grok</div>
-          <div class="m"><div class="l"><b>Weekly</b><span>58% · resets Mon</span></div><div class="track"><i style="--w:58%"></i></div></div>
-        </div>
-      </div>
-
-      <div class="card s2">
-        <h3>Tokens measured. Dollars on request.</h3>
-        <p>USD comes from a published list-price table, only when you ask.</p>
-        <div class="viz">
-          <div class="toggle"><span class="on">Tokens</span><span>USD</span></div>
-          <div class="big">1.84M<small>today</small></div>
-          <div class="split"><i style="--c:#0071e3;--f:58"></i><i style="--c:#6e56f8;--f:27"></i><i style="--c:#5ac8fa;--f:15"></i></div>
-          <div class="legend"><span style="--c:#0071e3">Claude</span><span style="--c:#6e56f8">Codex</span><span style="--c:#5ac8fa">Grok</span></div>
-        </div>
-      </div>
-
-      <div class="card s2">
-        <h3>Not tracked. Never guessed.</h3>
-        <p>A plan Keysrs can't read from your Mac shows as <em>not tracked</em>, with a link to that provider's own dashboard. No estimates dressed up as measurements.</p>
-        <div class="viz nt">
-          <div class="r">Claude Code, Codex, Grok<span class="tag">measured from local files</span></div>
-          <div class="r">Anything else<span class="tag">not tracked · <a href="#faq">open dashboard</a></span></div>
-        </div>
-      </div>
-
-      <div class="card s4">
-        <h3>This week, by day and model.</h3>
-        <p>Today by hour, the week or month by day. Filter by tool or model and export CSV with the raw columns.</p>
-        <div class="viz chart">
-          <div class="col" data-d="Thu" style="--h:46%"><i style="--c:#0071e3;--f:6"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
-          <div class="col" data-d="Fri" style="--h:72%"><i style="--c:#0071e3;--f:5"></i><i style="--c:#6e56f8;--f:4"></i><i style="--c:#5ac8fa;--f:2"></i></div>
-          <div class="col" data-d="Sat" style="--h:22%"><i style="--c:#0071e3;--f:4"></i><i style="--c:#6e56f8;--f:1"></i><i style="--c:#5ac8fa;--f:1"></i></div>
-          <div class="col" data-d="Sun" style="--h:28%"><i style="--c:#0071e3;--f:5"></i><i style="--c:#6e56f8;--f:2"></i></div>
-          <div class="col" data-d="Mon" style="--h:88%"><i style="--c:#0071e3;--f:6"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
-          <div class="col" data-d="Tue" style="--h:58%"><i style="--c:#0071e3;--f:7"></i><i style="--c:#6e56f8;--f:2"></i><i style="--c:#5ac8fa;--f:2"></i></div>
-          <div class="col today" data-d="Today" style="--h:94%"><i style="--c:#0071e3;--f:7"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="agents" class="gray">
+<section id="agents">
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">Key vault</p>
@@ -311,6 +250,67 @@ Apply this plan? [y/N] y
           <li><b>Lock screen revokes</b><span>So does revoking it or a restart.</span></li>
           <li><b>Counted in your usage</b><span>Every call lands in the chart. Request bodies never do.</span></li>
         </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features" class="gray">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Usage meter</p>
+      <h2 class="sh">Every plan limit,<br>before it bites.</h2>
+      <p class="sp">Reads the files Claude Code, Codex and Grok already write. No logins, no scraping, no provider websites.</p>
+    </div>
+
+    <div class="bento">
+      <div class="card s4">
+        <h3>Every plan window at a glance.</h3>
+        <p>Five-hour, weekly and model windows as “% used · resets in”, straight from the files each tool keeps on your Mac.</p>
+        <div class="viz meters">
+          <div class="prov">Claude</div>
+          <div class="m"><div class="l"><b>5-hour</b><span class="warn">94% · 22m left</span></div><div class="track"><i class="hot" style="--w:94%"></i></div></div>
+          <div class="m"><div class="l"><b>Weekly</b><span>71% · resets Sun</span></div><div class="track"><i style="--w:71%"></i></div></div>
+          <div class="prov">Codex</div>
+          <div class="m"><div class="l"><b>5-hour</b><span>48% · 3h 02m left</span></div><div class="track"><i style="--w:48%"></i></div></div>
+          <div class="m"><div class="l"><b>Weekly</b><span>67% · resets Thu</span></div><div class="track"><i style="--w:67%"></i></div></div>
+          <div class="prov">Grok</div>
+          <div class="m"><div class="l"><b>Weekly</b><span>58% · resets Mon</span></div><div class="track"><i style="--w:58%"></i></div></div>
+        </div>
+      </div>
+
+      <div class="card s2">
+        <h3>Tokens measured. Dollars on request.</h3>
+        <p>USD comes from a published list-price table, only when you ask.</p>
+        <div class="viz">
+          <div class="toggle"><span class="on">Tokens</span><span>USD</span></div>
+          <div class="big">1.84M<small>today</small></div>
+          <div class="split"><i style="--c:#0071e3;--f:58"></i><i style="--c:#6e56f8;--f:27"></i><i style="--c:#5ac8fa;--f:15"></i></div>
+          <div class="legend"><span style="--c:#0071e3">Claude</span><span style="--c:#6e56f8">Codex</span><span style="--c:#5ac8fa">Grok</span></div>
+        </div>
+      </div>
+
+      <div class="card s2">
+        <h3>Not tracked. Never guessed.</h3>
+        <p>A plan Keysrs can't read from your Mac shows as <em>not tracked</em>, with a link to that provider's own dashboard. No estimates dressed up as measurements.</p>
+        <div class="viz nt">
+          <div class="r">Claude Code, Codex, Grok<span class="tag">measured from local files</span></div>
+          <div class="r">Anything else<span class="tag">not tracked · <a href="#faq">open dashboard</a></span></div>
+        </div>
+      </div>
+
+      <div class="card s4">
+        <h3>This week, by day and model.</h3>
+        <p>Today by hour, the week or month by day. Filter by tool or model and export CSV with the raw columns.</p>
+        <div class="viz chart">
+          <div class="col" data-d="Thu" style="--h:46%"><i style="--c:#0071e3;--f:6"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col" data-d="Fri" style="--h:72%"><i style="--c:#0071e3;--f:5"></i><i style="--c:#6e56f8;--f:4"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col" data-d="Sat" style="--h:22%"><i style="--c:#0071e3;--f:4"></i><i style="--c:#6e56f8;--f:1"></i><i style="--c:#5ac8fa;--f:1"></i></div>
+          <div class="col" data-d="Sun" style="--h:28%"><i style="--c:#0071e3;--f:5"></i><i style="--c:#6e56f8;--f:2"></i></div>
+          <div class="col" data-d="Mon" style="--h:88%"><i style="--c:#0071e3;--f:6"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col" data-d="Tue" style="--h:58%"><i style="--c:#0071e3;--f:7"></i><i style="--c:#6e56f8;--f:2"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+          <div class="col today" data-d="Today" style="--h:94%"><i style="--c:#0071e3;--f:7"></i><i style="--c:#6e56f8;--f:3"></i><i style="--c:#5ac8fa;--f:2"></i></div>
+        </div>
       </div>
     </div>
   </div>
