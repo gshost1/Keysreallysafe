@@ -113,8 +113,13 @@ final class GatewayListener: @unchecked Sendable {
         }
         guard let target = service.lookupGateway(name: keyName) else {
             // Every key is off after the app restarts, and its clients then get this 404; the log
-            // says so. A name that is no key at all is not recorded (see recordGatewayDenial).
-            service.recordGatewayDenial(name: keyName, reason: "gateway_off", status: 404, via: via)
+            // says so. Only a verified client is recorded: a grant died with its key's gateway and
+            // can no longer be checked, so anyone sending something shaped like one would write a
+            // row per request. A name that is no key at all is not recorded either
+            // (see recordGatewayDenial).
+            if gatewayClient != nil {
+                service.recordGatewayDenial(name: keyName, reason: GatewayLogFilter.gatewayOff, status: 404, via: via)
+            }
             Self.writeJSON(fd: client, status: 404, object: [
                 "error": "not_found",
                 "message": "no key \(keyName) with the gateway on; run: keys grant \(keyName) --task \"...\"",

@@ -1081,7 +1081,10 @@ final class CatalogDB: @unchecked Sendable {
         switch filter {
         case .all: break
         case .failed: callWhere += " AND (http_status IS NULL OR http_status < 200 OR http_status > 299 OR \(gatewaySide))"
-        case .gatewaySide: callWhere += " AND \(gatewaySide)"
+        case .gatewaySide:
+            callWhere += " AND \(gatewaySide)"
+            refusalWhere += " AND e.detail IN (" + GatewayLogFilter.gatewaySideRefusals.map { _ in "?" }.joined(separator: ", ") + ")"
+            refusalArgs += GatewayLogFilter.gatewaySideRefusals.map { $0 as any SQLBindable }
         }
         let order = newestLimit == nil ? "ASC" : "DESC"
         var sql = """

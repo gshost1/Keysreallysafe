@@ -564,7 +564,10 @@ Start at Login is on, whether the `keys` on PATH is that bundle's binary, and an
 number is missing or the menu bar item does not behave like the copy you built.
 For the gateway it prints the limits it runs with (900 s per call, no separate
 connect timeout, 8 MiB request bodies, 32 connections, the 401/403 pause) and
-its last few failures on this side of the provider.
+its last few failures on this side of the provider: timeouts and connection
+errors, breaker pauses, and clients calling a key whose gateway is off. Token
+refusals are left out there, since anyone who can reach the gateway can cause
+them; `keys log --failed` has them.
 
 `keys log` is the gateway's request log: the last 50 calls it forwarded or
 refused, newest last, one line each with the time, key, provider, upstream
@@ -577,8 +580,11 @@ went to the caller unchanged; `gateway_timeout` (the 900-second limit ran
 out), `connect_failed`, `tls_failed`, `connection_lost`, `network_error` and
 `client_closed` (the caller went away, or stopped reading for 30 seconds) are
 failures on this side of the provider, and a refused call shows the code it
-was refused with (`no_client_token`, `grant_path_not_allowed`, `gateway_off`,
-…). A call that got no response head is answered 502
+was refused with (`no_client_token`, `grant_path_not_allowed`, …; `gateway_off`
+when a valid client token met a key whose gateway is off, while a grant is not
+logged then because it can no longer be checked). VIA is a label: `keys relay`
+always sets it and drops a caller's copy, but a program on this Mac can claim
+it too. A call that got no response head is answered 502
 `{"error":"upstream_error","reason":"gateway_timeout","detail":"NSURLErrorDomain -1001"}`,
 so a script can tell the gateway's failures from a provider's own 502 by
 `reason`. The log holds no body, token or key value; calls stored before it

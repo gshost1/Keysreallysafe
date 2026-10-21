@@ -13,7 +13,7 @@ struct DoctorReport: Equatable {
     var gatewayPort: UInt16
     var install: DoctorInstall
     var controlFile: String? = nil
-    /// The latest calls the gateway refused or failed on this side of the provider.
+    /// The latest failures on the gateway's side of the provider (`GatewayLogFilter.gatewaySide`).
     var gatewayFailures: [GatewayLogEntry] = []
 
     var printed: String {
@@ -156,8 +156,8 @@ enum Doctor {
 
     static let gatewayFailureCount = 5
 
-    /// The limits the gateway enforces, from the constants it runs with, and the latest calls it
-    /// refused or failed itself. Pure, so the lines can be asserted in tests. There is no
+    /// The limits the gateway enforces, from the constants it runs with, and the latest failures
+    /// on its side of the provider. Pure, so the lines can be asserted in tests. There is no
     /// separate connect timeout to print: a 30 s one cut off calls whose head takes minutes, so
     /// the request timeout covers connecting too.
     static func gatewayLines(failures: [GatewayLogEntry], timeZone: TimeZone) -> [String] {
@@ -173,7 +173,7 @@ enum Doctor {
             lines.append("gateway failures  none recorded")
             return lines
         }
-        lines.append("gateway failures  last \(failures.count) refused or failed on this side, newest last (more: keys log --failed)")
+        lines.append("gateway failures  last \(failures.count) on this side of the provider, newest last (token refusals: keys log --failed)")
         lines.append(contentsOf: GatewayLogFormat.table(failures, timeZone: timeZone).map { "  " + $0 })
         return lines
     }

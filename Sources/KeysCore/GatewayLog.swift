@@ -97,9 +97,18 @@ enum GatewayLogFilter {
     /// `keys log --failed`: refusals, non-2xx answers, gateway-side failures, and calls too old
     /// to have a status (product analytics counts those as failed too).
     case failed
-    /// What `keys doctor` lists: refusals and calls that ended for a gateway-side reason. Old
-    /// rows with no reason are left out, since nobody knows why they ended.
+    /// What `keys doctor` lists: calls that ended for a gateway-side reason and the refusals in
+    /// `gatewaySideRefusals`. Token refusals are left out (`keys log --failed` has them): anyone
+    /// who can reach the gateway, the relay's URL included, can collect them and push real
+    /// failures off a short list. Old rows with no reason are left out, since nobody knows why
+    /// they ended.
     case gatewaySide
+
+    /// The 404 refusal for a key whose gateway is off, recorded only for a verified client.
+    static let gatewayOff = "gateway_off"
+    /// Refusals only a working credential can cause: a key the breaker paused, and a verified
+    /// client calling a key whose gateway is off.
+    static let gatewaySideRefusals = [GatewayBreaker.code, gatewayOff]
 }
 
 /// Where a `keys log --tail` has read up to: the highest usage row and key event it has seen.
@@ -193,7 +202,9 @@ struct LogCommand: ParsableCommand {
             provider answered (its status is passed through unchanged); gateway_timeout, \
             connect_failed, tls_failed, connection_lost, network_error and client_closed are \
             failures on this side of the provider; a refusal shows the code the gateway refused \
-            with, such as no_client_token, grant_path_not_allowed or gateway_off.
+            with, such as no_client_token, grant_path_not_allowed or gateway_off. VIA is a \
+            label: keys relay always sets it and drops a caller's copy, but a program on this Mac \
+            can send it too.
             """
     )
 

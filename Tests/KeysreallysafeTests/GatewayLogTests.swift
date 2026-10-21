@@ -147,13 +147,18 @@ final class GatewayLogTests: XCTestCase {
         ).token
         let (_, wrongMethod) = try await rig.call("v1/chat/completions", token: getOnly, method: "POST")
         XCTAssertEqual(wrongMethod, 403)
-        // Every key is off after a relaunch; its callers then get 404 until it is turned on again.
+        // Every key is off after a relaunch; its clients then get 404 until it is turned on again.
+        let client = try rig.service.issueGatewayClient(name: "demo", label: "agent").token
         _ = try rig.service.setGateway(name: "demo", enabled: false, host: nil)
-        let (_, off) = try await rig.call("v1/models", token: getOnly)
+        let (_, off) = try await rig.call("v1/chat/completions", token: client, method: "POST")
         XCTAssertEqual(off, 404)
+        // The grant died with the gateway and can no longer be told from a made-up one, so its
+        // 404 is not logged; otherwise anyone could write a row per request.
+        let (_, deadGrant) = try await rig.call("v1/models", token: getOnly)
+        XCTAssertEqual(deadGrant, 404)
         // A name that is no key at all must not grow the log.
-        let (_, ghost) = try await rig.call("v1/models", token: getOnly, key: "ghost")
-        XCTAssertEqual(ghost, 404)
+        let (_, ghost) = try await rig.call("v1/models", token: nil, key: "ghost")
+        XCTAssertEqual(ghost, 401)
 
         let entries = try rig.db.gatewayLog(through: rig.db.gatewayLogCursor(), limit: 50)
         XCTAssertEqual(entries.map(\.kind), [.refusal, .refusal, .refusal, .refusal])
@@ -304,7 +309,7 @@ final class GatewayLogTests: XCTestCase {
         XCTAssertEqual(try db.gatewayLog(through: cursor, key: "demo", filter: .failed, limit: 50).map(\.reason),
                        ["client_closed", "upstream_status", nil, "out_of_scope"])
         XCTAssertEqual(try db.gatewayLog(through: cursor, filter: .gatewaySide, limit: 50).map(\.reason),
-                       ["gateway_timeout", "client_closed", "out_of_scope"])
+                       ["gateway_timeout", "client_closed"], "a token refusal is not a gateway-side failure")
         XCTAssertEqual(minutes(try db.gatewayLog(through: cursor, limit: 2)), ["05:30", "06:00"])
 
         let json = all[2].jsonObject
@@ -381,7 +386,7 @@ final class GatewayLogTests: XCTestCase {
         let failures = try db.gatewayLog(through: db.gatewayLogCursor(), filter: .gatewaySide, limit: Doctor.gatewayFailureCount)
         let lines = Doctor.gatewayLines(failures: failures, timeZone: utc)
         XCTAssertEqual(Array(lines.dropFirst(2)), [
-            "gateway failures  last 2 refused or failed on this side, newest last (more: keys log --failed)",
+            "gateway failures  last 2 on this side of the provider, newest last (token refusals: keys log --failed)",
             "  TIME                 KEY       PROVIDER    HOST                      STATUS  DURATION  REASON                 VIA",
             "  2026-10-20 12:00:00  glm       nvidia      integrate.api.nvidia.com  502     900.0s    gateway_timeout        relay",
             "  2026-10-20 12:03:00  glm       -           -                         -       -         upstream_auth_blocked  loopback",
@@ -396,6 +401,30 @@ final class GatewayLogTests: XCTestCase {
         XCTAssertTrue(printed[at + 1].hasPrefix("gateway limits  request_timeout=900s"))
         XCTAssertTrue(printed[at + 2].hasPrefix("gateway breaker  5 upstream 401/403"))
         XCTAssertTrue(printed.contains { $0.contains("gateway_timeout") })
+    }
+
+    /// Anyone who can reach the gateway (the relay's URL is enough) can collect token refusals;
+    /// they must not push the failures doctor is there to show off its short list.
+    func testTokenRefusalsCannotCrowdGatewayFailuresOutOfDoctor() throws {
+        let (db, dir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try db.insertUsage(GatewayUsageRow(ts: "2026-10-20T12:00:00Z", key: "glm", provider: "nvidia", model: "m",
+                                           status: 502, durationMs: 40, requestId: "t", via: "relay",
+                                           upstreamHost: "integrate.api.nvidia.com", reason: "tls_failed").usageEvent())
+        try db.insertKeyEvent(ts: "2026-10-20T12:01:00Z", name: "glm", action: "gateway_denied", caller: "gateway",
+                              detail: GatewayBreaker.code)
+        try db.insertKeyEvent(ts: "2026-10-20T12:02:00Z", name: "glm", action: "gateway_denied", caller: "gateway",
+                              detail: "gateway_off", httpStatus: 404)
+        for second in 0..<20 {
+            try db.insertKeyEvent(ts: String(format: "2026-10-20T12:03:%02dZ", second), name: "glm", action: "gateway_denied",
+                                  caller: "relay", detail: second.isMultiple(of: 2) ? "no_client_token" : "unknown_client",
+                                  httpStatus: 401)
+        }
+        let cursor = try db.gatewayLogCursor()
+        XCTAssertEqual(try db.gatewayLog(through: cursor, filter: .gatewaySide, limit: Doctor.gatewayFailureCount).map(\.reason),
+                       ["tls_failed", GatewayBreaker.code, "gateway_off"])
+        XCTAssertEqual(try db.gatewayLog(through: cursor, key: "glm", filter: .gatewaySide, limit: 5).count, 3)
+        XCTAssertEqual(try db.gatewayLog(through: cursor, filter: .failed, limit: 50).count, 23, "--failed still lists every refusal")
     }
 
     // MARK: product analytics
