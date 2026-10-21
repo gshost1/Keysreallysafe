@@ -20,6 +20,10 @@ struct GatewayUsageRow: Equatable {
     var reportedCostUsdTicks: Int64? = nil
     /// "relay" when `keys relay` replayed the call from the user's Worker; nil for loopback.
     var via: String? = nil
+    /// The provider host the call went to (never a path or query).
+    var upstreamHost: String? = nil
+    /// Why the call ended, a `GatewayReason` code.
+    var reason: String? = nil
 
     /// The usage_events row this call is stored as. Absent token counts become zero there,
     /// which is why pricing (`SpendQueries.gatewayUsd`) treats an all-zero call as unknown.
@@ -39,7 +43,10 @@ struct GatewayUsageRow: Equatable {
             cacheCreationTokens: cacheWriteTokens ?? 0,
             costUsdTicks: reportedCostUsdTicks,
             keyName: key,
-            httpStatus: status
+            httpStatus: status,
+            durationMs: durationMs,
+            upstreamHost: upstreamHost,
+            reason: reason
         )
     }
 }

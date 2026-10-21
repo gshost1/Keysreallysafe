@@ -13,6 +13,8 @@ struct DoctorReport: Equatable {
     var gatewayPort: UInt16
     var install: DoctorInstall
     var controlFile: String? = nil
+    /// The latest failures on the gateway's side of the provider (`GatewayLogFilter.gatewaySide`).
+    var gatewayFailures: [GatewayLogEntry] = []
 
     var printed: String {
         var lines: [String] = []
@@ -33,6 +35,7 @@ struct DoctorReport: Equatable {
         lines.append(
             "gateway  127.0.0.1:\(gatewayPort)  \(gatewayListening ? "listening" : "not listening")"
         )
+        lines.append(contentsOf: Doctor.gatewayLines(failures: gatewayFailures, timeZone: .current))
         lines.append("site  control=\(controlFile ?? "none (no running site)")")
         lines.append(contentsOf: Doctor.installLines(install))
         return lines.joined(separator: "\n")
@@ -133,6 +136,9 @@ enum Doctor {
 
         let listening = service.isGatewayRunning()
             || (probeListener && portOpen(host: BindPolicy.loopback, port: GatewayListener.port))
+        let failures = (try? service.catalog.gatewayLog(
+            through: service.catalog.gatewayLogCursor(), filter: .gatewaySide, limit: gatewayFailureCount
+        )) ?? []
 
         return DoctorReport(
             sources: sources,
@@ -143,8 +149,33 @@ enum Doctor {
             gatewayListening: listening,
             gatewayPort: GatewayListener.port,
             install: install ?? DoctorInstall.live(probeAgent: probeAgent),
-            controlFile: ControlFile.live(at: ControlFile.url(beside: service.catalog.path)).map { "127.0.0.1:\($0.port) pid \($0.pid)" }
+            controlFile: ControlFile.live(at: ControlFile.url(beside: service.catalog.path)).map { "127.0.0.1:\($0.port) pid \($0.pid)" },
+            gatewayFailures: failures
         )
+    }
+
+    static let gatewayFailureCount = 5
+
+    /// The limits the gateway enforces, from the constants it runs with, and the latest failures
+    /// on its side of the provider. Pure, so the lines can be asserted in tests. There is no
+    /// separate connect timeout to print: a 30 s one cut off calls whose head takes minutes, so
+    /// the request timeout covers connecting too.
+    static func gatewayLines(failures: [GatewayLogEntry], timeZone: TimeZone) -> [String] {
+        let mib = GatewayListener.bodyCap / (1024 * 1024)
+        var lines = [
+            "gateway limits  request_timeout=\(Int(GatewayListener.resourceTimeout))s (idle and whole call)"
+                + "  connect_timeout=none (the request timeout covers it)  body_cap=\(mib)MiB"
+                + "  max_connections=\(GatewayListener.maxConcurrent)  caller_io_timeout=\(GatewayListener.ioTimeoutSeconds)s",
+            "gateway breaker  \(GatewayBreaker.threshold) upstream 401/403 in a row pause a key's calls for "
+                + "\(Int(GatewayBreaker.cooldown))s (503 \(GatewayBreaker.code))",
+        ]
+        guard !failures.isEmpty else {
+            lines.append("gateway failures  none recorded")
+            return lines
+        }
+        lines.append("gateway failures  last \(failures.count) on this side of the provider, newest last (token refusals: keys log --failed)")
+        lines.append(contentsOf: GatewayLogFormat.table(failures, timeZone: timeZone).map { "  " + $0 })
+        return lines
     }
 
     /// Formats the install block. Pure: it reads only the gathered `DoctorInstall`, never the

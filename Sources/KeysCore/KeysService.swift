@@ -941,10 +941,12 @@ final class KeysService: @unchecked Sendable {
         try? catalog.touchGatewayClient(id: client.id, at: UTC.iso(now))
     }
 
-    /// Audit a denial only for a key that exists; a made-up name must not grow the log.
-    func recordGatewayDenial(name: String, reason: String) {
+    /// Audit a denial only for a key that exists; a made-up name must not grow the log. The
+    /// caller is the path the request took, as for a call, and `status` is what the gateway
+    /// answered (nil for a breaker trip, which answers no call by itself); `keys log` shows both.
+    func recordGatewayDenial(name: String, reason: String, status: Int? = nil, via: String? = nil) {
         guard (try? catalog.catalogExists(name: name)) == true else { return }
-        try? recordKeyEvent(name: name, action: "gateway_denied", caller: "gateway", detail: reason)
+        try? recordKeyEvent(name: name, action: "gateway_denied", caller: via ?? "gateway", detail: reason, httpStatus: status)
     }
 
     func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil) throws {
@@ -1259,6 +1261,7 @@ final class KeysService: @unchecked Sendable {
         action: String,
         caller: String,
         detail: String? = nil,
+        httpStatus: Int? = nil,
         touchLastUsed: Bool = false
     ) throws {
         let ts = UTC.iso(Date())
@@ -1267,7 +1270,8 @@ final class KeysService: @unchecked Sendable {
             name: name,
             action: action,
             caller: caller,
-            detail: detail
+            detail: detail,
+            httpStatus: httpStatus
         )
         if touchLastUsed {
             try catalog.touchLastUsed(name: name, at: ts)

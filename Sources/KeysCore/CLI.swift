@@ -22,6 +22,7 @@ public struct KeysCLI: ParsableCommand {
             SpendCommand.self,
             StatusCommand.self,
             DoctorCommand.self,
+            LogCommand.self,
             LoginItemStatusCommand.self,
             EnvCommand.self,
             GrantCommand.self,

@@ -19,6 +19,11 @@ struct UsageEvent: Equatable {
     var keyName: String? = nil
     /// Upstream HTTP status of a gateway call; nil for local events.
     var httpStatus: Int? = nil
+    /// Gateway calls only: how long the call took, the host it went to and why it ended
+    /// (`GatewayReason`). Nil for local events and for gateway rows stored before they were kept.
+    var durationMs: Int? = nil
+    var upstreamHost: String? = nil
+    var reason: String? = nil
 
     var tokenCount: Int {
         inputTokens.saturatingAdding(outputTokens).saturatingAdding(cachedReadTokens)
