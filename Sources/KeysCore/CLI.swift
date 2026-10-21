@@ -103,7 +103,7 @@ struct ListCommand: ParsableCommand {
         let service = try AppFactory.makeService()
         let rows = try service.list()
         if json {
-            try JSONValue.printLine(service.listJSONObject())
+            try JSONValue.printLine(Self.jsonRows(service: service))
             return
         }
         if rows.isEmpty {
@@ -115,6 +115,20 @@ struct ListCommand: ParsableCommand {
             let last = row.lastUsedAt ?? "-"
             print("\(row.name)\t\(row.provider)\t\(row.kind)\t\(last)")
         }
+    }
+
+    /// The gateway holds its keys in the running app's memory, so a CLI process built the
+    /// list from its own empty cache and reported every key off while the app had them on.
+    /// The app's list is the truth while it runs; without it no key is on, and the local
+    /// rows say so correctly.
+    static func jsonRows(service: KeysService) throws -> [[String: Any]] {
+        if let client = try? ControlClient.connect(control: ControlFile.url(beside: service.catalog.path)),
+           let obj = try? client.call(method: "GET", path: "/api/keys", expect: 200, timeout: 5),
+           let keys = obj["keys"] as? [[String: Any]]
+        {
+            return keys
+        }
+        return try service.listJSONObject()
     }
 }
 
