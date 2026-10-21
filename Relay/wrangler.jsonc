@@ -14,4 +14,8 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayHub"] }],
   // Bodies and tokens must not end up in Workers Logs; keep observability off.
   "observability": { "enabled": false }
+  // How long a request waits for the Mac when none is connected, in ms
+  // (default 60000, 0 answers 503 at once, 600000 at most). docs/relay.md has
+  // the details; set it here or with `npx wrangler deploy --var`.
+  // "vars": { "RELAY_OFFLINE_GRACE_MS": "60000" }
 }

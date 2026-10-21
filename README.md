@@ -500,7 +500,9 @@ Cloudflare account, and the Mac keeps one outbound WebSocket to it. The
 Worker is a pipe and nothing more; every request it carries still lands in
 the loopback gateway with the same token checks, key swap and usage row, and
 the Worker never sees a key. Agents call `https://<your worker>/<key name>`
-with their usual token.
+with their usual token. If the Mac drops off for a moment (the relay redialing,
+a short sleep), the Worker holds new requests for up to a minute and sends
+them once the Mac is back.
 
 ```sh
 (cd Relay && npm ci && npx wrangler login && npx wrangler deploy)   # your account

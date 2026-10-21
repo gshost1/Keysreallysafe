@@ -17,6 +17,8 @@ enum RelayProtocol {
     /// Matches the gateway's own request body cap, so the relay refuses nothing the gateway
     /// would accept and buffers nothing it would refuse.
     static let bodyCap = GatewayListener.bodyCap
+    /// The Worker sends no new request into a socket that has not pinged for 45 s (one and a
+    /// half intervals; macSilenceMs in Relay/src/protocol.js), so this must stay well under it.
     static let pingInterval: TimeInterval = 30
     /// A relayed response may take as long as the gateway allows upstream, plus connect time.
     static let gatewayReadTimeoutSeconds = Int(GatewayListener.resourceTimeout) + Int(GatewayListener.connectTimeout)
