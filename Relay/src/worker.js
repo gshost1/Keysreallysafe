@@ -29,7 +29,8 @@ function json(status, object, extraHeaders) {
 // first where a wait makes sense (docs/relay.md, the error table).
 const RETRY_AFTER = { mac_offline: "30", relay_busy: "5" };
 const RETRYABLE = new Set(["mac_offline", "relay_busy", "mac_disconnected"]);
-const NO_MAC = "no Mac is connected to this relay: `keys relay` is not running, or the Mac is asleep or offline";
+const NOT_RUNNING = "the Keysrs relay is off (Relay for Cloud Agents in its menu, or `keys relay on`) and `keys relay` is not running, or the Mac is asleep or offline";
+const NO_MAC = `no Mac is connected to this relay: ${NOT_RUNNING}`;
 
 const MiB = 1024 * 1024;
 const duration = (ms) => (ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`);
@@ -296,7 +297,7 @@ export class RelayHub extends DurableObject {
         // goes over in one piece, so the Mac never buffers it half-finished.
         entry.ws = await this.awaitMac(arrived + this.limits.offlineGraceMs);
         if (!entry.ws) {
-          throw new RelayError(503, "mac_offline", `no Mac connected to this relay within ${duration(this.limits.offlineGraceMs)}: \`keys relay\` is not running, or the Mac is asleep or offline`);
+          throw new RelayError(503, "mac_offline", `no Mac connected to this relay within ${duration(this.limits.offlineGraceMs)}: ${NOT_RUNNING}`);
         }
         toMac(requestFrame);
         for (const chunk of entry.upload) bodyToMac(chunk);

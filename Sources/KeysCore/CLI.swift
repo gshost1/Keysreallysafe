@@ -1356,11 +1356,38 @@ struct RelayCommand: ParsableCommand {
             each agent request back here and keys relay replays it against the gateway on \
             127.0.0.1:\(GatewayListener.port), so every grant check, key swap and usage row \
             happens on this Mac exactly as for a local caller. The Worker never sees a key. \
-            The agent calls https://<your worker>/<key name>/… with its ksfc_/ksf_ token.
+            The agent calls https://<your worker>/<key name>/… with its ksfc_/ksf_ token. \
+            keys relay on runs the relay inside Keysrs.app (also in its menu and in \
+            Settings), where it lasts until turned off or the app quits; keys relay alone \
+            runs it in this Terminal until Ctrl-C. Only one of them at a time: the Worker \
+            keeps a single Mac connection.
             """,
-        subcommands: [RelaySetupCommand.self, RelayRunCommand.self, RelayStatusCommand.self, RelayResetCommand.self],
+        subcommands: [
+            RelaySetupCommand.self, RelayRunCommand.self, RelayOnCommand.self, RelayOffCommand.self,
+            RelayStatusCommand.self, RelayResetCommand.self,
+        ],
         defaultSubcommand: RelayRunCommand.self
     )
+
+    /// The app's relay as the control socket reports it, in one line.
+    static func appLine(_ obj: [String: Any]) -> String {
+        guard JSONValue.bool(obj["on"]) == true else { return "off" }
+        let host = JSONValue.string(obj["url"]).flatMap { URL(string: $0)?.host } ?? "the Worker"
+        var line: String
+        switch JSONValue.string(obj["state"]) {
+        case "connected":
+            line = "on, connected to \(host) since \(JSONValue.string(obj["connected_since"]) ?? "now")"
+            let open = JSONValue.int(obj["inflight"]) ?? 0
+            if open > 0 { line += ", \(open) call\(open == 1 ? "" : "s") open" }
+        case "connecting":
+            line = "on, connecting to \(host)"
+        default:
+            line = "on, not connected; retrying"
+            if let error = JSONValue.string(obj["last_error"]) { line += " (\(error))" }
+        }
+        if JSONValue.bool(obj["awake"]) == true { line += ", keeping the Mac awake" }
+        return line
+    }
 }
 
 struct RelaySetupCommand: ParsableCommand {
@@ -1379,10 +1406,17 @@ struct RelaySetupCommand: ParsableCommand {
         relay secret for \(origin.absoluteString) (…\(RelaySecret.hint(secret))), stored in this Mac's Keychain.
         Give the Worker the same value, pasting it when asked:
           cd Relay && npx wrangler secret put RELAY_SECRET
-        Then connect with: keys relay
+        Then connect with: keys relay on (in Keysrs.app), or keys relay (in this Terminal)
         Agents use \(RelayURL.baseURL(origin, key: "<key name>")) as the base URL with a token from: keys client issue <key name>
 
         """.utf8))
+        // A relay that is on keeps the secret it started with.
+        if let held = RelayLock.holder(at: service.relayLockURL) {
+            let note = held.isApp(control: ControlFile.url(beside: service.catalog.path))
+                ? "The Keysrs app's relay is on with the previous secret; once the Worker has the new one, run keys relay off, then keys relay on."
+                : "The keys relay already running uses the previous secret; once the Worker has the new one, stop it with Ctrl-C and start it again."
+            FileHandle.standardError.write(Data((note + "\n").utf8))
+        }
     }
 }
 
@@ -1396,6 +1430,14 @@ struct RelayRunCommand: ParsableCommand {
 
     func run() throws {
         let service = try AppFactory.makeService()
+        // Before Touch ID: a second relay would only take the Worker's one Mac connection from
+        // the first on every redial.
+        let held: RelayLock
+        do {
+            held = try RelayLock(at: service.relayLockURL)
+        } catch let busy as RelayLock.Held {
+            throw AppError.usage(busy.terminalRefusal(control: ControlFile.url(beside: service.catalog.path)))
+        }
         try requireGatewayUp()
         let (origin, secret) = try service.relayCredentials(urlOverride: url)
         let client = RelayClient(
@@ -1416,7 +1458,8 @@ struct RelayRunCommand: ParsableCommand {
             Darwin.exit(0)
         }
         source.resume()
-        RunLoop.main.run()
+        // The lock is released when `held` goes, which must not be before the process does.
+        withExtendedLifetime(held) { RunLoop.main.run() }
     }
 
     /// A relay to a closed gateway would only fail on the first agent call; say so here.
@@ -1434,8 +1477,38 @@ struct RelayRunCommand: ParsableCommand {
     }
 }
 
+struct RelayOnCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "on",
+        abstract: "Run the relay inside the running Keysrs app (one Touch ID there) until off or quit."
+    )
+
+    func run() throws {
+        let control = try ControlClient.connect()
+        fputs("Touch ID in Keysrs…\n", stderr)
+        var obj = try control.call(method: "POST", path: "/api/relay", body: ["enabled": true], expect: 200)
+        // The first dial says whether the Worker takes the secret; wait for it, briefly.
+        let deadline = Date().addingTimeInterval(10)
+        while JSONValue.string(obj["state"]) == "connecting", Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.25)
+            obj = try control.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5)
+        }
+        print("relay \(RelayCommand.appLine(obj)); it stays on until keys relay off or Keysrs quits, and logs to menubar.log")
+    }
+}
+
+struct RelayOffCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "off", abstract: "Turn off the relay inside the running Keysrs app.")
+
+    func run() throws {
+        let control = try ControlClient.connect()
+        _ = try control.call(method: "POST", path: "/api/relay", body: ["enabled": false], expect: 200)
+        print("relay off in Keysrs; agents get 503 mac_offline (after the Worker's wait) until it is on again")
+    }
+}
+
 struct RelayStatusCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show the stored Worker URL and whether a secret exists.")
+    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show the stored Worker URL, whether a secret exists and which relay is running.")
 
     func run() throws {
         let service = try AppFactory.makeService()
@@ -1445,6 +1518,15 @@ struct RelayStatusCommand: ParsableCommand {
         if !status.configured {
             print("set up with: keys relay setup --url https://<your worker>.workers.dev")
         }
+        let control = ControlFile.url(beside: service.catalog.path)
+        if let client = try? ControlClient.connect(control: control),
+           let obj = try? client.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5)
+        {
+            print("app     \(RelayCommand.appLine(obj))")
+        }
+        if let held = RelayLock.holder(at: service.relayLockURL), !held.isApp(control: control) {
+            print("shell   keys relay is running\(held.pid.map { " (process \($0))" } ?? "")")
+        }
     }
 }
 
@@ -1453,6 +1535,14 @@ struct RelayResetCommand: ParsableCommand {
 
     func run() throws {
         let service = try AppFactory.makeService()
+        // The app's relay holds the secret in memory; forgetting it must not leave that running.
+        if let client = try? ControlClient.connect(control: ControlFile.url(beside: service.catalog.path)),
+           let obj = try? client.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5),
+           JSONValue.bool(obj["on"]) == true
+        {
+            _ = try client.call(method: "POST", path: "/api/relay", body: ["enabled": false], expect: 200)
+            print("turned off the relay in Keysrs")
+        }
         try service.resetRelay()
         print("relay forgotten on this Mac; on the Cloudflare side run: cd Relay && npx wrangler secret delete RELAY_SECRET (or npx wrangler delete)")
     }

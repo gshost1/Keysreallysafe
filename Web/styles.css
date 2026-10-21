@@ -874,6 +874,9 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
 }
 .switch[aria-checked="true"] { background: var(--blue); }
 .switch[aria-checked="true"]::after { transform: translateX(14px); }
+.switch:disabled { opacity: 0.45; cursor: default; }
+/* The relay's line can carry a Worker host or a transport error with no spaces in it. */
+#relay-hint { overflow-wrap: anywhere; }
 /* The Chart's key dropdown: the same quiet select as the Keys sort, one label beside it. */
 .picker { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
 .picker select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 6px; height: 24px; max-width: 220px; padding: 0 6px; }

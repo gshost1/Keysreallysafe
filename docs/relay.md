@@ -21,22 +21,24 @@ repository so you can read every line of what you deploy.
 ## How a call travels
 
 ```
-cloud agent ──HTTPS──▶ your Worker ──WebSocket (opened by the Mac)──▶ keys relay ──loopback──▶ gateway ──▶ provider
-   ksfc_…/ksf_… token          relay secret                               127.0.0.1:12767      real key
+cloud agent ──HTTPS──▶ your Worker ──WebSocket (opened by the Mac)──▶ the relay ──loopback──▶ gateway ──▶ provider
+   ksfc_…/ksf_… token          relay secret                                 127.0.0.1:12767      real key
 ```
 
-1. `keys relay` on the Mac opens `wss://<your worker>/connect`, presenting the
-   relay secret. The Worker keeps that one socket in a Durable Object.
+1. The relay on the Mac — inside Keysrs.app once you turn it on, or
+   `keys relay` in a Terminal — opens `wss://<your worker>/connect`,
+   presenting the relay secret. The Worker keeps that one socket in a Durable
+   Object.
 2. The agent calls `https://<your worker>/<key name>/v1/…` with its usual
    `ksfc_…` client token or `ksf_…` grant as the API key, exactly as it would
    call `http://127.0.0.1:12767/<key name>/v1/…` through a tunnel.
-3. The Worker frames the request over the socket. `keys relay` replays it as
+3. The Worker frames the request over the socket. The relay replays it as
    an HTTP request to the local gateway on loopback, with the `Host` header
    rewritten to `127.0.0.1:12767` and a marker header (`X-KSF-Via: relay`) so
    the audit log can show the path the call took.
 4. The gateway does what it always does: refuses without a valid token,
    checks scope, swaps in the Keychain secret, forwards, streams the response
-   and records usage. `keys relay` streams the response back through the
+   and records usage. The relay streams the response back through the
    Worker as it arrives, so SSE and other streaming bodies work.
 
 Nothing on the Mac listens on a new port. The gateway keeps its loopback bind;
@@ -63,9 +65,27 @@ keys relay setup --url https://keysrs-relay.<your-subdomain>.workers.dev
 #    Worker secret, never in wrangler.jsonc or in the repo).
 npx wrangler secret put RELAY_SECRET
 
-# 4. Connect. One Touch ID; Ctrl-C stops the relay.
-keys relay
+# 4. Connect, in Keysrs.app: one Touch ID, then it stays on until off or quit.
+keys relay on                           # or: menu bar → Relay for Cloud Agents
 ```
+
+The relay runs inside Keysrs.app from then on, without a Terminal: **Relay
+for Cloud Agents** in the menu bar, Settings → Relay in the dashboard, and
+`keys relay on` / `keys relay off` are the same switch. It lasts until you
+turn it off or quit Keysrs, reconnects on its own after a dropped socket or
+sleep ([Reconnection](#reconnection)), and writes its lines to
+`~/Library/Application Support/Keysreallysafe/menubar.log`. The menu and
+Settings show whether it is connected, how many calls are open and the last
+connection error. Each launch starts with it off, like the gateway forgets
+its keys: the secret leaves the Keychain only after Touch ID.
+
+`keys relay` on its own runs the same relay in the foreground of a Terminal
+instead, logging to stderr, until Ctrl-C. Only one relay runs per Mac,
+because the Worker keeps a single Mac connection and gives it to whichever
+connected last: `keys relay` refuses to start while the app's relay is on,
+and the app's switch refuses while `keys relay` runs. Both hold `relay.lock`
+beside the catalog while they run, and the kernel releases it if either
+crashes.
 
 Then, for the agent, issue a token as for any remote machine and point it at
 the Worker instead of a forwarded port:
@@ -77,16 +97,45 @@ export ANTHROPIC_BASE_URL=https://keysrs-relay.<your-subdomain>.workers.dev/rout
 export ANTHROPIC_AUTH_TOKEN=ksfc_…
 ```
 
-`keys relay status` shows the stored URL and whether a secret exists (its last
-four characters, never the secret). `keys relay reset` forgets both; run
+`keys relay status` shows the stored URL, whether a secret exists (its last
+four characters, never the secret) and which relay is running. `keys relay
+setup` run again mints a new secret; a relay that is on keeps the old one until
+it is turned off and on. `keys relay reset` turns the app's relay off and
+forgets the URL and the secret; run
 `npx wrangler secret delete RELAY_SECRET` or `npx wrangler delete` on the
 Cloudflare side to finish. `keys purge` removes the relay secret and URL with
 everything else.
 
-The `keys relay` process needs the gateway to be running (Keysrs.app or
-`keys dashboard`) and turned on for the key, the same precondition as
-`keys tunnel`. It reconnects on its own when the socket drops (see
-[Reconnection](#reconnection)).
+The relay needs the gateway running (it always is inside Keysrs.app; for
+`keys relay`, Keysrs.app or `keys dashboard`) and turned on for the key, the
+same precondition as `keys tunnel`. It reconnects on its own when the socket
+drops (see [Reconnection](#reconnection)).
+
+## Sleep
+
+The Mac has to be awake and online for a call to get through; the relay does
+not serve anything while the Mac sleeps. A call in flight when the Mac sleeps
+or loses its network fails with 502 `mac_disconnected` (marked retryable),
+because the gateway's call to the provider dies with the socket. A call that
+arrives while the Mac sleeps waits in the Worker for the window (60 s by
+default, [While the Mac is away](#while-the-mac-is-away)) and then gets 503
+`mac_offline`. Sleep does not turn the app's relay off, though: after the Mac
+wakes it notices the dead socket (the keepalive below, or the transport
+failing first), redials, and is relaying again within about a minute plus one
+retry step ([Reconnection](#reconnection)); requests still waiting in the
+Worker are sent to it then.
+
+**Keep Mac Awake for Relay Calls** (menu bar and Settings → Relay, off by
+default, remembered across launches) takes the `PreventUserIdleSystemSleep`
+power assertion, the one `caffeinate -i` takes, while a relayed call is open
+and for five minutes after the last one closes, so an idle Mac does not fall
+asleep under a long generation or between an agent's calls. The display can
+still sleep, and closing the lid, choosing Sleep or a critical battery still
+sleeps the Mac. While the assertion is held the menu's relay line and
+Settings say "keeping the Mac awake", `pmset -g assertions` lists it, and
+menubar.log notes when it is taken and released. `keys relay` in a Terminal
+never takes it; `caffeinate -i keys relay` keeps an idle Mac awake for as
+long as it runs.
 
 ## The protocol
 
@@ -253,8 +302,8 @@ top. Agent errors from the Worker itself are JSON with an `error` code and a
 |--------|------------------|-----------------------------------------------------------|
 | 503    | `mac_offline`    | no Mac connected within the window (60 s by default, at once with `RELAY_OFFLINE_GRACE_MS=0`): the relay is not running, or the Mac is off, asleep or offline; `Retry-After: 30` |
 | 502    | `mac_disconnected` | the Mac dropped while this request was in flight; it may be retried (see [While the Mac is away](#while-the-mac-is-away)) |
-| 502    | `gateway_unreachable` | `keys relay` is up but the gateway on 127.0.0.1:12767 is not |
-| 502    | other Mac codes  | `keys relay` could not serve it: `gateway_read_failed`, `upload_timeout`, `relay_buffer_full`, … |
+| 502    | `gateway_unreachable` | the relay is up but the gateway on 127.0.0.1:12767 is not |
+| 502    | other Mac codes  | the relay on the Mac could not serve it: `gateway_read_failed`, `upload_timeout`, `relay_buffer_full`, … |
 | 503    | `relay_busy`     | 32 requests are already in flight or waiting, or the waiting ones hold 32 MiB of bodies; `Retry-After: 5` |
 | 504    | `relay_timeout`  | the Mac sent no response head within 960 s                |
 | 408    | `upload_timeout` | the request body did not finish arriving within 60 s      |
@@ -266,7 +315,8 @@ comes from the gateway on the Mac and is unchanged.
 
 ## Reconnection
 
-`keys relay` reconnects after any close or failure with exponential backoff:
+The relay, in the app or in a Terminal, reconnects after any close or failure
+with exponential backoff:
 1 s, 2 s, 4 s … capped at 60 s, with ±20 % jitter, reset after a connection
 that stayed up for a minute. A socket that goes quiet counts as a failure
 (see Keepalive above), so a Mac coming back from sleep is relaying again
@@ -276,19 +326,29 @@ buffered or replaying; the Worker has already answered those agents with 502
 `mac_disconnected`. Requests that arrived while the Mac was away have been
 waiting in the Worker and arrive the moment the new socket is up, at most 32
 of them at once, each one whole. A 401 from the Worker (wrong secret) is reported
-on stderr with the fix (`keys relay setup` again, then `wrangler secret put`)
-and still retried at the capped interval, so a secret rotated on one side
-first does not strand the process. Ctrl-C stops it.
+with the fix (`keys relay setup` again, then `wrangler secret put`) in the
+relay's log, menubar.log for the app and stderr for `keys relay`, and as the
+last error in the menu and Settings, and still retried at the capped
+interval, so a secret rotated on one side first does not strand the relay.
+Turning it off, quitting Keysrs or Ctrl-C closes the socket at once, even
+mid-dial, and the Worker fails what was in flight on it with 502
+`mac_disconnected`.
 
 ## Testing it
 
 `cd Relay && npm test` runs the Worker inside workerd with a throwaway
 secret (no account, no network); `swift test --filter RelayTests` drives the
-Mac side with a fake socket against the real gateway on loopback. Both are in
+Mac side with a fake socket against the real gateway on loopback, and
+`RelayHostTests` the app's relay (the lock, turning it on and off, the
+idle-sleep assertion with a fake in place of IOKit, `/api/relay`). All are in
 CI. The real transport end to end is opt-in: start `npx wrangler dev --port
 8787` in `Relay/` with a `.dev.vars` holding `RELAY_SECRET=…` (git-ignored),
 then run `swift test --filter RelayEndToEndTests` with `KEYS_RELAY_E2E_URL`
-and `KEYS_RELAY_E2E_SECRET` set. `RELAY_UPLOAD_TIMEOUT_MS`,
+and `KEYS_RELAY_E2E_SECRET` set. Add `--var RELAY_OFFLINE_GRACE_MS:3000` to
+`wrangler dev` and `KEYS_RELAY_E2E_GRACE_MS=3000` to the test to cover the
+outage case: a call made while the app's relay is off waits and is answered
+once it is on again, and one made with the relay off past the window gets the
+JSON 503. `RELAY_UPLOAD_TIMEOUT_MS`,
 `RELAY_HEAD_TIMEOUT_MS` and `RELAY_IDLE_TIMEOUT_MS` are Worker knobs for that
 test suite only; a deployed Worker leaves them unset (`RELAY_OFFLINE_GRACE_MS`
 is the one meant for deployments). The Worker suite must finish with no
@@ -331,7 +391,7 @@ Cloudflare's edge, can and cannot do.
 - Exceed a token's scope: key, methods, path prefix, expiry, grant request and
   dollar caps are all enforced on the Mac per request, and revoking the token
   stops the Worker's requests at the next call.
-- Reach anything on the Mac but the gateway. `keys relay` only ever connects
+- Reach anything on the Mac but the gateway. The relay only ever connects
   to `127.0.0.1:12767` and only replays an HTTP request there; the frame
   format has no way to name another port, host or path root.
 - Read the usage catalog, the audit log, the dashboard, or other keys. The
@@ -362,7 +422,10 @@ including their tokens. They still cannot reach the gateway with those tokens
 unless they can also reach your Mac's loopback. Keep the secret out of CI
 logs; `keys relay setup` shows it once, stores it in the Mac's Keychain under
 its own service, and `keys relay status` only ever shows its last four
-characters.
+characters. While a relay is on, the secret is in the memory of the process
+running it, as a key is while the gateway holds it; the dashboard's
+`/api/relay` reports the state and the Worker URL, never the secret or its
+hint.
 
 Someone who learns the **Worker URL** alone can send it requests and burn
 your Cloudflare request quota, and will be told whether the Mac is online.
@@ -374,8 +437,11 @@ back.
 
 ## What changes in the privacy contract
 
-- The Mac may hold **one outbound** connection, opened by `keys relay` and
-  only while it runs, to a Worker URL you chose and deployed yourself.
+- The Mac may hold **one outbound** connection, to a Worker URL you chose and
+  deployed yourself, and only while the relay is on: in Keysrs.app from the
+  moment you turn it on (one Touch ID) until you turn it off or quit, never
+  at launch by itself, or while `keys relay` runs in a Terminal. One relay
+  at a time.
   Nothing new binds on the Mac; the gateway and dashboard stay on
   `127.0.0.1`.
 - Key values still never leave the Mac. Request bodies still never reach the

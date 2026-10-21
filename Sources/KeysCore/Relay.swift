@@ -538,6 +538,22 @@ final class RelayClient: @unchecked Sendable {
         var bufferTimeout = RelayProtocol.bufferTimeout
     }
 
+    /// What the loop is doing, for the app's menu and dashboard.
+    enum Phase: Equatable {
+        case stopped
+        case connecting
+        case connected(since: Date)
+        case waiting(until: Date)
+    }
+
+    /// A snapshot of the loop. `lastError` is the line the log got for the last failed dial
+    /// or lost connection, so it never holds a secret either; a connection clears it.
+    struct State: Equatable {
+        var phase: Phase = .stopped
+        var lastError: String?
+        var inflight = 0
+    }
+
     /// A request whose END has not arrived, with when its REQUEST frame did. `seq` orders
     /// arrivals for eviction: the clock may stand still between two frames (it is injected
     /// in tests and coarse in general), so a timestamp alone cannot say which came first.
@@ -555,12 +571,17 @@ final class RelayClient: @unchecked Sendable {
     /// 0.8…1.2 by default; fixed in tests.
     let jitter: @Sendable () -> Double
     let now: @Sendable () -> Date
+    /// Called after a request opens or closes, outside the lock; the app keeps the Mac awake
+    /// by it. Read `inflightCount` for the current number: calls may arrive out of order.
+    let activity: @Sendable () -> Void
     private let lock = NSLock()
     private var buffering: [UInt32: Buffered] = [:]
     private var nextSeq: UInt64 = 0
     private var replaying: [UInt32: RelayRequest] = [:]
     /// When the last frame of any kind (pong included) arrived on the current socket.
     private var lastReceived = Date.distantPast
+    private var phase = Phase.stopped
+    private var lastError: String?
     private let replayQueue = DispatchQueue(label: "keysreallysafe.relay.replay", attributes: .concurrent)
 
     init(
@@ -569,7 +590,8 @@ final class RelayClient: @unchecked Sendable {
         log: @escaping @Sendable (String) -> Void,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
         jitter: @escaping @Sendable () -> Double = { Double.random(in: 0.8...1.2) },
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        activity: @escaping @Sendable () -> Void = {}
     ) {
         self.options = options
         self.dialer = dialer
@@ -577,6 +599,24 @@ final class RelayClient: @unchecked Sendable {
         self.sleep = sleep
         self.jitter = jitter
         self.now = now
+        self.activity = activity
+    }
+
+    var state: State {
+        lock.withLock { State(phase: phase, lastError: lastError, inflight: buffering.count + replaying.count) }
+    }
+
+    private func enter(_ next: Phase) {
+        lock.withLock {
+            phase = next
+            if case .connected = next { lastError = nil }
+        }
+    }
+
+    /// Logs a failed dial or a lost connection and keeps it for the status line.
+    private func failed(_ line: String) {
+        lock.withLock { lastError = line }
+        log(line)
     }
 
     var connectURL: URL { RelayURL.connectURL(options.url) }
@@ -594,27 +634,37 @@ final class RelayClient: @unchecked Sendable {
         return base * jitter()
     }
 
-    /// Runs until the surrounding task is cancelled.
+    /// Runs until the surrounding task is cancelled, which also ends a dial or a receive that
+    /// is waiting on the network, so the app can turn the relay off at any point.
     func run() async {
         var failures = 0
         let host = options.url.host ?? options.url.absoluteString
+        defer { enter(.stopped) }
         while !Task.isCancelled {
             let started = Date()
+            enter(.connecting)
             do {
                 let socket = try await dialer.connect(url: connectURL, headers: connectHeaders)
+                if Task.isCancelled {
+                    socket.close()
+                    break
+                }
+                enter(.connected(since: now()))
                 log("connected to \(host); relaying requests to the gateway on 127.0.0.1:\(options.gatewayPort)")
                 try await serve(socket)
-            } catch let error as RelayDialError {
-                log("\(error)")
             } catch is CancellationError {
                 break
             } catch {
-                log("connection to \(host) lost: \(error.localizedDescription)")
+                // A cancelled dial or receive fails with the transport's own error; that is
+                // the relay being turned off, not a connection lost.
+                if Task.isCancelled { break }
+                failed(error is RelayDialError ? "\(error)" : "connection to \(host) lost: \(error.localizedDescription)")
             }
             if Task.isCancelled { break }
             if Date().timeIntervalSince(started) >= options.stableAfter { failures = 0 }
             failures += 1
             let delay = backoff(failures: failures)
+            enter(.waiting(until: now().addingTimeInterval(delay)))
             log("reconnecting in \(Int(delay.rounded()))s")
             do { try await sleep(delay) } catch { break }
         }
@@ -652,7 +702,13 @@ final class RelayClient: @unchecked Sendable {
         }
         while true {
             try Task.checkCancellation()
-            let message = try await socket.receive()
+            // URLSession's receive does not return when its task is cancelled; closing the
+            // socket fails it, and with it this loop.
+            let message = try await withTaskCancellationHandler {
+                try await socket.receive()
+            } onCancel: {
+                socket.close()
+            }
             lock.withLock { lastReceived = now() }
             switch message {
             case .text:
@@ -680,12 +736,14 @@ final class RelayClient: @unchecked Sendable {
                 return old
             }
             stale?.cancel()
+            activity()
             expireStale(socket: socket)
             enforceBufferBounds(socket: socket)
         case .body:
             guard let request = lock.withLock({ buffering[frame.id]?.request }) else { return }
             if !request.append(frame.payload) {
                 lock.withLock { _ = buffering.removeValue(forKey: frame.id) }
+                activity()
                 socket.sendDetached(.json(.error, id: frame.id, ["code": "payload_too_large", "message": "request body over \(RelayProtocol.bodyCap) bytes"]))
                 return
             }
@@ -701,10 +759,16 @@ final class RelayClient: @unchecked Sendable {
                 self?.lock.withLock {
                     if self?.replaying[frame.id] === request { self?.replaying.removeValue(forKey: frame.id) }
                 }
+                self?.activity()
             }
         case .cancel:
-            let request = lock.withLock { buffering.removeValue(forKey: frame.id)?.request ?? replaying[frame.id] }
+            let (request, wasBuffering) = lock.withLock { () -> (RelayRequest?, Bool) in
+                if let buffered = buffering.removeValue(forKey: frame.id)?.request { return (buffered, true) }
+                return (replaying[frame.id], false)
+            }
             request?.cancel()
+            // A replay leaves `replaying` when it returns, and says so then.
+            if wasBuffering { activity() }
         case .response, .error:
             break
         }
@@ -718,6 +782,7 @@ final class RelayClient: @unchecked Sendable {
             for id in ids { buffering.removeValue(forKey: id) }
             return ids
         }
+        if !expired.isEmpty { activity() }
         for id in expired {
             socket.sendDetached(.json(.error, id: id, ["code": "upload_timeout", "message": "the request body did not finish arriving at the Mac within \(Int(options.bufferTimeout))s"]))
         }
@@ -737,6 +802,7 @@ final class RelayClient: @unchecked Sendable {
             }
             return ids
         }
+        if !evicted.isEmpty { activity() }
         for id in evicted {
             socket.sendDetached(.json(.error, id: id, ["code": "relay_buffer_full", "message": "the Mac dropped this request: too many unfinished uploads are already buffered"]))
         }
@@ -750,6 +816,7 @@ final class RelayClient: @unchecked Sendable {
             return all
         }
         for request in open { request.cancel() }
+        if !open.isEmpty { activity() }
     }
 
     var inflightCount: Int { lock.withLock { buffering.count + replaying.count } }
