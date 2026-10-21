@@ -555,7 +555,12 @@ keys purge
 `keys env` puts the secret in the child's environment only; nothing touches
 the clipboard. It prints the provider and host the key belongs to before the
 prompt, so a similarly named key for a different provider is caught early.
-Prefer `keys grant` when the child only needs to call that provider. `keys doctor` prints every local source it looked for, whether
+The command stays in keys' process group (the shell's job), as it would
+without keys: Ctrl-C reaches it, a coding agent can take over the terminal,
+and keys exits the way the command did (`keys agent` revokes its grant
+first). Prefer `keys grant` when the child only needs to call that provider.
+
+`keys doctor` prints every local source it looked for, whether
 it was found, when it last changed, which row in the dashboard it feeds, and why a
 row is empty. It also reports the install: which `Keysrs.app` it found, whether
 Start at Login is on, whether the `keys` on PATH is that bundle's binary, and any

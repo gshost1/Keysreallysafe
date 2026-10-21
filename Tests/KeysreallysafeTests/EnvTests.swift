@@ -58,7 +58,7 @@ final class EnvTests: XCTestCase {
             variable: "OPENAI_API_KEY",
             command: ["curl", "https://example.invalid"]
         )
-        XCTAssertEqual(status, 0)
+        XCTAssertEqual(status, .exited(0))
         XCTAssertEqual(runner.lastArgv, ["curl", "https://example.invalid"])
         XCTAssertEqual(runner.lastExtraEnv, ["OPENAI_API_KEY": fixtureSecret])
         XCTAssertNil(clipboard.value)
@@ -127,19 +127,21 @@ final class EnvTests: XCTestCase {
     func testEnvPropagatesChildExitStatus() throws {
         let (service, runner, _) = try makeEnvService()
         try service.add(name: "xai", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
-        runner.status = 7
-        XCTAssertEqual(try service.env(name: "xai", variable: "FOO", command: ["false"]), 7)
+        runner.exit = .exited(7)
+        XCTAssertEqual(try service.env(name: "xai", variable: "FOO", command: ["false"]), .exited(7))
+        runner.exit = .signaled(SIGINT)
+        XCTAssertEqual(try service.env(name: "xai", variable: "FOO", command: ["sleep", "9"]).status, 130)
     }
 
-    func testFoundationRunnerInjectsEnvIntoChild() throws {
+    func testSpawnRunnerInjectsEnvIntoChild() throws {
         let dir = try TempDir.make()
         let out = dir.appendingPathComponent("out")
-        let runner = FoundationCommandRunner()
+        let runner = SpawnCommandRunner(restoresHandlers: true)
         let status = try runner.run(
             argv: ["/bin/sh", "-c", "printf %s \"$KRS_TEST\" > \"$1\"", "sh", out.path],
             extraEnv: ["KRS_TEST": fixtureSecret]
         )
-        XCTAssertEqual(status, 0)
+        XCTAssertEqual(status, .exited(0))
         XCTAssertEqual(try String(contentsOf: out, encoding: .utf8), fixtureSecret)
     }
 

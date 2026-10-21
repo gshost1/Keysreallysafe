@@ -43,7 +43,7 @@ final class KeysService: @unchecked Sendable {
         codexHome: URL = Paths.codexHome,
         grokBotHome: URL = Paths.grokBotHome,
         droidHome: URL = Paths.droidHome,
-        runner: any CommandRunner = FoundationCommandRunner(),
+        runner: any CommandRunner = SpawnCommandRunner(),
         openRouter: any OpenRouterFetching = OpenRouterHTTP(),
         relaySecrets: (any SecretStore)? = nil
     ) {
@@ -1400,7 +1400,7 @@ final class KeysService: @unchecked Sendable {
         variable: String,
         command: [String],
         caller: String = "env"
-    ) throws -> Int32 {
+    ) throws -> ChildExit {
         let row = try existingRow(name)
         let variable = EnvVar.canonicalize(variable)
         try EnvVar.validate(variable)
