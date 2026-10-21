@@ -30,9 +30,6 @@
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
     <symbol id="check" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="currentColor" opacity=".14"/><path d="M6 10.3l2.6 2.6L14 7.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <radialGradient id="tid-disc" cx=".5" cy=".38" r=".62"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dedee2"/></radialGradient>
-    <linearGradient id="tid-whorl" gradientUnits="userSpaceOnUse" x1="4" y1="2" x2="20" y2="22"><stop offset="0" stop-color="#f0569a"/><stop offset="1" stop-color="#c2185b"/></linearGradient>
-    <symbol id="tid-fp" viewBox="0 0 64 64"><circle cx="32" cy="32" r="31" fill="url(#tid-disc)" stroke="rgba(0,0,0,.1)" stroke-width=".8"/><g fill="none" stroke="url(#tid-whorl)" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 52.5C10.6 47 9.5 41.5 9.5 35V32A22.5 22.5 0 0 1 54.5 32V35C54.5 41.5 53.4 47 50.5 52.5"/><path d="M17.5 55.5C15.3 50.5 14.5 44.5 14.5 38V32A17.5 17.5 0 0 1 38.5 15.9"/><path d="M43.3 18.6A17.5 17.5 0 0 1 49.5 32V38C49.5 44.5 48.7 50.5 46.5 55.5"/><path d="M22 57.5C20.4 52.5 19.5 46.5 19.5 40V32A12.5 12.5 0 0 1 44.5 32V40C44.5 46.5 43.6 52.5 42 57.5"/><path d="M24.5 32A7.5 7.5 0 0 1 39.5 32V40C39.5 47 38.5 53 36.8 58.5"/><path d="M24.5 36V40C24.5 44 24.9 48 25.7 52"/><path d="M32 29.5A2.8 2.8 0 0 1 34.5 32.5V40C34.5 47.5 33.6 53.5 32 59"/><path d="M29.5 34V40C29.5 44.5 29.9 49 30.8 53.5"/></g></symbol>
   </defs>
 </svg>
 
@@ -91,7 +88,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
         </div>
 
         <div class="touch">
-          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
+          <div class="tid"><img class="fp" src="touchid.png" alt="" width="54" height="54"><img src="icon.svg" alt="" width="26" height="26"></div>
           <b>Keysrs</b>
           <p>Keysrs is trying to connect the relay to keysrs-relay.you.workers.dev.</p>
           <p>Touch ID or enter your password to allow this.</p>
@@ -157,7 +154,7 @@ Apply this plan? [y/N] y
   OPENAI_BASE_URL -&gt; relay<span class="cur"></span></pre>
         </div>
         <div class="touch t2">
-          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
+          <div class="tid"><img class="fp" src="touchid.png" alt="" width="54" height="54"><img src="icon.svg" alt="" width="26" height="26"></div>
           <b>Keysrs</b>
           <p>Keysrs is trying to match 1 value in .env against the vault and wrap them.</p>
           <p>Touch ID or enter your password to allow this.</p>
@@ -219,7 +216,7 @@ Apply this plan? [y/N] y
 <span class="cd">⏺</span> Running 48 evals through the grant… <span class="cur"></span></pre>
         </div>
         <div class="touch t2">
-          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
+          <div class="tid"><img class="fp" src="touchid.png" alt="" width="54" height="54"><img src="icon.svg" alt="" width="26" height="26"></div>
           <b>Keysrs</b>
           <p>Keysrs is trying to grant "run evals" the key codex-astra for OpenAI at api.openai.com, 30 min.</p>
           <p>Touch ID or enter your password to allow this.</p>

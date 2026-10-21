@@ -116,8 +116,8 @@ p { margin: 0; }
   background: rgba(240,240,242,.86); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
   box-shadow: 0 0 0 .5px rgba(0,0,0,.18), inset 0 0 0 1px rgba(255,255,255,.55), 0 24px 60px -12px rgba(0,0,0,.35); }
 .touch .tid { position: relative; width: 54px; height: 54px; margin-bottom: 10px; }
-.touch .fp { display: block; width: 54px; height: 54px; }
-.touch .tid img { position: absolute; right: -6px; bottom: -4px; width: 26px; height: 26px; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.25)); }
+.touch .fp { display: block; width: 54px; height: 54px; border-radius: 50%; }
+.touch .tid img:not(.fp) { position: absolute; right: -1.5px; bottom: -1.5px; width: 28px; height: 28px; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.25)); }
 .touch b { display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; }
 .touch p + p { margin-top: 10px; }
 .touch .bts { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
