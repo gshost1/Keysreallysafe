@@ -146,11 +146,131 @@ final class EnvTests: XCTestCase {
     }
 
     func testParseEnvCommand() throws {
-        let parsed = try KeysCLI.parseAsRoot(["env", "xai", "OPENAI_API_KEY", "--", "curl", "-sS", "https://example.invalid"])
-        let env = try XCTUnwrap(parsed as? EnvCommand)
-        XCTAssertEqual(env.name, "xai")
-        XCTAssertEqual(env.variable, "OPENAI_API_KEY")
-        XCTAssertEqual(env.command, ["curl", "-sS", "https://example.invalid"])
+        let (pairs, command) = try parseEnv(["xai", "OPENAI_API_KEY", "--", "curl", "-sS", "https://example.invalid"])
+        XCTAssertEqual(pairs, [EnvPair(name: "xai", variable: "OPENAI_API_KEY")])
+        XCTAssertEqual(command, ["curl", "-sS", "https://example.invalid"])
+    }
+
+    func testParseEnvCommandTakesSeveralPairs() throws {
+        let (pairs, command) = try parseEnv([
+            "modal-id", "MODAL_TOKEN_ID", "modal-secret", "MODAL_TOKEN_SECRET", "--", "bun", "run", "--watch", "batch.ts",
+        ])
+        XCTAssertEqual(pairs, [
+            EnvPair(name: "modal-id", variable: "MODAL_TOKEN_ID"),
+            EnvPair(name: "modal-secret", variable: "MODAL_TOKEN_SECRET"),
+        ])
+        XCTAssertEqual(command, ["bun", "run", "--watch", "batch.ts"])
+
+        // The first -- ends keys' own arguments; a nested keys env keeps its own.
+        let nested = try parseEnv(["a", "A", "--", "keys", "env", "b", "B", "--", "bun", "x.ts"])
+        XCTAssertEqual(nested.pairs, [EnvPair(name: "a", variable: "A")])
+        XCTAssertEqual(nested.command, ["keys", "env", "b", "B", "--", "bun", "x.ts"])
+    }
+
+    func testParseEnvCommandRefusesWhatItWouldHaveToGuess() throws {
+        let grammar = "(keys env <name> <variable> [<name> <variable> ...] -- <command>)"
+        // Without --, "b B cmd" could be a pair and a command or the command itself.
+        XCTAssertEqual(usage { _ = try self.parseEnv(["a", "A", "b", "B", "cmd"]) }, "missing command after -- \(grammar)")
+        XCTAssertEqual(usage { _ = try self.parseEnv(["a", "A", "--"]) }, "missing command after -- \(grammar)")
+        XCTAssertEqual(
+            usage { _ = try self.parseEnv(["a", "A", "b", "--", "cmd"]) },
+            "b has no variable; keys env takes <name> <variable> pairs before --"
+        )
+        XCTAssertThrowsError(try KeysCLI.parseAsRoot(["env", "a"]))
+    }
+
+    func testEnvSetsSeveralVariablesUnderOnePresencePrompt() throws {
+        let (db, _) = try makeDB()
+        let secrets = MemorySecretStore()
+        let runner = FakeCommandRunner()
+        let (service, gate) = makeGatedService(db: db, secrets: secrets, runner: runner)
+        try service.add(name: "modal-id", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
+        try service.add(name: "modal-secret", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret + "2")
+
+        let status = try service.env(
+            pairs: [
+                EnvPair(name: "modal-id", variable: "MODAL_TOKEN_ID"),
+                EnvPair(name: "modal-secret", variable: "MODAL_TOKEN_SECRET"),
+                EnvPair(name: "modal-id", variable: "\"MODAL_ID_AGAIN\""),
+            ],
+            command: ["bun", "batch.ts"]
+        )
+        XCTAssertEqual(status, .exited(0))
+        XCTAssertEqual(gate.reasons, ["unlock 2 keys: modal-id and modal-secret"])
+        XCTAssertEqual(runner.lastArgv, ["bun", "batch.ts"])
+        XCTAssertEqual(runner.lastExtraEnv, [
+            "MODAL_TOKEN_ID": fixtureSecret,
+            "MODAL_TOKEN_SECRET": fixtureSecret + "2",
+            "MODAL_ID_AGAIN": fixtureSecret,
+        ])
+        // One env event per key, as a single keys env writes, and both keys marked used.
+        for name in ["modal-id", "modal-secret"] {
+            XCTAssertEqual(try service.keyEvents(name: name).filter { $0.action == "env" }.map(\.caller), ["env"], name)
+        }
+        XCTAssertTrue(try service.list().allSatisfy { $0.lastUsedAt != nil })
+    }
+
+    func testEnvMissingKeyAmongSeveralRunsNothingAndDoesNotPrompt() throws {
+        let (db, _) = try makeDB()
+        let runner = FakeCommandRunner()
+        let (service, gate) = makeGatedService(db: db, runner: runner)
+        try service.add(name: "modal-id", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
+        XCTAssertThrowsError(try service.env(
+            pairs: [EnvPair(name: "modal-id", variable: "A"), EnvPair(name: "modal-secret", variable: "B")],
+            command: ["true"]
+        )) { error in
+            guard let app = error as? AppError, case .notFound("modal-secret") = app else {
+                return XCTFail("expected notFound, got \(error)")
+            }
+        }
+        XCTAssertEqual(gate.reasons, [])
+        XCTAssertNil(runner.lastArgv)
+        XCTAssertNil(try service.list()[0].lastUsedAt)
+        XCTAssertEqual(try service.keyEvents(name: "modal-id").filter { $0.action == "env" }, [])
+    }
+
+    func testEnvUnreadableKeyAmongSeveralRunsNothing() throws {
+        let (db, _) = try makeDB()
+        let secrets = MemorySecretStore()
+        let runner = FakeCommandRunner()
+        let (service, gate) = makeGatedService(db: db, secrets: secrets, runner: runner)
+        try service.add(name: "modal-id", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
+        // A catalog row whose Keychain item is gone.
+        try db.insertCatalog(CatalogRow(
+            name: "modal-secret", provider: "xai", kind: "runtime", notes: "",
+            createdAt: "2026-01-01T00:00:00Z", lastUsedAt: nil
+        ))
+        XCTAssertThrowsError(try service.env(
+            pairs: [EnvPair(name: "modal-id", variable: "A"), EnvPair(name: "modal-secret", variable: "B")],
+            command: ["true"]
+        ))
+        XCTAssertEqual(gate.reasons.count, 1)
+        XCTAssertNil(runner.lastArgv)
+        XCTAssertEqual(try service.keyEvents(name: "modal-id").filter { $0.action == "env" }, [])
+    }
+
+    func testEnvRefusesTheSameVariableTwice() throws {
+        let (service, runner, _) = try makeEnvService()
+        try service.add(name: "a", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
+        try service.add(name: "b", provider: "xai", kind: "runtime", notes: "", secret: fixtureSecret)
+        XCTAssertEqual(
+            usage {
+                _ = try service.env(pairs: [EnvPair(name: "a", variable: "X"), EnvPair(name: "b", variable: "`X`")], command: ["true"])
+            },
+            "X is given twice"
+        )
+        XCTAssertNil(runner.lastArgv)
+    }
+
+    func testPresenceReasonNamesEveryKey() {
+        XCTAssertEqual(KeysService.unlockReason(["a"]), "unlock a")
+        XCTAssertEqual(KeysService.unlockReason(["a", "b"]), "unlock 2 keys: a and b")
+        XCTAssertEqual(KeysService.unlockReason(["a", "b", "c"]), "unlock 3 keys: a, b and c")
+    }
+
+    private func parseEnv(_ arguments: [String]) throws -> (pairs: [EnvPair], command: [String]) {
+        let parsed = try KeysCLI.parseAsRoot(["env"] + arguments)
+        return try XCTUnwrap(parsed as? EnvCommand).parsed()
     }
 
     private func makeEnvService() throws -> (KeysService, FakeCommandRunner, FakeClipboard) {

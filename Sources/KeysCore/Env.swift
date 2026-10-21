@@ -39,6 +39,30 @@ enum EnvVar {
     }
 }
 
+/// One vault key and the variable `keys env` sets it as.
+struct EnvPair: Equatable, Sendable {
+    let name: String
+    let variable: String
+
+    static let usage = "keys env <name> <variable> [<name> <variable> ...] -- <command>"
+
+    /// Splits `keys env`'s arguments at the first `--`: name/variable pairs before it, the
+    /// command after. A missing `--` is refused rather than guessed at, since without it a
+    /// second pair would read as the command and get the first key.
+    static func parse(_ arguments: [String]) throws -> (pairs: [EnvPair], command: [String]) {
+        guard let split = arguments.firstIndex(of: "--"), split + 1 < arguments.count else {
+            throw AppError.usage("missing command after -- (\(usage))")
+        }
+        let words = arguments[..<split]
+        guard !words.isEmpty else { throw AppError.usage("name a key and a variable before -- (\(usage))") }
+        guard words.count.isMultiple(of: 2) else {
+            throw AppError.usage("\(words[words.count - 1]) has no variable; keys env takes <name> <variable> pairs before --")
+        }
+        let pairs = stride(from: 0, to: words.count, by: 2).map { EnvPair(name: words[$0], variable: words[$0 + 1]) }
+        return (pairs, Array(arguments[(split + 1)...]))
+    }
+}
+
 /// How a launched command ended.
 enum ChildExit: Equatable, Sendable {
     case exited(Int32)

@@ -278,7 +278,8 @@ app-level presence prompting:
 - `keys copy` puts it on the clipboard and wipes the clipboard 20 seconds
   later. Reveal in the dashboard hides it again after 15 seconds.
 - `keys env <name> VAR -- <command>` hands it to one child process as an
-  environment variable, so it never touches the clipboard at all.
+  environment variable, so it never touches the clipboard at all. More
+  `<name> VAR` pairs before the `--` share the same prompt.
 - `keys rotate` swaps in a new value under the same name and bumps a version.
 - Delete and purge also require presence, so a script on the machine cannot
   quietly empty the vault.
@@ -521,7 +522,7 @@ keys get <name>
 keys copy <name>
 keys rm <name> [--yes]
 keys rotate <name>
-keys env <name> <VAR> -- <command> [args...]
+keys env <name> <VAR> [<name> <VAR> ...] -- <command> [args...]
 keys grant <name> [--task <text>] [--minutes N] [--methods GET,POST] [--paths /a,/b] [--max-requests N] [--max-usd X] [--json]
 keys grants [--all] [--json]
 keys revoke <id> | --all [--key <name>]
@@ -555,6 +556,13 @@ keys purge
 `keys env` puts the secret in the child's environment only; nothing touches
 the clipboard. It prints the provider and host the key belongs to before the
 prompt, so a similarly named key for a different provider is caught early.
+A command that needs several secrets takes several pairs under one Touch ID:
+
+```sh
+keys env modal-id MODAL_TOKEN_ID modal-secret MODAL_TOKEN_SECRET -- python run.py
+```
+
+Every key is read before the command starts, so a missing one runs nothing.
 The command stays in keys' process group (the shell's job), as it would
 without keys: Ctrl-C reaches it, a coding agent can take over the terminal,
 and keys exits the way the command did (`keys agent` revokes its grant

@@ -418,9 +418,15 @@ struct LoginItemStatusCommand: ParsableCommand {
 struct EnvCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "env",
-        abstract: "Run a command with a vault secret in the environment (user presence, no clipboard).",
-        usage: "keys env <name> <variable> -- <command> ...",
-        discussion: "Unlocks the named key, sets <variable> in the child only, and runs the command in keys' process group, so Ctrl-C reaches it and keys exits the way it did. Put -- before the command so its flags are not parsed by keys. The secret is not copied to the clipboard."
+        abstract: "Run a command with vault secrets in its environment (one user presence check, no clipboard).",
+        usage: "keys env <name> <variable> [<name> <variable> ...] -- <command> ...",
+        discussion: """
+            Unlocks the named keys under one Touch ID and sets each <variable> in the child only. \
+            Every key is read before the command starts, so a missing one runs nothing. The \
+            command stays in keys' process group, so Ctrl-C reaches it, and keys exits the way \
+            it did. Put -- before the command so its flags are not parsed by keys. No secret \
+            is copied to the clipboard.
+            """
     )
 
     @Argument(help: "Vault key name.")
@@ -429,12 +435,18 @@ struct EnvCommand: ParsableCommand {
     @Argument(help: "Environment variable to set in the child.")
     var variable: String
 
-    @Argument(parsing: .remaining, help: "Command after --.")
-    var command: [String]
+    @Argument(parsing: .captureForPassthrough, help: ArgumentHelp("More <name> <variable> pairs, then -- and the command.", valueName: "more"))
+    var rest: [String] = []
+
+    /// The pairs before `--` and the command after it.
+    func parsed() throws -> (pairs: [EnvPair], command: [String]) {
+        try EnvPair.parse([name, variable] + rest)
+    }
 
     func run() throws {
+        let (pairs, command) = try parsed()
         let service = try AppFactory.makeService()
-        try service.env(name: name, variable: variable, command: command, caller: "env").exitProcess()
+        try service.env(pairs: pairs, command: command, caller: "env").exitProcess()
     }
 }
 
