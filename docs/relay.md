@@ -181,7 +181,7 @@ secret is meant for one Mac. Run two Macs against two Workers.
 | silence between response chunks    | 300 s | Worker (stream aborted)                   |
 | one response frame waiting for the socket | 60 s | Mac (replay abandoned)              |
 | silence on the socket              | 60 s  | Mac (closes and reconnects)               |
-| gateway connect + request timeout  | 30 s / 900 s | the gateway (the response head of a non-streaming call can take minutes) |
+| gateway request timeout (no separate connect timeout) | 900 s | the gateway (502 `upstream_error`, reason `gateway_timeout`; the response head of a non-streaming call can take minutes) |
 
 Response bodies are streamed and not capped; the idle timeout bounds a stalled
 stream. The in-flight slot is taken when the request arrives, before its body,
@@ -206,8 +206,14 @@ top. Agent errors from the Worker itself are JSON with an `error` code and a
 | 413    | `payload_too_large` | request body over 8 MiB                                |
 | 400    | `client_gone`    | the request body ended before it was complete (normally unseen: the agent has gone) |
 
-Everything else (401 `client_required`, 403 grant denials, upstream statuses)
-comes from the gateway on the Mac and is unchanged.
+Everything else comes from the gateway on the Mac and is unchanged: 401
+`client_required`, 403 grant denials, 404 `not_found` for a key whose gateway
+is off, upstream statuses (a provider's own 502 or 504 included), and the
+gateway's own 502 `upstream_error` for a call that got no response head, whose
+`reason` says why: `gateway_timeout` (its 900 s limit), `connect_failed`,
+`tls_failed`, `connection_lost` or `network_error`. `keys log` on the Mac
+shows each call with its status, duration, reason and whether it came
+through the relay.
 
 ## Reconnection
 

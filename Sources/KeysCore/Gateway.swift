@@ -12,6 +12,8 @@ struct GatewayTarget {
 final class GatewayListener: @unchecked Sendable {
     static let port: UInt16 = 12767
     static let bodyCap = 8 * 1024 * 1024
+    /// Not applied to the upstream call (see `handle`); the relay adds it to its read deadline
+    /// so it outwaits the gateway.
     static let connectTimeout: TimeInterval = 30
     // Non-streaming generations send no response head until the whole answer
     // is written; Kimi runs have taken over 500 s, so the wait is long.
@@ -21,11 +23,14 @@ final class GatewayListener: @unchecked Sendable {
 
     let listener: LoopbackListener
     private let service: KeysService
+    /// The whole call's limit: `resourceTimeout`, unless a test shortens it.
+    private let requestTimeout: TimeInterval
 
     var boundPort: UInt16 { listener.port }
 
-    init(service: KeysService, port: UInt16 = GatewayListener.port) throws {
+    init(service: KeysService, port: UInt16 = GatewayListener.port, requestTimeout: TimeInterval = GatewayListener.resourceTimeout) throws {
         self.service = service
+        self.requestTimeout = requestTimeout
         self.listener = try LoopbackListener(
             port: port, acceptLabel: "keysreallysafe.gateway.accept", workLabel: "keysreallysafe.gateway",
             ioTimeoutSeconds: Self.ioTimeoutSeconds, maxConcurrent: Self.maxConcurrent
@@ -83,6 +88,9 @@ final class GatewayListener: @unchecked Sendable {
             Self.writeJSON(fd: client, status: 404, object: ["error": "not_found"])
             return
         }
+        // `keys relay` marks what it replays so the ledger can say which way a call came in.
+        // A label only: a local caller that forges it gains nothing, and it never goes upstream.
+        let via = request.headers["x-ksf-via"]?.lowercased() == "relay" ? "relay" : nil
         // Loopback headers say where a browser request came from; they say nothing about a native
         // local process. Every caller must hold either a long-lived client capability (ksfc_)
         // or a task grant (ksf_), presented where the SDK would put the provider key.
@@ -95,7 +103,7 @@ final class GatewayListener: @unchecked Sendable {
             case .allowed(let c):
                 gatewayClient = c
             case .denied(let reason):
-                service.recordGatewayDenial(name: keyName, reason: reason)
+                service.recordGatewayDenial(name: keyName, reason: reason, status: 401, via: via)
                 Self.writeJSON(fd: client, status: 401, object: [
                     "error": "client_required",
                     "hint": "issue one with: keys grant \(keyName) --task \"...\" (temporary) or keys client issue \(keyName) (long-lived)",
@@ -104,6 +112,9 @@ final class GatewayListener: @unchecked Sendable {
             }
         }
         guard let target = service.lookupGateway(name: keyName) else {
+            // Every key is off after the app restarts, and its clients then get this 404; the log
+            // says so. A name that is no key at all is not recorded (see recordGatewayDenial).
+            service.recordGatewayDenial(name: keyName, reason: "gateway_off", status: 404, via: via)
             Self.writeJSON(fd: client, status: 404, object: [
                 "error": "not_found",
                 "message": "no key \(keyName) with the gateway on; run: keys grant \(keyName) --task \"...\"",
@@ -116,7 +127,7 @@ final class GatewayListener: @unchecked Sendable {
             case .success(let g):
                 grant = g
             case .failure(let denial):
-                service.recordGatewayDenial(name: keyName, reason: denial.code)
+                service.recordGatewayDenial(name: keyName, reason: denial.code, status: denial.status, via: via)
                 Self.writeJSON(fd: client, status: denial.status, object: [
                     "error": denial.code,
                     "message": denial.message,
@@ -137,15 +148,12 @@ final class GatewayListener: @unchecked Sendable {
             return
         }
         if let gatewayClient { service.noteGatewayClientUse(gatewayClient) }
-        // `keys relay` marks what it replays so the ledger can say which way a call came in.
-        // A label only: a local caller that forges it gains nothing, and it never goes upstream.
-        let via = request.headers["x-ksf-via"]?.lowercased() == "relay" ? "relay" : nil
         let path = GatewayPath.join(prefix: target.provider.pathPrefix, rest: request.rest)
         var headers = request.headers.filter { !Self.dropIncoming.contains($0.key.lowercased()) }
         headers["Host"] = target.host
         guard var urlRequest = target.provider.upstreamRequest(
             host: target.host, path: path, query: rawQuery, method: request.method, headers: headers,
-            secret: target.secret, timeout: Self.resourceTimeout
+            secret: target.secret, timeout: requestTimeout
         ) else {
             Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
             return
@@ -162,8 +170,8 @@ final class GatewayListener: @unchecked Sendable {
         let started = Date()
         let proxy = GatewayProxyTask(clientFD: client, tee: tee)
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = Self.resourceTimeout
-        config.timeoutIntervalForResource = Self.resourceTimeout
+        config.timeoutIntervalForRequest = requestTimeout
+        config.timeoutIntervalForResource = requestTimeout
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.waitsForConnectivity = false
@@ -179,11 +187,13 @@ final class GatewayListener: @unchecked Sendable {
 
         let durationMs = Int((Date().timeIntervalSince(started) * 1000.0).rounded())
         let status = proxy.statusCode ?? 502
-        if !proxy.wroteHead {
-            // The URL error code (never a header or body) says whether it was a
-            // timeout, a refused connection or TLS, which the bare 502 could not.
-            var object: [String: Any] = ["error": "upstream_error"]
-            if let failure = proxy.failure { object["detail"] = failure }
+        let ending = proxy.ending()
+        if !proxy.wroteHead, !ending.clientClosed {
+            // The URL error code (never a header or body) says whether it was a timeout, a
+            // refused connection or TLS, which the bare 502 could not; `reason` says the same
+            // as a stable code, so a harness can tell this from a provider's own 502.
+            var object: [String: Any] = ["error": "upstream_error", "reason": ending.reason]
+            if let detail = ending.detail { object["detail"] = detail }
             Self.writeJSON(fd: client, status: 502, object: object)
         }
         let parsed = tee.result(
@@ -191,7 +201,7 @@ final class GatewayListener: @unchecked Sendable {
             requestModel: evaluation ? request.headers["ai-model-id"] : nil
         )
         if service.breaker.record(key: target.name, status: status) {
-            service.recordGatewayDenial(name: target.name, reason: GatewayBreaker.code)
+            service.recordGatewayDenial(name: target.name, reason: GatewayBreaker.code, via: via)
         }
         do {
             try service.recordGatewayUsage(
@@ -210,7 +220,9 @@ final class GatewayListener: @unchecked Sendable {
                     durationMs: durationMs,
                     requestId: proxy.requestId,
                     reportedCostUsdTicks: (200..<300).contains(status) ? parsed.reportedCostUsdTicks : nil,
-                    via: via
+                    via: via,
+                    upstreamHost: target.host,
+                    reason: ending.reason
                 ),
                 grantId: grant?.id
             )
@@ -338,6 +350,9 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     private(set) var statusCode: Int?
     private(set) var requestId: String?
     private(set) var failure: String?
+    private var failureError: NSError?
+    /// Writing to the caller failed, so the gateway cancelled the upstream call.
+    private var clientClosed = false
 
     init(clientFD: Int32, tee: GatewayTee) {
         self.clientFD = clientFD
@@ -346,6 +361,15 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
 
     func wait() {
         sema.wait()
+    }
+
+    /// Why the call ended (a `GatewayReason` code), the URL error behind it, and whether the
+    /// caller is gone. Read once `wait` has returned.
+    func ending() -> (reason: String, detail: String?, clientClosed: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        let reason = GatewayReason.outcome(clientClosed: clientClosed, failure: failureError, gotHead: hasResponse)
+        return (reason, failure, clientClosed)
     }
 
     func urlSession(
@@ -374,6 +398,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
         if !wroteHead {
             wroteHead = writeHead(http)
             if !wroteHead {
+                clientClosed = true
                 sessionTask?.cancel()
                 lock.unlock()
                 finish()
@@ -387,6 +412,9 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         if !HTTPFrame.writeAll(fd: clientFD, data) {
+            lock.lock()
+            clientClosed = true
+            lock.unlock()
             sessionTask?.cancel()
             finish()
             return
@@ -398,6 +426,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
         if let error = error as NSError? {
             lock.lock()
             failure = "\(error.domain) \(error.code)"
+            failureError = error
             lock.unlock()
         }
         finish()

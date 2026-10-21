@@ -75,6 +75,9 @@ final class CatalogDB: @unchecked Sendable {
               cost_usd_ticks INTEGER,
               key_name TEXT,
               http_status INTEGER,
+              duration_ms INTEGER,
+              upstream_host TEXT,
+              reason TEXT,
               PRIMARY KEY (source, session_id, prompt_id, model)
             );
             """)
@@ -82,6 +85,13 @@ final class CatalogDB: @unchecked Sendable {
         // left in place for older binaries; a usage_events table from those versions lacks it.
         if try !tableHasColumn("usage_events", "http_status") {
             try exec("ALTER TABLE usage_events ADD COLUMN http_status INTEGER;")
+        }
+        // How long a gateway call took, where it went and why it ended (GatewayReason), for
+        // `keys log`. Rows stored before these columns existed keep NULL: nobody knows.
+        for (column, type) in [("duration_ms", "INTEGER"), ("upstream_host", "TEXT"), ("reason", "TEXT")] {
+            if try !tableHasColumn("usage_events", column) {
+                try exec("ALTER TABLE usage_events ADD COLUMN \(column) \(type);")
+            }
         }
         try exec("CREATE INDEX IF NOT EXISTS usage_events_occurred ON usage_events (occurred_at);")
         try exec("CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events (model);")
@@ -116,9 +126,14 @@ final class CatalogDB: @unchecked Sendable {
               name TEXT NOT NULL,
               action TEXT NOT NULL,
               caller TEXT,
-              detail TEXT
+              detail TEXT,
+              http_status INTEGER
             );
             """)
+        // The status the gateway answered a refused call with (gateway_denied), for `keys log`.
+        if try !tableHasColumn("key_events", "http_status") {
+            try exec("ALTER TABLE key_events ADD COLUMN http_status INTEGER;")
+        }
         try exec("CREATE INDEX IF NOT EXISTS key_events_name_ts ON key_events (name, ts DESC, id DESC);")
         try exec("""
             CREATE TABLE IF NOT EXISTS provider_checks (
@@ -845,7 +860,8 @@ final class CatalogDB: @unchecked Sendable {
         source, session_id, prompt_id, model, occurred_at, provider,
         cwd, session_title, model_calls,
         input_tokens, output_tokens, cached_read_tokens, cache_creation_tokens,
-        reasoning_tokens, cost_usd_ticks, key_name, http_status
+        reasoning_tokens, cost_usd_ticks, key_name, http_status,
+        duration_ms, upstream_host, reason
         """
 
     /// Upserts one event; true when it was new, false when it replaced an existing row.
@@ -857,7 +873,7 @@ final class CatalogDB: @unchecked Sendable {
             )
             try run("""
                 INSERT INTO usage_events (\(Self.usageColumns))
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, session_id, prompt_id, model) DO UPDATE SET
                   occurred_at = CASE WHEN excluded.occurred_at = '\(Self.epochSentinel)'
                                       AND usage_events.occurred_at != '\(Self.epochSentinel)'
@@ -873,12 +889,16 @@ final class CatalogDB: @unchecked Sendable {
                   reasoning_tokens = excluded.reasoning_tokens,
                   cost_usd_ticks = excluded.cost_usd_ticks,
                   key_name = excluded.key_name,
-                  http_status = excluded.http_status;
+                  http_status = excluded.http_status,
+                  duration_ms = excluded.duration_ms,
+                  upstream_host = excluded.upstream_host,
+                  reason = excluded.reason;
                 """,
                 event.source, event.sessionId, event.promptId, event.model, event.occurredAt, event.provider,
                 event.cwd, event.sessionTitle, event.modelCalls,
                 event.inputTokens, event.outputTokens, event.cachedReadTokens, event.cacheCreationTokens,
-                event.reasoningTokens, event.costUsdTicks, event.keyName, event.httpStatus
+                event.reasoningTokens, event.costUsdTicks, event.keyName, event.httpStatus,
+                event.durationMs, event.upstreamHost, event.reason
             )
             return !existed
         }
@@ -929,7 +949,10 @@ final class CatalogDB: @unchecked Sendable {
             reasoningTokens: Int(sqlite3_column_int64(stmt, 13)),
             costUsdTicks: sqlite3_column_type(stmt, 14) == SQLITE_NULL ? nil : sqlite3_column_int64(stmt, 14),
             keyName: columnText(stmt, 15),
-            httpStatus: columnOptionalInt(stmt, 16)
+            httpStatus: columnOptionalInt(stmt, 16),
+            durationMs: columnOptionalInt(stmt, 17),
+            upstreamHost: columnText(stmt, 18),
+            reason: columnText(stmt, 19)
         )
     }
 
@@ -985,10 +1008,10 @@ final class CatalogDB: @unchecked Sendable {
         var detail: String?
     }
 
-    func insertKeyEvent(ts: String, name: String, action: String, caller: String?, detail: String?) throws {
+    func insertKeyEvent(ts: String, name: String, action: String, caller: String?, detail: String?, httpStatus: Int? = nil) throws {
         try run(
-            "INSERT INTO key_events (ts, name, action, caller, detail) VALUES (?, ?, ?, ?, ?);",
-            ts, name, action, caller, detail
+            "INSERT INTO key_events (ts, name, action, caller, detail, http_status) VALUES (?, ?, ?, ?, ?, ?);",
+            ts, name, action, caller, detail, httpStatus
         )
     }
 
@@ -1007,6 +1030,89 @@ final class CatalogDB: @unchecked Sendable {
                 action: columnText($0, 3) ?? "",
                 caller: columnText($0, 4),
                 detail: columnText($0, 5)
+            )
+        }
+    }
+
+    // MARK: gateway request log (keys log, keys doctor)
+
+    /// The newest usage row and key event, so a followed log reads only what came after.
+    func gatewayLogCursor() throws -> GatewayLogCursor {
+        let call = try one("SELECT COALESCE(MAX(rowid), 0) FROM usage_events;") { sqlite3_column_int64($0, 0) } ?? 0
+        let refusal = try one("SELECT COALESCE(MAX(id), 0) FROM key_events;") { sqlite3_column_int64($0, 0) } ?? 0
+        return GatewayLogCursor(call: call, refusal: refusal)
+    }
+
+    /// The last `limit` entries written up to `cursor`, oldest first.
+    func gatewayLog(
+        through cursor: GatewayLogCursor, key: String? = nil, filter: GatewayLogFilter = .all, limit: Int
+    ) throws -> [GatewayLogEntry] {
+        try gatewayLogEntries(after: GatewayLogCursor(call: 0, refusal: 0), through: cursor, key: key,
+                              filter: filter, newestLimit: limit).reversed()
+    }
+
+    /// Every entry written after `after` and up to `through`, oldest first.
+    func gatewayLog(
+        after: GatewayLogCursor, through: GatewayLogCursor, key: String? = nil, filter: GatewayLogFilter = .all
+    ) throws -> [GatewayLogEntry] {
+        try gatewayLogEntries(after: after, through: through, key: key, filter: filter, newestLimit: nil)
+    }
+
+    /// Forwarded calls are the gateway's usage rows; refusals are its `gateway_denied` audit
+    /// entries, which name no host (nothing went upstream) and take the key's provider from the
+    /// catalog. The path a call took is in its session id (`GatewayUsageRow.usageEvent`) or the
+    /// event's caller. With `newestLimit` the newest entries come first.
+    private func gatewayLogEntries(
+        after: GatewayLogCursor, through: GatewayLogCursor, key: String?, filter: GatewayLogFilter, newestLimit: Int?
+    ) throws -> [GatewayLogEntry] {
+        // A followed log asks every second for the few rows after its cursor: `+source` keeps
+        // SQLite on that rowid range instead of the primary key's walk over every gateway row.
+        var callWhere = (after.call > 0 ? "+source" : "source") + " = 'gateway' AND rowid > ? AND rowid <= ?"
+        var refusalWhere = "e.action = 'gateway_denied' AND e.id > ? AND e.id <= ?"
+        var callArgs: [any SQLBindable] = [after.call, through.call]
+        var refusalArgs: [any SQLBindable] = [after.refusal, through.refusal]
+        if let key {
+            callWhere += " AND key_name = ?"
+            callArgs.append(key)
+            refusalWhere += " AND e.name = ?"
+            refusalArgs.append(key)
+        }
+        let gatewaySide = "(reason IS NOT NULL AND reason != '\(GatewayReason.upstreamStatus)')"
+        switch filter {
+        case .all: break
+        case .failed: callWhere += " AND (http_status IS NULL OR http_status < 200 OR http_status > 299 OR \(gatewaySide))"
+        case .gatewaySide: callWhere += " AND \(gatewaySide)"
+        }
+        let order = newestLimit == nil ? "ASC" : "DESC"
+        var sql = """
+            SELECT kind, ts, key_name, provider, host, status, duration_ms, reason, via FROM (
+              SELECT 0 AS kind, rowid AS seq, occurred_at AS ts, key_name, provider, upstream_host AS host,
+                     http_status AS status, duration_ms, reason,
+                     CASE WHEN substr(session_id, 1, 9) = 'gw-relay:' THEN 'relay' ELSE 'loopback' END AS via
+              FROM usage_events WHERE \(callWhere)
+              UNION ALL
+              SELECT 1, e.id, e.ts, e.name, c.provider, NULL, e.http_status, NULL, e.detail,
+                     CASE WHEN e.caller = 'relay' THEN 'relay' ELSE 'loopback' END
+              FROM key_events e LEFT JOIN catalog c ON c.name = e.name WHERE \(refusalWhere)
+            )
+            ORDER BY ts \(order), kind \(order), seq \(order)
+            """
+        var args = callArgs + refusalArgs
+        if let newestLimit {
+            sql += " LIMIT ?"
+            args.append(newestLimit)
+        }
+        return try query(sql + ";", args) { stmt in
+            GatewayLogEntry(
+                kind: sqlite3_column_int64(stmt, 0) == 1 ? .refusal : .call,
+                ts: columnText(stmt, 1) ?? "",
+                key: columnText(stmt, 2) ?? "",
+                provider: columnText(stmt, 3),
+                host: columnText(stmt, 4),
+                status: columnOptionalInt(stmt, 5),
+                durationMs: columnOptionalInt(stmt, 6),
+                reason: columnText(stmt, 7),
+                via: columnText(stmt, 8) ?? "loopback"
             )
         }
     }
