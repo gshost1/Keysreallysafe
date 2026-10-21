@@ -419,9 +419,15 @@ struct LoginItemStatusCommand: ParsableCommand {
 struct EnvCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "env",
-        abstract: "Run a command with a vault secret in the environment (user presence, no clipboard).",
-        usage: "keys env <name> <variable> -- <command> ...",
-        discussion: "Unlocks the named key, sets <variable> in the child only, and execs the command. Put -- before the command so its flags are not parsed by keys. The secret is not copied to the clipboard."
+        abstract: "Run a command with vault secrets in its environment (one user presence check, no clipboard).",
+        usage: "keys env <name> <variable> [<name> <variable> ...] -- <command> ...",
+        discussion: """
+            Unlocks the named keys under one Touch ID and sets each <variable> in the child only. \
+            Every key is read before the command starts, so a missing one runs nothing. The \
+            command stays in keys' process group, so Ctrl-C reaches it, and keys exits the way \
+            it did. Put -- before the command so its flags are not parsed by keys. No secret \
+            is copied to the clipboard.
+            """
     )
 
     @Argument(help: "Vault key name.")
@@ -430,12 +436,18 @@ struct EnvCommand: ParsableCommand {
     @Argument(help: "Environment variable to set in the child.")
     var variable: String
 
-    @Argument(parsing: .remaining, help: "Command after --.")
-    var command: [String]
+    @Argument(parsing: .captureForPassthrough, help: ArgumentHelp("More <name> <variable> pairs, then -- and the command.", valueName: "more"))
+    var rest: [String] = []
+
+    /// The pairs before `--` and the command after it.
+    func parsed() throws -> (pairs: [EnvPair], command: [String]) {
+        try EnvPair.parse([name, variable] + rest)
+    }
 
     func run() throws {
+        let (pairs, command) = try parsed()
         let service = try AppFactory.makeService()
-        Darwin.exit(try service.env(name: name, variable: variable, command: command, caller: "env"))
+        try service.env(pairs: pairs, command: command, caller: "env").exitProcess()
     }
 }
 
@@ -1171,14 +1183,24 @@ struct AgentCommand: ParsableCommand {
             "launching \(agent.executable) with \(key) (\(provider.name)) behind http://127.0.0.1:\(GatewayListener.port)/\(key)\n",
             stderr
         )
-        let status = try service.runner.run(argv: [agent.executable] + args, extraEnv: env)
-        if let grantID {
-            // The session is over; nothing should keep the token alive.
+        let ended = try Self.launch(runner: service.runner, argv: [agent.executable] + args, env: env) {
+            guard let grantID else { return }
+            // The session is over; nothing should keep the token alive. A short timeout, since
+            // keys ignores Ctrl-C until it exits.
             if let control = try? ControlClient.connect() {
-                _ = try? control.call(method: "DELETE", path: "/api/grants/\(grantID)", expect: 200)
+                _ = try? control.call(method: "DELETE", path: "/api/grants/\(grantID)", expect: 200, timeout: 10)
             }
         }
-        Darwin.exit(status)
+        ended.exitProcess()
+    }
+
+    /// Runs the agent, then `cleanup` however it ended: a normal exit, a signal (Ctrl-C, a
+    /// closed terminal), or a launch that never started, so the grant does not outlive it.
+    static func launch(
+        runner: any CommandRunner, argv: [String], env: [String: String], cleanup: () -> Void
+    ) throws -> ChildExit {
+        defer { cleanup() }
+        return try runner.run(argv: argv, extraEnv: env)
     }
 }
 
@@ -1328,7 +1350,7 @@ struct TunnelCommand: ParsableCommand {
         }
         fputs(text + "\nssh is running; Ctrl-C stops the tunnel.\n", stderr)
         let service = try AppFactory.makeService()
-        Darwin.exit(try service.runner.run(argv: argv, extraEnv: [:]))
+        try service.runner.run(argv: argv, extraEnv: [:]).exitProcess()
     }
 
     /// A tunnel to a closed port fails only when the remote side first uses it; refuse here

@@ -62,7 +62,7 @@ func makeGatedService(
     secrets: any SecretStore = MemorySecretStore(),
     gate: RecordingPresenceGate = RecordingPresenceGate(),
     clipboard: any ClipboardClient = FakeClipboard(),
-    runner: any CommandRunner = FoundationCommandRunner(),
+    runner: any CommandRunner = SpawnCommandRunner(restoresHandlers: true),
     openRouter: any OpenRouterFetching = OpenRouterHTTP()
 ) -> (KeysService, RecordingPresenceGate) {
     let service = KeysService(
@@ -278,13 +278,13 @@ final class FakeOpenRouter: OpenRouterFetching, @unchecked Sendable {
 final class FakeCommandRunner: CommandRunner, @unchecked Sendable {
     var lastArgv: [String]?
     var lastExtraEnv: [String: String]?
-    var status: Int32 = 0
+    var exit: ChildExit = .exited(0)
     var error: Error?
-    func run(argv: [String], extraEnv: [String: String]) throws -> Int32 {
+    func run(argv: [String], extraEnv: [String: String]) throws -> ChildExit {
         lastArgv = argv
         lastExtraEnv = extraEnv
         if let error { throw error }
-        return status
+        return exit
     }
 }
 

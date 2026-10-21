@@ -43,7 +43,7 @@ final class KeysService: @unchecked Sendable {
         codexHome: URL = Paths.codexHome,
         grokBotHome: URL = Paths.grokBotHome,
         droidHome: URL = Paths.droidHome,
-        runner: any CommandRunner = FoundationCommandRunner(),
+        runner: any CommandRunner = SpawnCommandRunner(),
         openRouter: any OpenRouterFetching = OpenRouterHTTP(),
         relaySecrets: (any SecretStore)? = nil
     ) {
@@ -1404,18 +1404,56 @@ final class KeysService: @unchecked Sendable {
         variable: String,
         command: [String],
         caller: String = "env"
-    ) throws -> Int32 {
-        let row = try existingRow(name)
-        let variable = EnvVar.canonicalize(variable)
-        try EnvVar.validate(variable)
+    ) throws -> ChildExit {
+        try env(pairs: [EnvPair(name: name, variable: variable)], command: command, caller: caller)
+    }
+
+    /// One presence check covers every pair, so a launch that needs a token id and its secret
+    /// asks once. Every key is resolved and read before the command starts: a missing key or a
+    /// failed read runs nothing. Each key is audited as a single `keys env` is.
+    func env(pairs: [EnvPair], command: [String], caller: String = "env") throws -> ChildExit {
+        guard !pairs.isEmpty else { throw AppError.usage("name a key and a variable before --") }
+        var resolved: [(row: CatalogRow, variable: String)] = []
+        for pair in pairs {
+            let row = try existingRow(pair.name)
+            let variable = EnvVar.canonicalize(pair.variable)
+            try EnvVar.validate(variable)
+            if resolved.contains(where: { $0.variable == variable }) {
+                throw AppError.usage("\(variable) is given twice")
+            }
+            resolved.append((row, variable))
+        }
         guard !command.isEmpty else { throw AppError.usage("missing command after --") }
-        let provider = Providers.provider(id: row.provider)
-        let where_ = row.gatewayHost ?? provider?.host ?? "no fixed host"
-        let line = "keys env: \(name) is a \(provider?.name ?? row.provider) key (\(where_)); the raw value goes to \(command[0]) as \(variable)\n"
-        FileHandle.standardError.write(Data(line.utf8))
-        let secret = try get(name: name)
-        try recordKeyEvent(name: name, action: "env", caller: caller, touchLastUsed: true)
-        return try runner.run(argv: command, extraEnv: [variable: secret])
+        for (row, variable) in resolved {
+            let provider = Providers.provider(id: row.provider)
+            let where_ = row.gatewayHost ?? provider?.host ?? "no fixed host"
+            let line = "keys env: \(row.name) is a \(provider?.name ?? row.provider) key (\(where_)); the raw value goes to \(command[0]) as \(variable)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        var names: [String] = []
+        for (row, _) in resolved where !names.contains(row.name) {
+            names.append(row.name)
+        }
+        try presence.require(reason: Self.unlockReason(names))
+        var values: [String: String] = [:]
+        for name in names {
+            values[name] = try secrets.get(name: name)
+        }
+        for name in names {
+            try recordKeyEvent(name: name, action: "env", caller: caller, touchLastUsed: true)
+        }
+        var extraEnv: [String: String] = [:]
+        for (row, variable) in resolved {
+            extraEnv[variable] = values[row.name]
+        }
+        return try runner.run(argv: command, extraEnv: extraEnv)
+    }
+
+    /// "unlock a", "unlock 2 keys: a and b": the prompt names every key it opens, the count
+    /// first, so a sheet that cuts the list short still shows how many.
+    static func unlockReason(_ names: [String]) -> String {
+        guard names.count > 1 else { return "unlock \(names.first ?? "")" }
+        return "unlock \(names.count) keys: " + names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
     }
 
     func liveStatus() throws -> LiveStatus {
