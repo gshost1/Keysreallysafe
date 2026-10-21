@@ -200,8 +200,11 @@ protocol RelayDialer: Sendable {
     func connect(url: URL, headers: [String: String]) async throws -> any RelaySocket
 }
 
-/// URLSession's WebSocket. A refused handshake only surfaces on first use, so the dialer
-/// pings once before handing the socket over and reports the HTTP status when there is one.
+/// URLSession's WebSocket. The dial returns once the handshake has answered 101, and reports
+/// the HTTP status of a refused one. It does not ping to find that out: a Worker that kept
+/// requests while the Mac was away sends them right behind the 101, and URLSession hands over
+/// no pong while data frames nobody has received yet sit ahead of it, so such a dial would
+/// never finish.
 final class URLSessionRelayDialer: RelayDialer {
     func connect(url: URL, headers: [String: String]) async throws -> any RelaySocket {
         var request = URLRequest(url: url)
@@ -211,15 +214,18 @@ final class URLSessionRelayDialer: RelayDialer {
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.waitsForConnectivity = false
-        let session = URLSession(configuration: config)
+        let handshake = RelayHandshake()
+        let session = URLSession(configuration: config, delegate: handshake, delegateQueue: nil)
         let task = session.webSocketTask(with: request)
         task.maximumMessageSize = 2 * 1024 * 1024
         task.resume()
         do {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                task.sendPing { error in
-                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-                }
+            // Up to the 30 s timeout; cancelling the dial cancels the task, which ends the
+            // handshake at once.
+            try await withTaskCancellationHandler {
+                try await handshake.opened()
+            } onCancel: {
+                task.cancel(with: .goingAway, reason: nil)
             }
         } catch {
             let status = (task.response as? HTTPURLResponse)?.statusCode
@@ -227,6 +233,49 @@ final class URLSessionRelayDialer: RelayDialer {
             throw RelayDialError(status: status, message: error.localizedDescription)
         }
         return URLSessionRelaySocket(task: task, session: session)
+    }
+}
+
+/// The session delegate that says how the handshake ended: opened, or failed (a refused
+/// upgrade, a timeout, a cancel). Whatever it hears after that is the socket's business.
+final class RelayHandshake: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: Result<Void, Error>?
+    private var waiter: CheckedContinuation<Void, Error>?
+
+    func opened() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let settled: Result<Void, Error>? = lock.withLock {
+                if outcome == nil { waiter = continuation }
+                return outcome
+            }
+            if let settled { continuation.resume(with: settled) }
+        }
+    }
+
+    private func settle(_ result: Result<Void, Error>) {
+        let waiting: CheckedContinuation<Void, Error>? = lock.withLock {
+            guard outcome == nil else { return nil }
+            outcome = result
+            defer { waiter = nil }
+            return waiter
+        }
+        waiting?.resume(with: result)
+    }
+
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        settle(.success(()))
+    }
+
+    func urlSession(
+        _ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?
+    ) {
+        settle(.failure(RelayDialError(status: nil, message: "the Worker closed the relay during the handshake")))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        settle(.failure(error ?? RelayDialError(status: nil, message: "the relay connection ended during the handshake")))
     }
 }
 

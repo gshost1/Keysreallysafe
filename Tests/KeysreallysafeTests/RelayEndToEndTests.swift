@@ -57,4 +57,25 @@ final class RelayEndToEndTests: XCTestCase {
         let usage = try await rig.usageRows()
         XCTAssertEqual(usage.first?.sessionId, "gw-relay:demo")
     }
+
+    /// A refused upgrade still names its status, now that the dial waits for the handshake
+    /// instead of a pong.
+    func testAWrongSecretIsReportedAsTheWorkersRefusal() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let rawURL = env["KEYS_RELAY_E2E_URL"], env["KEYS_RELAY_E2E_SECRET"] != nil else {
+            throw XCTSkip("set KEYS_RELAY_E2E_URL and KEYS_RELAY_E2E_SECRET with wrangler dev running")
+        }
+        let wrong = RelaySecret.generate()
+        do {
+            _ = try await URLSessionRelayDialer().connect(
+                url: RelayURL.connectURL(try RelayURL.validate(rawURL)),
+                headers: ["Authorization": "Bearer \(wrong)", RelayProtocol.protocolHeader: RelayProtocol.version]
+            )
+            XCTFail("the Worker took a secret it was never given")
+        } catch let error as RelayDialError {
+            XCTAssertEqual(error.status, 401, "\(error)")
+            XCTAssertTrue("\(error)".contains("refused the relay secret (401)"))
+            XCTAssertFalse("\(error)".contains(wrong))
+        }
+    }
 }

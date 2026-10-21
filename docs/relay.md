@@ -175,7 +175,10 @@ connection replaces the previous one**, which is closed with code 4000
 (marked retryable). This is deliberate: a Mac that crashed or changed
 networks must be able to reconnect without waiting for the stale socket to
 time out, and one relay secret is meant for one Mac. Run two Macs against two
-Workers.
+Workers. For the Mac, the dial ends at the 101: it does not wait for a pong
+first, because a Worker that kept requests for it sends them right behind the
+101, and URLSession hands over no pong while data frames sit unread ahead of
+it.
 
 ## While the Mac is away
 
