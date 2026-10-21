@@ -40,9 +40,9 @@
   <div class="wrap">
     <a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a>
     <nav>
+      <a href="#relay">Cloud VMs</a>
       <a href="#features">Features</a>
       <a href="#agents">Key vault</a>
-      <a href="#relay">Cloud VMs</a>
       <a href="#privacy">Privacy</a>
       <a href="#faq">FAQ</a>
       <a href="https://github.com/gshost1/Keysreallysafe">GitHub</a>
@@ -127,7 +127,71 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
   </div>
 </div>
 
-<section id="features" class="gray" style="margin-top:100px">
+<section id="relay" class="gray" style="margin-top:100px">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Cloud VMs and agents</p>
+      <h2 class="sh">Your VMs get a dummy key.<br>The real one never leaves.</h2>
+      <p class="sp">A VM, a GitHub Actions job or a cloud coding session can't reach your Mac's loopback. Deploy the small relay Worker into your own Cloudflare account and it can. <code>keys wrap</code> rewrites a project's <code>.env</code> so every provider key becomes a dummy token and a URL at your Worker.</p>
+    </div>
+
+    <div class="ask">
+      <ol class="steps">
+        <li><b>Wrap the env file.</b><span>One Touch ID. The real keys go into the Keychain; the file gets dummy tokens and your Worker's URL, and the original is backed up beside it.</span></li>
+        <li><b>Ship the file.</b><span>Copy it to the VM, the Actions secret, the cloud session. Nothing in it works without your Mac.</span></li>
+        <li><b>Calls come home.</b><span>Each call reaches your Worker, rides one WebSocket your Mac opened, gets the real key swapped in on loopback and goes to the provider. It lands in your usage chart like any other.</span></li>
+      </ol>
+      <div class="askvis">
+        <div class="win chat wrapdemo">
+          <div class="tb"><i></i><i></i><i></i><span>zsh — ~/evals</span></div>
+<pre><span class="cu">$ keys wrap .env --relay https://keysrs-relay.you.workers.dev</span>
+1 value in .env looks like a provider key: OPENAI_API_KEY
+<span class="ct">Touch ID in Keysrs to compare them with the vault…</span>
+plan for .env:
+  wrap  OPENAI_API_KEY -&gt; evals-openai  (new vault key, OpenAI at api.openai.com)
+  set   OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
+each wrapped key gets a client token (POST and GET, 30 days) and the gateway turned on
+Apply this plan? [y/N] y
+<span class="ok">wrapped 1 variable in .env:</span>
+  OPENAI_API_KEY -&gt; evals-openai (added to the vault) client #4
+  OPENAI_BASE_URL -&gt; relay<span class="cur"></span></pre>
+        </div>
+        <div class="touch t2">
+          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
+          <b>Keysrs</b>
+          <p>Keysrs is trying to match 1 value in .env against the vault and wrap them.</p>
+          <p>Touch ID or enter your password to allow this.</p>
+          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bento">
+      <div class="card s3">
+        <h3>If a dummy key leaks.</h3>
+        <p>It can call that one provider, through your Mac, until you revoke it or it expires. The real key is unchanged, so there is nothing to rotate.</p>
+        <ul class="fence">
+          <li><b>One key, one host</b><span>A token is bound to one vault key and its provider.</span></li>
+          <li><b>Expires on its own</b><span>30 days by default, a year at most. <code>keys client revoke</code> ends it now.</span></li>
+          <li><b>Only while your Mac is on</b><span>No Mac, no gateway, no calls.</span></li>
+          <li><b>Every call counted</b><span>Each one is a row in your usage. Request bodies never are.</span></li>
+        </ul>
+      </div>
+      <div class="card s3">
+        <h3>The Worker is a pipe.</h3>
+        <p>You deploy it from the repo into your own account and can read every line. The free Workers plan is enough, and Keysrs hosts nothing.</p>
+        <ul class="fence">
+          <li><b>Never sees a key</b><span>The swap happens on your Mac. The Worker carries requests and answers.</span></li>
+          <li><b>Holds one secret</b><span>The relay secret only lets your Mac connect. It is never a stand-in for a token.</span></li>
+          <li><b>Your Mac has to be on</b><span>Off or asleep, nothing is served: a call waits up to a minute for the Mac, then gets a retryable 503.</span></li>
+          <li><b>Cloudflare only, for now</b><span>One Worker with a SQLite-backed Durable Object. The protocol is in the repo; other routes are welcome.</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">Usage meter</p>
@@ -188,7 +252,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
   </div>
 </section>
 
-<section id="agents">
+<section id="agents" class="gray">
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">Key vault</p>
@@ -246,70 +310,6 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
           <li><b>Expires on its own</b><span>You pick how long it lasts.</span></li>
           <li><b>Lock screen revokes</b><span>So does revoking it or a restart.</span></li>
           <li><b>Counted in your usage</b><span>Every call lands in the chart. Request bodies never do.</span></li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="relay" class="gray">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Cloud VMs and agents</p>
-      <h2 class="sh">Your VMs get a dummy key.<br>The real one never leaves.</h2>
-      <p class="sp">A VM, a GitHub Actions job or a cloud coding session can't reach your Mac's loopback. Deploy the small relay Worker into your own Cloudflare account and it can. <code>keys wrap</code> rewrites a project's <code>.env</code> so every provider key becomes a dummy token and a URL at your Worker.</p>
-    </div>
-
-    <div class="ask">
-      <ol class="steps">
-        <li><b>Wrap the env file.</b><span>One Touch ID. The real keys go into the Keychain; the file gets dummy tokens and your Worker's URL, and the original is backed up beside it.</span></li>
-        <li><b>Ship the file.</b><span>Copy it to the VM, the Actions secret, the cloud session. Nothing in it works without your Mac.</span></li>
-        <li><b>Calls come home.</b><span>Each call reaches your Worker, rides one WebSocket your Mac opened, gets the real key swapped in on loopback and goes to the provider. It lands in your usage chart like any other.</span></li>
-      </ol>
-      <div class="askvis">
-        <div class="win chat wrapdemo">
-          <div class="tb"><i></i><i></i><i></i><span>zsh — ~/evals</span></div>
-<pre><span class="cu">$ keys wrap .env --relay https://keysrs-relay.you.workers.dev</span>
-1 value in .env looks like a provider key: OPENAI_API_KEY
-<span class="ct">Touch ID in Keysrs to compare them with the vault…</span>
-plan for .env:
-  wrap  OPENAI_API_KEY -&gt; evals-openai  (new vault key, OpenAI at api.openai.com)
-  set   OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
-each wrapped key gets a client token (POST and GET, 30 days) and the gateway turned on
-Apply this plan? [y/N] y
-<span class="ok">wrapped 1 variable in .env:</span>
-  OPENAI_API_KEY -&gt; evals-openai (added to the vault) client #4
-  OPENAI_BASE_URL -&gt; relay<span class="cur"></span></pre>
-        </div>
-        <div class="touch t2">
-          <div class="tid"><svg class="fp"><use href="#tid-fp"/></svg><img src="icon.svg" alt="" width="26" height="26"></div>
-          <b>Keysrs</b>
-          <p>Keysrs is trying to match 1 value in .env against the vault and wrap them.</p>
-          <p>Touch ID or enter your password to allow this.</p>
-          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="bento">
-      <div class="card s3">
-        <h3>If a dummy key leaks.</h3>
-        <p>It can call that one provider, through your Mac, until you revoke it or it expires. The real key is unchanged, so there is nothing to rotate.</p>
-        <ul class="fence">
-          <li><b>One key, one host</b><span>A token is bound to one vault key and its provider.</span></li>
-          <li><b>Expires on its own</b><span>30 days by default, a year at most. <code>keys client revoke</code> ends it now.</span></li>
-          <li><b>Only while your Mac is on</b><span>No Mac, no gateway, no calls.</span></li>
-          <li><b>Every call counted</b><span>Each one is a row in your usage. Request bodies never are.</span></li>
-        </ul>
-      </div>
-      <div class="card s3">
-        <h3>The Worker is a pipe.</h3>
-        <p>You deploy it from the repo into your own account and can read every line. The free Workers plan is enough, and Keysrs hosts nothing.</p>
-        <ul class="fence">
-          <li><b>Never sees a key</b><span>The swap happens on your Mac. The Worker carries requests and answers.</span></li>
-          <li><b>Holds one secret</b><span>The relay secret only lets your Mac connect. It is never a stand-in for a token.</span></li>
-          <li><b>Your Mac has to be on</b><span>Off or asleep, nothing is served: a call waits up to a minute for the Mac, then gets a retryable 503.</span></li>
-          <li><b>Cloudflare only, for now</b><span>One Worker with a SQLite-backed Durable Object. The protocol is in the repo; other routes are welcome.</span></li>
         </ul>
       </div>
     </div>

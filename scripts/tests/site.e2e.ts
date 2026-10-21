@@ -10,8 +10,8 @@ test('marketing navigation, release links, privacy and terms', async ({ app, bro
   const wrapPrompt = 'Keysrs is trying to match 1 value in .env against the vault and wrap them.';
   await expect(browser.locator('.touch p:first-of-type')).toHaveCount(3);
   await expect(browser.locator('.touch p:first-of-type').nth(0)).toHaveText(relayPrompt);
-  await expect(browser.locator('.touch p:first-of-type').nth(1)).toHaveText(grantPrompt);
-  await expect(browser.locator('.touch p:first-of-type').nth(2)).toHaveText(wrapPrompt);
+  await expect(browser.locator('.touch p:first-of-type').nth(1)).toHaveText(wrapPrompt);
+  await expect(browser.locator('.touch p:first-of-type').nth(2)).toHaveText(grantPrompt);
   await expect(browser.locator('#relay')).toBeVisible();
   await expect(browser.locator('body')).not.toContainText('is trying to Grant');
   const download = browser.locator('a[href$="Keysrs-arm64.dmg"]');
