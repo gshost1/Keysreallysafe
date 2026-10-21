@@ -352,6 +352,11 @@ final class GatewayLogTests: XCTestCase {
         XCTAssertEqual(GatewayLogFormat.duration(nil), "-")
         XCTAssertEqual(GatewayLogFormat.duration(850), "850ms")
         XCTAssertEqual(GatewayLogFormat.duration(61_249), "61.2s")
+        // A provider name is whatever was typed into `keys add`; an escape sequence in it must
+        // not reach the terminal as one.
+        let odd = GatewayLogEntry(kind: .refusal, ts: "2026-10-20T10:00:00Z", key: "demo", provider: "evil\u{1b}[31m\u{9b}x",
+                                  host: nil, status: 401, durationMs: nil, reason: "no_client_token", via: "loopback")
+        XCTAssertEqual(GatewayLogFormat.fields(odd, timeZone: TimeZone(secondsFromGMT: 0)!)[2], "evil?[31m?x")
     }
 
     // MARK: doctor

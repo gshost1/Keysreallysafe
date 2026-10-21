@@ -116,14 +116,22 @@ enum GatewayLogFormat {
     static func fields(_ entry: GatewayLogEntry, timeZone: TimeZone) -> [String] {
         [
             time(entry.ts, timeZone: timeZone),
-            entry.key,
-            entry.provider ?? "-",
-            entry.host ?? "-",
+            printable(entry.key),
+            entry.provider.map(printable) ?? "-",
+            entry.host.map(printable) ?? "-",
             entry.status.map(String.init) ?? "-",
             duration(entry.durationMs),
-            entry.reason ?? "-",
+            entry.reason.map(printable) ?? "-",
             entry.via,
         ]
+    }
+
+    /// Catalog text goes straight to a terminal here, so a control character (an escape
+    /// sequence in a provider name, say) is printed as "?" instead of being interpreted.
+    static func printable(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.map { scalar in
+            scalar.value < 0x20 || (0x7F...0x9F).contains(scalar.value) ? "?" : scalar
+        }))
     }
 
     static func duration(_ ms: Int?) -> String {
@@ -134,7 +142,7 @@ enum GatewayLogFormat {
 
     /// Local wall-clock time to the second; an unparseable stored value is shown as stored.
     static func time(_ iso: String, timeZone: TimeZone) -> String {
-        guard let date = UTC.parse(iso) else { return iso }
+        guard let date = UTC.parse(iso) else { return printable(iso) }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let c = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
