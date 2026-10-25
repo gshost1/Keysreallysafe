@@ -40,6 +40,25 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta(Self.relayStayAwakeKey, on ? "on" : "off") }
     }
 
+    static let hiddenUsageKey = "pref_hidden_usage"
+    static let hiddenUsageMax = 64
+
+    /// Usage cards the person turned off in Settings, by source or subscription id. The
+    /// dashboard keeps its own copy per browser and mirrors it here so the menu bar, which has
+    /// no browser storage, hides the same tools.
+    var hiddenUsage: Set<String> {
+        guard let raw = try? catalog.metaValue(Self.hiddenUsageKey),
+              let list = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String] else { return [] }
+        return Set(list)
+    }
+
+    func setHiddenUsage(_ ids: [String]) throws {
+        let clean = Array(Set(ids.filter { (1...64).contains($0.count) && !$0.contains(where: \.isNewline) })).sorted()
+        guard clean.count <= Self.hiddenUsageMax else { throw AppError.usage("too many hidden cards") }
+        let data = try JSONSerialization.data(withJSONObject: clean)
+        try catalog.withTransaction { try catalog.setMeta(Self.hiddenUsageKey, String(decoding: data, as: UTF8.self)) }
+    }
+
     var loginRegistrationAttempted: Bool { (try? catalog.metaValue("app_login_registered")) == "yes" }
 
     func recordLoginRegistration() throws {

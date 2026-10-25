@@ -441,6 +441,13 @@ function handle(method, pathname, body, params) {
   }
   // The app's relay, mirroring the engine: the body is enabled and/or stay_awake, booleans and
   // nothing else; on needs a relay that is set up and no relay running in a Terminal.
+  // The menu bar's copy of the hidden usage cards, mirroring the engine's validation.
+  if (pathname === "/api/preferences/hidden-usage" && method === "POST") {
+    if (!Array.isArray(body.hidden) || body.hidden.some((x) => typeof x !== "string")) {
+      return [400, { error: "hidden must be a list" }];
+    }
+    return [200, { hidden: [...new Set(body.hidden)].sort() }];
+  }
   if (pathname === "/api/relay" && method === "GET") return [200, relay];
   if (pathname === "/api/relay" && method === "POST") {
     const fields = Object.keys(body);

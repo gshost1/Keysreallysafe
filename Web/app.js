@@ -3270,6 +3270,7 @@
     const box = $("live-status");
     // Hidden cards leave this pane only: they are not zero and not "not tracked", and the
     // Chart, the totals and ingest never consult these preferences.
+    if (!hiddenSynced) syncHiddenUsage(true);
     const hidden = hiddenUsage();
     const isHidden = (r) => (r.source === "droid" && !showDroid()) || hidden.has(usageId(r));
     const all = data.plans || [];
@@ -3309,7 +3310,20 @@
     const set = hiddenUsage();
     if (hide) set.add(id); else set.delete(id);
     try { localStorage.setItem("ksf.hiddenUsage", JSON.stringify([...set])); } catch { /* fine */ }
+    syncHiddenUsage();
     renderStatus();
+  }
+  // The menu bar has no browser storage, so the app keeps a mirror of this choice. Sent on
+  // every change and once per page load, which carries over a choice made before the mirror.
+  let hiddenSynced = false;
+  function syncHiddenUsage(onLoad) {
+    hiddenSynced = true;
+    const hidden = [...hiddenUsage()];
+    // Nothing hidden on a fresh load means nothing to carry over; the menu bar shows no Droid.
+    if (onLoad && hidden.length === 0) return;
+    api("/api/preferences/hidden-usage", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hidden }),
+    }).catch(() => { /* the menu bar keeps its last copy */ });
   }
   function setTheme(name) {
     applyTheme(name);

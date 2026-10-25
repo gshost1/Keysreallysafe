@@ -59,6 +59,34 @@ final class MenubarWindowsTests: XCTestCase {
         XCTAssertFalse(snap.tooltip.contains("estimate"))
     }
 
+    func testHiddenOrUnmeasuredToolGetsNoCard() {
+        var claude = ToolStatus(source: "claude", title: "Claude")
+        claude.weeklyPct = 2
+        var codex = ToolStatus(source: "openai", title: "OpenAI · Codex")
+        codex.plan = "ChatGPT Prolite"
+        var grok = ToolStatus(source: "grok", title: "Grok")
+        grok.weeklyUsd = 0
+        let unmeasured = MenubarSnapshot.from(LiveStatus(grok: grok, claude: claude, plans: [grok, claude, codex]))
+        XCTAssertEqual(unmeasured.cards.map(\.id), ["claude", "grok"], "a plan with no local measure is not a card")
+
+        codex.weeklyPct = 46
+        let hidden = MenubarSnapshot.from(LiveStatus(grok: grok, claude: claude, plans: [grok, claude, codex]),
+                                          hidden: ["openai", "grok"])
+        XCTAssertEqual(hidden.cards.map(\.id), ["claude"])
+        XCTAssertEqual(hidden.title, "C 2%")
+    }
+
+    func testHiddenUsagePreferenceRoundTrips() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let prefs = AppPreferences(catalog: try CatalogDB(path: dir.appendingPathComponent("c.sqlite")))
+        XCTAssertTrue(prefs.hiddenUsage.isEmpty)
+        try prefs.setHiddenUsage(["openai", "droid", "openai", "", "a\nb"])
+        XCTAssertEqual(prefs.hiddenUsage, ["openai", "droid"])
+        XCTAssertThrowsError(try prefs.setHiddenUsage((0..<65).map { "s\($0)" }))
+    }
+
     func testToolWithoutWindowsIsOmitted() {
         let status = LiveStatus(grok: nil, claude: nil, plans: [ToolStatus(source: "cursor", title: "Cursor")])
         let snap = MenubarSnapshot.from(status)

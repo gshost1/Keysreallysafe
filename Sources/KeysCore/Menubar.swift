@@ -30,7 +30,9 @@ struct MenubarSnapshot: Equatable {
     /// Title: each tool's weekly percentage; Claude's Fable window stays in the dropdown.
     /// Percentages are used quota, directly from local snapshots. Grok's dollars are the
     /// week's local spend the Grok status row already carries.
-    static func from(_ status: LiveStatus?, now: Date = Date()) -> MenubarSnapshot {
+    /// `hidden` is the Settings choice mirrored from the dashboard. A tool that is hidden, or
+    /// whose quota no local file measures, gets no title part and no card, as on the Usage pane.
+    static func from(_ status: LiveStatus?, hidden: Set<String> = [], now: Date = Date()) -> MenubarSnapshot {
         let grok = status?.grok ?? status?.plans.first { $0.source == "grok" }
         let spendLine = "Grok \(formatUsd(grok?.weeklyUsd ?? 0)) this week"
         var parts: [String] = []
@@ -40,7 +42,10 @@ struct MenubarSnapshot: Equatable {
             let claude = status.claude ?? status.plans.first { $0.source == "claude" }
             let codex = status.plans.first { $0.source == "openai" }
             for (letter, name, tool) in [("C", "Claude", claude), ("X", "Codex", codex), ("G", "Grok", grok)] {
-                guard let tool else { continue }
+                guard let tool, !hidden.contains(tool.source) else { continue }
+                let measured = tool.source == "claude" || tool.fiveHourPct != nil || tool.weeklyPct != nil ||
+                    (tool.source == "grok" && tool.weeklyUsd != nil)
+                guard measured else { continue }
                 if tool.source == "claude" {
                     parts.append(tool.weeklyPct.map { "\(letter) \($0)%" } ?? "\(letter) —")
                 } else if let week = tool.weeklyPct {
@@ -258,7 +263,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 DispatchQueue.main.async { self?.refresh() }
             }
         }
-        let snap = MenubarSnapshot.from(try? service.liveStatus())
+        let snap = MenubarSnapshot.from(try? service.liveStatus(), hidden: service.preferences.hiddenUsage)
         item.button?.title = snap.title
         item.button?.toolTip = snap.tooltip
         lastSnapshot = snap

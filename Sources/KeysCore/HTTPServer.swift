@@ -168,6 +168,12 @@ final class APIHandler: @unchecked Sendable {
                 return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
             case ("POST", "/api/relay"):
                 return try relaySet(request)
+            case ("POST", "/api/preferences/hidden-usage"):
+                guard let list = try jsonBody(request)["hidden"] as? [Any] else {
+                    return HTTPResponse.json(400, ["error": "hidden must be a list"])
+                }
+                try service.preferences.setHiddenUsage(list.compactMap { $0 as? String })
+                return HTTPResponse.json(200, ["hidden": service.preferences.hiddenUsage.sorted()])
             case ("GET", "/api/limits"):
                 return try limitsList()
             case ("PUT", let p) where p.hasPrefix("/api/limits/"):
