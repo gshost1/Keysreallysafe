@@ -40,6 +40,8 @@ struct CatalogRow: Equatable {
     var lastUsedAt: String?
     var gatewayHost: String? = nil
     var version: Int = 1
+    /// Ask an aggregator for its cheapest upstream (`CheapestRouting`). Off unless turned on.
+    var gatewayCheapest: Bool = false
 }
 
 struct IngestReport: Equatable {

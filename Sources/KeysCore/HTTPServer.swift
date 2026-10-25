@@ -304,6 +304,7 @@ final class APIHandler: @unchecked Sendable {
         case ("PATCH", 1, _): return try keysPatch(request, name: name)
         case ("DELETE", 1, _): return try keysDelete(name)
         case ("POST", 2, "gateway"): return try keysGateway(request, name: name)
+        case ("POST", 2, "cheapest"): return try keysCheapest(request, name: name)
         case ("GET", 2, "clients"): return try clientsList(name)
         case ("POST", 2, "clients"): return try clientsIssue(request, name: name)
         case ("DELETE", 3, "clients"): return try clientsRevoke(name, id: parts[2])
@@ -523,6 +524,14 @@ final class APIHandler: @unchecked Sendable {
             }
         }
         let row = try service.setGateway(name: name, enabled: enabled, host: host, caller: "dashboard")
+        return HTTPResponse.json(200, try service.keyJSONObject(row))
+    }
+
+    private func keysCheapest(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
+        guard let enabled = JSONValue.bool(try jsonBody(request)["enabled"]) else {
+            return HTTPResponse.json(400, ["error": "enabled is required"])
+        }
+        let row = try service.setGatewayCheapest(name: name, enabled: enabled, caller: "dashboard")
         return HTTPResponse.json(200, try service.keyJSONObject(row))
     }
 

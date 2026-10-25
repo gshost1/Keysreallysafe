@@ -435,6 +435,8 @@ final class KeysService: @unchecked Sendable {
             "last_used_at": row.lastUsedAt as Any? ?? NSNull(),
             "gateway_enabled": enabled,
             "gateway_host": row.gatewayHost as Any? ?? NSNull(),
+            "gateway_cheapest": row.gatewayCheapest,
+            "cheapest_supported": CheapestRouting.supports(provider: row.provider),
             "gateway_url": enabled
                 ? "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
                 : NSNull(),
@@ -469,7 +471,22 @@ final class KeysService: @unchecked Sendable {
             disableGatewayMemory(name: name, reason: "target_changed")
             return nil
         }
-        return cached
+        var target = cached
+        target.cheapest = row.gatewayCheapest && CheapestRouting.supports(provider: row.provider)
+        return target
+    }
+
+    /// Changes where an aggregator sends the key's calls, never what the key can reach, so it
+    /// asks for no Touch ID (like the other metadata); the audit log records each change.
+    func setGatewayCheapest(name: String, enabled: Bool, caller: String = "dashboard") throws -> CatalogRow {
+        let row = try existingRow(name)
+        if enabled, !CheapestRouting.supports(provider: row.provider) {
+            let provider = Providers.provider(id: row.provider)?.name ?? row.provider
+            throw AppError.usage("\(provider) has no per-request price sort, so there is nothing to turn on for \(name)")
+        }
+        let updated = try catalog.updateGatewayCheapest(name: name, enabled: enabled)
+        try? recordKeyEvent(name: name, action: "gateway_cheapest", caller: caller, detail: enabled ? "on" : "off")
+        return updated
     }
 
     /// Enable requires one Touch ID (the same presence check as copy). Secret is held in memory only.
@@ -955,11 +972,14 @@ final class KeysService: @unchecked Sendable {
         try? recordKeyEvent(name: name, action: "gateway_denied", caller: via ?? "gateway", detail: reason, httpStatus: status)
     }
 
-    func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil) throws {
+    func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil, method: String = "POST") throws {
         analytics?.record((200..<400).contains(row.status) ? .gatewaySuccess : .gatewayFailure, durationMS: row.durationMs)
         var event = row.usageEvent()
         if let grantId {
-            grants.charge(id: grantId, usd: SpendQueries.gatewayUsd(event))
+            grants.charge(
+                id: grantId, usd: SpendQueries.gatewayUsd(event),
+                billable: GrantStore.billable(method: method, status: row.status)
+            )
         }
         try catalog.withTransaction {
             // The upstream request id is the prompt id so a local event with the same id can be

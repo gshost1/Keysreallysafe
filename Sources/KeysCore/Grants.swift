@@ -23,6 +23,9 @@ struct Grant: Equatable, Sendable {
     var maxUsd: Double?
     var requests: Int = 0
     var usd: Double = 0
+    /// Billable calls that came back with no price. `usd` leaves them out, so on a grant with
+    /// `maxUsd` one of these means the cap can no longer be enforced (see `authorize`).
+    var unpricedCalls: Int = 0
     var lastUsedAt: Date?
     var revokedAt: Date?
     var revokeReason: String?
@@ -52,6 +55,7 @@ struct Grant: Equatable, Sendable {
             "max_usd": maxUsd as Any? ?? NSNull(),
             "requests": requests,
             "usd": usd,
+            "unpriced_calls": unpricedCalls,
             "last_used_at": lastUsedAt.map(UTC.iso) as Any? ?? NSNull(),
             "revoked_at": revokedAt.map(UTC.iso) as Any? ?? NSNull(),
             "revoke_reason": revokeReason as Any? ?? NSNull(),
@@ -159,12 +163,13 @@ enum GrantDenial: Error, Equatable {
     case path(String, allowed: [String] = [], suggestion: String? = nil)
     case requestLimit
     case usdLimit
+    case usdUnpriced
     case targetChanged
 
     var status: Int {
         switch self {
         case .required, .invalid: return 401
-        case .requestLimit, .usdLimit: return 429
+        case .requestLimit, .usdLimit, .usdUnpriced: return 429
         default: return 403
         }
     }
@@ -180,6 +185,7 @@ enum GrantDenial: Error, Equatable {
         case .path: return "grant_path_not_allowed"
         case .requestLimit: return "grant_request_limit"
         case .usdLimit: return "grant_usd_limit"
+        case .usdUnpriced: return "grant_usd_unpriced"
         case .targetChanged: return "grant_target_changed"
         }
     }
@@ -201,7 +207,9 @@ enum GrantDenial: Error, Equatable {
             }
             return text
         case .requestLimit: return "grant request limit reached"
-        case .usdLimit: return "grant spend limit reached (estimate, checked after each call)"
+        case .usdLimit: return "grant spend limit reached (checked after each call)"
+        case .usdUnpriced:
+            return "a call on this grant came back without a price, so its spend limit can no longer be enforced; issue a new grant (keys grant), or use --max-requests for a provider that reports no cost"
         case .targetChanged: return "key provider or host changed since the grant; issue a new one"
         }
     }
@@ -362,21 +370,37 @@ final class GrantStore: @unchecked Sendable {
         }
         if let cap = g.maxRequests, g.requests >= cap { return .failure(.requestLimit) }
         if let cap = g.maxUsd, g.usd >= cap { return .failure(.usdLimit) }
+        // Fail closed: once a call's cost is unknown, `usd` is a floor, not the spend, and a cap
+        // checked against it would let the grant run on unbounded (as it did, to the cap and
+        // past it, with Vercel calls that were never priced).
+        if g.maxUsd != nil, g.unpricedCalls > 0 { return .failure(.usdUnpriced) }
         g.requests += 1
         g.lastUsedAt = now
         grants[id] = g
         return .success(g)
     }
 
-    /// Add an estimated cost after a call finished. Enforcement is post-hoc: one call can overshoot.
-    func charge(id: String, usd: Double?) {
-        guard let usd, usd > 0 else { return }
+    /// Add a finished call's cost: the provider's receipt, else a list-price estimate, else
+    /// nil. Enforcement is post-hoc, so one call (or several in flight together) can overshoot.
+    /// An unpriced call counts only when it could have been billed (`billable`).
+    func charge(id: String, usd: Double?, billable: Bool = true) {
         lock.lock()
         if var g = grants[id] {
-            g.usd += usd
+            if let usd {
+                if usd > 0 { g.usd += usd }
+            } else if billable {
+                g.unpricedCalls += 1
+            }
             grants[id] = g
         }
         lock.unlock()
+    }
+
+    /// Whether a call with no price may still have cost money. A provider bills a generation it
+    /// answered; an error status or a read (model lists, balances) is not one. A call that never
+    /// got an answer is left out too, which is the one place this errs toward the caller.
+    static func billable(method: String, status: Int) -> Bool {
+        !["GET", "HEAD", "OPTIONS"].contains(method.uppercased()) && (200..<300).contains(status)
     }
 
     /// Drop revoked/expired grants older than `age` so the table stays small.
