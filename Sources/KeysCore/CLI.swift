@@ -472,8 +472,13 @@ struct GrantCommand: ParsableCommand {
         discussion: """
             Asks the running site to mint a grant token for <name>. Use the token as the API key \
             and point the SDK at the printed base URL; the gateway swaps in the real secret. \
-            The grant expires, can be revoked, and dies with screen lock or a site restart. \
-            Within its scope no further prompts are needed.
+            The grant expires, can be revoked, and dies with screen lock or a site restart, \
+            on purpose: a grant is for a task you are around for. A job that must outlive a \
+            screen lock needs a client token (keys client issue) instead. \
+            Within its scope no further prompts are needed. With --max-usd the spend is the \
+            provider's reported cost where it gives one, else a list-price estimate; a call \
+            that has neither ends the grant (429 grant_usd_unpriced), because the cap could \
+            no longer be checked.
             """
     )
 
@@ -495,7 +500,7 @@ struct GrantCommand: ParsableCommand {
     @Option(name: .customLong("max-requests"), help: "Refuse further calls after this many.")
     var maxRequests: Int?
 
-    @Option(name: .customLong("max-usd"), help: "Refuse further calls once the estimated spend passes this (checked after each call).")
+    @Option(name: .customLong("max-usd"), help: "Refuse further calls once the spend passes this (checked after each call); an unpriced call also ends the grant.")
     var maxUsd: Double?
 
     @Flag(help: "Print the grant as JSON (token included) for a script to read once.")
@@ -532,7 +537,9 @@ struct GrantCommand: ParsableCommand {
         print("  expires  \(expires)  (\(minutes) min)")
         print("  scope    methods \(methodsOut.isEmpty ? "all" : methodsOut)  paths \(pathsOut.isEmpty ? "any" : pathsOut.joined(separator: ","))")
         if let n = JSONValue.int(obj["max_requests"]) { print("  limit    \(n) requests") }
-        if let u = JSONValue.double(obj["max_usd"]) { print("  limit    $\(String(format: "%.2f", u)) estimated, enforced after each call") }
+        if let u = JSONValue.double(obj["max_usd"]) {
+            print("  limit    $\(String(format: "%.2f", u)), enforced after each call; a call with no price ends the grant")
+        }
         print("  base url \(base)")
         // Paths are scoped under the base URL; spelling out one full URL catches a
         // missing version segment before the first call is refused.
@@ -565,14 +572,22 @@ struct GrantsCommand: ParsableCommand {
         }
         print("ID\tKEY\tHOST\tTASK\tSTATUS\tEXPIRES\tREQUESTS\tUSD")
         for g in grants {
-            let usd = JSONValue.double(g["usd"]) ?? 0
+            let usd = Self.usdCell(usd: JSONValue.double(g["usd"]) ?? 0, unpriced: JSONValue.int(g["unpriced_calls"]) ?? 0)
             print([
                 JSONValue.string(g["id"]) ?? "", JSONValue.string(g["key"]) ?? "", JSONValue.string(g["host"]) ?? "",
                 JSONValue.string(g["task"]) ?? "", JSONValue.string(g["status"]) ?? "",
                 JSONValue.string(g["expires_at"]) ?? "", String(JSONValue.int(g["requests"]) ?? 0),
-                String(format: "%.4f", usd),
+                usd,
             ].joined(separator: "\t"))
         }
+    }
+
+    /// An unpriced call is unknown money, so the sum of the priced ones is only a floor.
+    static func usdCell(usd: Double, unpriced: Int) -> String {
+        if unpriced == 0 { return String(format: "%.4f", usd) }
+        let calls = "\(unpriced) call\(unpriced == 1 ? "" : "s")"
+        if usd == 0 { return "unpriced (\(calls))" }
+        return String(format: "≥%.4f", usd) + " + unpriced (\(calls))"
     }
 }
 
@@ -851,24 +866,35 @@ struct GatewayCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "gateway",
         abstract: "Turn the local gateway on or off for a key in the running Keysrs (on asks for Touch ID).",
-        usage: "keys gateway on|off <key>",
+        usage: "keys gateway on|off <key>, or keys gateway cheapest on|off <key>",
         discussion: """
             The gateway holds a key in the memory of the running app only, so it forgets every \
             key when Keysrs quits; client tokens stay valid but are refused until the key is \
             turned on again. Off also revokes the key's active grants.
+
+            cheapest on makes the gateway ask an aggregator for its lowest-priced upstream \
+            provider on each JSON call through this key (OpenRouter provider.sort "price", \
+            Vercel AI Gateway providerOptions.gateway.sort "cost"), unless the call already \
+            names a routing preference. Off by default; other providers refuse it.
             """
     )
 
-    @Argument(help: "on or off.") var state: String
-    @Argument(help: "Key name.") var name: String
+    @Argument(help: "on, off or cheapest.") var state: String
+    @Argument(help: "Key name (after cheapest: on or off).") var name: String
+    @Argument(help: "After cheapest on|off: the key name.") var key: String?
 
     func run() throws {
+        if state.lowercased() == "cheapest" {
+            try runCheapest()
+            return
+        }
         let enabled: Bool
         switch state.lowercased() {
         case "on": enabled = true
         case "off": enabled = false
         default: throw AppError.usage("say on or off, e.g. keys gateway on \(name)")
         }
+        if key != nil { throw AppError.usage("usage: keys gateway on|off <key>") }
         try KeyName.validate(name)
         let control = try ControlClient.connect()
         if enabled { fputs("Touch ID in Keysrs…\n", stderr) }
@@ -878,6 +904,22 @@ struct GatewayCommand: ParsableCommand {
         } else {
             print("gateway off for \(name); its grants are revoked, client tokens are refused until it is on again")
         }
+    }
+
+    private func runCheapest() throws {
+        let enabled: Bool
+        switch name.lowercased() {
+        case "on": enabled = true
+        case "off": enabled = false
+        default: throw AppError.usage("usage: keys gateway cheapest on|off <key>")
+        }
+        guard let key else { throw AppError.usage("usage: keys gateway cheapest on|off <key>") }
+        try KeyName.validate(key)
+        let control = try ControlClient.connect()
+        _ = try control.call(method: "POST", path: "/api/keys/\(key)/cheapest", body: ["enabled": enabled], expect: 200)
+        print(enabled
+            ? "cheapest upstream on for \(key): calls that pick no provider ask for the lowest price"
+            : "cheapest upstream off for \(key): calls go upstream as sent")
     }
 }
 

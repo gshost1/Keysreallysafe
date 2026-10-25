@@ -81,6 +81,11 @@ final class CatalogDB: @unchecked Sendable {
               PRIMARY KEY (source, session_id, prompt_id, model)
             );
             """)
+        // Off for every key that existed before the setting did: turning it on changes where
+        // a key's calls go, so only the user does that.
+        if try !tableHasColumn("catalog", "gateway_cheapest") {
+            try exec("ALTER TABLE catalog ADD COLUMN gateway_cheapest INTEGER NOT NULL DEFAULT 0;")
+        }
         // Gateway calls used to keep their status in a separate gateway_usage table, which is
         // left in place for older binaries; a usage_events table from those versions lacks it.
         if try !tableHasColumn("usage_events", "http_status") {
@@ -562,15 +567,15 @@ final class CatalogDB: @unchecked Sendable {
         try withLock { try run("DELETE FROM subscriptions WHERE id = ?;", id) > 0 }
     }
 
-    private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version"
+    private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version, gateway_cheapest"
 
     func insertCatalog(_ row: CatalogRow) throws {
         try withLock {
             do {
                 try run(
-                    "INSERT INTO catalog (\(Self.catalogColumns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                    "INSERT INTO catalog (\(Self.catalogColumns)) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     row.name, row.provider, row.kind, row.notes, row.createdAt, row.lastUsedAt, row.gatewayHost,
-                    row.version
+                    row.version, row.gatewayCheapest ? 1 : 0
                 )
             } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
                 throw AppError.alreadyExists(row.name)
@@ -703,6 +708,18 @@ final class CatalogDB: @unchecked Sendable {
                 row.provider, row.kind, row.notes, name
             )
             if changed == 0 {
+                throw AppError.notFound(name)
+            }
+            return row
+        }
+    }
+
+    func updateGatewayCheapest(name: String, enabled: Bool) throws -> CatalogRow {
+        try withLock {
+            if try run("UPDATE catalog SET gateway_cheapest = ? WHERE name = ?;", enabled ? 1 : 0, name) == 0 {
+                throw AppError.notFound(name)
+            }
+            guard let row = try catalogRow(name: name) else {
                 throw AppError.notFound(name)
             }
             return row
@@ -1209,7 +1226,8 @@ final class CatalogDB: @unchecked Sendable {
             createdAt: columnText(stmt, 4) ?? "",
             lastUsedAt: columnText(stmt, 5),
             gatewayHost: columnText(stmt, 6),
-            version: Int(sqlite3_column_int64(stmt, 7))
+            version: Int(sqlite3_column_int64(stmt, 7)),
+            gatewayCheapest: sqlite3_column_int64(stmt, 8) != 0
         )
     }
 

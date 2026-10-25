@@ -7,6 +7,8 @@ struct GatewayTarget {
     var provider: Providers.Record
     var host: String
     var version: Int
+    /// Read from the catalog on every call, so turning it on or off needs no new Touch ID.
+    var cheapest: Bool = false
 }
 
 final class GatewayListener: @unchecked Sendable {
@@ -163,13 +165,20 @@ final class GatewayListener: @unchecked Sendable {
             Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
             return
         }
-        urlRequest.httpBody = request.body
+        // The caller's body is still what usage is parsed against below; only the upstream
+        // copy carries the added routing field.
+        urlRequest.httpBody = target.cheapest
+            ? CheapestRouting.apply(
+                request.body, provider: target.provider.id, path: path, method: request.method, headers: request.headers
+            ) ?? request.body
+            : request.body
 
-        // Vercel's native evaluation protocol differs from its OpenAI-compatible
-        // /v1 endpoints. Keep the extra parser scoped to this provider and path.
-        let evaluation = target.provider.id == "vercel-ai-gateway" && path == "/v4/ai/evaluation-model"
+        // Vercel answers in its own shapes (the AI SDK protocol under /v4/ai, OpenAI and
+        // Anthropic ones under /v1) and puts its cost receipt in every one of them, so all of
+        // its paths get the Vercel parser. Other providers parse by their catalog api.
+        let vercel = target.provider.id == "vercel-ai-gateway"
         let directEvaluation = target.provider.id == "typesafe" && path == "/v1/systemone"
-        let usageAPI = evaluation ? "vercel-evaluation" : directEvaluation ? "typesafe-systemone" :
+        let usageAPI = vercel ? GatewayUsageParser.vercelAPI(path: path) : directEvaluation ? "typesafe-systemone" :
             target.provider.api == "typesafe-systemone" ? "other" : target.provider.api
         let tee = GatewayTee(api: usageAPI)
         let started = Date()
@@ -203,7 +212,7 @@ final class GatewayListener: @unchecked Sendable {
         }
         let parsed = tee.result(
             requestBody: request.body,
-            requestModel: evaluation ? request.headers["ai-model-id"] : nil
+            requestModel: vercel ? request.headers["ai-language-model-id"] ?? request.headers["ai-model-id"] : nil
         )
         if service.breaker.record(key: target.name, status: status) {
             service.recordGatewayDenial(name: target.name, reason: GatewayBreaker.code, via: via)
@@ -229,7 +238,8 @@ final class GatewayListener: @unchecked Sendable {
                     upstreamHost: target.host,
                     reason: ending.reason
                 ),
-                grantId: grant?.id
+                grantId: grant?.id,
+                method: request.method
             )
         } catch {
             let line = "gateway usage persist failed for \(target.name): \(error)\n"

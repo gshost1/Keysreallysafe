@@ -78,6 +78,8 @@ enum GatewayUsageParser {
         case "anthropic": return anthropic(from: obj)
         case "gemini": return gemini(from: obj)
         case "vercel-evaluation": return vercelEvaluation(from: obj)
+        case "vercel": return vercel(from: obj, base: openAI(from: obj))
+        case "vercel-anthropic": return vercel(from: obj, base: anthropicAsOpenAI(from: obj))
         case "typesafe-systemone": return typeSafe(from: obj)
         default: return GatewayParsedUsage()
         }
@@ -88,7 +90,18 @@ enum GatewayUsageParser {
     /// that header.
     static func requestedModel(api: String, requestBody: Data, requestModel: String?) -> String? {
         if api == "vercel-evaluation" { return boundedModelId(requestModel) }
+        // The AI SDK's native /v4/ai calls name the model in a header and not in the body;
+        // the OpenAI-compatible /v1 ones name it in the body.
+        if api.hasPrefix("vercel"), let model = boundedModelId(requestModel) { return model }
         return modelFromRequest(requestBody)
+    }
+
+    /// The usage parser for one Vercel AI Gateway path. Every Vercel response can carry the
+    /// gateway's own cost receipt, whichever protocol the caller spoke.
+    static func vercelAPI(path: String) -> String {
+        if path == "/v4/ai/evaluation-model" { return "vercel-evaluation" }
+        if path == "/v1/messages" || path.hasPrefix("/v1/messages/") { return "vercel-anthropic" }
+        return "vercel"
     }
 
     static func isSSE(_ contentType: String?, body: Data) -> Bool {
@@ -139,6 +152,77 @@ enum GatewayUsageParser {
             outputTokens: evaluationTokenCount(usage?["outputTokens"]),
             reportedCostUsdTicks: evaluationCostTicks(gateway?["cost"])
         )
+    }
+
+    /// Vercel AI Gateway, on top of the protocol-shaped usage in `base`:
+    /// - AI SDK native (`/v4/ai/language-model`): a whole result, or one stream part, with
+    ///   `usage.inputTokens`/`outputTokens` either as numbers (spec v2) or as
+    ///   `{total, cacheRead, cacheWrite}` / `{total}` objects (spec v3 and v4), and the model
+    ///   in `response.modelId` or a `response-metadata` part's `modelId`. In a stream the usage
+    ///   and cost arrive in the `finish` part.
+    /// - `providerMetadata.gateway.cost` (USD as a string) on the native API, and on the
+    ///   OpenAI-compatible one `usage.cost` or a `provider_metadata.gateway.cost` (in a stream,
+    ///   on the last chunk). Vercel documents the native receipt; the /v1 spots are as observed.
+    private static func vercel(from obj: [String: Any], base: GatewayParsedUsage) -> GatewayParsedUsage {
+        var r = base
+        if let usage = JSONValue.object(obj["usage"]) {
+            if let input = usage["inputTokens"] {
+                if let parts = JSONValue.object(input) {
+                    r.inputTokens = evaluationTokenCount(parts["total"]) ?? r.inputTokens
+                    r.cacheReadTokens = evaluationTokenCount(parts["cacheRead"]) ?? r.cacheReadTokens
+                    r.cacheWriteTokens = evaluationTokenCount(parts["cacheWrite"]) ?? r.cacheWriteTokens
+                } else if let count = evaluationTokenCount(input) {
+                    r.inputTokens = count
+                    r.cacheReadTokens = evaluationTokenCount(usage["cachedInputTokens"]) ?? r.cacheReadTokens
+                }
+            }
+            if let output = usage["outputTokens"] {
+                if let parts = JSONValue.object(output) {
+                    r.outputTokens = evaluationTokenCount(parts["total"]) ?? r.outputTokens
+                } else if let count = evaluationTokenCount(output) {
+                    r.outputTokens = count
+                }
+            }
+            r.reportedCostUsdTicks = evaluationCostTicks(usage["cost"]) ?? r.reportedCostUsdTicks
+        }
+        let type = JSONValue.string(obj["type"])
+        if type == "response-metadata" {
+            r.model = JSONValue.string(obj["modelId"]) ?? r.model
+        } else if let response = JSONValue.object(obj["response"]), let model = JSONValue.string(response["modelId"]) {
+            r.model = model
+        }
+        // Where the receipt sits: top level (native), on the Responses API's `response`, the
+        // Messages API's `message`, or a chat choice's `message` / stream `delta`. Only the
+        // first few choices are looked at; the receipt is per call, not per choice.
+        var holders: [[String: Any]] = [obj]
+        for key in ["response", "message"] {
+            if let inner = JSONValue.object(obj[key]) { holders.append(inner) }
+        }
+        for choice in ((obj["choices"] as? [Any]) ?? []).prefix(4).compactMap(JSONValue.object) {
+            for key in ["message", "delta"] {
+                if let inner = JSONValue.object(choice[key]) { holders.append(inner) }
+            }
+        }
+        for holder in holders {
+            for key in ["providerMetadata", "provider_metadata"] {
+                if let metadata = JSONValue.object(holder[key]), let gateway = JSONValue.object(metadata["gateway"]),
+                   let ticks = evaluationCostTicks(gateway["cost"])
+                {
+                    r.reportedCostUsdTicks = ticks
+                }
+            }
+        }
+        return r
+    }
+
+    /// Vercel's catalog entry counts input the OpenAI way, cached tokens included, so an
+    /// Anthropic-shaped answer from its /v1/messages is folded into that convention.
+    private static func anthropicAsOpenAI(from obj: [String: Any]) -> GatewayParsedUsage {
+        var r = anthropic(from: obj)
+        if let input = r.inputTokens {
+            r.inputTokens = input.saturatingAdding(r.cacheReadTokens ?? 0).saturatingAdding(r.cacheWriteTokens ?? 0)
+        }
+        return r
     }
 
     private static func typeSafe(from obj: [String: Any]) -> GatewayParsedUsage {

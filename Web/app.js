@@ -2180,6 +2180,9 @@
       form.elements.provider.value = k.provider || "";
       form.elements.kind.value = k.kind === "billing" ? "billing" : "runtime";
       form.elements.notes.value = k.notes || "";
+      // Only routers with a per-request price sort offer it (CheapestRouting.swift).
+      $("edit-cheapest-row").hidden = !k.cheapest_supported;
+      form.elements.cheapest.checked = !!k.gateway_cheapest;
     });
   }
   $("edit-form").addEventListener("submit", async (e) => {
@@ -2195,11 +2198,17 @@
     if (provider !== (k.provider || "")) payload.provider = provider;
     if (form.elements.kind.value !== k.kind) payload.kind = form.elements.kind.value;
     if (form.elements.notes.value !== (k.notes || "")) payload.notes = form.elements.notes.value;
-    if (!Object.keys(payload).length) { $("dlg-edit").close(); return; }
+    const cheapest = !$("edit-cheapest-row").hidden && form.elements.cheapest.checked !== !!k.gateway_cheapest;
+    if (!Object.keys(payload).length && !cheapest) { $("dlg-edit").close(); return; }
     const submit = form.querySelector('[type="submit"]');
     setBtn(submit, "Saving…", true);
     try {
-      await api("/api/keys/" + encodeURIComponent(name), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (cheapest) {
+        await api("/api/keys/" + encodeURIComponent(name) + "/cheapest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: form.elements.cheapest.checked }) });
+      }
+      if (Object.keys(payload).length) {
+        await api("/api/keys/" + encodeURIComponent(name), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      }
       $("dlg-edit").close();
       say(`Saved ${name}.`);
       await loadKeys();
@@ -2222,6 +2231,7 @@
     add: "added", copy: "copied", reveal: "revealed", env: "used in env", check: "checked", rotate: "rotated", rm: "deleted", patch: "edited",
     gateway_enable: "gateway on", gateway_disable: "gateway off", gateway_call: "gateway call", gateway_denied: "gateway refused",
     grant: "grant issued", grant_revoke: "grant revoked", client_issue: "client issued", client_revoke: "client revoked",
+    gateway_cheapest: "cheapest upstream",
   };
   // Who did it, as the engine names it: the loopback gateway, the relay, the dashboard, the CLI.
   const CALLER_LABEL = { gateway: "local gateway", relay: "relay", dashboard: "dashboard", cli: "command line", system: "system", models: "model check", add: "command line", test: "test" };
@@ -2369,9 +2379,16 @@
       el("span", { class: "g-id", text: g.id }),
       el("span", { class: "g-key", text: g.key + " → " + g.host }),
       el("span", { class: "g-task", text: g.task, title: g.task }),
-      el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${fmtUsd(g.usd)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${minutesLeft(g.expires_at)} min left` }),
+      el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${grantUsd(g)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${minutesLeft(g.expires_at)} min left` }),
       el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke grant " + g.id, onclick: () => revokeGrant(g.id) }),
     )));
+  }
+  // An unpriced call is unknown money: the priced sum is only a floor, never "$0".
+  function grantUsd(g) {
+    const n = Number(g.unpriced_calls) || 0;
+    if (!n) return fmtUsd(g.usd);
+    const calls = n + (n === 1 ? " call" : " calls");
+    return (Number(g.usd) > 0 ? "≥" + fmtUsd(g.usd) + " + " : "") + "unpriced (" + calls + ")";
   }
   async function revokeClient(key, id) {
     try {
@@ -2451,7 +2468,7 @@
     $("gr-kind").textContent = "Grant";
     $("gr-id").textContent = g.id;
     $("gr-target").textContent = `${g.key} → ${providerName(g.provider)} at ${g.host}`;
-    $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + " estimated" : ""}`;
+    $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + ", ends on an unpriced call" : ""}`;
     $("gr-expires").textContent = `${fmtWhenShort(g.expires_at)} (${body.minutes} min), or earlier on screen lock, revoke or site restart`;
     $("gr-base").textContent = g.base_url;
     $("gr-token").textContent = g.token;

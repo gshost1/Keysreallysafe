@@ -326,13 +326,21 @@ Point the SDK at the base URL, give it the token as the key, and every call
 inside the scope goes through with no further prompt. Anything else fails
 closed with a named reason: `grant_required`, `grant_expired`,
 `grant_revoked`, `grant_method_not_allowed`, `grant_path_not_allowed`,
-`grant_request_limit`, `grant_usd_limit`, `grant_target_changed`. A grant is
+`grant_request_limit`, `grant_usd_limit`, `grant_usd_unpriced`,
+`grant_target_changed`. A grant is
 bound to one key and the host recorded when it was issued; editing the
 provider or host revokes it. Screen lock, `keys revoke`, gateway off and a
-restart of the app all revoke. Grants live only in the app's memory; the audit log
+restart of the app all revoke. That is deliberate: a grant is for a task you
+are around for, so an unattended job that has to outlive a screen lock needs a
+client token (`keys client issue`) instead. Grants live only in the app's memory; the audit log
 keeps the id, task and scope, never the token. `--max-requests` is a hard cap.
-`--max-usd` is an estimate from list prices checked after each call, so one
-call can overshoot it.
+`--max-usd` counts the provider's reported cost where it gives one (Vercel AI
+Gateway does), else a list-price estimate, checked after each call, so one
+call, or several in flight together, can overshoot it. A successful
+generation call that has neither ends a capped grant with `429
+grant_usd_unpriced`, because the cap could no longer be checked; `keys
+grants` and the dashboard show such spend as "unpriced", never $0. Reads
+(GET) and failed calls don't count.
 
 If the gateway is off for the key, `keys grant` turns it on with the same
 single prompt. `keys grants` lists what is active, `keys revoke <id>` or
@@ -400,16 +408,29 @@ The gateway forwards to the provider host from `Web/providers.json`, from a
 provider you added yourself, or the host you set, replaces the token with the
 secret in the right header, never follows a redirect, streams the response
 back, and records the `usage` object from OpenAI chat-completions and
-responses, Anthropic messages and Gemini bodies, plus Vercel evaluation-model
-responses and the upstream `request-id`.
-For evaluation requests the model comes from the `ai-model-id` header. Valid
-provider-reported Vercel evaluation cost is preferred over a list-price estimate;
-missing cost with no price remains unpriced. Those calls show up as a "Via
+responses, Anthropic messages and Gemini bodies, plus Vercel AI Gateway's
+own shapes (the AI SDK protocol under `/v4/ai`, streamed or not, and its
+OpenAI- and Anthropic-compatible `/v1`) and the upstream `request-id`.
+For Vercel's native requests the model comes from the `ai-language-model-id`
+or `ai-model-id` header. Vercel's reported cost (`providerMetadata.gateway.cost`,
+in a stream on the finish part; `usage.cost` or `provider_metadata` on `/v1`)
+is stored as the call's spend, ahead of any list-price estimate; missing cost
+with no price remains unpriced. Those calls show up as a "Via
 gateway" column in Keys and can be charted per key. A call that no model or
 price could be attached to is shown as unpriced, never as $0. The secret is
 held in process memory only while the gateway is on and is forgotten on
 restart. Providers that need request signing or OAuth (Bedrock, Vertex,
 watsonx) cannot be proxied and say so.
+
+`keys gateway cheapest on <key>` (or Cheapest upstream in the key's Edit
+dialog) makes the gateway ask an aggregator for its lowest-priced upstream
+on each JSON call through that key: OpenRouter gets `provider.sort: "price"`,
+Vercel AI Gateway `providerOptions.gateway.sort: "cost"`. It is off for every
+key until you turn it on, it is added only when the call names no provider
+order, filter or sort of its own, and only the copy sent upstream changes;
+the body is still never stored or logged. Other routers have no such
+request field (or already route by price) and refuse the setting; see
+[docs/cheapest-routing.md](docs/cheapest-routing.md).
 
 Gateway dollars are a separate ledger from the local-log estimate. A Claude
 Code or Codex call routed through the gateway appears in both places; when
@@ -573,6 +594,7 @@ keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path
 keys client list <name>
 keys client revoke <name> <id>
 keys gateway on|off <name>
+keys gateway cheapest on|off <name>
 keys wrap <env file> [--dry-run] [--yes] [--relay <worker url>] [--label <text>] [--days N]
 keys providers [--json]
 keys provider add <id> --name <name> [--host <host>] [--api openai|anthropic|gemini|other] [--auth-header <header>] [--auth-prefix <prefix>] [--path-prefix <path>] [--key-prefix <hint>] [--note <text>] [--no-gateway]

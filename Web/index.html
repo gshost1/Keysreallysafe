@@ -262,6 +262,7 @@
           <input name="notes" autocomplete="off">
         </label>
       </div>
+      <label class="inline" id="edit-cheapest-row" hidden><input type="checkbox" name="cheapest"> Cheapest upstream: ask the router for its lowest-priced provider, unless the caller already picked one</label>
       <p class="hint">Name and secret can't change. To rotate, delete the key and add it again.</p>
       <p class="err" id="edit-err" role="alert"></p>
       <div class="actions">
@@ -338,7 +339,7 @@
         <label>Max requests (optional)
           <input name="max_requests" type="number" min="1" step="1" inputmode="numeric" placeholder="unlimited">
         </label>
-        <label>Max USD, estimated (optional)
+        <label>Max USD (optional; an unpriced call ends the grant)
           <input name="max_usd" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="unlimited">
         </label>
       </div>
