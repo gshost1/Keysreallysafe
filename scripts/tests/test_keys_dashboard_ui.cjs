@@ -1359,7 +1359,9 @@ test("a request whose provider named no model keeps its bar under unknown", asyn
 test("switching scope clears the filters that belong to the other one", async (page, origin) => {
   await openKeysSource(page, origin, "range=week&key=alpha&provider=vercel-ai-gateway&source=keys");
   assert.equal(await page.locator("#source-chips").isHidden(), true, "a tool filter means nothing in the gateway ledger");
-  assert.equal(await page.locator("#group-chips").isHidden(), true, "projects are a Claude-only grouping");
+  assert.equal(await page.locator('[data-group="project"]').isHidden(), true, "projects are a Claude-only grouping");
+  assert.equal(await page.locator('[data-group="key"]').isVisible(), true, "the gateway ledger groups by key");
+  assert.equal(await page.locator('[data-group="provider"]').isVisible(), true, "and by provider");
 
   // Out to Subscriptions: the provider and key go with it, and the local filters come back.
   await page.getByRole("radio", { name: "Subscriptions" }).click();
@@ -1377,7 +1379,7 @@ test("switching scope clears the filters that belong to the other one", async (p
   await page.waitForFunction(() => document.querySelector('[data-group="project"]').getAttribute("aria-checked") === "true");
 
   await page.getByRole("radio", { name: "API keys" }).click();
-  await page.waitForFunction(() => document.getElementById("group-chips").hidden);
+  await page.waitForFunction(() => document.querySelector('[data-group="project"]').hidden);
   assert.equal(await page.locator('[data-group="model"]').getAttribute("aria-checked"), "true");
   last = spendSearches().pop();
   assert.ok(last.includes("source=keys") && last.includes("by=model"), `stale grouping survived: ${last}`);

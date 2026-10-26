@@ -379,6 +379,36 @@ final class ApiKeyUsageTests: XCTestCase {
         XCTAssertTrue(json.contains("\"provider\":\"vercel-ai-gateway\""))
     }
 
+    func testGroupingByKeyAndProviderSplitsTheLedger() throws {
+        let (db, _) = try makeDB()
+        let service = try service(db, keys: [
+            ("vercel-a", "vercel-ai-gateway"), ("vercel-b", "vercel-ai-gateway"), ("ts", "typesafe"),
+        ])
+        try service.recordGatewayUsage(gatewayRow(key: "vercel-a", provider: "vercel-ai-gateway", model: "openai/gpt-4.1", requestId: "a1"))
+        try service.recordGatewayUsage(gatewayRow(key: "vercel-a", provider: "vercel-ai-gateway", model: "openai/gpt-4o-mini", requestId: "a2"))
+        try service.recordGatewayUsage(gatewayRow(key: "vercel-b", provider: "vercel-ai-gateway", model: "openai/gpt-4.1", requestId: "b1"))
+        try service.recordGatewayUsage(gatewayRow(
+            key: "ts", provider: "typesafe", model: "system-one", requestId: "t1", input: nil, output: nil
+        ))
+
+        let byKey = try report(db, by: .key)
+        XCTAssertEqual(Set(byKey.rows.compactMap(\.model)), ["vercel-a", "vercel-b", "ts"])
+        let a = try XCTUnwrap(byKey.rows.first { $0.model == "vercel-a" })
+        XCTAssertEqual(a.modelCalls, 2)
+        XCTAssertEqual(a.key, "vercel-a")
+        XCTAssertEqual(a.provider, "vercel-ai-gateway")
+        XCTAssertEqual(a.models, ["openai/gpt-4.1", "openai/gpt-4o-mini"])
+        XCTAssertEqual(Set(byKey.daily.map(\.model)), ["vercel-a", "vercel-b", "ts"], "the chart stacks by the same series")
+
+        let byProvider = try report(db, by: .provider)
+        let vercelName = try XCTUnwrap(Providers.provider(id: "vercel-ai-gateway")?.name)
+        let vercel = try XCTUnwrap(byProvider.rows.first { $0.model == vercelName })
+        XCTAssertEqual(vercel.modelCalls, 3, "both Vercel keys fold into one provider row")
+        XCTAssertEqual(vercel.provider, "vercel-ai-gateway")
+        XCTAssertEqual(byProvider.rows.reduce(0) { $0 + $1.modelCalls }, byKey.totals.gatewayCalls)
+        XCTAssertEqual(byProvider.totals.gatewayCalls, byKey.totals.gatewayCalls, "grouping never changes the totals")
+    }
+
     /// A workload is a model under a provider, not a billing source of its own: the same model
     /// recorded on two providers stays one model, and each provider's view keeps its own share.
     func testOneWorkloadModelOnTwoProvidersStaysOneModel() throws {

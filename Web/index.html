@@ -75,9 +75,11 @@
         <div class="chips" role="radiogroup" aria-label="Provider" id="provider-filter" hidden title="One provider or all of them"></div>
         <!-- A dropdown, not a chip row: a vault with many keys made this a long line. -->
         <label class="picker" id="keys-filter" hidden title="One key or all of them">Key <select id="keys-filter-select" aria-label="API key"></select></label>
-        <div class="chips" role="radiogroup" aria-label="Group by" id="group-chips" hidden title="Models or projects (P)">
+        <div class="chips" role="radiogroup" aria-label="Group by" id="group-chips" hidden title="Group the list and the chart">
           <button type="button" role="radio" data-group="model" aria-checked="true">Models</button>
-          <button type="button" role="radio" data-group="project" aria-checked="false" tabindex="-1">Projects</button>
+          <button type="button" role="radio" data-group="project" aria-checked="false" tabindex="-1" title="Claude Code projects (P)">Projects</button>
+          <button type="button" role="radio" data-group="key" aria-checked="false" tabindex="-1" hidden title="One row per vault key">Keys</button>
+          <button type="button" role="radio" data-group="provider" aria-checked="false" tabindex="-1" hidden title="One row per provider the keys route to">Providers</button>
         </div>
         <div class="chips" role="radiogroup" aria-label="Unit" title="Tokens, USD or requests (T)">
           <button type="button" role="radio" data-unit="tokens" aria-checked="true">Tokens</button>

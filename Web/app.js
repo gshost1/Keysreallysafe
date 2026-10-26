@@ -515,19 +515,27 @@
   });
   wirePickerKeys("provider-filter", "data-provider-filter");
 
-  // Projects are a Claude-only grouping (the only source with a project path). The chips hide otherwise.
+  // Projects are a Claude-only grouping (the only source with a project path); keys and
+  // providers exist only in the gateway ledger. Each chip shows only where it means something.
   const groupChips = wireChips("data-group", (value) => setGroup(value));
+  const groupAllowed = (value) => value === "model"
+    || (value === "project" && state.source === "claude")
+    || ((value === "key" || value === "provider") && keysMode());
   function setGroup(value) {
-    state.group = value === "project" && state.source === "claude" ? "project" : "model";
+    state.group = groupAllowed(value) ? value : "model";
     groupChips.sync(state.group);
     state.mixFilter = null;
     loadSpend();
   }
   function syncGroupChips() {
-    const show = state.source === "claude";
+    const show = state.source === "claude" || keysMode();
     $("group-chips").hidden = !show;
-    if (!show && state.group !== "model") { state.group = "model"; groupChips.sync("model"); }
+    document.querySelector('[data-group="project"]').hidden = state.source !== "claude";
+    for (const g of ["key", "provider"]) document.querySelector(`[data-group="${g}"]`).hidden = !keysMode();
+    if (!groupAllowed(state.group)) state.group = "model";
+    groupChips.sync(state.group);
   }
+  const routeGroup = () => keysMode() && (state.group === "key" || state.group === "provider") ? state.group : null;
   const todayMode = () => state.range === "today";
   function setRange(value) {
     rangeChips.sync(value);
@@ -595,14 +603,15 @@
   async function loadSpend() {
     const seq = ++spendSeq;
     // A by=hour report carries the same model rows as by=model plus the hourly points Today draws.
-    const q = new URLSearchParams({ range: state.range, by: todayMode() ? "hour" : projectMode() ? "project" : "model", source: state.source });
+    const q = new URLSearchParams({ range: state.range, by: routeGroup() || (todayMode() ? "hour" : projectMode() ? "project" : "model"), source: state.source });
     if (state.key) q.set("key", state.key);
     if (keysMode() && state.provider) q.set("provider", state.provider);
     try {
       // A filtered report only names the provider and key already chosen, so the pickers would
       // narrow to the current choice and strand the user there. The unfiltered report over the
       // same range is what lists every choice; it is only needed while a filter is applied.
-      const filtered = keysMode() && (state.key || state.provider);
+      // A by=key or by=provider report names no key per row either, so it needs the index too.
+      const filtered = keysMode() && (state.key || state.provider || routeGroup());
       const indexReq = filtered
         ? api("/api/spend?" + new URLSearchParams({ range: state.range, by: "model", source: "keys" }).toString()).catch(() => null)
         : null;
@@ -774,6 +783,10 @@
       const seen = new Map();
       for (const it of items) seen.set(it.label, (seen.get(it.label) || 0) + 1);
       for (const it of items) if (seen.get(it.label) > 1 && it.cwd) it.label = it.cwd.split("/").filter(Boolean).slice(-2).join("/");
+    } else if (routeGroup()) {
+      // Keys and providers have no vendor family to cluster by: biggest spend first, then calls.
+      const cost = (it) => it.usd ?? it.est ?? 0;
+      items.sort((a, b) => cost(b) - cost(a) || b.calls - a.calls || b.tokens - a.tokens);
     } else items.sort((a, b) => order[family(a.model)] - order[family(b.model)] || b.tokens - a.tokens);
     assignColors(items.map((it) => it.model));
     const out = [];
@@ -795,7 +808,9 @@
       }
     }
     if (other) out.push(other);
-    out.sort((a, b) => a.slot - b.slot);
+    // Colour slots follow vendor families, which mean nothing for keys and providers; those keep
+    // the spend order set above.
+    if (!routeGroup()) out.sort((a, b) => a.slot - b.slot);
     return out;
   }
 

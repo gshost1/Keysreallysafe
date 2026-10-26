@@ -276,6 +276,9 @@ final class APIHandler: @unchecked Sendable {
         guard let source = SourceFilter(rawValue: request.query["source"] ?? "all") else {
             return HTTPResponse.json(400, ["error": "invalid source"])
         }
+        if (by == .key || by == .provider) && source != .keys {
+            return HTTPResponse.json(400, ["error": "by=key and by=provider require source=keys"])
+        }
         if by == .project && source != .claude {
             return HTTPResponse.json(400, ["error": "by=project requires source=claude"])
         }

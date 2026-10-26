@@ -203,6 +203,9 @@ enum SpendGroup: String {
     case session
     case hour
     case project
+    /// The gateway ledger only: one row per vault key, or per provider the keys route to.
+    case key
+    case provider
 }
 
 struct SpendTotals: Equatable {

@@ -284,7 +284,7 @@ struct SpendCommand: ParsableCommand {
     func run() throws {
         if month && week { throw AppError.usage("choose --month or --week") }
         let range: SpendRange = week ? .week : .month
-        guard let group = SpendGroup(rawValue: by), group != .hour else {
+        guard let group = SpendGroup(rawValue: by), [.model, .session, .project].contains(group) else {
             throw AppError.usage("--by must be model, session, or project")
         }
         let service = try AppFactory.makeService()
@@ -310,7 +310,7 @@ struct SpendCommand: ParsableCommand {
 
     private func printTable(_ report: SpendReport) {
         switch report.by {
-        case .model, .hour:
+        case .model, .hour, .key, .provider:
             print("MODEL\tIN\tOUT\tCACHE_READ\tREASONING\tUSD\tCALLS")
             for row in report.rows {
                 let usd = usdCell(row)

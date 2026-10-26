@@ -334,11 +334,22 @@ struct SpendQueries {
             rows = groupBySession(charted)
         case .project:
             rows = groupByProject(charted)
+        case .key:
+            rows = groupByRoute(charted, label: Self.keyLabel)
+        case .provider:
+            rows = groupByRoute(charted, label: Self.providerLabel)
         }
 
-        let daily = dailyPoints(charted, calendar: cal, byProject: by == .project)
-        let points = by == .hour
-            ? hourlyPoints(charted, now: now, timeZone: timeZone)
+        let series: (UsageEvent) -> String = switch by {
+        case .key: Self.keyLabel
+        case .provider: Self.providerLabel
+        default: \.model
+        }
+        let daily = dailyPoints(charted, calendar: cal, byProject: by == .project, series: series)
+        // Today draws hourly points; a by=key or by=provider report over today carries them too,
+        // stacked by the same series as its rows.
+        let points = by == .hour || (range == .today && (by == .key || by == .provider))
+            ? hourlyPoints(charted, now: now, timeZone: timeZone, series: series)
             : []
         return SpendReport(
             range: range,
@@ -457,6 +468,34 @@ struct SpendQueries {
         }
     }
 
+    /// The series name a by=key or by=provider row and its daily points share. Rows carry it
+    /// in `model` so the chart, the list and click-to-isolate work unchanged.
+    static func keyLabel(_ event: UsageEvent) -> String { event.keyName ?? "" }
+    static func providerLabel(_ event: UsageEvent) -> String {
+        Providers.provider(id: event.provider)?.name ?? event.provider
+    }
+
+    private static func groupByRoute(_ events: [UsageEvent], label: (UsageEvent) -> String) -> [SpendRow] {
+        var acc: [String: SpendRow] = [:]
+        var models: [String: Set<String>] = [:]
+        for event in events {
+            let name = label(event)
+            var row = acc[name] ?? SpendRow(model: name)
+            if row.key == nil, event.keyName == name { row.key = name }
+            if row.provider == nil, !event.provider.isEmpty, Self.providerLabel(event) == name || row.key != nil {
+                row.provider = event.provider
+            }
+            row.add(event)
+            acc[name] = row
+            if !event.model.isEmpty { models[name, default: []].insert(event.model) }
+        }
+        for (name, set) in models { acc[name]?.models = set.sorted() }
+        return acc.values.sorted { lhs, rhs in
+            if let order = byTotal(lhs, rhs) { return order }
+            return (lhs.model ?? "") < (rhs.model ?? "")
+        }
+    }
+
     private static func groupBySession(_ events: [UsageEvent]) -> [SpendRow] {
         struct Key: Hashable { var source: String; var session: String }
         var acc: [Key: SpendRow] = [:]
@@ -499,9 +538,11 @@ struct SpendQueries {
         }
     }
 
-    private static func dailyPoints(_ events: [UsageEvent], calendar: Calendar, byProject: Bool) -> [DailyPoint] {
+    private static func dailyPoints(
+        _ events: [UsageEvent], calendar: Calendar, byProject: Bool, series: @escaping (UsageEvent) -> String = \.model
+    ) -> [DailyPoint] {
         let day = { (date: Date) -> String? in SpendRange.localDay(date, timeZone: calendar.timeZone) }
-        return points(events, bucket: day, series: { byProject ? ($0.cwd ?? "") : $0.model }).map { point in
+        return points(events, bucket: day, series: { byProject ? ($0.cwd ?? "") : series($0) }).map { point in
             let project = byProject ? projectName(point.series) : nil
             return DailyPoint(
                 day: point.bucket,
@@ -521,7 +562,9 @@ struct SpendQueries {
     }
 
     /// One point per (elapsed local hour, model). Hours after `now` are dropped.
-    private static func hourlyPoints(_ events: [UsageEvent], now: Date, timeZone: TimeZone) -> [HourlyPoint] {
+    private static func hourlyPoints(
+        _ events: [UsageEvent], now: Date, timeZone: TimeZone, series: @escaping (UsageEvent) -> String = \.model
+    ) -> [HourlyPoint] {
         let today = SpendRange.localDay(now, timeZone: timeZone)
         let currentHour = SpendRange.localHour(now, timeZone: timeZone)
         let hour = { (date: Date) -> String? in
@@ -529,7 +572,7 @@ struct SpendQueries {
             let hour = SpendRange.localHour(date, timeZone: timeZone)
             return hour <= currentHour ? hour : nil
         }
-        return points(events, bucket: hour, series: \.model).map { point in
+        return points(events, bucket: hour, series: series).map { point in
             HourlyPoint(
                 hour: point.bucket,
                 model: point.series,
