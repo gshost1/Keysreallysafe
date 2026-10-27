@@ -585,7 +585,7 @@ keys ingest [all|grok|claude|openai|droid]
 keys usage import <file>...
 keys spend [--month|--week] [--json] [--by model|session|project]
 keys version [--json]
-keys status
+keys status [--json]
 keys doctor
 keys log [--key <name>] [--failed] [--tail] [--limit N] [--json]
 keys dashboard [--month|--week]

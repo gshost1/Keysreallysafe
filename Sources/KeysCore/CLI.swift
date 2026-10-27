@@ -370,49 +370,156 @@ struct StatusCommand: ParsableCommand {
         abstract: "Local plan windows: Grok, Claude, OpenAI/Codex, and other tools."
     )
 
+    @Flag(help: "Print one JSON line, an entry per tool with its tracked state, for a script to read.")
+    var json = false
+
     func run() throws {
         let service = try AppFactory.makeService()
         let status = try service.liveStatus()
+        if json {
+            try JSONValue.printLine(Self.jsonObject(plans: status.plans))
+            return
+        }
         for row in status.plans {
-            printPlan(row)
+            for line in Self.humanLines(row) {
+                print(line)
+            }
         }
     }
 
-    private func printPlan(_ row: ToolStatus) {
-        print(row.title)
+    /// The one JSON line, sorted keys, that every `--json` flag prints: an entry per tool,
+    /// every entry saying whether Keysrs tracks it. An untracked tool carries no usage
+    /// numbers at all, so a script cannot mistake absence for a measured zero — the same
+    /// no-fake-numbers rule the prose follows.
+    static func jsonObject(plans: [ToolStatus], now: Date = Date()) -> [String: Any] {
+        ["tools": plans.map { jsonEntry($0, now: now) }]
+    }
+
+    /// True when Keysrs holds a current measured usage figure for the tool. A percent whose
+    /// window already reset is not one: it describes a window that closed, and printing it
+    /// now would let a script read a stale number as if it described the current one, the
+    /// reason every other reader nulls expired windows. A zero alone does not count either:
+    /// an idle week is an absence, not a measurement (the Usage pane's rule), so a fresh
+    /// machine reports every tool as not tracked.
+    static func isTracked(_ row: ToolStatus, now: Date) -> Bool {
+        if livePct(row.fiveHourPct, reset: row.fiveHourResetsAt, now: now) != nil { return true }
+        if livePct(row.weeklyPct, reset: row.weeklyResetsAt, now: now) != nil { return true }
+        if row.monthlyPct != nil { return true }
+        if livePct(row.fablePct, reset: row.fableResetsAt, now: now) != nil { return true }
+        if row.limitRemaining != nil || row.usageWeekly != nil { return true }
+        if let usd = row.weeklyUsd, usd > 0 { return true }
+        if let tokens = row.weeklyTokens, tokens > 0 { return true }
+        if let tokens = row.fiveHourTokens, tokens > 0 { return true }
+        if let tokens = row.monthlyTokens, tokens > 0 { return true }
+        if let prompts = row.weeklyPrompts, prompts > 0 { return true }
+        return false
+    }
+
+    private static func jsonEntry(_ row: ToolStatus, now: Date) -> [String: Any] {
+        var entry: [String: Any] = [
+            "source": row.source,
+            "title": row.title,
+            "kind": row.kind,
+        ]
+        let tracked = isTracked(row, now: now)
+        entry["tracked"] = tracked
+        if let note = row.usageNote {
+            entry["usage_note"] = note
+        }
+        guard tracked else { return entry }
+        // Only windows with something current in them appear, so a present key is a real
+        // figure. An expired window's percent is left out with its reset time; the prose
+        // hedges those with "(reset due)", a caveat a JSON number cannot carry inline.
+        if let pct = livePct(row.fiveHourPct, reset: row.fiveHourResetsAt, now: now) {
+            entry["five_hour_pct"] = pct
+            if let reset = row.fiveHourResetsAt { entry["five_hour_resets_at"] = reset }
+        }
+        if let pct = livePct(row.weeklyPct, reset: row.weeklyResetsAt, now: now) {
+            entry["weekly_pct"] = pct
+            if let reset = row.weeklyResetsAt { entry["weekly_resets_at"] = reset }
+        }
+        if let pct = livePct(row.fablePct, reset: row.fableResetsAt, now: now) {
+            entry["fable_pct"] = pct
+            if let reset = row.fableResetsAt { entry["fable_resets_at"] = reset }
+        }
+        if let pct = row.monthlyPct {
+            entry["monthly_pct"] = pct
+        }
+        // Token, spend and limit figures are counted per window, so the zeros that appear
+        // here are real zeros, counted from records that exist.
+        let measured: [(String, Any)] = [
+            ("weekly_usd", row.weeklyUsd as Any? ?? NSNull()),
+            ("weekly_tokens", row.weeklyTokens as Any? ?? NSNull()),
+            ("weekly_prompts", row.weeklyPrompts as Any? ?? NSNull()),
+            ("five_hour_tokens", row.fiveHourTokens as Any? ?? NSNull()),
+            ("monthly_tokens", row.monthlyTokens as Any? ?? NSNull()),
+            ("five_hour_limit", row.fiveHourLimit as Any? ?? NSNull()),
+            ("weekly_limit", row.weeklyLimit as Any? ?? NSNull()),
+            ("monthly_limit", row.monthlyLimit as Any? ?? NSNull()),
+            ("limit", row.limit as Any? ?? NSNull()),
+            ("limit_remaining", row.limitRemaining as Any? ?? NSNull()),
+            ("usage_weekly", row.usageWeekly as Any? ?? NSNull()),
+            ("plan", row.plan as Any? ?? NSNull()),
+            ("snapshot_at", row.snapshotAt as Any? ?? NSNull()),
+        ]
+        for (key, value) in measured where !(value is NSNull) {
+            entry[key] = value
+        }
+        if let period = row.period, row.weeklyUsd != nil || row.weeklyTokens != nil || row.weeklyPrompts != nil {
+            entry["period"] = period.jsonObject()
+        }
+        return entry
+    }
+
+    /// A percent of a window that has not closed: no reset time, or one still in the future.
+    /// A reset that cannot be parsed is treated as expired, the stricter rule the Claude
+    /// usage cache already applies.
+    private static func livePct(_ pct: Int?, reset: String?, now: Date) -> Int? {
+        guard let pct else { return nil }
+        if let reset {
+            guard let date = UTC.parse(reset), date > now else { return nil }
+        }
+        return pct
+    }
+
+    /// The prose blocks the human path prints for one tool, pulled out so a test can pin
+    /// them: `--json` grows beside this output, and it must not drift while it does.
+    static func humanLines(_ row: ToolStatus, now: Date = Date()) -> [String] {
+        var lines = [row.title]
         if row.source == "droid" {
             // Three catalog-backed windows, each with its optional limit. A limit prints the
             // percent it drives; an unlimited window prints the tokens alone.
-            print("  5 hour  \(droidWindow(row.fiveHourTokens, limit: row.fiveHourLimit))")
-            print("  weekly  \(droidWindow(row.weeklyTokens, limit: row.weeklyLimit))")
-            print("  month   \(droidWindow(row.monthlyTokens, limit: row.monthlyLimit))")
+            lines.append("  5 hour  \(droidWindow(row.fiveHourTokens, limit: row.fiveHourLimit))")
+            lines.append("  weekly  \(droidWindow(row.weeklyTokens, limit: row.weeklyLimit))")
+            lines.append("  month   \(droidWindow(row.monthlyTokens, limit: row.monthlyLimit))")
         } else {
             if let usd = row.weeklyUsd, row.weeklyTokens != nil {
-                print("  weekly  \(row.weeklyTokens ?? 0) tokens  ≈ \(String(format: "$%.2f", usd)) estimate")
+                lines.append("  weekly  \(row.weeklyTokens ?? 0) tokens  ≈ \(String(format: "$%.2f", usd)) estimate")
             } else if let usd = row.weeklyUsd {
-                print("  weekly  \(String(format: "$%.2f", usd))  local spend")
+                lines.append("  weekly  \(String(format: "$%.2f", usd))  local spend")
             } else if row.weeklyTokens != nil {
-                print("  weekly  \(row.weeklyTokens ?? 0) tokens")
+                lines.append("  weekly  \(row.weeklyTokens ?? 0) tokens")
             } else if let prompts = row.weeklyPrompts {
-                print("  weekly  \(prompts) prompts sent · limit not tracked")
+                lines.append("  weekly  \(prompts) prompts sent · limit not tracked")
             }
             if row.fiveHourPct != nil || row.source == "claude" || row.source == "openai" {
-                print("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt))")
+                lines.append("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt, now: now))")
             }
             if row.weeklyPct != nil || row.source == "openai" {
-                print("  weekly  \(pctLine(row.weeklyPct, reset: row.weeklyResetsAt))")
+                lines.append("  weekly  \(pctLine(row.weeklyPct, reset: row.weeklyResetsAt, now: now))")
             }
             if row.source == "claude" {
-                print("  Fable   \(pctLine(row.fablePct, reset: row.fableResetsAt))")
+                lines.append("  Fable   \(pctLine(row.fablePct, reset: row.fableResetsAt, now: now))")
             }
         }
         if let note = row.usageNote {
-            print("  \(note)")
+            lines.append("  \(note)")
         }
+        return lines
     }
 
     /// One Droid window: its tokens, and the percent of the limit when one is set.
-    private func droidWindow(_ tokens: Int?, limit: Int?) -> String {
+    private static func droidWindow(_ tokens: Int?, limit: Int?) -> String {
         guard let tokens else { return "—" }
         var line = "\(tokens) tokens"
         if let limit {
@@ -421,10 +528,10 @@ struct StatusCommand: ParsableCommand {
         return line
     }
 
-    private func pctLine(_ pct: Int?, reset: String?) -> String {
+    private static func pctLine(_ pct: Int?, reset: String?, now: Date) -> String {
         guard let pct else { return "—" }
         var s = "\(pct)%"
-        if let reset, let extra = LiveStatus.formatResets(at: reset, now: Date()) {
+        if let reset, let extra = LiveStatus.formatResets(at: reset, now: now) {
             s += "  (\(extra))"
         }
         return s
