@@ -1752,6 +1752,11 @@ struct RelayRunCommand: ParsableCommand {
         withExtendedLifetime(held) { RunLoop.main.run() }
     }
 
+    /// The same gateway-not-up failure as `keys tunnel`: `keys relay run` hits the identical
+    /// condition, so it shares that helper — same wording, same exit code (6, like every other
+    /// "no running site").
+    static func gatewayDown() -> AppError { TunnelCommand.gatewayDown() }
+
     /// A relay to a closed gateway would only fail on the first agent call; say so here.
     private func requireGatewayUp() throws {
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(GatewayListener.port)/")!)
@@ -1759,10 +1764,7 @@ struct RelayRunCommand: ParsableCommand {
         do {
             _ = try BlockingHTTP.send(req, timeout: 3)
         } catch {
-            throw AppError.usage(
-                "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
-                    + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
-            )
+            throw Self.gatewayDown()
         }
     }
 }

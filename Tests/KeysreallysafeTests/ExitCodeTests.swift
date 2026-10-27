@@ -56,4 +56,17 @@ final class ExitCodeTests: XCTestCase {
         XCTAssertTrue(message.contains("gateway is not listening"), message)
         XCTAssertTrue(message.contains("Keysrs.app"), message)
     }
+
+    func testRelayGatewayDownIsSiteUnavailable() {
+        // `keys relay run` hits the same gateway-not-up condition as `keys tunnel`, so it
+        // must map to the same exit 6 with byte-identical wording (it used to be exit 1).
+        guard case AppError.siteUnavailable(let message) = RelayRunCommand.gatewayDown(),
+              case AppError.siteUnavailable(let tunnel) = TunnelCommand.gatewayDown()
+        else {
+            return XCTFail("relay and tunnel gateway-not-up errors must both be .siteUnavailable")
+        }
+        XCTAssertEqual(AppError.siteUnavailable(message).exitCode, 6)
+        XCTAssertTrue(message.contains("gateway is not listening"), message)
+        XCTAssertEqual(message, tunnel, "relay run must give the same wording as tunnel")
+    }
 }
