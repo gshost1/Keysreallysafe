@@ -2531,7 +2531,7 @@ test("an empty vault gets the first-use guide, dismisses it and keeps it in help
   await page.reload();
   await page.waitForLoadState("networkidle");
   assert.equal(await page.locator("#onboard").isHidden(), true, "a dismissed guide stays dismissed");
-  await page.getByRole("button", { name: "Help", exact: true }).click();
+  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
   await waitDialog(page, "dlg-help", true);
   assert.match(await page.locator("#dlg-help").textContent(), /Getting started/);
 });
@@ -2682,7 +2682,7 @@ test("four panes: the shortcuts and arrow keys reach Usage, Chart, Keys and Sett
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
   assert.deepEqual(await shown(), ["pane-usage"], "the arrow keys wrap from Settings back to Usage");
-  await page.getByRole("button", { name: "Help", exact: true }).click();
+  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
   await waitDialog(page, "dlg-help", true);
   const help = await page.locator("#dlg-help .shortcuts").textContent();
   assert.doesNotMatch(help, /Optimizer/);
