@@ -2057,8 +2057,17 @@ struct RelayPairRequireCommand: ParsableCommand {
         case "off": required = false
         default: throw AppError.usage("usage: keys relay pair require on|off")
         }
-        let service = try AppFactory.makeService()
-        try service.setRelayPairingRequired(required)
+        if let control = try? ControlClient.connect() {
+            // The running site owns the catalog and asks for the one Touch ID the off-toggle
+            // costs there, exactly like the mint in the issue verb.
+            if !required { fputs("Touch ID in Keysrs…\n", stderr) }
+            _ = try control.call(
+                method: "POST", path: "/api/relay/pairings/required", body: ["required": required], expect: 200
+            )
+        } else {
+            let service = try AppFactory.makeService()
+            try service.setRelayPairingRequired(required)
+        }
         // The running relay reads the flag from the catalog per request, so this applies
         // without a restart.
         print(required

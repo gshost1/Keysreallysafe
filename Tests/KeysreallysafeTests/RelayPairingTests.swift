@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import KeysCore
 
@@ -142,7 +143,7 @@ final class RelayPairingTests: XCTestCase {
 
     func testRequireFlagDefaultsOffAndPersistsAcrossReopen() throws {
         let (db, dir) = try makeDB()
-        let (service, _) = makeGatedService(db: db)
+        let (service, gate) = makeGatedService(db: db)
         XCTAssertFalse(service.relayPairingRequired(), "default is off: today's behavior")
         try service.setRelayPairingRequired(true)
         XCTAssertTrue(service.relayPairingRequired())
@@ -150,7 +151,44 @@ final class RelayPairingTests: XCTestCase {
         let reopened = try CatalogDB(path: dir.appendingPathComponent("catalog.db"))
         XCTAssertEqual(try reopened.metaValue(KeysService.relayPairingRequiredMetaKey), "1", "the flag lives in the catalog")
         try service.setRelayPairingRequired(false)
+        XCTAssertEqual(gate.reasons, ["stop requiring paired agents on the relay"],
+                       "clearing the flag now costs the one presence prompt")
         XCTAssertNil(try reopened.metaValue(KeysService.relayPairingRequiredMetaKey))
+    }
+
+    /// Turning enforcement off is the one security-lowering move in the pairing surface, so
+    /// it costs exactly one presence prompt, ordered before the catalog write.
+    func testRequireOffPromptsOnceWithReasonAndClearsTheFlag() throws {
+        let (db, _) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        try service.setRelayPairingRequired(true)
+
+        try service.setRelayPairingRequired(false)
+        XCTAssertEqual(gate.reasons, ["stop requiring paired agents on the relay"], "one prompt to stop requiring pairings")
+        XCTAssertNil(try db.metaValue(KeysService.relayPairingRequiredMetaKey), "the write happened under the prompt")
+        XCTAssertFalse(service.relayPairingRequired())
+    }
+
+    /// A cancelled prompt is a refusal, so the flag must stay exactly as it was: the write
+    /// happens only after a successful prompt, never on the way to one.
+    func testRequireOffThroughAThrowingGateLeavesTheFlagSet() throws {
+        let (db, _) = try makeDB()
+        let (service, gate) = makeGatedService(db: db, gate: RecordingPresenceGate(error: AppError.authCancelled))
+        try service.setRelayPairingRequired(true)
+
+        XCTAssertThrowsError(try service.setRelayPairingRequired(false))
+        XCTAssertEqual(gate.reasons, ["stop requiring paired agents on the relay"], "the refusal came from the prompt")
+        XCTAssertEqual(try db.metaValue(KeysService.relayPairingRequiredMetaKey), "1", "a cancelled prompt leaves the flag set")
+        XCTAssertTrue(service.relayPairingRequired())
+    }
+
+    /// Raising enforcement only ever tightens, so turning it on needs no presence at all.
+    func testRequireOnNeverPrompts() throws {
+        let (db, _) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        try service.setRelayPairingRequired(true)
+        XCTAssertEqual(gate.reasons, [], "raising enforcement costs no presence")
+        XCTAssertEqual(try db.metaValue(KeysService.relayPairingRequiredMetaKey), "1")
     }
 
     func testPurgeClearsRelayPairingsAndTheFlag() throws {
@@ -215,6 +253,37 @@ final class RelayPairingTests: XCTestCase {
         XCTAssertEqual(service.verifyRelayPairing(credential: pairCredentialB, keyName: nil, now: t0), .ok)
 
         XCTAssertEqual(gate.reasons, [], "pairing verification reads the catalog only; it never prompts")
+    }
+
+    /// A thrown flag read must not silently disable enforcement: an unreadable flag refuses
+    /// exactly like a missing credential, while an absent row stays a legitimate off. The
+    /// read error is induced deterministically — a second raw SQLite connection drops the
+    /// meta table, and sqlite's schema change makes the service connection's next prepare
+    /// of the flag read throw.
+    func testVerifyPairingFailsClosedWhenTheFlagCannotBeRead() throws {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // An absent row is the legitimate default off, with and without a credential.
+        XCTAssertEqual(service.verifyRelayPairing(credential: nil, keyName: nil, now: t0), .notRequired)
+        try service.setRelayPairingRequired(true)
+        try seedPairing(db, credential: pairCredential, label: "ci", at: t0, expiresAt: t0.addingTimeInterval(3600))
+        XCTAssertEqual(service.verifyRelayPairing(credential: pairCredential, keyName: nil, now: t0), .ok)
+        let touched = try XCTUnwrap(try db.relayPairing(tokenHash: RelayPairing.hash(pairCredential))?.lastUsedAt)
+
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dir.appendingPathComponent("catalog.db").path, &raw), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(raw, "DROP TABLE meta;", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(raw)
+
+        XCTAssertEqual(service.verifyRelayPairing(credential: nil, keyName: nil, now: t0), .pairingRequired,
+                       "an unreadable flag fails closed")
+        XCTAssertEqual(service.verifyRelayPairing(credential: pairCredential, keyName: nil, now: t0), .pairingRequired,
+                       "a valid credential does not rescue an unreadable flag")
+        XCTAssertEqual(try db.relayPairing(tokenHash: RelayPairing.hash(pairCredential))?.lastUsedAt, touched,
+                       "the refusals never move last_used_at")
+        XCTAssertEqual(gate.reasons, [], "a failed flag read refuses without prompting")
     }
 
     // MARK: enforcement at the relay socket
@@ -652,14 +721,15 @@ final class RelayPairingTests: XCTestCase {
         return (APIHandler(service: service, webRoot: dir), gate, db, dir)
     }
 
-    /// One call against /api/relay/pairings; the raw body text comes back for absence checks.
+    /// One call against the pairings routes; the raw body text comes back for absence checks.
     private func pairCall(
-        _ handler: APIHandler, _ method: String, body: [String: Any]? = nil, token: String? = nil
+        _ handler: APIHandler, _ method: String, body: [String: Any]? = nil, token: String? = nil,
+        path: String = "/api/relay/pairings"
     ) throws -> (status: Int, object: [String: Any], text: String) {
         var headers = ["host": "127.0.0.1:12765"]
         if let token { headers["x-ksf-token"] = token }
         let response = handler.handle(HTTPRequest(
-            method: method, path: "/api/relay/pairings", query: [:], headers: headers,
+            method: method, path: path, query: [:], headers: headers,
             body: try body.map(JSONValue.data) ?? Data(), serverPort: 12765
         ))
         let text = String(decoding: response.body, as: UTF8.self)
@@ -769,6 +839,64 @@ final class RelayPairingTests: XCTestCase {
         XCTAssertEqual(gate.reasons, [], "revocation never prompts")
     }
 
+    /// The enforcement-toggle route: `required` false costs one prompt in the app (this is
+    /// the route the CLI verb delegates to), true costs none, and every refused body is a
+    /// 4xx that consumed no prompt. Behind the mutating token gate like the rest of the
+    /// pairings family.
+    func testRequiredRoutePromptsOnlyForOffAndRefusalsConsumeNoPrompt() throws {
+        let (handler, gate, db, _) = try makePairingAPI()
+
+        // on: no prompt, the flag lands, the response reports the mode.
+        let (onStatus, onObj, _) = try pairCall(
+            handler, "POST", body: ["required": true], token: handler.originToken,
+            path: "/api/relay/pairings/required"
+        )
+        XCTAssertEqual(onStatus, 200)
+        XCTAssertEqual(gate.reasons, [], "raising enforcement needs no presence")
+        XCTAssertEqual(try db.metaValue(KeysService.relayPairingRequiredMetaKey), "1")
+        XCTAssertEqual(onObj["pairing_required"] as? Bool, true)
+
+        // off: exactly one prompt with the house reason, then the write.
+        let (offStatus, offObj, _) = try pairCall(
+            handler, "POST", body: ["required": false], token: handler.originToken,
+            path: "/api/relay/pairings/required"
+        )
+        XCTAssertEqual(offStatus, 200)
+        XCTAssertEqual(gate.reasons, ["stop requiring paired agents on the relay"])
+        XCTAssertNil(try db.metaValue(KeysService.relayPairingRequiredMetaKey))
+        XCTAssertEqual(offObj["pairing_required"] as? Bool, false)
+
+        // A bad body is refused before the service method can prompt: 4xx, nothing written.
+        // (A JSON number for `required` is deliberately absent from this list: this
+        // Foundation's JSONSerialization bridges 1 through `as? Bool` as true, so
+        // JSONValue.bool coerces it — the same truth table every other boolean route uses.
+        // The coercion cannot bypass presence: only the false direction costs the prompt,
+        // and the service method decides that, not the body parser.)
+        let badBodies: [[String: Any]?] = [
+            nil, [:], ["required": "yes"], ["required": "on"], ["enabled": false],
+            ["required": true, "label": "x"],
+        ]
+        for bad in badBodies {
+            let (status, _, _) = try pairCall(
+                handler, "POST", body: bad, token: handler.originToken,
+                path: "/api/relay/pairings/required"
+            )
+            XCTAssertEqual(status, 400, "\(String(describing: bad))")
+        }
+        XCTAssertEqual(gate.reasons.count, 1, "the refused bodies consumed no prompt")
+        XCTAssertNil(try db.metaValue(KeysService.relayPairingRequiredMetaKey), "they wrote nothing either")
+
+        // Token-gated like the rest of the pairings family: without the token, a 403 that
+        // never reached the service method.
+        let (gated, _, _) = try pairCall(
+            handler, "POST", body: ["required": false], token: nil,
+            path: "/api/relay/pairings/required"
+        )
+        XCTAssertEqual(gated, 403)
+        XCTAssertEqual(gate.reasons.count, 1, "the ungated call consumed no prompt")
+        XCTAssertNil(try db.metaValue(KeysService.relayPairingRequiredMetaKey), "and it wrote nothing")
+    }
+
     func testStatusReportsPairingModeAndActiveCount() throws {
         let (db, _) = try makeDB()
         let (service, _) = makeGatedService(db: db)
@@ -814,15 +942,66 @@ final class RelayPairingTests: XCTestCase {
 
         // `require` takes only on|off; anything else is a usage error in run(), still before
         // the command opens the catalog or contacts the app.
-        var require = try XCTUnwrap(try RelayPairCommand.parseAsRoot(["require", "maybe"]) as? RelayPairRequireCommand)
+        let require = try XCTUnwrap(try RelayPairCommand.parseAsRoot(["require", "maybe"]) as? RelayPairRequireCommand)
         XCTAssertThrowsError(try require.run()) { error in
             XCTAssertTrue(String(describing: error).contains("on|off"), "\(error)")
         }
+
+        // The two valid states parse; run() is not driven here because with a valid state it
+        // would reach whatever site owns the default control file — the round-trip test
+        // below drives the delegated call against an in-process site instead.
+        let off = try XCTUnwrap(try RelayPairCommand.parseAsRoot(["require", "off"]) as? RelayPairRequireCommand)
+        XCTAssertEqual(off.state, "off")
+        let on = try XCTUnwrap(try RelayPairCommand.parseAsRoot(["require", "on"]) as? RelayPairRequireCommand)
+        XCTAssertEqual(on.state, "on")
 
         // No verb: the group itself runs and answers with usage, not a connection attempt.
         var bare = try RelayPairCommand.parseAsRoot([])
         XCTAssertThrowsError(try bare.run()) { error in
             XCTAssertTrue(String(describing: error).contains("keys relay pair"), "\(error)")
         }
+    }
+
+    /// The verb's real path is the control file: `keys relay pair require` delegates to the
+    /// running site, which owns the catalog and the one Touch ID the off-toggle costs —
+    /// exactly the call RelayPairRequireCommand.run() makes, driven here against an
+    /// in-process site so the prompt lands in the app, never in the Terminal.
+    func testRequireVerbDelegatesThroughTheControlFileAndPromptsInTheApp() throws {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        try service.setRelayPairingRequired(true)
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+        let handler = APIHandler(service: service, webRoot: web)
+        let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
+        server.start()
+        defer { server.stop() }
+        let control = ControlFile.url(beside: db.path)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+
+        let client = try ControlClient.connect(control: control)
+        let off = try client.call(
+            method: "POST", path: "/api/relay/pairings/required", body: ["required": false], expect: 200
+        )
+        XCTAssertEqual(off["pairing_required"] as? Bool, false)
+        XCTAssertEqual(gate.reasons, ["stop requiring paired agents on the relay"], "the prompt happens in the app")
+        XCTAssertNil(try db.metaValue(KeysService.relayPairingRequiredMetaKey))
+
+        let on = try client.call(
+            method: "POST", path: "/api/relay/pairings/required", body: ["required": true], expect: 200
+        )
+        XCTAssertEqual(on["pairing_required"] as? Bool, true)
+        XCTAssertEqual(gate.reasons.count, 1, "require on performs no prompt anywhere")
+
+        // A refused body over the wire reads back as its message and consumes no prompt.
+        XCTAssertThrowsError(try client.call(
+            method: "POST", path: "/api/relay/pairings/required", body: ["required": "maybe"], expect: 200
+        )) { error in
+            guard case AppError.usage(let m) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(m.contains("true or false"), m)
+        }
+        XCTAssertEqual(gate.reasons.count, 1, "the refusal consumed no prompt")
+        XCTAssertEqual(try db.metaValue(KeysService.relayPairingRequiredMetaKey), "1",
+                       "the flag stayed exactly where require on left it")
     }
 }
