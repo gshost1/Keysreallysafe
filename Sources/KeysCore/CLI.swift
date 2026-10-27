@@ -1519,8 +1519,12 @@ struct RelayRunCommand: ParsableCommand {
         }
         try requireGatewayUp()
         let (origin, secret) = try service.relayCredentials(urlOverride: url)
+        var options = RelayClient.Options(url: origin, secret: secret)
+        // Pairing is enforced when the catalog flag is on; the verifier reads hashes only,
+        // so a relayed request never prompts here either.
+        options.pairing = service.relayPairingVerifier()
         let client = RelayClient(
-            options: RelayClient.Options(url: origin, secret: secret),
+            options: options,
             log: { line in
                 FileHandle.standardError.write(Data("relay  \(line)\n".utf8))
             }
