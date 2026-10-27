@@ -152,6 +152,13 @@
               <option value="oldest">Oldest</option>
             </select>
           </label>
+          <!-- The rows' gateway figures share the page's unit; this switch says which one is on
+               screen and changes it from here. Tokens are not recorded per key, so its two honest
+               answers are requests and USD. -->
+          <span class="keys-unit" id="keys-unit-label">
+            <span class="keys-unit-prefix">Gateway in</span>
+            <button type="button" id="keys-unit"></button>
+          </span>
         </div>
       </div>
       <!-- One flat list ordered by the sort. Each key is a focusable .key-row[data-name]; the

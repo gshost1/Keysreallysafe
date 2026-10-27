@@ -882,6 +882,29 @@ test("the More menu dispatches every action through the selected key's existing 
   await waitFocused(page, "alpha:menu");
 });
 
+test("rows show kind, created date and the active-grant count", async (page, origin) => {
+  keys = baseKeys();
+  keys[0].active_grants = 2;
+  await openKeys(page, origin);
+  assert.equal((await rowCell(page, "alpha", "kind").textContent()).trim(), "runtime");
+  assert.equal((await rowCell(page, "bravo", "kind").textContent()).trim(), "billing");
+  assert.equal((await rowCell(page, "alpha", "created").textContent()).trim(), "Added Sep 1, 2026");
+  assert.equal(await rowCell(page, "alpha", "created").getAttribute("title"), "2026-09-01T10:00:00Z");
+  assert.equal((await page.locator('#keys-body .key-row[data-name="alpha"] .badge.grants').textContent()).trim(), "2 grants");
+  assert.equal(await page.locator('#keys-body .key-row[data-name="bravo"] .badge.grants').count(), 0, "no badge without grants");
+  // Newest/Oldest sort by the date the row now shows.
+  await page.locator("#keys-sort").selectOption("newest");
+  assert.deepEqual(await rowNames(page), ["charlie", "bravo", "alpha"]);
+  await page.locator("#keys-sort").selectOption("oldest");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Access & grants (2)").waitFor();
+  await page.keyboard.press("Escape");
+  await openRowMenu(page, "bravo");
+  await menuItem(page, "Access & grants").waitFor();
+  await page.keyboard.press("Escape");
+});
+
 test("the More menu skips disabled items, supports keyboard dismissal and stays one at a time", async (page, origin) => {
   keys = [...baseKeys(), {
     name: "no-gateway", provider: "fixture-no-gateway", kind: "runtime",
@@ -900,7 +923,18 @@ test("the More menu skips disabled items, supports keyboard dismissal and stays 
   for (const label of ["Access & grants", "Turn on gateway…"]) {
     assert.equal(await menuItem(page, label).getAttribute("aria-disabled"), "true");
   }
+  // A greyed item says why, as a tooltip and as its accessible description.
+  const why = {
+    "Turn on gateway…": "Gatewayless Fixture needs request signing; it cannot be proxied",
+    "Access & grants": "Gatewayless Fixture cannot be proxied, so no grant",
+  };
+  for (const [label, reason] of Object.entries(why)) {
+    assert.equal(await menuItem(page, label).getAttribute("title"), reason);
+    assert.equal(await menuItem(page, label).evaluate((item) =>
+      document.getElementById(item.getAttribute("aria-describedby"))?.textContent), reason);
+  }
   assert.equal(await menuItem(page, "Check connection").getAttribute("aria-disabled"), "false");
+  assert.equal(await menuItem(page, "Check connection").getAttribute("title"), null, "an available item carries no reason");
   const before = requests.filter((r) => /\/(gateway|grants|check)$/.test(r.pathname)).length;
   await menuItem(page, "Access & grants").evaluate((item) =>
     item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
@@ -913,6 +947,11 @@ test("the More menu skips disabled items, supports keyboard dismissal and stays 
   await page.keyboard.press("Escape");
   await openRowMenu(page, "bravo");
   assert.equal(await menuItem(page, "Check connection").getAttribute("aria-disabled"), "true");
+  assert.equal(await menuItem(page, "Check connection").getAttribute("title"),
+    "No read-only check endpoint for this provider; nothing is sent");
+  assert.equal(await menuItem(page, "Check connection").evaluate((item) =>
+    document.getElementById(item.getAttribute("aria-describedby"))?.textContent),
+  "No read-only check endpoint for this provider; nothing is sent");
   const checks = requests.filter((r) => /\/api\/keys\/bravo\/check$/.test(r.pathname)).length;
   await menuItem(page, "Check connection").evaluate((item) =>
     item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
@@ -2260,18 +2299,37 @@ test("the Usage summary and the Keys figures follow the same unit, switched from
   await page.waitForFunction(() => /\$/.test(document.getElementById("usage-totals").textContent));
   assert.match(await page.locator("#usage-totals").textContent(), /≈ \$0\.03/);
 
-  // One unit for the page: the Keys figures answer in it too, with no switch of their own.
+  // One unit for the page: the Keys figures answer in it too, and the pane says which one it is.
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
-  assert.equal(await page.locator("#keys-unit").count(), 0, "the Keys pane has no unit switch of its own");
+  assert.equal((await page.locator("#keys-unit").textContent()).trim(), "USD", "the Keys pane names the unit it shows");
   assert.match(await gatewayText(page, "alpha"), /\$0\.01/);
   assert.equal(await gatewayText(page, "charlie"), "2 calls, unpriced", "an unpriced figure is never $0");
   assert.equal(await gatewayText(page, "bravo"), null, "no figure for a key without gateway calls");
-  await page.getByRole("tab", { name: "Usage" }).click();
-  await page.getByRole("button", { name: "Show this month in tokens instead of USD" }).click();
-  await page.getByRole("tab", { name: "Keys" }).click();
+  // Switched from Keys itself, and the Usage summary follows the same switch.
+  await page.getByRole("button", { name: "Showing USD; switch the gateway figures to requests" }).click();
   await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-list").textContent));
   assert.equal(await gatewayText(page, "alpha"), "3 requests");
+  assert.equal(await gatewayText(page, "bravo"), null, "still no figure for a key without gateway calls");
+  assert.equal((await page.locator("#keys-unit").textContent()).trim(), "requests");
+  await page.getByRole("tab", { name: "Usage" }).click();
+  assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/, "the summary follows the Keys switch");
+});
+
+test("the Keys unit switch stays visible and keyboard-reachable at 390 px", async (page, origin) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openKeys(page, origin);
+  const control = page.getByRole("button", { name: "Showing requests; switch the gateway figures to USD" });
+  await control.waitFor({ state: "visible" });
+  const box = await control.boundingBox();
+  assert.ok(box.x >= 0 && box.x + box.width <= 390, `the switch leaves the viewport: ${JSON.stringify(box)}`);
+  await control.focus();
+  assert.equal(await page.evaluate(() => document.activeElement.id), "keys-unit");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => /\$/.test(document.getElementById("keys-list").textContent));
+  assert.match(await gatewayText(page, "alpha"), /\$0\.01/);
+  await page.getByRole("button", { name: "Showing USD; switch the gateway figures to requests" }).click();
+  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-list").textContent));
 });
 
 test("the Keys figures follow the Chart's unit at 390 px and stay inside the row", async (page, origin) => {

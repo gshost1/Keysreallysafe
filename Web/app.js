@@ -559,6 +559,7 @@
     unitChips.sync(state.unit);
     // One unit for the whole page: the chart, the key rows' gateway figures and the Usage
     // summary all answer in it, so switching in one place does not leave another contradicting it.
+    syncKeysUnit();
     if (state.keys.length) renderKeys();
     renderUsageTotals();
     // The plan cards are redrawn from the status already in hand, so the switch does not wait for
@@ -566,6 +567,15 @@
     if (state.status) renderStatus();
     if (state.spend) { renderTotals(state.spend); renderMix(); drawChart(); }
   }
+  // The Keys pane has no chart chips, so it carries its own switch: without it the figures
+  // would silently follow whatever was last picked on Usage or Chart.
+  function syncKeysUnit() {
+    const btn = $("keys-unit");
+    btn.textContent = usdMode() ? "USD" : "requests";
+    btn.setAttribute("aria-label", usdMode() ? "Showing USD; switch the gateway figures to requests" : "Showing requests; switch the gateway figures to USD");
+    btn.title = btn.getAttribute("aria-label");
+  }
+  $("keys-unit").addEventListener("click", () => setUnit(usdMode() ? "tokens" : "usd"));
   $("keys-sort").addEventListener("change", (e) => {
     state.keySort = keySorts[e.target.value] ? e.target.value : "name";
     try { localStorage.setItem("ksf.keysort", state.keySort); } catch { /* fine */ }
@@ -905,8 +915,8 @@
       "aria-label": `${text} this month through the gateway with ${k.name}; open in the chart`,
     });
     // The unit this page is in decides what the figure says. Requests are what a key's own row can
-    // always answer for, and no dollar figure is put on screen unless USD was asked for (on the
-    // Usage or Chart pane; the unit is shared by the whole page).
+    // always answer for, and no dollar figure is put on screen unless USD was asked for (here,
+    // on Usage or on Chart; the unit is shared by the whole page).
     if (!usdMode()) {
       if (!calls) return null;
       return figure(plural(calls, "request", "requests"), "This month, requests through the local gateway with this key.");
@@ -1584,6 +1594,7 @@
     $("keys-list").hidden = keys.length === 0;
     $("keys-sort-label").hidden = all.length === 0;
     $("keys-provider-label").hidden = all.length === 0;
+    $("keys-unit-label").hidden = all.length === 0;
     $("keys-search-box").hidden = all.length === 0 && !q;
     $("keys-empty").hidden = all.length > 0;
     $("keys-no-match").hidden = all.length === 0 || keys.length > 0;
@@ -1645,13 +1656,16 @@
     });
     const gateway = gatewayMonthCell(k, tab);
     const meta = [
+      k.kind ? el("span", { class: "key-kind", text: k.kind, title: "Kind" }) : null,
+      k.created_at ? el("span", { class: "key-created", text: "Added " + fmtDate(k.created_at), title: k.created_at }) : null,
       gateway ? el("span", { class: "key-gateway-wrap" }, gateway, el("span", { class: "key-gateway-note", text: " this month" })) : null,
       k.last_check ? el("span", { class: "key-check", text: (k.last_check.ok ? "✓ " : "✗ ") + k.last_check.summary + " · " + relTime(k.last_check.checked_at), title: "Last read-only check " + k.last_check.checked_at }) : null,
     ].filter(Boolean);
     const names = el("div", { class: "key-names" },
       el("div", { class: "key-title" },
         el("span", { class: "key-name", text: k.name, title: k.name }),
-        on ? el("span", { class: "badge", text: "Gateway on", title: "Requests to the local gateway use this key until the engine restarts" }) : null),
+        on ? el("span", { class: "badge", text: "Gateway on", title: "Requests to the local gateway use this key until the engine restarts" }) : null,
+        k.active_grants ? el("span", { class: "badge grants", text: plural(k.active_grants, "grant", "grants"), title: "Active grants for this key; open Access & grants (A) to see or revoke them" }) : null),
       el("div", { class: "key-sub", title: k.host ? "Requests bound to " + k.host : "No fixed host" },
         el("span", { class: "key-provider", text: k.provider ? providerName(k.provider) : "No provider" }),
         k.host ? el("span", { class: "key-host", text: k.host }) : null),
@@ -1741,10 +1755,16 @@
     { act: "delete", label: "Delete key…", icon: ["M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"], destructive: true },
   ];
 
+  // The reason an item is unavailable, or "" when it is not; a greyed item with no reason
+  // reads as a bug.
   function menuItemDisabled(act, key) {
     const provider = providerById(key.provider);
-    return ((act === "gateway" || act === "grant") && provider && provider.gateway === false)
-      || (act === "check" && !key.checkable);
+    if (provider && provider.gateway === false) {
+      if (act === "gateway") return provider.name + " needs request signing; it cannot be proxied";
+      if (act === "grant") return provider.name + " cannot be proxied, so no grant";
+    }
+    if (act === "check" && !key.checkable) return "No read-only check endpoint for this provider; nothing is sent";
+    return "";
   }
   function renderKeyMenu(key) {
     $("key-menu").replaceChildren(...KEY_MENU_ITEMS.map((item) => {
@@ -1752,14 +1772,19 @@
       const disabled = menuItemDisabled(item.act, key);
       const label = item.act === "gateway"
         ? (key.gateway_enabled ? "Turn off gateway" : "Turn on gateway…")
-        : item.label;
+        : item.act === "grant" && key.active_grants
+          ? `${item.label} (${key.active_grants})`
+          : item.label;
+      const whyId = disabled ? "key-menu-why-" + item.act : null;
       return el("button", {
         type: "button", class: "key-menu-item" + (item.destructive ? " destructive" : ""),
         role: "menuitem", tabindex: "-1", "data-act": item.act,
-        "aria-disabled": String(!!disabled),
+        "aria-disabled": String(!!disabled), title: disabled || null, "aria-describedby": whyId,
       },
       svgIcon(item.icon),
       el("span", { class: "key-menu-label", text: label }),
+      // Hidden from the name (it is read through aria-describedby), so the item keeps its label.
+      disabled ? el("span", { class: "sr", id: whyId, "aria-hidden": "true", text: disabled }) : null,
       item.shortcut ? el("span", { class: "key-menu-shortcut", "aria-hidden": "true", text: item.shortcut }) : null);
     }));
   }
@@ -3758,6 +3783,7 @@
   // ---------- start ----------
 
   loadProviders();
+  syncKeysUnit();
   syncScopeChips();
   loadModels();
   showPane("usage", { keyboard: true });
