@@ -69,7 +69,7 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits, subscriptions, nextSubId;
+let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits, subscriptions, nextSubId, grants, profiles;
 
 function reset() {
   keys = baseKeys();
@@ -90,6 +90,11 @@ function reset() {
   delays = new Map();     // "METHOD /path" -> milliseconds
   requests = [];
   unexpected = [];
+  // The active grants GET /api/grants answers. Empty unless a test fills it.
+  grants = [];
+  // The saved grant bounds (the engine's grant_profiles rows): names and scope numbers only,
+  // exactly the fields the real /api/profiles answers with. Empty unless a test fills it.
+  profiles = [];
   // The engine's catalog version on /api/status; a gateway call bumps it with no one on the page.
   catalogVersion = 1;
   // The audit rows a key's History drawer shows; invented, like everything else here.
@@ -345,7 +350,18 @@ function handle(method, pathname, body, params) {
   }
   if (keyMatch && leaf === "/events") return [200, { events: keyEvents }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
-  if (pathname === "/api/grants") return [200, { grants: [] }];
+  if (pathname === "/api/grants") return [200, { grants }];
+  // Saved grant bounds, mirroring the engine's grant_profiles rows. The page only lists and
+  // removes them — `keys profile add` is the CLI's surface — so the fixture fakes GET and
+  // DELETE only; a POST from the page would land in `unexpected` and fail the case.
+  if (pathname === "/api/profiles" && method === "GET") return [200, { profiles }];
+  const profileMatch = /^\/api\/profiles\/([0-9a-z]+)$/.exec(pathname);
+  if (profileMatch && method === "DELETE") {
+    const gone = profiles.find((p) => p.id === profileMatch[1]);
+    if (!gone) return [404, { error: "profile_not_found" }];
+    profiles = profiles.filter((p) => p.id !== gone.id);
+    return [200, gone];
+  }
   if (pathname === "/api/providers" && method === "GET") return [200, providersCatalog()];
   if (pathname === "/api/providers" && method === "POST") {
     if (typeof body.id !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(body.id)) return [400, { error: "invalid provider id" }];
@@ -484,7 +500,10 @@ const server = http.createServer((request, response) => {
   request.on("end", async () => {
     const method = request.method.toUpperCase();
     const key = rule(method, url.pathname);
-    requests.push({ method, pathname: url.pathname, search: url.search, token: request.headers["x-ksf-token"] || null });
+    let body = {};
+    if (raw) { try { body = JSON.parse(raw); } catch { body = {}; } }
+    // The parsed body rides along so cases can assert what the page actually sent.
+    requests.push({ method, pathname: url.pathname, search: url.search, token: request.headers["x-ksf-token"] || null, body });
 
     if (process.env.KEYS_FIXTURE_PORT && url.pathname === "/__fixture/reset" && method === "POST") {
       reset();
@@ -501,8 +520,6 @@ const server = http.createServer((request, response) => {
     }
     if (failure) return json(response, failure.status, failure.body);
 
-    let body = {};
-    if (raw) { try { body = JSON.parse(raw); } catch { body = {}; } }
     // The answer is computed now and delivered late, which is how a slow reply
     // carries a view of the vault that has since moved on.
     const [status, value] = handle(method, url.pathname, body, url.searchParams);
@@ -932,6 +949,116 @@ test("the grant dialog issues a grant, and a client needs a method", async (page
   assert.equal(await page.locator("#grant-submit").textContent(), "Issue client");
   assert.equal(await page.locator("#grant-submit").isDisabled(), false);
   assert.equal(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/clients"), false);
+});
+
+// ---------- profiles in the grant dialog and the grants area ----------
+// UI mechanics only: this fixture is a mimic, and nothing here proves server enforcement —
+// the bounds and named refusals are the Swift in-process tests' business.
+
+const fixtureGrant = (over = {}) => ({
+  id: "g9", key: "alpha", provider: "openai", host: "api.openai.com", task: "fixture task",
+  methods: ["GET", "POST"], paths: ["/v1/messages"], requests: 0, usd: 0, unpriced_calls: 0,
+  max_requests: 500, max_usd: 2.5, profile: "evals", unattended: true,
+  created_at: "2026-09-20T12:00:00Z", expires_at: "2026-09-20T20:00:00Z",
+  base_url: "http://127.0.0.1:12767/g/g9", token: "ksf-grant-fixture", auth_header: "Authorization",
+  ...over,
+});
+
+test("the grant dialog offers only this key's profiles, and picking one prefills the scope", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  profiles = [
+    { id: "ab12cd34", name: "evals", keys: ["alpha"], methods: ["GET", "POST"], paths: ["/v1/messages"], minutes: 480, max_requests: 500, max_usd: 2.5, unattended: true },
+    { id: "ef56ab78", name: "reads", keys: ["bravo"], methods: ["GET"], paths: [], minutes: 60, max_requests: null, max_usd: null, unattended: false },
+  ];
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await focusRow(page, "alpha");
+  await page.keyboard.press("a");
+  await waitDialog(page, "dlg-grant", true);
+  const sel = page.locator("#grant-form [name=profile]");
+  await page.waitForFunction(() => document.querySelector('#grant-form [name="profile"]').options.length > 1);
+  assert.deepEqual(
+    await sel.locator("option").evaluateAll((os) => os.map((o) => o.value)),
+    ["", "evals"],
+    "only profiles whose keys include alpha are offered"
+  );
+  assert.equal(await sel.locator("option[value=evals]").textContent(), "evals (unattended)", "the unattended marker is in the picker");
+
+  await sel.selectOption("evals");
+  assert.equal(await page.locator("#grant-form [name=minutes]").inputValue(), "480");
+  assert.equal(await page.locator('#grant-form [name=minutes] option[value="480"]').textContent(), "8 hours", "a span with no preset gets its own option");
+  assert.equal(await page.locator("#grant-form [name=methods]").inputValue(), "GET,POST");
+  assert.equal(await page.locator("#grant-form [name=paths]").inputValue(), "/v1/messages");
+  assert.equal(await page.locator("#grant-form [name=max_requests]").inputValue(), "500");
+  assert.equal(await page.locator("#grant-form [name=max_usd]").inputValue(), "2.5");
+
+  await page.locator("#grant-form [name=task]").fill("profiled fixture task");
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, body: fixtureGrant() });
+  await page.locator("#grant-submit").click();
+  await page.locator("#grant-result").waitFor({ state: "visible" });
+  const profiled = requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/grants").pop();
+  assert.equal(profiled.body.profile, "evals", "the picked profile rides on the request");
+  assert.equal(profiled.body.minutes, 480, "the prefilled span rides too");
+  assert.equal(await page.locator("#gr-scope").textContent(),
+    "GET, POST · /v1/messages · max 500 requests · max $2.50, ends on an unpriced call · profile evals · unattended");
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-grant", false);
+
+  // A reopen starts at None, and issuing without picking sends no profile field at all.
+  await rowButton(page, "alpha", "grant").click();
+  await waitDialog(page, "dlg-grant", true);
+  assert.equal(await sel.inputValue(), "");
+  assert.equal(await page.locator('#grant-form [name=minutes] option[value="480"]').count(), 0,
+    "a prefill's span choice does not outlive the dialog");
+  assert.equal(await page.locator("#grant-form [name=minutes]").inputValue(), "30", "the shipped default span is back");
+  await page.locator("#grant-form [name=task]").fill("plain fixture task");
+  await page.locator("#grant-submit").click();
+  await page.locator("#grant-result").waitFor({ state: "visible" });
+  const plain = requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/grants").pop();
+  assert.equal("profile" in plain.body, false, "no profile picked means no profile sent");
+});
+
+test("grant rows show the profile and the unattended badge, and unpriced spend never reads $0", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  const soon = new Date(Date.now() + 3600_000).toISOString();
+  grants = [
+    fixtureGrant({ id: "aa11bb22", task: "night evals", requests: 12, usd: 0.4, unpriced_calls: 2, expires_at: soon }),
+    fixtureGrant({ id: "bb22cc33", task: "plain ask", methods: ["GET"], paths: [], max_requests: null, max_usd: null, profile: null, unattended: false, requests: 1, usd: 0, unpriced_calls: 0, expires_at: soon }),
+  ];
+  await openKeys(page, origin);
+  await page.locator("#grants-list li").first().waitFor();
+  const profiled = page.locator("#grants-list li", { hasText: "night evals" });
+  assert.match(await profiled.textContent(), /profile evals/, "the row names the profile");
+  assert.match(await profiled.textContent(), /unattended/, "the unattended badge is on the row");
+  assert.match(await profiled.textContent(), /12 req\/500/, "the caps stay readable");
+  assert.match(await profiled.textContent(), /unpriced \(2 calls\)/, "unpriced spend stays unpriced");
+  assert.doesNotMatch(await profiled.textContent(), /· \$0 ·/, "unknown money is never rendered as $0");
+  const plain = page.locator("#grants-list li", { hasText: "plain ask" });
+  assert.equal(await plain.locator(".badge").count(), 0, "a plain grant row carries no badges");
+});
+
+test("the grants area lists saved profiles with their bounds, and Remove deletes them", async (page, origin) => {
+  profiles = [
+    { id: "ab12cd34", name: "evals", keys: ["alpha"], methods: ["GET", "POST"], paths: ["/v1/messages"], minutes: 480, max_requests: 500, max_usd: 2.5, unattended: true },
+    { id: "ef56ab78", name: "reads", keys: ["bravo"], methods: ["GET"], paths: [], minutes: 60, max_requests: null, max_usd: null, unattended: false },
+  ];
+  await openKeys(page, origin);
+  await page.locator("#profiles-list li").first().waitFor();
+  assert.equal(await page.locator("#grants-count").textContent(), "0 active grants, 0 clients, 2 profiles.");
+  const evals = page.locator("#profiles-list li", { hasText: "evals" });
+  assert.match(await evals.textContent(), /keys alpha/, "the row names the keys");
+  assert.match(await evals.textContent(), /\/v1\/messages/, "the row shows the path scope");
+  assert.match(await evals.textContent(), /8 h/, "the row shows the lifetime");
+  assert.match(await evals.textContent(), /max 500 requests/, "the row shows the request cap");
+  assert.match(await evals.textContent(), /max \$2\.50/, "the row shows the usd cap");
+  assert.match(await evals.textContent(), /unattended/, "the unattended badge is on the row");
+
+  await page.locator('#profiles-list [aria-label="Remove profile evals"]').click();
+  await page.waitForFunction(() => document.getElementById("profiles-list").children.length === 1);
+  assert.ok(requests.some((r) => r.method === "DELETE" && r.pathname === "/api/profiles/ab12cd34"),
+    "Remove deletes the row by id");
+  assert.equal(await page.locator("#grants-count").textContent(), "0 active grants, 0 clients, 1 profile.");
+  assert.equal(await page.locator("#profiles-list li", { hasText: "evals" }).count(), 0, "the removed row is gone after the reload");
 });
 
 test("chips and pickers wrap on the arrow keys", async (page, origin) => {

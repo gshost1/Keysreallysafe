@@ -345,6 +345,448 @@ final class GrantTests: XCTestCase {
         }
     }
 
+    // MARK: - Profile-bounded issuance
+
+    /// A service with one vault key, the base for the profile issuance tests.
+    private func profiledService() throws -> (KeysService, RecordingPresenceGate, CatalogDB) {
+        let (service, gate, db) = try gatedService()
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        return (service, gate, db)
+    }
+
+    /// The saved profile the issuance tests use: every bound set, unattended.
+    @discardableResult
+    private func saveProfile(
+        _ service: KeysService,
+        name: String = "evals",
+        keys: [String] = ["demo"],
+        methods: Set<String> = ["GET", "POST"],
+        paths: [String] = ["/v1/messages"],
+        minutes: Int = 480,
+        maxRequests: Int? = 500,
+        maxUsd: Double? = 2.5,
+        unattended: Bool = true
+    ) throws -> Profile {
+        try service.addProfile(ProfileRequest(
+            name: name, keys: keys, methods: methods, paths: paths, minutes: minutes,
+            maxRequests: maxRequests, maxUsd: maxUsd, unattended: unattended
+        ))
+    }
+
+    /// A refusal's whole contract: its own named error, its wire code, and a presence gate
+    /// that never saw the ask.
+    private func assertPrePromptRefusal(
+        _ expected: ProfileError,
+        gate: RecordingPresenceGate,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ body: () throws -> Any
+    ) {
+        XCTAssertThrowsError(try body(), file: file, line: line) { error in
+            guard let e = error as? ProfileError else {
+                return XCTFail("expected \(expected), got \(error)", file: file, line: line)
+            }
+            XCTAssertEqual(e, expected, "\(e)", file: file, line: line)
+            XCTAssertEqual(e.code, expected.code, "the wire code is part of the refusal", file: file, line: line)
+        }
+        XCTAssertEqual(gate.reasons, [], "a refused ask consumed no prompt", file: file, line: line)
+    }
+
+    /// A profile's values are defaults for whatever the ask left out and ceilings for the
+    /// rest: tightening is honored, nothing is silently widened, and the grant records the
+    /// profile and its unattended flag for display and audit.
+    func testProfileGrantTakesTheProfileAsDefaultsAndHonorsTightening() throws {
+        let (service, gate, _) = try profiledService()
+        _ = try saveProfile(service)
+
+        let defaulted = try service.issueGrant(
+            name: "demo", request: GrantRequest(task: "night evals"), profile: "evals", caller: "cli"
+        )
+        XCTAssertEqual(
+            Int(defaulted.grant.expiresAt.timeIntervalSince(defaulted.grant.createdAt) / 60), 480,
+            "an unset lifetime takes the profile's"
+        )
+        XCTAssertEqual(defaulted.grant.methods, ["GET", "POST"])
+        XCTAssertEqual(defaulted.grant.paths, ["/v1/messages"])
+        XCTAssertEqual(defaulted.grant.maxRequests, 500)
+        XCTAssertEqual(defaulted.grant.maxUsd, 2.5)
+        XCTAssertEqual(defaulted.grant.profile, "evals")
+        XCTAssertEqual(defaulted.grant.unattended, true)
+        XCTAssertEqual(defaulted.grant.jsonObject()["profile"] as? String, "evals")
+        XCTAssertEqual(defaulted.grant.jsonObject()["unattended"] as? Bool, true)
+        XCTAssertEqual(gate.reasons.count, 1)
+
+        // Tightening: every named bound lands as asked, inside the profile.
+        let tightened = try service.issueGrant(
+            name: "demo",
+            request: GrantRequest(
+                task: "quick evals", minutes: 60, methods: ["GET"],
+                paths: ["/v1/messages/count_tokens"], maxRequests: 10, maxUsd: 1
+            ),
+            profile: "evals",
+            specified: GrantSpecified(minutes: true, methods: true, paths: true, maxRequests: true, maxUsd: true),
+            caller: "cli"
+        )
+        XCTAssertEqual(
+            Int(tightened.grant.expiresAt.timeIntervalSince(tightened.grant.createdAt) / 60), 60
+        )
+        XCTAssertEqual(tightened.grant.methods, ["GET"])
+        XCTAssertEqual(tightened.grant.paths, ["/v1/messages/count_tokens"])
+        XCTAssertEqual(tightened.grant.maxRequests, 10)
+        XCTAssertEqual(tightened.grant.maxUsd, 1)
+        XCTAssertEqual(tightened.grant.profile, "evals", "the profile rides along even when tightened")
+        XCTAssertEqual(tightened.grant.unattended, true, "unattended comes from the profile, never the ask")
+
+        // A profile without a cap lets the ask pick its own (still only a tightening), and a
+        // non-unattended profile issues a plain watched grant.
+        _ = try saveProfile(
+            service, name: "reads", methods: Grant.allMethods, paths: [], minutes: 1440,
+            maxRequests: nil, maxUsd: nil, unattended: false
+        )
+        let picky = try service.issueGrant(
+            name: "demo",
+            request: GrantRequest(task: "reads", minutes: 1440, maxRequests: 5, maxUsd: 1),
+            profile: "reads",
+            specified: GrantSpecified(minutes: true, maxRequests: true, maxUsd: true),
+            caller: "cli"
+        )
+        XCTAssertEqual(picky.grant.methods, Grant.allMethods)
+        XCTAssertEqual(picky.grant.paths, [])
+        XCTAssertEqual(picky.grant.maxRequests, 5)
+        XCTAssertEqual(picky.grant.maxUsd, 1)
+        XCTAssertEqual(picky.grant.profile, "reads")
+        XCTAssertEqual(picky.grant.unattended, false)
+        let uncapped = try service.issueGrant(name: "demo", request: GrantRequest(task: "uncapped"), profile: "reads")
+        XCTAssertNil(uncapped.grant.maxRequests)
+        XCTAssertNil(uncapped.grant.maxUsd)
+
+        // The audit row names the profile; the token and the secret stay out of it.
+        let events = try service.keyEvents(name: "demo").filter { $0.action == "grant" }
+        XCTAssertTrue(events.contains { ($0.detail ?? "").contains("profile evals") })
+        for e in events {
+            XCTAssertFalse((e.detail ?? "").contains(defaulted.token), "audit keeps the id, never the token")
+            XCTAssertFalse((e.detail ?? "").contains(fixtureSecret))
+        }
+    }
+
+    /// Every way an ask can sit outside a profile is refused with its own named error, and the
+    /// Touch ID prompt is never consumed for a refused ask. The codes are the wire the CLI
+    /// control path and the dashboard read.
+    func testOutOfProfileBoundsIsRefusedBeforeThePromptWithItsOwnNamedError() throws {
+        let (service, gate, db) = try profiledService()
+        try service.add(name: "other", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret + "2")
+        _ = try saveProfile(service)
+
+        assertPrePromptRefusal(.notFound("nope"), gate: gate) {
+            try service.issueGrant(name: "demo", request: GrantRequest(task: "x"), profile: "nope")
+        }
+        assertPrePromptRefusal(.keyNotAllowed(key: "other", profile: "evals", keys: ["demo"]), gate: gate) {
+            try service.issueGrant(name: "other", request: GrantRequest(task: "x"), profile: "evals")
+        }
+        assertPrePromptRefusal(
+            .methodNotAllowed(method: "DELETE", profile: "evals", methods: ["GET", "POST"]), gate: gate
+        ) {
+            try service.issueGrant(
+                name: "demo",
+                request: GrantRequest(task: "x", methods: ["GET", "DELETE"]),
+                profile: "evals",
+                specified: GrantSpecified(methods: true)
+            )
+        }
+        assertPrePromptRefusal(
+            .pathNotAllowed(path: "/v1/models", profile: "evals", paths: ["/v1/messages"]), gate: gate
+        ) {
+            try service.issueGrant(
+                name: "demo",
+                request: GrantRequest(task: "x", paths: ["/v1/models"]),
+                profile: "evals",
+                specified: GrantSpecified(paths: true)
+            )
+        }
+        // An explicitly empty path list asks for any path: wider than a scoped profile, so it
+        // is refused instead of passing as a vacuous subset. `/` was already refused by name.
+        for (paths, named) in [([String](), "any path"), (["/"], "/")] {
+            assertPrePromptRefusal(
+                .pathNotAllowed(path: named, profile: "evals", paths: ["/v1/messages"]), gate: gate
+            ) {
+                try service.issueGrant(
+                    name: "demo",
+                    request: GrantRequest(task: "x", paths: paths),
+                    profile: "evals",
+                    specified: GrantSpecified(paths: true)
+                )
+            }
+        }
+        assertPrePromptRefusal(.minutesOver(requested: 481, profile: "evals", ceiling: 480), gate: gate) {
+            try service.issueGrant(
+                name: "demo",
+                request: GrantRequest(task: "x", minutes: 481),
+                profile: "evals",
+                specified: GrantSpecified(minutes: true)
+            )
+        }
+        assertPrePromptRefusal(.requestCapOver(requested: 501, profile: "evals", ceiling: 500), gate: gate) {
+            try service.issueGrant(
+                name: "demo",
+                request: GrantRequest(task: "x", maxRequests: 501),
+                profile: "evals",
+                specified: GrantSpecified(maxRequests: true)
+            )
+        }
+        assertPrePromptRefusal(.usdCapOver(requested: 3, profile: "evals", ceiling: 2.5), gate: gate) {
+            try service.issueGrant(
+                name: "demo",
+                request: GrantRequest(task: "x", maxUsd: 3),
+                profile: "evals",
+                specified: GrantSpecified(maxUsd: true)
+            )
+        }
+        XCTAssertEqual(service.listGrants(includeInactive: true).count, 0, "no refused ask left a grant behind")
+
+        // Fail closed on a row that bypassed save-time validation: an unattended profile
+        // with no hard cap issues nothing, even though `addProfile` would have refused it.
+        try db.insertProfile(Profile(
+            id: "deadbee1", name: "raw", keys: ["demo"], methods: Grant.allMethods, paths: [],
+            minutes: 60, maxRequests: nil, maxUsd: nil, unattended: true,
+            createdAt: Date(), updatedAt: Date()
+        ))
+        assertPrePromptRefusal(.requiresCap, gate: gate) {
+            try service.issueGrant(name: "demo", request: GrantRequest(task: "x"), profile: "raw")
+        }
+        XCTAssertEqual(gate.reasons, [], "through the whole matrix, no prompt was consumed")
+    }
+
+    /// The prompt is the one line a local process that rewrote a profile cannot cross, so a
+    /// profile grant names the profile AND the effective scope — the tightened one, not the
+    /// saved one. Plain grants keep the pinned format, byte-identical.
+    func testThePromptNamesTheProfileAndTheEffectiveScopeAndPlainGrantsStayPinned() throws {
+        let (service, gate, _) = try profiledService()
+        _ = try saveProfile(service)
+        _ = try saveProfile(
+            service, name: "reads", methods: Grant.allMethods, paths: [], minutes: 30,
+            maxRequests: nil, maxUsd: nil, unattended: false
+        )
+
+        // The plain format, pinned as before, and the additive JSON fields stay null/false.
+        let plain = try service.issueGrant(name: "demo", request: GrantRequest(task: "list models", minutes: 15), caller: "cli")
+        XCTAssertEqual(
+            gate.reasons.last,
+            "grant \"list models\" the key demo for OpenAI at api.openai.com, 15 min"
+        )
+        XCTAssertTrue(plain.grant.jsonObject()["profile"] is NSNull)
+        XCTAssertEqual(plain.grant.jsonObject()["unattended"] as? Bool, false)
+
+        // The profile format: task, key, provider, host, span, then the profile name and the
+        // effective methods, paths, caps, and the word unattended — in that order.
+        _ = try service.issueGrant(name: "demo", request: GrantRequest(task: "night evals"), profile: "evals", caller: "cli")
+        XCTAssertEqual(
+            gate.reasons.last,
+            "grant \"night evals\" the key demo for OpenAI at api.openai.com, 8 h, "
+                + "profile evals: GET,POST, /v1/messages, max 500 req, max $2.50, unattended"
+        )
+
+        // All methods are spelled out, no paths reads "any path", and a watched profile
+        // never says unattended.
+        _ = try service.issueGrant(name: "demo", request: GrantRequest(task: "reading"), profile: "reads", caller: "cli")
+        XCTAssertEqual(
+            gate.reasons.last,
+            "grant \"reading\" the key demo for OpenAI at api.openai.com, 30 min, "
+                + "profile reads: DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT, any path"
+        )
+
+        // A tightened ask is shown with its tightened values, not the profile's.
+        _ = try service.issueGrant(
+            name: "demo",
+            request: GrantRequest(
+                task: "tight", minutes: 60, methods: ["GET"], paths: ["/v1/messages/count_tokens"],
+                maxRequests: 10, maxUsd: 1
+            ),
+            profile: "evals",
+            specified: GrantSpecified(minutes: true, methods: true, paths: true, maxRequests: true, maxUsd: true),
+            caller: "cli"
+        )
+        XCTAssertEqual(
+            gate.reasons.last,
+            "grant \"tight\" the key demo for OpenAI at api.openai.com, 1 h, "
+                + "profile evals: GET, /v1/messages/count_tokens, max 10 req, max $1.00, unattended"
+        )
+        XCTAssertEqual(gate.reasons.count, 4, "exactly one prompt per grant, profile or not")
+    }
+
+    /// A profile mints nothing by itself: presence is still the only gate that issues. With
+    /// the gate throwing (as a denied Touch ID does), no grant exists; with it recording, the
+    /// same ask issues — and keeps exactly the scope it was tightened to.
+    func testAProfileAloneMintsNothingWhenThePresenceGateThrows() throws {
+        let (db, _) = try makeDB()
+        let gate = RecordingPresenceGate(error: AppError.authCancelled)
+        let (service, _) = makeGatedService(db: db, gate: gate)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.addProfile(ProfileRequest(
+            name: "evals", keys: ["demo"], methods: ["GET"], paths: ["/v1/messages"],
+            minutes: 60, maxRequests: 5, maxUsd: nil, unattended: false
+        ))
+        XCTAssertThrowsError(
+            try service.issueGrant(name: "demo", request: GrantRequest(task: "night evals"), profile: "evals")
+        ) { error in
+            guard case AppError.authCancelled = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(service.listGrants(includeInactive: true).count, 0, "no grant exists after a denied prompt")
+        XCTAssertEqual(gate.reasons.count, 1, "the prompt was asked and denied, not skipped")
+
+        // The same ask with the gate accepting issues and stays tight.
+        gate.error = nil
+        let issued = try service.issueGrant(
+            name: "demo",
+            request: GrantRequest(task: "night evals", minutes: 30, methods: ["GET"]),
+            profile: "evals",
+            specified: GrantSpecified(minutes: true, methods: true)
+        )
+        XCTAssertEqual(gate.reasons.count, 2)
+        XCTAssertNoThrow(try service.grants.authorize(
+            token: issued.token, key: "demo", host: "api.openai.com", method: "GET",
+            rest: "v1/messages", providerPrefix: "/v1"
+        ).get())
+        XCTAssertEqual(
+            service.grants.authorize(
+                token: issued.token, key: "demo", host: "api.openai.com", method: "POST",
+                rest: "v1/messages", providerPrefix: "/v1"
+            ),
+            .failure(.method("POST")),
+            "the tightened scope is what the grant carries"
+        )
+    }
+
+    /// A grant is self-contained: the profile is consulted at issuance only, so deleting it —
+    /// or re-adding the same name with wider bounds — changes nothing about a live grant.
+    func testEditingOrDeletingTheProfileAfterIssuanceLeavesTheGrantSelfContained() throws {
+        let (service, gate, _) = try profiledService()
+        _ = try saveProfile(
+            service, methods: ["GET"], paths: ["/v1/messages"], minutes: 60,
+            maxRequests: 3, maxUsd: nil, unattended: false
+        )
+        let issued = try service.issueGrant(name: "demo", request: GrantRequest(task: "sweep"), profile: "evals")
+        let token = issued.token
+
+        func authorize(_ method: String, _ rest: String) -> Result<Grant, GrantDenial> {
+            service.grants.authorize(
+                token: token, key: "demo", host: "api.openai.com",
+                method: method, rest: rest, providerPrefix: "/v1"
+            )
+        }
+        XCTAssertNoThrow(try authorize("GET", "v1/messages").get())
+
+        // "Edit" is remove + re-add: the same name, wider bounds.
+        _ = try service.removeProfile(name: "evals")
+        XCTAssertNoThrow(try authorize("GET", "v1/messages").get(), "delete changed nothing about the live grant")
+        XCTAssertEqual(authorize("POST", "v1/messages"), .failure(.method("POST")))
+        XCTAssertEqual(authorize("GET", "v1/models"), .failure(.path("/v1/models", allowed: ["/v1/messages"])))
+
+        _ = try saveProfile(
+            service, methods: Grant.allMethods, paths: [], minutes: 1440,
+            maxRequests: nil, maxUsd: nil, unattended: false
+        )
+        XCTAssertEqual(authorize("POST", "v1/messages"), .failure(.method("POST")), "a wider profile does not widen a live grant")
+        XCTAssertEqual(authorize("GET", "v1/models"), .failure(.path("/v1/models", allowed: ["/v1/messages"])))
+        let live = service.listGrants().filter { $0.id == issued.grant.id }
+        XCTAssertEqual(live.map(\.methods), [["GET"]], "the grant keeps its recorded scope")
+        XCTAssertEqual(live.map(\.paths), [["/v1/messages"]])
+        XCTAssertEqual(live.map(\.profile), ["evals" as String?], "the profile name stays for display and audit")
+        XCTAssertEqual(live.compactMap(\.maxRequests), [3])
+        XCTAssertEqual(gate.reasons.count, 1, "profile edits never prompt")
+    }
+
+    /// The dashboard API and the CLI control-file path ask the same service, so a profile
+    /// grant is bounded identically on both, and the refusals keep their names on the wire.
+    func testTheAPIAndControlFilePathsIssueUnderTheProfileWithNamedRefusals() throws {
+        let (db, dir) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try saveProfile(service)
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+        let handler = APIHandler(service: service, webRoot: web)
+
+        // The dashboard API path: a profile field in the body, no scope fields, and the
+        // profile's bounds land on the grant.
+        let ask: [String: Any] = ["task": "api sweep", "profile": "evals"]
+        let created = handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data(ask))
+        XCTAssertEqual(created.status, 201, String(data: created.body, encoding: .utf8)!)
+        let obj = try JSONSerialization.jsonObject(with: created.body) as! [String: Any]
+        XCTAssertEqual(obj["profile"] as? String, "evals")
+        XCTAssertEqual(obj["unattended"] as? Bool, true)
+        XCTAssertEqual(obj["methods"] as? [String], ["GET", "POST"])
+        XCTAssertEqual(obj["paths"] as? [String], ["/v1/messages"])
+        XCTAssertEqual(obj["max_requests"] as? Int, 500)
+        XCTAssertEqual(obj["max_usd"] as? Double, 2.5)
+
+        // The refusals surface as named JSON errors, with the missing profile a 404.
+        let unknownAsk: [String: Any] = ["task": "x", "profile": "nope"]
+        let unknown = handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data(unknownAsk))
+        XCTAssertEqual(unknown.status, 404)
+        let unknownObj = try JSONSerialization.jsonObject(with: unknown.body) as! [String: Any]
+        XCTAssertEqual(unknownObj["error"] as? String, "profile_not_found")
+
+        // Minutes are a ceiling: an ask above the profile's is refused before the prompt.
+        let overAsk: [String: Any] = ["task": "x", "profile": "evals", "minutes": 500]
+        let over = handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data(overAsk))
+        XCTAssertEqual(over.status, 400)
+        let overObj = try JSONSerialization.jsonObject(with: over.body) as! [String: Any]
+        XCTAssertEqual(overObj["error"] as? String, "profile_minutes_over")
+        let overMessage = overObj["message"] as? String ?? ""
+        XCTAssertTrue(overMessage.contains("480"), overMessage)
+
+        // The CLI path rides the same handler through the control file, so it is the same
+        // bounded grant, and a refusal over the wire reads back as its message.
+        let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
+        server.start()
+        defer { server.stop() }
+        let control = ControlFile.url(beside: db.path)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        let client = try ControlClient.connect(control: control)
+        let cliAsk: [String: Any] = ["task": "cli sweep", "profile": "evals", "caller": "cli"]
+        let cliObj = try client.call(method: "POST", path: "/api/keys/demo/grants", body: cliAsk, expect: 201)
+        XCTAssertEqual(cliObj["profile"] as? String, "evals")
+        XCTAssertEqual(cliObj["unattended"] as? Bool, true)
+        XCTAssertEqual(cliObj["methods"] as? [String], ["GET", "POST"])
+        XCTAssertEqual(cliObj["paths"] as? [String], ["/v1/messages"])
+        XCTAssertEqual(cliObj["max_requests"] as? Int, 500)
+        XCTAssertEqual(cliObj["max_usd"] as? Double, 2.5)
+
+        let tightAsk: [String: Any] = ["task": "x", "profile": "evals", "minutes": 481]
+        XCTAssertThrowsError(try client.call(method: "POST", path: "/api/keys/demo/grants", body: tightAsk, expect: 201)) { error in
+            guard case AppError.usage(let m) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(m.contains("481"), m)
+            XCTAssertTrue(m.contains("480"), m)
+        }
+    }
+
+    /// `keys grants` names the profile and the unattended badge on profile-issued grants and
+    /// keeps plain rows readable without them.
+    func testTheGrantsTableNamesTheProfileAndTheUnattendedBadge() {
+        XCTAssertEqual(
+            GrantsCommand.header,
+            "ID\tKEY\tHOST\tTASK\tSTATUS\tEXPIRES\tREQUESTS\tUSD\tPROFILE\tUNATTENDED"
+        )
+        let profiled: [String: Any] = [
+            "id": "0000aaaa", "key": "demo", "host": "api.openai.com", "task": "night evals",
+            "status": "active", "expires_at": "2026-10-27T00:00:00Z", "requests": 3, "usd": 0.5,
+            "unpriced_calls": 0, "profile": "evals", "unattended": true,
+        ]
+        XCTAssertEqual(
+            GrantsCommand.row(profiled),
+            "0000aaaa\tdemo\tapi.openai.com\tnight evals\tactive\t2026-10-27T00:00:00Z\t3\t0.5000\tevals\tunattended"
+        )
+        let plain: [String: Any] = [
+            "id": "0000bbbb", "key": "demo", "host": "api.openai.com", "task": "list models",
+            "status": "active", "expires_at": "2026-10-27T00:00:00Z", "requests": 1, "usd": 0,
+            "unpriced_calls": 1, "profile": NSNull(), "unattended": false,
+        ]
+        XCTAssertEqual(
+            GrantsCommand.row(plain),
+            "0000bbbb\tdemo\tapi.openai.com\tlist models\tactive\t2026-10-27T00:00:00Z\t1\tunpriced (1 call)\t-\t-"
+        )
+    }
+
     func testRedactScrubsSecretsBearerAndGrantTokens() {
         let s = Redact.scrub(
             "key sk-live-abcdef failed; Authorization: Bearer sk-live-abcdef; grant ksf_0a1b2c3d_QUJD; x-api-key: zzz-1234",

@@ -593,6 +593,181 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(c["slot"] as? Int, 2)
     }
 
+    // MARK: - Profiles over the dashboard API (saved grant bounds)
+
+    /// One JSON object out of a response, for the route assertions below.
+    private func object(_ r: HTTPResponse) throws -> [String: Any] {
+        try XCTUnwrap(try? JSONSerialization.jsonObject(with: r.body) as? [String: Any])
+    }
+
+    /// The profile routes follow the same discipline as every other mutation: no write without
+    /// the per-launch token, and every answer carries bounds only — a profile is saved scope,
+    /// never a credential, and nothing in these rows may say otherwise.
+    func testProfileRoutesNeedTheTokenOnWritesAndCRUDAnswersBoundsOnly() throws {
+        let (handler, service, _) = try makeHandler()
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        let draft = try JSONValue.data([
+            "name": "evals", "keys": ["demo"], "methods": ["POST", "GET"], "paths": ["/v1/messages"],
+            "minutes": 480, "max_requests": 500, "max_usd": 2.5, "unattended": true,
+        ])
+
+        // Writes without the token are refused like every other mutating route; reads stay
+        // open to the page behind the same-origin gate alone.
+        XCTAssertEqual(handle(handler, method: "POST", path: "/api/profiles", body: draft, token: false).status, 403)
+        XCTAssertEqual(handle(handler, method: "DELETE", path: "/api/profiles/00000000", token: false).status, 403)
+        XCTAssertTrue(((try object(handle(handler, method: "GET", path: "/api/profiles"))["profiles"] as? [Any]) ?? [[:]]).isEmpty)
+
+        // With the token the row saves and answers with its bounds, normalized the way the
+        // CLI prints them.
+        let created = handle(handler, method: "POST", path: "/api/profiles", body: draft)
+        XCTAssertEqual(created.status, 201)
+        let row = try object(created)
+        XCTAssertEqual(row["name"] as? String, "evals")
+        XCTAssertEqual(row["keys"] as? [String], ["demo"])
+        XCTAssertEqual(row["methods"] as? [String], ["GET", "POST"])
+        XCTAssertEqual(row["paths"] as? [String], ["/v1/messages"])
+        XCTAssertEqual(row["minutes"] as? Int, 480)
+        XCTAssertEqual(row["max_requests"] as? Int, 500)
+        XCTAssertEqual(row["max_usd"] as? Double, 2.5)
+        XCTAssertEqual(row["unattended"] as? Bool, true)
+        let id = try XCTUnwrap(row["id"] as? String)
+        XCTAssertEqual(id.count, 8, "the id is the Grant.newID() shape")
+        XCTAssertEqual(Set(row.keys), [
+            "id", "name", "keys", "methods", "paths", "minutes",
+            "max_requests", "max_usd", "unattended", "created_at", "updated_at",
+        ], "a profile answers with bounds only")
+
+        let listed = try object(handle(handler, method: "GET", path: "/api/profiles"))
+        let rows = try XCTUnwrap(listed["profiles"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0]["name"] as? String, "evals")
+
+        // A bad save is refused with the same named errors the CLI prints, whatever the shape.
+        let bad: [(String, [String: Any], String)] = [
+            ("a duplicate name", ["name": "evals", "keys": ["demo"]], "profile_name_taken"),
+            ("an unknown key", ["name": "other", "keys": ["ghost"]], "profile_key_unknown"),
+            ("an unattended profile with no cap", ["name": "night", "keys": ["demo"], "unattended": true], "profile_requires_cap"),
+            ("minutes outside 1...1440", ["name": "long", "keys": ["demo"], "minutes": 0], "profile_minutes_range"),
+        ]
+        for (why, extra, code) in bad {
+            var body: [String: Any] = extra
+            if extra["name"] as? String != "night" { body["unattended"] = false }
+            let refused = handle(handler, method: "POST", path: "/api/profiles", body: try JSONValue.data(body))
+            XCTAssertEqual(refused.status, 400, why)
+            XCTAssertEqual(try object(refused)["error"] as? String, code, why)
+        }
+
+        // Remove answers the removed row, then the profile is gone; a second remove and a
+        // malformed id are both a plain 404.
+        let removed = handle(handler, method: "DELETE", path: "/api/profiles/\(id)")
+        XCTAssertEqual(removed.status, 200)
+        XCTAssertEqual(try object(removed)["name"] as? String, "evals")
+        XCTAssertTrue((try object(handle(handler, method: "GET", path: "/api/profiles"))["profiles"] as? [[String: Any]])!.isEmpty)
+        XCTAssertEqual(handle(handler, method: "DELETE", path: "/api/profiles/\(id)").status, 404)
+        XCTAssertEqual(handle(handler, method: "DELETE", path: "/api/profiles/zz").status, 404)
+    }
+
+    /// A grant asked for through the dashboard API under a profile lands inside the same bounds
+    /// the CLI path enforces — the CLI's control path is this very route — with the same named
+    /// refusals, and a refused ask never reaches the presence gate.
+    func testGrantUnderAProfileViaTheAPISharesTheCLIPathBoundsAndNamedRefusals() throws {
+        let (handler, service, _) = try makeHandler()
+        let gate = try XCTUnwrap(service.presence as? RecordingPresenceGate)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.addProfile(ProfileRequest(
+            name: "evals", keys: ["demo"], methods: ["GET", "POST"], paths: ["/v1/messages"],
+            minutes: 480, maxRequests: 500, maxUsd: 2.5, unattended: true
+        ))
+
+        let issued = handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data([
+            "task": "night evals", "profile": "evals",
+        ]))
+        XCTAssertEqual(issued.status, 201)
+        let row = try object(issued)
+        XCTAssertEqual(row["methods"] as? [String], ["GET", "POST"])
+        XCTAssertEqual(row["paths"] as? [String], ["/v1/messages"])
+        XCTAssertEqual(row["max_requests"] as? Int, 500)
+        XCTAssertEqual(row["max_usd"] as? Double, 2.5)
+        XCTAssertEqual(row["profile"] as? String, "evals")
+        XCTAssertEqual(row["unattended"] as? Bool, true)
+        let viaAPI = try XCTUnwrap(service.listGrants().first { $0.task == "night evals" })
+        XCTAssertEqual(
+            Int(viaAPI.expiresAt.timeIntervalSince(viaAPI.createdAt) / 60), 480,
+            "an unset lifetime takes the profile's"
+        )
+        XCTAssertEqual(gate.reasons.count, 1, "one prompt for the whole issuance")
+        XCTAssertTrue(gate.reasons[0].contains("profile evals"), "the prompt names the profile")
+
+        // Every way the ask can sit outside the profile is refused with the profile's own
+        // named error, and none of them consumed a prompt.
+        let promptsBefore = gate.reasons
+        try service.add(name: "other", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        let refusals: [(String, String, [String: Any], Int)] = [
+            ("an unknown profile", "/api/keys/demo/grants", ["task": "x", "profile": "nope"], 404),
+            ("a key the profile does not name", "/api/keys/other/grants", ["task": "x", "profile": "evals"], 400),
+            ("minutes above the ceiling", "/api/keys/demo/grants", ["task": "x", "profile": "evals", "minutes": 600], 400),
+            ("a method outside the profile", "/api/keys/demo/grants", ["task": "x", "profile": "evals", "methods": ["DELETE"]], 400),
+            ("a path outside the profile", "/api/keys/demo/grants", ["task": "x", "profile": "evals", "paths": ["/v1/models"]], 400),
+            ("a request cap above the ceiling", "/api/keys/demo/grants", ["task": "x", "profile": "evals", "max_requests": 900], 400),
+            ("a usd cap above the ceiling", "/api/keys/demo/grants", ["task": "x", "profile": "evals", "max_usd": 9], 400),
+        ]
+        let codes = [
+            "profile_not_found", "profile_key_not_allowed", "profile_minutes_over",
+            "profile_method_not_allowed", "profile_path_not_allowed", "profile_request_cap_over",
+            "profile_usd_cap_over",
+        ]
+        for ((why, path, body, status), code) in zip(refusals, codes) {
+            let refused = handle(handler, method: "POST", path: path, body: try JSONValue.data(body))
+            XCTAssertEqual(refused.status, status, why)
+            XCTAssertEqual(try object(refused)["error"] as? String, code, why)
+        }
+        XCTAssertEqual(gate.reasons, promptsBefore, "a refused API ask consumed no prompt")
+
+        // Parity with the CLI path: the same ask through the service seam the control path
+        // drives lands on the same bounds as the API row above.
+        let viaCLI = try service.issueGrant(
+            name: "demo", request: GrantRequest(task: "night evals"), profile: "evals", caller: "cli"
+        )
+        XCTAssertEqual(viaCLI.grant.methods, viaAPI.methods)
+        XCTAssertEqual(viaCLI.grant.paths, viaAPI.paths)
+        XCTAssertEqual(viaCLI.grant.maxRequests, viaAPI.maxRequests)
+        XCTAssertEqual(viaCLI.grant.maxUsd, viaAPI.maxUsd)
+        XCTAssertEqual(viaCLI.grant.profile, viaAPI.profile)
+        XCTAssertEqual(viaCLI.grant.unattended, viaAPI.unattended)
+    }
+
+    /// The grants list answers the profile name and the unattended flag for grants issued under
+    /// a profile, and null/false for plain grants — additive fields, the old shape unchanged.
+    func testGrantsListAnswersProfileAndUnattendedForProfileIssuedGrants() throws {
+        let (handler, service, _) = try makeHandler()
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.addProfile(ProfileRequest(
+            name: "evals", keys: ["demo"], methods: ["GET", "POST"], paths: ["/v1/messages"],
+            minutes: 480, maxRequests: 500, maxUsd: 2.5, unattended: true
+        ))
+        XCTAssertEqual(handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data([
+            "task": "night evals", "profile": "evals",
+        ])).status, 201)
+        XCTAssertEqual(handle(handler, method: "POST", path: "/api/keys/demo/grants", body: try JSONValue.data([
+            "task": "plain ask",
+        ])).status, 201)
+
+        let rows = try XCTUnwrap(try object(handle(handler, method: "GET", path: "/api/grants"))["grants"] as? [[String: Any]])
+        XCTAssertEqual(rows.count, 2)
+        let profiled = try XCTUnwrap(rows.first { $0["task"] as? String == "night evals" })
+        XCTAssertEqual(profiled["profile"] as? String, "evals")
+        XCTAssertEqual(profiled["unattended"] as? Bool, true)
+        XCTAssertEqual(profiled["unpriced_calls"] as? Int, 0, "the old fields keep their shape")
+        let plain = try XCTUnwrap(rows.first { $0["task"] as? String == "plain ask" })
+        XCTAssertTrue(plain["profile"] is NSNull, "a plain grant has no profile")
+        XCTAssertEqual(plain["unattended"] as? Bool, false)
+
+        // The audit row names the profile and never the token.
+        let events = try service.keyEvents(name: "demo")
+        XCTAssertTrue(events.contains { ($0.detail ?? "").contains("profile evals") })
+        XCTAssertFalse(events.contains { ($0.detail ?? "").contains("ksf_") })
+    }
+
     private func localDate(
         _ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int,
         timeZone: TimeZone

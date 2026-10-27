@@ -352,6 +352,65 @@ test("the history pane shows the real key events the backend recorded", async (p
   await rowButton(page, "contract-alpha", "history").click();
 });
 
+// ---------- profiles: the real routes, issuance and badges ----------
+// Sits after the history case (its event-count comparison is self-consistent by construction)
+// and before the delete case, and leaves the vault, the grants area and the profile table as
+// it found them, so the ordered scenario and the harness's end-of-run state assertions hold.
+
+test("a profile bounds a real grant end to end and removes cleanly", async (page) => {
+  await openKeys(page);
+  const saved = await request(page, "POST", "/api/profiles", {
+    name: "contract-evals", keys: ["contract-alpha"], methods: ["GET", "POST"],
+    paths: ["/v1/messages"], minutes: 480, max_requests: 500, max_usd: 2.5, unattended: true,
+  }, { "X-KSF-Token": token });
+  assert.equal(saved.status, 201, JSON.stringify(saved.data));
+  assert.equal(saved.data.name, "contract-evals");
+  assert.equal(saved.data.unattended, true, "a profile answers with bounds only");
+
+  await rowButton(page, "contract-alpha", "grant").click();
+  await waitDialog(page, "dlg-grant", true);
+  const sel = page.locator("#grant-form [name=profile]");
+  await page.waitForFunction(() => document.querySelector('#grant-form [name="profile"]').options.length > 1);
+  assert.deepEqual(
+    await sel.locator("option").evaluateAll((os) => os.map((o) => o.value)),
+    ["", "contract-evals"],
+    "the picker offers only profiles whose keys include this one"
+  );
+  await sel.selectOption("contract-evals");
+  assert.equal(await page.locator("#grant-form [name=minutes]").inputValue(), "480",
+    "the prefill is the real profile's lifetime");
+  await page.locator("#grant-form [name=task]").fill("contract profile run");
+  await page.locator("#grant-submit").click();
+  await page.locator("#grant-result").waitFor({ state: "visible" });
+
+  // The real list answers the real issuance: the profile's defaults became the grant's bounds.
+  const listed = await get(page, "/api/grants");
+  const row = listed.data.grants.find((g) => g.task === "contract profile run");
+  assert.ok(row, `the issued grant must be listed: ${JSON.stringify(listed.data)}`);
+  assert.equal(row.profile, "contract-evals");
+  assert.equal(row.unattended, true);
+  assert.equal(row.methods.join(","), "GET,POST");
+  assert.equal(row.paths.join(","), "/v1/messages");
+  assert.equal(row.max_requests, 500);
+  assert.equal(row.max_usd, 2.5);
+
+  // The active row shows the profile and the unattended badge; the dialog's Revoke now both
+  // kills the grant and closes, so the grants area is left holding only the profile.
+  const active = page.locator("#grants-list li", { hasText: "contract profile run" });
+  assert.match(await active.textContent(), /profile contract-evals/);
+  assert.match(await active.textContent(), /unattended/);
+  await page.locator("#gr-revoke").click();
+  await waitDialog(page, "dlg-grant", false);
+  await page.waitForFunction(() => !document.querySelector("#grants-list li"));
+
+  // Removing the profile goes through the real DELETE route and empties the area.
+  await page.locator('#profiles-list [aria-label="Remove profile contract-evals"]').click();
+  await page.waitForFunction(() => !document.querySelector("#profiles-list li"));
+  const gone = await get(page, "/api/profiles");
+  assert.deepEqual(gone.data.profiles, [], "the real profile table is empty again");
+  await page.waitForFunction(() => document.getElementById("grants").hidden);
+});
+
 test("delete removes the real row and its stored secret", async (page) => {
   await openKeys(page);
   await rowButton(page, NEW_KEY, "delete").click();

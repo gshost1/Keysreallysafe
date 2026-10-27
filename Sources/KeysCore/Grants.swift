@@ -29,6 +29,14 @@ struct Grant: Equatable, Sendable {
     var lastUsedAt: Date?
     var revokedAt: Date?
     var revokeReason: String?
+    /// The profile this grant was issued under, if any. Display and audit only: the gateway's
+    /// request path never reads it, and a grant keeps its scope after its profile is edited
+    /// or removed — the profile was consulted once, at issuance.
+    var profile: String?
+    /// True exactly when the issuing profile was flagged unattended. A label for `keys grants`
+    /// and the dashboard; it changes nothing about enforcement, and the grant still dies on
+    /// screen lock, restart, revoke and expiry like any other.
+    var unattended: Bool = false
 
     var isRevoked: Bool { revokedAt != nil }
     func isExpired(at now: Date) -> Bool { now >= expiresAt }
@@ -59,6 +67,8 @@ struct Grant: Equatable, Sendable {
             "last_used_at": lastUsedAt.map(UTC.iso) as Any? ?? NSNull(),
             "revoked_at": revokedAt.map(UTC.iso) as Any? ?? NSNull(),
             "revoke_reason": revokeReason as Any? ?? NSNull(),
+            "profile": profile as Any? ?? NSNull(),
+            "unattended": unattended,
             "status": status,
         ]
     }
@@ -91,6 +101,19 @@ struct GrantRequest {
         if let maxUsd, !(maxUsd > 0) { throw AppError.usage("max usd must be positive") }
         return r
     }
+}
+
+/// Which of a grant ask's bounds the caller named, as opposed to the ones `GrantRequest` fills
+/// with defaults. Only `issueGrant` reads it, and only under a profile: a named bound must sit
+/// inside the profile (tighten, never widen), an unnamed one takes the profile's value as its
+/// default. The surfaces that know what was actually said — the dashboard API body, the CLI
+/// flags — build it; with no profile it is never consulted and nothing changes.
+struct GrantSpecified: Equatable, Sendable {
+    var minutes = false
+    var methods = false
+    var paths = false
+    var maxRequests = false
+    var maxUsd = false
 }
 
 enum GrantPath {
@@ -270,6 +293,8 @@ final class GrantStore: @unchecked Sendable {
         provider: String,
         host: String,
         request: GrantRequest,
+        profile: String? = nil,
+        unattended: Bool = false,
         now: Date = Date()
     ) -> (grant: Grant, token: String) {
         var id = GrantToken.newID()
@@ -287,7 +312,9 @@ final class GrantStore: @unchecked Sendable {
             createdAt: now,
             expiresAt: now.addingTimeInterval(TimeInterval(request.minutes * 60)),
             maxRequests: request.maxRequests,
-            maxUsd: request.maxUsd
+            maxUsd: request.maxUsd,
+            profile: profile,
+            unattended: unattended
         )
         grants[id] = grant
         hashes[id] = GrantToken.hash(token)

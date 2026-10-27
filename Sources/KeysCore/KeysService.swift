@@ -544,9 +544,15 @@ final class KeysService: @unchecked Sendable {
 
     /// One presence prompt per grant. Names the task, provider, host and expiry in the prompt.
     /// If the gateway is off for the key, this turns it on with the same single prompt.
+    /// Under a profile every bound check runs before that prompt: a refused ask consumes no
+    /// Touch ID, the profile's values default whatever the ask left unnamed, and a named bound
+    /// must sit inside it. The grant itself is self-contained — the request path never
+    /// consults profiles, and the profile is not read again after this returns.
     func issueGrant(
         name: String,
         request raw: GrantRequest,
+        profile profileName: String? = nil,
+        specified: GrantSpecified = GrantSpecified(),
         caller: String = "dashboard"
     ) throws -> (grant: Grant, token: String) {
         try requireGatewayOwner()
@@ -558,8 +564,22 @@ final class KeysService: @unchecked Sendable {
         guard let host = row.gatewayHost ?? provider.host else {
             throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
         }
-        let reason = Self.grantReason(
-            task: request.task, key: name, provider: provider, host: host, minutes: request.minutes
+        var effective = request
+        var under: Profile?
+        if let profileName {
+            let profile = try self.profile(name: profileName)
+            effective = try profile.bounded(
+                request: request, specified: specified, key: name, providerPrefix: provider.pathPrefix
+            )
+            under = profile
+        }
+        let reason = under.map {
+            Self.profileGrantReason(
+                task: effective.task, key: name, provider: provider, host: host,
+                minutes: effective.minutes, profile: $0, request: effective
+            )
+        } ?? Self.grantReason(
+            task: effective.task, key: name, provider: provider, host: host, minutes: effective.minutes
         )
         if let cached = lookupGateway(name: name), cached.host == host {
             try presence.require(reason: reason)
@@ -567,7 +587,10 @@ final class KeysService: @unchecked Sendable {
             _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
         }
         grants.prune()
-        let issued = grants.issue(key: name, provider: provider.id, host: host, request: request)
+        let issued = grants.issue(
+            key: name, provider: provider.id, host: host, request: effective,
+            profile: under?.name, unattended: under?.unattended ?? false
+        )
         try recordKeyEvent(
             name: name,
             action: "grant",
@@ -584,12 +607,39 @@ final class KeysService: @unchecked Sendable {
         return "grant \"\(task)\" the key \(key) for \(provider.name) at \(host), \(span)"
     }
 
+    /// The profile-grant reason: the pinned plain skeleton plus the profile name and the
+    /// EFFECTIVE scope. The prompt is the one line a local process that rewrote a saved profile
+    /// cannot cross, so the bounds the user is actually approving are spelled out — methods,
+    /// paths (or any path), each active cap, and the word unattended — instead of hiding
+    /// behind the profile's name.
+    static func profileGrantReason(
+        task: String,
+        key: String,
+        provider: Providers.Record,
+        host: String,
+        minutes: Int,
+        profile: Profile,
+        request: GrantRequest
+    ) -> String {
+        var scope = [request.methods.sorted().joined(separator: ",")]
+        scope.append(request.paths.isEmpty ? "any path" : request.paths.joined(separator: ","))
+        if let n = request.maxRequests { scope.append("max \(n) req") }
+        if let u = request.maxUsd { scope.append(String(format: "max $%.2f", u)) }
+        if profile.unattended { scope.append("unattended") }
+        return grantReason(task: task, key: key, provider: provider, host: host, minutes: minutes)
+            + ", profile \(profile.name): " + scope.joined(separator: ", ")
+    }
+
     static func grantDetail(_ g: Grant) -> String {
-        var parts = ["\(g.id)", g.task, "until \(UTC.iso(g.expiresAt))", "\(g.host)"]
+        var parts = ["\(g.id)", g.task]
+        if let p = g.profile { parts.append("profile \(p)") }
+        parts.append("until \(UTC.iso(g.expiresAt))")
+        parts.append("\(g.host)")
         if g.methods != Grant.allMethods { parts.append(g.methods.sorted().joined(separator: ",")) }
         if !g.paths.isEmpty { parts.append(g.paths.joined(separator: ",")) }
         if let n = g.maxRequests { parts.append("max \(n) req") }
         if let u = g.maxUsd { parts.append(String(format: "max $%.2f", u)) }
+        if g.unattended { parts.append("unattended") }
         return parts.joined(separator: " · ")
     }
 
@@ -645,6 +695,89 @@ final class KeysService: @unchecked Sendable {
             rest: rest,
             providerPrefix: target.provider.pathPrefix
         )
+    }
+
+    // MARK: - Profiles (saved grant bounds)
+
+    /// Saves a named bound on grant issuance. No presence prompt: a profile row holds no
+    /// secret and no capability — nothing can be spent with it — so like other catalog
+    /// metadata it changes without one, and the grant prompt remains the only gate that
+    /// mints anything. Key names are checked against the vault rows so a profile cannot
+    /// promise a key that is not there.
+    func addProfile(_ raw: ProfileRequest, caller: String = "dashboard", now: Date = Date()) throws -> Profile {
+        let request = try raw.validated()
+        if try catalog.profileExists(name: request.name) {
+            throw ProfileError.nameTaken(request.name)
+        }
+        for key in request.keys {
+            guard try catalog.catalogExists(name: key) else { throw ProfileError.keyUnknown(key) }
+        }
+        let profile = Profile(
+            id: GrantToken.newID(),
+            name: request.name,
+            keys: request.keys,
+            methods: request.methods,
+            paths: request.paths,
+            minutes: request.minutes,
+            maxRequests: request.maxRequests,
+            maxUsd: request.maxUsd,
+            unattended: request.unattended,
+            createdAt: now,
+            updatedAt: now
+        )
+        try catalog.insertProfile(profile)
+        for key in profile.keys {
+            try recordKeyEvent(name: key, action: "profile_add", caller: caller, detail: Self.profileDetail(profile))
+        }
+        return profile
+    }
+
+    func listProfiles() throws -> [Profile] {
+        try catalog.listProfiles()
+    }
+
+    /// A profile by name, or the named refusal for a missing one.
+    func profile(name: String) throws -> Profile {
+        guard let profile = try catalog.profile(name: name) else { throw ProfileError.notFound(name) }
+        return profile
+    }
+
+    /// Deleting a profile changes nothing about grants already issued under it: a grant
+    /// is self-contained and the request path never reads this table. `keys revoke` is
+    /// the off-switch for a live grant.
+    @discardableResult
+    func removeProfile(name: String, caller: String = "dashboard") throws -> Profile {
+        guard let profile = try catalog.profile(name: name) else { throw ProfileError.notFound(name) }
+        return try removeProfile(profile, caller: caller)
+    }
+
+    /// The dashboard's rows know the id, so its remove button answers the id; the refusal for
+    /// a missing row is the same named one the CLI prints.
+    @discardableResult
+    func removeProfile(id: String, caller: String = "dashboard") throws -> Profile {
+        guard let profile = try catalog.profile(id: id) else { throw ProfileError.notFound(id) }
+        return try removeProfile(profile, caller: caller)
+    }
+
+    private func removeProfile(_ profile: Profile, caller: String) throws -> Profile {
+        guard try catalog.deleteProfile(id: profile.id) else { throw ProfileError.notFound(profile.name) }
+        for key in profile.keys {
+            try recordKeyEvent(name: key, action: "profile_remove", caller: caller, detail: Self.profileDetail(profile))
+        }
+        return profile
+    }
+
+    /// Audit detail in the `grantDetail` shape: the profile's name and bounds, never a
+    /// secret (a profile holds none).
+    static func profileDetail(_ p: Profile) -> String {
+        var parts = [p.name, "keys " + p.keys.joined(separator: ",")]
+        if p.methods != Grant.allMethods { parts.append(p.methods.sorted().joined(separator: ",")) }
+        if !p.paths.isEmpty { parts.append(p.paths.joined(separator: ",")) }
+        parts.append("\(p.minutes) min")
+        if let n = p.maxRequests { parts.append("max \(n) req") }
+        if let u = p.maxUsd { parts.append(String(format: "max $%.2f", u)) }
+        if p.unattended { parts.append("unattended") }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: - Provider checks (read-only)

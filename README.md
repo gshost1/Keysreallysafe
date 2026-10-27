@@ -353,6 +353,33 @@ through a 0600 file under Application Support; without one it says so and
 stops. The token in that file only lets a local process *ask*; the grant
 itself still needs Touch ID in the app.
 
+**A profile** is a saved bound on grants, not a credential. `keys profile add`
+stores a name plus issuance-time bounds in the catalog — key names, methods,
+path scopes, minutes, a request cap, a dollar cap, an unattended flag; no
+secret, no token:
+
+```sh
+keys profile add evals --keys router --methods POST --paths /v1/messages \
+  --minutes 480 --max-requests 500 --max-usd 2 --unattended
+```
+
+A profile is consulted only when a grant is issued, never when a request is
+authorized. `keys grant router --profile evals` (or the profile picker in the
+grant dialog, or `keys agent <agent> <key> --profile`) still costs exactly one
+Touch ID, and the prompt names the profile and the effective scope — the
+methods, paths, caps and lifetime being approved — plus the word "unattended"
+when the profile is flagged. Every profile value is a default and a ceiling: a
+request may tighten it, never exceed it, and an ask outside the bounds is
+refused with a named error before any prompt is consumed. Editing or deleting
+a profile afterwards changes nothing about grants already issued.
+
+An unattended profile must carry at least one hard cap (`--max-requests` or
+`--max-usd`), so a grant meant to run while you are away is pre-committed to a
+number you read at approval. The prompt says "unattended", and `keys grants`
+and the dashboard badge the grant. Nothing else about it changes: it still
+dies on screen lock, expiry, revoke, gateway off and restart, so a job that
+has to outlive a screen lock still needs a client token (`keys client
+issue`).
 **A client** is for a program you keep: a capability that lives in the
 catalog as a hash, expires in days (default 30, at most 365), and is scoped
 to HTTP methods and an upstream path prefix. It is bound to the host the key
@@ -577,9 +604,12 @@ keys copy <name>
 keys rm <name> [--yes]
 keys rotate <name>
 keys env <name> <VAR> [<name> <VAR> ...] -- <command> [args...]
-keys grant <name> [--task <text>] [--minutes N] [--methods GET,POST] [--paths /a,/b] [--max-requests N] [--max-usd X] [--json]
+keys grant <name> [--task <text>] [--minutes N] [--methods GET,POST] [--paths /a,/b] [--max-requests N] [--max-usd X] [--profile <name>] [--json]
 keys grants [--all] [--json]
 keys revoke <id> | --all [--key <name>]
+keys profile add <name> --keys <a,b> [--methods GET,POST] [--paths /a,/b] [--minutes N] [--max-requests N] [--max-usd X] [--unattended] [--json]
+keys profile list [--json]
+keys profile remove <name>
 keys test <name> [--json]
 keys models <name> [--grep <text>] [--cached] [--json]
 keys ingest [all|grok|claude|openai|droid]
@@ -603,7 +633,7 @@ keys provider rm <id>
 keys provider hide <id>
 keys provider unhide <id>
 keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]
-keys agent <agent> <key> [--minutes N] [--client] [--label <text>] [--] [args...]
+keys agent <agent> <key> [--minutes N] [--profile <name>] [--client] [--label <text>] [--] [args...]
 keys tunnel <user@host> [--remote-port N] [--key <name>] [--print]
 keys relay [run] [--url <worker url>] | on | off | setup --url <worker url> | status | reset
 keys purge

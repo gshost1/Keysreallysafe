@@ -144,6 +144,12 @@ final class APIHandler: @unchecked Sendable {
                 return grantsRevokeAll(request)
             case ("DELETE", let p) where p.hasPrefix("/api/grants/"):
                 return try grantRevoke(p)
+            case ("GET", "/api/profiles"):
+                return try profilesList()
+            case ("POST", "/api/profiles"):
+                return try profilesAdd(request)
+            case ("DELETE", let p) where p.hasPrefix("/api/profiles/"):
+                return try profilesRemove(p)
             case ("GET", "/api/models"):
                 return try models()
             case ("GET", "/api/keys"):
@@ -206,6 +212,13 @@ final class APIHandler: @unchecked Sendable {
             }
         } catch let error as AppError {
             return mapError(error)
+        } catch let error as ProfileError {
+            // Profile refusals keep their names on the wire: the CLI control path and the
+            // dashboard both answer to the code, and a missing profile is a 404 like any
+            // other missing row. None of them consumed a Touch ID prompt.
+            let status: Int
+            if case .notFound = error { status = 404 } else { status = 400 }
+            return HTTPResponse.json(status, ["error": error.code, "message": error.message])
         } catch {
             return HTTPResponse.json(400, ["error": "bad_request"])
         }
@@ -750,27 +763,40 @@ final class APIHandler: @unchecked Sendable {
     private func keysGrant(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
         let obj = try jsonBody(request)
         var req = GrantRequest(task: JSONValue.string(obj["task"]) ?? "")
-        if let m = JSONValue.int(obj["minutes"]) { req.minutes = m }
+        // `specified` carries which bounds the caller named, so a profile defaults the rest.
+        var specified = GrantSpecified()
+        if let m = JSONValue.int(obj["minutes"]) {
+            req.minutes = m
+            specified.minutes = true
+        }
         if let methods = obj["methods"] as? [Any] {
             req.methods = Set(methods.compactMap { $0 as? String })
+            specified.methods = true
         }
         if let paths = obj["paths"] as? [Any] {
             req.paths = paths.compactMap { $0 as? String }
+            specified.paths = true
         }
         if obj.keys.contains("max_requests"), !(obj["max_requests"] is NSNull) {
             guard let n = JSONValue.int(obj["max_requests"]) else {
                 return HTTPResponse.json(400, ["error": "max_requests must be an integer"])
             }
             req.maxRequests = n
+            specified.maxRequests = true
         }
         if obj.keys.contains("max_usd"), !(obj["max_usd"] is NSNull) {
             guard let d = JSONValue.double(obj["max_usd"]) else {
                 return HTTPResponse.json(400, ["error": "max_usd must be a number"])
             }
             req.maxUsd = d
+            specified.maxUsd = true
         }
+        // An empty profile string means "no profile", the shape a cleared form produces.
+        let profile = JSONValue.string(obj["profile"]).flatMap { $0.isEmpty ? nil : $0 }
         let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "dashboard"
-        let issued = try service.issueGrant(name: name, request: req, caller: caller)
+        let issued = try service.issueGrant(
+            name: name, request: req, profile: profile, specified: specified, caller: caller
+        )
         var body = issued.grant.jsonObject()
         body["token"] = issued.token
         body["gateway_url"] = "http://127.0.0.1:\(GatewayListener.port)/\(name)"
@@ -800,6 +826,76 @@ final class APIHandler: @unchecked Sendable {
         let key = request.query["key"].flatMap { $0.isEmpty ? nil : $0 }
         let touched = service.revokeGrants(key: key, reason: "revoked", caller: "dashboard")
         return HTTPResponse.json(200, ["revoked": touched.map { $0.jsonObject() }])
+    }
+
+    // MARK: - Profiles (saved grant bounds)
+
+    /// The rows a profile answers with are bounds and names only — a profile holds no secret,
+    /// no token and no hash, and neither this route nor the request path ever treats it as
+    /// authority. Writes ride the same per-launch token as every other mutation (refused
+    /// before the route in `handle`), because a saved bound decides what a future grant prompt
+    /// will name.
+    private func profilesList() throws -> HTTPResponse {
+        HTTPResponse.json(200, ["profiles": try service.listProfiles().map { $0.jsonObject() }])
+    }
+
+    /// POST /api/profiles saves a profile. The fields are the ones `keys profile add` takes, and
+    /// validation lives in `ProfileRequest.validated`, so a bad shape is refused here with the
+    /// same named error the CLI prints — nothing on this route can smuggle a value past it.
+    private func profilesAdd(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let name = JSONValue.string(obj["name"]) else {
+            return HTTPResponse.json(400, ["error": "name is required"])
+        }
+        guard let rawKeys = obj["keys"] as? [Any], !rawKeys.isEmpty, rawKeys.allSatisfy({ $0 is String }) else {
+            return HTTPResponse.json(400, ["error": "keys must be a non-empty list of key names"])
+        }
+        var draft = ProfileRequest(name: name, keys: rawKeys.compactMap { $0 as? String })
+        if obj.keys.contains("methods"), !(obj["methods"] is NSNull) {
+            guard let raw = obj["methods"] as? [Any], raw.allSatisfy({ $0 is String }) else {
+                return HTTPResponse.json(400, ["error": "methods must be a list of method names"])
+            }
+            draft.methods = Set(raw.compactMap { $0 as? String })
+        }
+        if obj.keys.contains("paths"), !(obj["paths"] is NSNull) {
+            guard let raw = obj["paths"] as? [Any], raw.allSatisfy({ $0 is String }) else {
+                return HTTPResponse.json(400, ["error": "paths must be a list of path scopes"])
+            }
+            draft.paths = raw.compactMap { $0 as? String }
+        }
+        if obj.keys.contains("minutes") {
+            guard let minutes = JSONValue.int(obj["minutes"]) else {
+                return HTTPResponse.json(400, ["error": "minutes must be an integer"])
+            }
+            draft.minutes = minutes
+        }
+        if obj.keys.contains("max_requests"), !(obj["max_requests"] is NSNull) {
+            guard let cap = JSONValue.int(obj["max_requests"]) else {
+                return HTTPResponse.json(400, ["error": "max_requests must be an integer"])
+            }
+            draft.maxRequests = cap
+        }
+        if obj.keys.contains("max_usd"), !(obj["max_usd"] is NSNull) {
+            guard let cap = JSONValue.double(obj["max_usd"]) else {
+                return HTTPResponse.json(400, ["error": "max_usd must be a number"])
+            }
+            draft.maxUsd = cap
+        }
+        if let unattended = JSONValue.bool(obj["unattended"]) {
+            draft.unattended = unattended
+        }
+        let profile = try service.addProfile(draft, caller: "dashboard")
+        return HTTPResponse.json(201, profile.jsonObject())
+    }
+
+    /// DELETE /api/profiles/<id>. The dashboard's rows know the id; a missing row answers with
+    /// the CLI's `profile_not_found`, and removing changes nothing about grants already issued
+    /// under it.
+    private func profilesRemove(_ path: String) throws -> HTTPResponse {
+        let id = String(path.dropFirst("/api/profiles/".count))
+        guard id.count == 8, id.allSatisfy({ $0.isHexDigit }) else { throw AppError.notFound("profile \(id)") }
+        let profile = try service.removeProfile(id: id, caller: "dashboard")
+        return HTTPResponse.json(200, profile.jsonObject())
     }
 
     private func keysCheck(_ name: String) throws -> HTTPResponse {
