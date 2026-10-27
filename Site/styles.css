@@ -50,7 +50,7 @@ p { margin: 0; }
 /* hero */
 .hero { text-align: center; padding: 84px 0 0; position: relative; }
 .badge { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); margin-bottom: 22px; }
-.badge b { font-size: 12px; font-weight: 600; color: var(--blue-ink); background: var(--blue-tint); border-radius: 999px; padding: 3px 10px; }
+.badge b { white-space: nowrap; flex: none; font-size: 12px; font-weight: 600; color: var(--blue-ink); background: var(--blue-tint); border-radius: 999px; padding: 3px 10px; }
 .hero h1 { font-size: clamp(46px, 7.2vw, 84px); line-height: 1.02; letter-spacing: -0.045em; max-width: 12.5ch; margin: 0 auto; }
 .hero h1 .g { background: linear-gradient(95deg, #0071e3 10%, #6e56f8 60%, #b04df0); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .hero .lead { font-size: clamp(18px, 1.9vw, 21px); color: var(--ink-2); max-width: 50ch; margin: 24px auto 34px; line-height: 1.45; }

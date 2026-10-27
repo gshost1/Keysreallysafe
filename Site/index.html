@@ -51,7 +51,7 @@
 <main>
 <div class="hero">
   <div class="wrap">
-    <div class="badge"><b>New in 0.12</b>Dummy keys for your VMs, through a Worker in your own Cloudflare account</div>
+    <div class="badge"><b>New in 0.13</b>Saved grant limits, one-touch renewal, paired relay agents and an agent skill</div>
     <h1>Dummy keys for your VMs. <span class="g">Real ones stay on your Mac.</span></h1>
     <p class="lead">Paste a key into Keysrs once. Your scripts, agents and cloud VMs get dummy keys that only work through your Mac: on loopback, or through a small Worker in your own Cloudflare account. The real key stays in the Keychain behind Touch ID. And the menu bar shows your Claude Code, Codex and Grok limits before they bite.</p>
     <div class="cta">
@@ -193,7 +193,7 @@ Apply this plan? [y/N] y
     <div class="head">
       <p class="eyebrow">Key vault</p>
       <h2 class="sh">Tell Claude the key's name.<br>Touch ID does the rest.</h2>
-      <p class="sp">No copying, no pasting, no <code>.env</code> files. Your agent asks Keysrs by name, you touch the sensor, and it gets a short grant for that one task. It never sees the key.</p>
+      <p class="sp">No copying, no pasting, no <code>.env</code> files. Your agent asks Keysrs by name, you touch the sensor, and it gets a short grant for that one task. It never sees the key. The Keysrs agent skill, inside the app, teaches it how.</p>
     </div>
 
     <div class="ask">
@@ -243,8 +243,8 @@ Apply this plan? [y/N] y
         <p>Every grant is short-lived and fenced in. When it ends, the agent's access ends with it.</p>
         <ul class="fence">
           <li><b>One key, one host</b><span>Change either and the grant is void.</span></li>
-          <li><b>Expires on its own</b><span>You pick how long it lasts.</span></li>
-          <li><b>Lock screen revokes</b><span>So does revoking it or a restart.</span></li>
+          <li><b>Expires on its own</b><span>You pick how long. One touch renews it with the same token.</span></li>
+          <li><b>Lock screen revokes</b><span>So do rotating the key, revoking the grant and a restart.</span></li>
           <li><b>Counted in your usage</b><span>Every call lands in the chart. Request bodies never do.</span></li>
         </ul>
       </div>
@@ -428,6 +428,9 @@ Apply this plan? [y/N] y
       <details><summary>What if my Mac is off?</summary><p>Nothing is served. A call that arrives while the Mac is away waits in the Worker for up to a minute, then gets a 503 marked retryable. Sleep doesn't turn the relay off: it redials when the Mac is awake again, and the waiting calls follow. Keep Mac Awake for Relay Calls, off by default, holds off idle sleep while a call is open.</p></details>
       <details><summary>Does the Worker see my keys?</summary><p>No. It is a pipe you deploy from the repo into your own Cloudflare account; Keysrs hosts none. It holds one relay secret that lets your Mac connect, carries requests and answers, and never has a provider key. If a dummy key leaks, it works for that one provider through your Mac until you revoke it or it expires, 30 days by default, and the real key is untouched.</p></details>
       <details><summary>Why Cloudflare only?</summary><p>It's the one host the relay knows today: a Worker with a SQLite-backed Durable Object, which the free plan includes. The protocol is documented in the repo, and other routes are welcome.</p></details>
+      <details><summary>Can I choose which remote agents use the relay?</summary><p>Yes. <code>keys relay pair issue</code> gives one agent its own pairing credential, sent as an <code>x-ksf-pair</code> header. Turn on <code>keys relay pair require on</code> and your Mac refuses every relayed call without a live pairing, before the request reaches the gateway. Pairing is an extra gate: the call still needs its token. Turning it off again takes Touch ID.</p></details>
+      <details><summary>Do I have to approve every grant from scratch?</summary><p>No. Save the limits you keep typing as a profile (<code>keys profile add</code>) and ask for a grant under it; the Touch ID prompt still spells out exactly what you approve. A grant that ran out can be renewed in place, for up to a day after it ended: one touch, same scope, same token, so a running agent keeps going.</p></details>
+      <details><summary>How does my agent learn to use Keysrs?</summary><p>Give it the Keysrs agent skill. It ships inside the app, at <code>Keysrs.app/Contents/Resources/Skills/keysrs</code>, and in the repo. Copy that folder into your agent's skills folder, such as <code>~/.claude/skills</code> for Claude Code; the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/agents.md">agent guide</a> lists Droid, Codex and Grok too. It teaches the agent to ask for a grant by the key's name and read the JSON answers, and to leave deleting keys, long-lived tokens and the relay to you. Keysrs never writes into an agent's folders itself.</p></details>
       <details><summary>Is the dollar figure real?</summary><p>Tokens are real: they're what your Mac measured. Dollars are an estimate from a published list-price table, hidden until you choose USD. Anything unpriced reads as unknown, not $0.</p></details>
       <details><summary>Is it really free?</summary><p>Yes. Keysrs is MIT-licensed open source with no trial, license key or paid tier.</p></details>
       <details><summary>What Macs does it run on?</summary><p>macOS 14 Sonoma or newer on Apple Silicon. The download is Developer ID signed and notarized by Apple. No Intel build yet.</p></details>
