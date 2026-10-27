@@ -997,6 +997,45 @@ test("deleting from the More menu updates rows, count and the provider filter", 
   assert.equal(await status(page), "Deleted charlie.");
 });
 
+// VAL-CROSS-001: landing on Usage, the vault is reached from the rail and search, copy and a
+// menu-driven edit all act on the same key without losing the selection.
+test("a first vault visit searches, copies and edits through the More menu", async (page, origin) => {
+  await page.clock.install();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  assert.equal(await page.locator("#pane-usage").isVisible(), true, "Usage is the default pane");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  await settleKeys(page);
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await rowButton(page, "bravo", "copy").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
+  assert.equal(await status(page), "Copied bravo. Clipboard wipes in 20 s.");
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/bravo/copy"
+    && r.token === "test-token"));
+  // Flush the deferred refresh after a copy so the resting label and the reload settle.
+  await page.clock.runFor(2600);
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
+
+  await page.locator("#keys-search").fill("");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+
+  await openRowMenu(page, "bravo");
+  await menuItem(page, "Edit details").click();
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "bravo");
+  await page.locator("#edit-form [name=notes]").fill("first-visit note");
+  await page.locator("#edit-form [type=submit]").click();
+  await waitDialog(page, "dlg-edit", false);
+  assert.equal(await status(page), "Saved bravo.");
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="bravo"] .key-notes')?.textContent === "first-visit note");
+  assert.equal(await page.locator('#keys-body .key-row[data-name="bravo"]').getAttribute("aria-current"), "true",
+    "the edited row stays selected");
+});
+
 test("provider initials follow the documented rule for one-word, multi-word and unknown providers", async (page, origin) => {
   keys = [
     { name: "k-google", provider: "google", created_at: "2026-09-01T10:00:00Z", last_used_at: null, checkable: false },
