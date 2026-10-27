@@ -160,3 +160,14 @@ remaining flake is environmental. Recorded here, not counted as a failure.
 flat Keys list with the ··· menu, the provider filter and the sort, the grants box below the
 list, the footer, and "Help at the foot of the rail"; the "Keys table's gateway column" wording
 became "the Keys list's gateway figures".
+## Mission process notes
+
+- The mission runner stalled once mid-mission (host process exited while its state file said
+  "running"); after marking the run paused the runner recovered and completed every remaining
+  feature. One Task-dispatched fallback worker died of model-usage exhaustion after writing
+  but before verifying an uncommitted partial fix for the Chart chips; the next worker
+  reviewed that diff, kept it, verified it against the pre-fix CSS and committed it as
+  2f7350c. No work was lost or duplicated.
+- Validator observation, not a contract failure: a first Escape press inside the edit dialog's
+  provider autocomplete does not close the dialog (Cancel works). That dialog was deliberately
+  left unredesigned, so this pre-existing quirk is out of scope; noted here for a future pass.
