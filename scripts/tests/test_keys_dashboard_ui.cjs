@@ -1554,6 +1554,135 @@ test("the add dialog never leaves a typed secret in the DOM after it closes", as
   assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "");
 });
 
+// The sentinel for the secret-safety tests below: invented, never a real credential, held
+// in one named constant and only ever asserted against negatively — it is never printed or
+// written into an assertion message.
+const SAFETY_SECRET = "sk-add-safety-NEVER-REAL-0000000000";
+// A full-document scan for the sentinel: negative only, and the message never embeds it.
+const safetyFree = (page, step) =>
+  page.evaluate(() => document.documentElement.innerHTML)
+    .then((html) => assert.doesNotMatch(html, new RegExp(SAFETY_SECRET), step));
+
+// VAL-SECRET-001: a saved key's secret must not linger anywhere in the document once the
+// dialog has closed — not in the rendered row, not in the closed dialog's markup — and the
+// secret input itself must come back blank for the next key.
+test("add leaves no trace of the typed secret in the dom after it saves", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SAFETY_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "",
+    "the secret input must come back blank");
+  await safetyFree(page, "no secret in DOM after save");
+});
+
+// VAL-SECRET-002: nothing the add flow sends back may carry the typed secret. The responses
+// are read off the wire (the POST's own body and the listing the page refetches), and the
+// audit endpoint the History drawer reads is fetched from the page over the fixture's
+// invented add row, which mirrors the shape the real engine audits for a created key.
+test("no add-flow response echoes the typed secret", async (page, origin) => {
+  keyEvents = [{ ts: "2026-10-27T12:00:00Z", action: "add", caller: "add", detail: null }];
+  await openKeys(page, origin);
+  const addResponses = [];
+  const listings = [];
+  page.on("response", (r) => {
+    if (new URL(r.url()).pathname !== "/api/keys") return;
+    if (r.request().method() === "POST") addResponses.push(r);
+    if (r.request().method() === "GET") listings.push(r);
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SAFETY_SECRET);
+  const listingsBefore = listings.length;
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  assert.equal(addResponses.length, 1, "exactly one add POST was answered");
+  assert.equal((await addResponses[0].text()).includes(SAFETY_SECRET), false,
+    "the add response must not echo the typed secret");
+  assert.ok(listings.length > listingsBefore, "the page refetched the listing after the add");
+  assert.equal((await listings[listings.length - 1].text()).includes(SAFETY_SECRET), false,
+    "the listing must not echo the typed secret");
+  const eventsText = await page.evaluate(async () => (await fetch("/api/keys/delta/events")).text());
+  assert.equal(JSON.parse(eventsText).events.length, 1, "the fixture's audit row for the add is served");
+  assert.equal(eventsText.includes(SAFETY_SECRET), false, "the audit endpoint must not echo the typed secret");
+});
+
+// VAL-SECRET-003: a refused submit is a retry, not a dead end. While the dialog stays open
+// every typed value survives (the secret included, so the user does not retype it), and the
+// close that abandons the retry wipes the secret like every other close path.
+test("a duplicate 409 keeps every typed value for the retry and wipes the secret when the dialog closes", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("alpha");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SAFETY_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.equal(await dialogOpen(page, "dlg-add"), true, "the dialog stays open for the retry");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), "alpha", "the name is preserved");
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "openai", "the provider is preserved");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue().then((v) => v.length > 0), true,
+    "the typed secret is preserved while the dialog stays open");
+  assert.equal(await page.locator("#add-form [type=submit]").isDisabled(), false, "the retry must be possible");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "",
+    "closing after the refusal wipes the secret");
+  await safetyFree(page, "no trace of the abandoned secret may stay in the dom");
+});
+
+// VAL-SECRET-003: the wipe is the property of every close path, not just Cancel. Escape
+// counts twice — plain, and with the provider list open where the first Escape must close
+// only the list (the secret surviving until the dialog itself closes) — and so does the
+// backdrop click outside the card.
+test("cancel, escape and the backdrop each wipe the typed secret when they close the add dialog", async (page, origin) => {
+  await openKeys(page, origin);
+  const secretInput = page.locator("#add-form [name=secret]");
+  const typedAndWiped = async (close, step) => {
+    await page.locator("#btn-add").click();
+    await waitDialog(page, "dlg-add", true);
+    await secretInput.fill(SAFETY_SECRET);
+    await close();
+    await waitDialog(page, "dlg-add", false);
+    await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+    assert.equal(await secretInput.inputValue(), "", `${step} must wipe the secret input`);
+    await safetyFree(page, `no trace of the typed secret may stay in the dom after ${step}`);
+  };
+  await typedAndWiped(() => page.locator("#dlg-add [data-close]").click(), "cancel");
+  await typedAndWiped(() => page.keyboard.press("Escape"), "escape");
+
+  // Escape with the picker list open: the first Escape closes only the list, so the typed
+  // secret must still be there for the retry; the second closes the dialog and wipes it.
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await secretInput.fill(SAFETY_SECRET);
+  await page.locator("#add-form [name=provider]").click();
+  await page.locator("#add-form .pick-list:visible").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(await dialogOpen(page, "dlg-add"), true, "the first escape closes only the picker list");
+  assert.equal(await page.locator("#add-form .pick-list").isHidden(), true, "the picker list is closed");
+  assert.equal(await secretInput.inputValue().then((v) => v.length > 0), true,
+    "the secret survives while the dialog stays open");
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-add", false);
+  await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+  assert.equal(await secretInput.inputValue(), "", "the second escape wipes the secret input");
+  await safetyFree(page, "no trace of the typed secret may stay in the dom after the picker escape");
+
+  await typedAndWiped(() => page.mouse.click(8, 8), "a backdrop click");
+});
+
 // Invented sentinels for the provider tests below, in the suite's NEVER-REAL style. The
 // sk-ant- and gsk_ shapes carry the real vendors' unique key_prefixes, which is the point
 // of the guess test; none of these is a real credential.

@@ -270,6 +270,13 @@ test("the API keys scope charts the real gateway ledger and keeps an unpriced co
 
 test("the add dialog creates a real key through POST /api/keys", async (page) => {
   await openKeys(page);
+  // VAL-SECRET-002: nothing the add flow sends back may carry the typed secret. The POST's
+  // own response body is captured off the wire, the listing is re-requested after the add,
+  // and the audit rows the key's History reads are fetched below — each scanned negatively.
+  const addResponses = [];
+  page.on("response", (r) => {
+    if (r.request().method() === "POST" && new URL(r.url()).pathname === "/api/keys") addResponses.push(r);
+  });
   await page.locator("#btn-add").click();
   await waitDialog(page, "dlg-add", true);
   await page.locator("#add-form [name=name]").fill(NEW_KEY);
@@ -285,6 +292,11 @@ test("the add dialog creates a real key through POST /api/keys", async (page) =>
   assert.equal(await status(page), `Added ${NEW_KEY}.`);
   assert.equal(await page.locator("#keys-count").textContent(), `${SEEDED.length + 1} keys`);
 
+  assert.equal(addResponses.length, 1, "exactly one add POST was answered");
+  assert.equal(addResponses[0].status(), 201, "the real add route answers 201 created");
+  assert.equal((await addResponses[0].text()).includes(DELTA_SECRET), false,
+    "the add response must not echo the typed secret");
+
   const listed = await get(page, "/api/keys");
   const row = listed.data.keys.find((k) => k.name === NEW_KEY);
   assert.ok(row, "the real backend must now list the created key");
@@ -293,6 +305,13 @@ test("the add dialog creates a real key through POST /api/keys", async (page) =>
   assert.equal(row.notes, "created by the contract harness");
   assert.equal(row.version, 1);
   assert.equal(JSON.stringify(listed.data).includes(DELTA_SECRET), false, "the typed secret must not come back");
+
+  // The audit rows this key's History drawer reads: the add is in there, the secret is not.
+  const events = await get(page, `/api/keys/${NEW_KEY}/events?limit=50`);
+  assert.equal(events.status, 200);
+  assert.ok(events.data.events.some((e) => e.action === "add"), "the real backend audited the add");
+  assert.equal(JSON.stringify(events.data).includes(DELTA_SECRET), false,
+    "the audit endpoint must not echo the typed secret");
 });
 
 test("a duplicate name surfaces the real 409 already_exists", async (page) => {

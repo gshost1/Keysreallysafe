@@ -40,6 +40,41 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertEqual(missing.status, 404)
     }
 
+    /// VAL-SECRET-004: the catalog is not a secret store. After an add the secret may live
+    /// only in the SecretStore — the raw catalog files on disk (the main DB and its WAL) and
+    /// the key_events rows the dashboard's History reads must hold no trace of it. The
+    /// sentinel is invented; the analytics side of this boundary is pinned by
+    /// ProductAnalyticsTests, which stays the evidence for it.
+    func testAddLeavesNoSecretInCatalogFilesOrKeyEvents() throws {
+        let (db, dir) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        let sentinel = "sk-add-NEVER-REAL-4604109371"
+        try service.add(name: "demo", provider: "xai", kind: "runtime", notes: "n", secret: sentinel, caller: "add")
+
+        // The audit row exists, so the scans below run over real rows, not an empty table.
+        let events = try service.keyEvents(name: "demo")
+        XCTAssertEqual(events.map(\.action), ["add"])
+
+        // The wire shape the History drawer reads: the add is in there, the secret is not.
+        let handler = APIHandler(service: service, webRoot: dir)
+        let response = handle(handler, method: "GET", path: "/api/keys/demo/events")
+        XCTAssertEqual(response.status, 200)
+        let text = String(data: response.body, encoding: .utf8)!
+        XCTAssertFalse(text.contains(sentinel))
+        XCTAssertFalse(text.contains("\"secret\""))
+
+        // Raw bytes: every file of the catalog on disk, the main DB and its WAL included.
+        // The key's own name does appear among those bytes — the row is stored, by design —
+        // so the same traversal that finds it proves it read the files that hold the write.
+        assertNoSentinel(sentinel, in: dir)
+        var sawName = false
+        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        while let url = files?.nextObject() as? URL {
+            if let data = try? Data(contentsOf: url), data.range(of: Data("demo".utf8)) != nil { sawName = true }
+        }
+        XCTAssertTrue(sawName, "the scan must traverse the files that hold the key's own row")
+    }
+
     func testRemoveAndRotateRequirePresenceAndBumpVersion() throws {
         let (db, _) = try makeDB()
         let inner = MemorySecretStore()
