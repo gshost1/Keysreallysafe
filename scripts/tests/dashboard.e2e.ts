@@ -6,7 +6,12 @@ async function reset(app: App) {
   await expect(reply.status).toBe(200);
   await app.open('/');
 }
-const row = (browser: Browser, name: string) => browser.locator(`#keys-body tr[data-name="${name}"]`).first();
+const row = (browser: Browser, name: string) => browser.locator(`#keys-body .key-row[data-name="${name}"]`).first();
+// Copy and More are row buttons; the other shortcuts remain available on the selected row.
+async function act(browser: Browser, name: string, key: string) {
+  await browser.locator(`#keys-body .key-row[data-name="${name}"] .key-name`).first().click();
+  await row(browser, name).press(key);
+}
 
 test('vault creation, metadata edit and confirmed deletion round trip', async ({ app, browser, screen }) => {
   await reset(app);
@@ -18,13 +23,13 @@ test('vault creation, metadata edit and confirmed deletion round trip', async ({
   await browser.locator('#add-form [name=secret]').fill('sk-fixture-NEVER-REAL-0000000000');
   await browser.locator('#add-form [type=submit]').click();
   await expect(row(browser, 'delta')).toBeVisible();
-  await browser.locator('#keys-body tr[data-name="delta"] [data-act=edit]').first().click();
+  await act(browser, 'delta', 'e');
   await browser.locator('#edit-form [name=notes]').fill('edited synthetic note');
   await browser.locator('#edit-form [type=submit]').click();
   await expect(browser.locator('#status')).toHaveText('Saved delta.');
   const saved = await (await fetch(new URL('/api/keys', app.baseUrl))).json();
   await expect(saved.keys.find((k: any) => k.name === 'delta').notes).toBe('edited synthetic note');
-  await browser.locator('#keys-body tr[data-name="delta"] [data-act=delete]').first().click();
+  await act(browser, 'delta', 'Backspace');
   await expect(browser.locator('#delete-name')).toHaveText('delta');
   await browser.locator('#delete-confirm').click();
   await expect(row(browser, 'delta')).not.toBeVisible();
@@ -34,11 +39,11 @@ test('vault creation, metadata edit and confirmed deletion round trip', async ({
 test('rotation submits a replacement and fresh reveals keep it', async ({ app, browser, screen }) => {
   await reset(app);
   await screen.getByRole('tab', 'Keys').click();
-  await browser.locator('#keys-body tr[data-name="alpha"] [data-act=reveal]').first().click();
+  await act(browser, 'alpha', 'v');
   await expect(browser.locator('#reveal-secret')).toHaveText('sk-fixture-NEVER-REAL-0000000000');
   await browser.locator('#dlg-reveal [data-close]').click();
   await expect(browser.locator('#reveal-secret')).toHaveText('');
-  await browser.locator('#keys-body tr[data-name="alpha"] [data-act=rotate]').first().click();
+  await act(browser, 'alpha', 'r');
   const replacement = 'sk-fixture-ROTATED-NEVER-REAL-1111111111';
   await browser.locator('#rotate-form [name=secret]').fill(replacement);
   await browser.locator('#rotate-form [type=submit]').click();
@@ -50,7 +55,7 @@ test('rotation submits a replacement and fresh reveals keep it', async ({ app, b
   await app.open('/');
   await screen.getByRole('tab', 'Keys').click();
   for (let i = 0; i < 2; i++) {
-    await browser.locator('#keys-body tr[data-name="alpha"] [data-act=reveal]').first().click();
+    await act(browser, 'alpha', 'v');
     await expect(browser.locator('#reveal-secret')).toHaveText(replacement);
     await browser.locator('#dlg-reveal [data-close]').click();
     await expect(browser.locator('#reveal-secret')).toHaveText('');

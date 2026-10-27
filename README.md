@@ -157,7 +157,7 @@ Touch ID), then move the app to the Trash.
 
 ## The dashboard
 
-The Keysrs window has four panes, switched with the segmented control or `⌘1` through `⌘4`:
+The Keysrs window has four panes, switched from the left rail or with `⌘1` through `⌘4`:
 Usage, Chart, Keys and Settings.
 
 The dashboard is dark by default (neutral grey, not blue-tinted). **Settings → Light theme** switches it to the
@@ -190,7 +190,7 @@ Remove sit on each row, and Remove asks first. One
 quiet line underneath gives this month from the local logs, in tokens by
 default, with a switch on the line itself for USD. A first run with an empty
 vault also gets a short getting-started guide there; it stays available under
-**?** in the toolbar.
+**Help** at the foot of the rail (or the `?` key).
 
 **Chart** starts on today by hour and switches to this week or this month by
 day (`D` / `W` / `M`). Two things this Mac pays for are charted, and `S`
@@ -200,7 +200,7 @@ is chosen, and switching drops the ones that do not carry over. Figures are in
 tokens — and requests, where the ledger counts them — until USD is chosen: a
 token count is what this Mac measured, while a dollar figure is this repo's
 list-price table applied to it afterwards. `T` flips tokens and USD, the choice
-is remembered, and the Usage summary and the Keys table's gateway column follow
+is remembered, and the Usage summary and the Keys list's gateway figures follow
 the same unit from their own switches. The model list under the chart shows
 every model by default, each with its own name, colour and filter however many
 a family has, and clicking one shows it alone. Each model wears its vendor's
@@ -234,21 +234,24 @@ to chart, so this view will not match a provider's own dashboard. The
 subscription sources are unaffected — gateway dollars are never folded into
 them, because a routed Claude Code or Codex call also appears in a local log.
 
-**Keys** is a dense table: name, provider and the host requests are bound to,
-kind, created, last used, dollars routed through the gateway this month, and
-the last read-only check. Actions
-per row: Copy (`C`, clipboard wipes itself after 20 s), Reveal (`V`, hides
-after 15 s), Edit (`E`, provider, kind and notes; name and secret are
-immutable), History (`H`, the audit log), Rotate (`R`, new secret under the
-same name), Gateway (`G`), Grant (`A`, a temporary scoped token, see below),
-Check (`T`, authentication status and model list from the provider's
-read-only endpoint, with a filter box) and Delete (`⌫`). Active grants sit
-above the table with a Revoke button each. `N` adds a key; the provider
+**Keys** is a flat list of the vault's keys: each row shows a provider-initials
+tile, the key's name and provider, when it was last used, a Copy button (`C`,
+the clipboard wipes itself after 20 s) and a `···` menu with the rest of the
+actions — Reveal (`V`, hides after 15 s), Edit (`E`, provider, kind and notes;
+name and secret are immutable), Access & grants (`A`, a temporary scoped token,
+see below), Gateway on/off (`G`), Activity (`H`, the audit log), Check
+connection (`T`, authentication status and model list from the provider's
+read-only endpoint, with a filter box), Rotate (`R`, a new secret under the
+same name) and Delete (`⌫`). A key with the gateway on says so on its row,
+with this month's routed requests or estimated dollars when it has any, and the
+footer states the Keychain storage and the 20 s clipboard wipe. Active grants
+sit below the list with a Revoke button each. `N` adds a key; the provider
 picker is grouped into Labs, Routers, Hosts, Clouds and Non-chat, and a pasted
-secret with a recognisable prefix pre-fills it. Rows are grouped under a header
-per provider, and the search box (`/`) narrows them by name, provider or host —
-the count reads "N of M keys" while it does, and `Esc` clears it. `?` lists
-every shortcut.
+secret with a recognisable prefix pre-fills it. The search box (`/`) narrows
+the list by name, provider or host — the count reads "N of M keys" while it
+does, and `Esc` clears it — a provider filter shows one provider's keys, and
+the sort orders by name, recency, use or age, remembered across launches. `?`
+lists every shortcut.
 
 **Settings** holds what used to crowd the toolbar: the theme switch, which
 cards Usage shows, **Ingest now** with the last ingest time, the CSV export and

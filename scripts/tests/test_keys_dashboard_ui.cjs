@@ -19,6 +19,8 @@ const assets = new Map([
   ["/analytics.js", ["application/javascript", ""]],
   ["/styles.css", ["text/css", asset("styles.css")]],
   ["/providers.json", ["application/json", asset("providers.json")]],
+  ["/icon.png", ["image/png", asset("icon.png")]],
+  ["/icon.svg", ["image/svg+xml", asset("icon.svg")]],
 ]);
 
 // The merged catalog the engine serves at /api/providers, mirrored from the shipped file: the
@@ -348,6 +350,23 @@ function handle(method, pathname, body, params) {
     fixtureSecrets.set(name, body.secret);
     return [200, { version: 2 }];
   }
+  if (keyMatch && leaf === "/gateway" && method === "POST") {
+    const key = found();
+    if (!key) return [404, { error: "not_found" }];
+    key.gateway_enabled = !!body.enabled;
+    key.gateway_url = key.gateway_enabled ? `http://127.0.0.1:12767/${name}` : null;
+    return [200, { gateway_url: key.gateway_url }];
+  }
+  if (keyMatch && leaf === "/check" && method === "POST") {
+    const key = found();
+    if (!key) return [404, { error: "not_found" }];
+    const result = {
+      ok: true, provider: key.provider, host: key.host || "api.example.test", endpoint: "/v1/models",
+      checked_at: "2026-10-27T12:00:00Z", model_count: 2, models: ["fixture-small", "fixture-large"],
+    };
+    key.last_check = { ok: true, checked_at: result.checked_at, summary: "2 models" };
+    return [200, result];
+  }
   if (keyMatch && leaf === "/events") return [200, { events: keyEvents }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
   if (pathname === "/api/grants") return [200, { grants }];
@@ -531,10 +550,28 @@ const server = http.createServer((request, response) => {
 
 // ---------- helpers ----------
 
-const rowNames = (page) => page.locator("#keys-body tr[data-name]:not(.key-events-row)")
+const rowNames = (page) => page.locator("#keys-body .key-row[data-name]")
   .evaluateAll((rows) => rows.map((row) => row.dataset.name));
-const rowCell = (page, name, cell) => page.locator(`#keys-body tr[data-name="${name}"] .td-${cell}`).first();
-const rowButton = (page, name, act) => page.locator(`#keys-body tr[data-name="${name}"] [data-act="${act}"]`).first();
+// A row's parts: name, provider, host, used, gateway (this month's figure), notes, avatar.
+const rowCell = (page, name, cell) => page.locator(`#keys-body .key-row[data-name="${name}"] .key-${cell}`).first();
+const rowButton = (page, name, act) => page.locator(`#keys-body .key-row[data-name="${name}"] [data-act="${act}"]`).first();
+const menuItem = (page, label) => page.getByRole("menuitem", { name: label, exact: true });
+const openRowMenu = async (page, name) => {
+  await rowButton(page, name, "menu").click();
+  await page.locator("#key-menu:visible").waitFor();
+};
+// The row's letter actions remain available alongside Copy and the More menu.
+const ROW_LETTER = { reveal: "v", edit: "e", gateway: "g", grant: "a", check: "t", history: "h", rotate: "r", delete: "Backspace", copy: "c" };
+async function rowAct(page, name, act) {
+  const row = page.locator(`#keys-body .key-row[data-name="${name}"]`).first();
+  await row.locator(".key-name").click();
+  await row.press(ROW_LETTER[act]);
+}
+// The figure is absent, not "—", when a key has no gateway calls this month.
+const gatewayText = (page, name) => page.evaluate((n) => {
+  const node = document.querySelector(`#keys-body .key-row[data-name="${n}"] .key-gateway`);
+  return node ? node.textContent.trim() : null;
+}, name);
 const status = (page) => page.locator("#status").textContent();
 // A closed <dialog> is not "hidden" in a way a visibility wait can observe, so
 // the open flag is read directly.
@@ -550,7 +587,7 @@ async function openKeys(page, origin, options = {}) {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Keys" }).click();
-  if (!options.expectEmpty) await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
+  if (!options.expectEmpty) await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   return page;
 }
 
@@ -562,20 +599,763 @@ const test = (name, fn) => { if (!only || name.includes(only)) checks.push({ nam
 
 test("key list renders every key with its count and no empty state", async (page, origin) => {
   await openKeys(page, origin);
-  // Grouped by provider name (Anthropic, OpenAI, TypeSafe), then by name inside a group.
-  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "charlie"]);
+  // One flat list in the default name order; no provider header rows between keys.
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-body > :not(.key-row)").count(), 0, "nothing but key rows");
   assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
   assert.equal(await page.locator("#keys-empty").isHidden(), true);
-  assert.equal(await page.locator("#keys-table").isVisible(), true);
-  assert.equal((await rowCell(page, "bravo", "used").textContent()).trim(), "Never");
+  assert.equal(await page.locator("#keys-list").isVisible(), true);
+  assert.equal((await rowCell(page, "bravo", "used").textContent()).trim(), "Never used");
 });
 
 test("an empty vault shows the empty state and hides the table", async (page, origin) => {
   keys = [];
   await openKeys(page, origin, { expectEmpty: true });
   await page.locator("#keys-empty:visible").waitFor();
-  assert.equal(await page.locator("#keys-table").isHidden(), true);
+  assert.equal(await page.locator("#keys-list").isHidden(), true);
   assert.equal(await page.locator("#keys-count").textContent(), "0 keys");
+  assert.equal(await page.locator("#keys-count").isVisible(), true, "the count says so on screen");
+  assert.equal(await page.locator("#keys-no-match").isHidden(), true);
+});
+
+// ---------- the vault list's design ----------
+
+// Read in the page: an element's text colour against its own background, flattened through a
+// canvas so color-mix() and alpha values resolve to the pixels actually drawn.
+const avatarLook = (page) => page.evaluate(() => {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 1;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const px = (css, under) => {
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = under; ctx.fillRect(0, 0, 1, 1);
+    ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1);
+    return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  };
+  const lum = ([r, g, b]) => [r, g, b].map((c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; })
+    .reduce((a, c, i) => a + c * [0.2126, 0.7152, 0.0722][i], 0);
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const card = getComputedStyle(document.getElementById("pane-keys")).backgroundColor;
+  return [...document.querySelectorAll("#keys-body .key-row")].map((row) => {
+    const tile = row.querySelector(".key-avatar");
+    const cs = getComputedStyle(tile);
+    const rowBg = px(getComputedStyle(row).backgroundColor, card);
+    const bg = px(cs.backgroundColor, `rgb(${rowBg.join(",")})`);
+    const fg = px(cs.color, `rgb(${bg.join(",")})`);
+    return {
+      name: row.dataset.name, initials: tile.textContent, tint: [...tile.classList].find((c) => c.startsWith("tint-")),
+      hidden: tile.getAttribute("aria-hidden"), media: tile.querySelectorAll("img, svg").length,
+      contrast: Math.round(ratio(fg, bg) * 100) / 100,
+    };
+  });
+});
+
+test("key rows show an initials tile, a mono name, the provider, last used and Copy in both themes", async (page, origin) => {
+  const foreign = [];
+  page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const rows = await page.evaluate(() => [...document.querySelectorAll("#keys-body .key-row")].map((row) => ({
+    name: row.dataset.name,
+    title: row.querySelector(".key-name").textContent,
+    font: getComputedStyle(row.querySelector(".key-name")).fontFamily,
+    provider: row.querySelector(".key-provider").textContent,
+    used: row.querySelector(".key-used").textContent,
+    buttons: [...row.querySelectorAll("button")].map((b) => b.dataset.act + ":" + b.textContent.trim()),
+    columns: getComputedStyle(row).gridTemplateColumns.split(" ").slice(-2).join(" "),
+    height: row.getBoundingClientRect().height,
+  })));
+  assert.deepEqual(rows.map((r) => [r.name, r.title, r.provider]), [["alpha", "alpha", "OpenAI"], ["bravo", "bravo", "Anthropic"], ["charlie", "charlie", "TypeSafe"]]);
+  assert.match(rows[0].used, /^(Sep 18|\d+ (days|weeks|months) ago)$/, "a used key shows a relative time");
+  assert.deepEqual(rows.slice(1).map((r) => r.used), ["Never used", "Never used"]);
+  for (const r of rows) {
+    assert.match(r.font, /monospace|Menlo|SF Mono/, `${r.name}: the name is monospaced`);
+    assert.equal(r.buttons.filter((b) => b.startsWith("copy:"))[0], "copy:Copy");
+    // Copy, More, and only where real, the gateway figure. More exposes the existing actions.
+    assert.ok(r.buttons.every((b) => /^(copy|menu|chart):/.test(b)), `${r.name}: unexpected buttons ${r.buttons}`);
+    assert.ok(r.buttons.some((b) => b.startsWith("menu:")), `${r.name}: the More button is visible`);
+    assert.equal(r.columns, "99px 118px", `${r.name}: the last-used and actions columns`);
+    assert.ok(r.height >= 62, `${r.name}: row is ${r.height}px tall`);
+  }
+
+  const dark = await avatarLook(page);
+  assert.deepEqual(dark.map((a) => a.initials), ["Op", "An", "Ty"]);
+  assert.equal(new Set(dark.map((a) => a.tint)).size, 3, "each fixture provider has its own tint");
+  for (const a of dark) {
+    assert.equal(a.hidden, "true", "the tile is decoration; the provider name is the text");
+    assert.equal(a.media, 0, "initials only, never a logo");
+    assert.ok(a.contrast >= 4.5, `${a.name} initials at ${a.contrast}:1 in dark`);
+  }
+
+  // The header, search and list tools of the design.
+  assert.equal(await page.locator("#pane-keys .eyebrow").textContent(), "KEYSRS");
+  assert.equal(await page.locator("#pane-keys h1").textContent(), "Your keys.");
+  assert.equal(await page.locator("#pane-keys h1").evaluate((n) => getComputedStyle(n).fontSize), "39px");
+  await page.getByRole("button", { name: "Add key", exact: true }).waitFor();
+  assert.equal(await page.locator("#btn-add kbd").textContent(), "N");
+  assert.equal(await page.locator("#keys-search-box kbd").textContent(), "/");
+  assert.equal(await page.locator(".list-label").evaluate((n) => n.firstChild.textContent.trim()), "All keys");
+  assert.equal(await page.locator("#keys-search-box").evaluate((n) => n.getBoundingClientRect().height), 42);
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.locator("#theme-switch").click();
+  await page.getByRole("tab", { name: "Keys" }).click();
+  const light = await avatarLook(page);
+  assert.deepEqual(light.map((a) => [a.initials, a.tint]), dark.map((a) => [a.initials, a.tint]), "the same tile in both themes");
+  for (const a of light) assert.ok(a.contrast >= 4.5, `${a.name} initials at ${a.contrast}:1 in light`);
+  const palette = await page.evaluate(() => ({
+    page: getComputedStyle(document.body).backgroundColor,
+    add: getComputedStyle(document.getElementById("btn-add")).backgroundColor,
+  }));
+  assert.deepEqual(palette, { page: "rgb(245, 245, 247)", add: "rgb(0, 113, 227)" });
+  assert.doesNotMatch(await page.evaluate(() => document.body.innerHTML), new RegExp(SECRET));
+  assert.deepEqual(foreign, []);
+});
+
+test("the More menu has the designed order, semantics, theme and viewport placement", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const menuButton = rowButton(page, "alpha", "menu");
+  assert.equal(await menuButton.isVisible(), true, "More is visible without hovering");
+  assert.equal(await menuButton.getAttribute("aria-haspopup"), "menu");
+  assert.equal(await menuButton.getAttribute("aria-label"), "More actions for alpha");
+
+  const order = async () => page.locator("#key-menu").evaluate((menu) =>
+    [...menu.children].map((node) => node.getAttribute("role") === "separator"
+      ? "separator" : node.querySelector(".key-menu-label").textContent));
+  let menuShortcuts = [];
+  for (const theme of ["dark", "light"]) {
+    if (theme === "light") {
+      await page.getByRole("tab", { name: "Settings" }).click();
+      await page.locator("#theme-switch").click();
+      await page.getByRole("tab", { name: "Keys" }).click();
+      await settleKeys(page);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openRowMenu(page, "charlie");
+    assert.deepEqual(await order(), [
+      "Reveal key", "Edit details", "separator", "Access & grants", "Turn on gateway…",
+      "Activity", "Check connection", "Rotate key…", "separator", "Delete key…",
+    ]);
+    const geometry = await page.evaluate(() => {
+      const menu = document.getElementById("key-menu").getBoundingClientRect();
+      const button = document.querySelector('#keys-body [data-name="charlie"] [data-act="menu"]').getBoundingClientRect();
+      return {
+      left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom,
+      buttonLeft: button.left, buttonRight: button.right, buttonTop: button.top, buttonBottom: button.bottom,
+        background: getComputedStyle(document.getElementById("key-menu")).backgroundColor,
+        viewportWidth: innerWidth, viewportHeight: innerHeight,
+      };
+    });
+    assert.ok(geometry.left >= 0 && geometry.right <= geometry.viewportWidth, `${theme}: menu stays inside horizontally: ${JSON.stringify(geometry)}`);
+    assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.viewportHeight, `${theme}: menu stays inside vertically: ${JSON.stringify(geometry)}`);
+    assert.ok(Math.abs(geometry.right - geometry.buttonRight) <= 1, `${theme}: menu is right-aligned to its button`);
+    assert.ok(geometry.top >= geometry.buttonBottom || geometry.bottom <= geometry.buttonTop,
+      `${theme}: menu opens below or flips above: ${JSON.stringify(geometry)}`);
+    assert.equal(await page.locator("#key-menu").getAttribute("role"), "menu");
+    assert.equal(await page.locator("#key-menu").getAttribute("aria-label"), "More actions for charlie");
+    assert.equal(await page.locator("#key-menu [role=menuitem]").count(), 8);
+    menuShortcuts = await page.locator("#key-menu [role=menuitem]").evaluateAll((items) =>
+      items.map((item) => [item.dataset.act, item.querySelector(".key-menu-shortcut")?.textContent || ""]));
+    assert.equal(await rowButton(page, "charlie", "menu").getAttribute("aria-expanded"), "true");
+    assert.equal(await page.locator("#key-menu").evaluate((n) => getComputedStyle(n).backgroundColor), geometry.background);
+    assert.doesNotMatch(await page.evaluate(() => document.body.innerHTML), new RegExp(SECRET));
+    await page.keyboard.press("Escape");
+    await waitFocused(page, "charlie:menu");
+  }
+  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  const help = await page.locator("#dlg-help .shortcuts").evaluate((box) => ({
+    keys: [...box.querySelectorAll("dt")].map((dt) => [...dt.querySelectorAll("kbd")].map((k) => k.textContent.trim()).join("")),
+    text: box.textContent,
+  }));
+  for (const [act, key] of menuShortcuts) {
+    if (!key) continue;
+    assert.ok(help.keys.includes(key), `${act} has ${key} in the help list`);
+  }
+  for (const phrase of ["Reveal key", "Edit details", "Access & grants", "Turn the gateway on or off", "Activity", "Check connection", "Rotate key"]) {
+    assert.ok(help.text.includes(phrase), `help describes ${phrase}`);
+  }
+  await waitDialog(page, "dlg-help", true);
+});
+
+// The vault's whole surface — listing, searching, filtering, sorting, copying and the More
+// menu — runs without the secret ever entering the DOM and without a single off-origin request.
+test("no secret reaches the DOM and no request leaves the origin across list, search, filter, sort, copy and the menu", async (page, origin) => {
+  const foreign = [];
+  page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
+  const secretFree = async (step) =>
+    assert.doesNotMatch(await page.evaluate(() => document.documentElement.innerHTML), new RegExp(SECRET), step);
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await secretFree("the rendered list");
+
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await secretFree("search");
+  await page.locator("#keys-search").fill("");
+  await page.selectOption("#keys-provider", "openai");
+  assert.deepEqual(await rowNames(page), ["alpha"]);
+  await secretFree("the provider filter");
+  await page.selectOption("#keys-provider", "");
+  await page.selectOption("#keys-sort", "recent");
+  await secretFree("sorting");
+
+  await rowButton(page, "bravo", "copy").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
+  await secretFree("copy feedback");
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
+  await secretFree("the post-copy refresh");
+
+  await openRowMenu(page, "alpha");
+  await secretFree("the open menu");
+  await page.keyboard.press("Escape");
+  await waitFocused(page, "alpha:menu");
+  await secretFree("after the menu closes");
+
+  assert.deepEqual(foreign, [], `off-origin requests: ${foreign.join(", ")}`);
+});
+
+test("the More menu dispatches every action through the selected key's existing handlers", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await openKeys(page, origin);
+  await settleKeys(page);
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Reveal key").click();
+  await waitDialog(page, "dlg-reveal", true);
+  assert.equal(await page.locator("#reveal-name").textContent(), "alpha");
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/reveal"));
+  await page.locator("#dlg-reveal [data-close]").click();
+  await waitFocused(page, "alpha:menu");
+  await page.waitForFunction(() => !document.body.innerHTML.includes("sk-fixture-NEVER-REAL"));
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Edit details").click();
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "alpha");
+  await page.locator("#edit-form [name=notes]").fill("edited through More");
+  await page.locator("#edit-form [type=submit]").click();
+  await waitDialog(page, "dlg-edit", false);
+  assert.equal(await status(page), "Saved alpha.");
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="alpha"] .key-notes')?.textContent === "edited through More");
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Access & grants").click();
+  await waitDialog(page, "dlg-grant", true);
+  assert.equal(await page.locator("#grant-name").textContent(), "alpha");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await waitDialog(page, "dlg-grant", false);
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Turn on gateway…").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Gateway on."));
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/gateway"));
+  assert.match(await status(page), /^Gateway on\. Base URL http:\/\/127\.0\.0\.1:12767\/alpha\./);
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="alpha"] .badge')?.textContent === "Gateway on");
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Turn off gateway").waitFor();
+  await menuItem(page, "Turn off gateway").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Gateway off for alpha.");
+  assert.equal(requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/gateway").length, 2);
+  await page.waitForFunction(() => !document.querySelector('#keys-body [data-name="alpha"] .badge'));
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Activity").click();
+  await page.locator('#keys-body .key-events-row[data-name="alpha"]').waitFor();
+  assert.ok(requests.some((r) => r.pathname === "/api/keys/alpha/events"));
+  await waitFocused(page, "alpha:menu");
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Activity").click();
+  await page.locator('#keys-body .key-events-row[data-name="alpha"]').waitFor({ state: "detached" });
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Check connection").click();
+  await waitDialog(page, "dlg-check", true);
+  assert.equal(await page.locator("#check-name").textContent(), "alpha");
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"));
+  await page.locator("#dlg-check [data-close]").click();
+  await waitDialog(page, "dlg-check", false);
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Rotate key…").click();
+  await waitDialog(page, "dlg-rotate", true);
+  assert.equal(await page.locator("#rotate-name").textContent(), "alpha");
+  await page.locator("#dlg-rotate [data-close]").click();
+  await waitDialog(page, "dlg-rotate", false);
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Delete key…").click();
+  await waitDialog(page, "dlg-delete", true);
+  assert.equal(await page.locator("#delete-name").textContent(), "alpha");
+  await page.locator("#dlg-delete [data-close]").click();
+  await waitDialog(page, "dlg-delete", false);
+  await waitFocused(page, "alpha:menu");
+});
+
+test("rows show kind, created date and the active-grant count", async (page, origin) => {
+  keys = baseKeys();
+  keys[0].active_grants = 2;
+  await openKeys(page, origin);
+  assert.equal((await rowCell(page, "alpha", "kind").textContent()).trim(), "runtime");
+  assert.equal((await rowCell(page, "bravo", "kind").textContent()).trim(), "billing");
+  assert.equal((await rowCell(page, "alpha", "created").textContent()).trim(), "Added Sep 1, 2026");
+  assert.equal(await rowCell(page, "alpha", "created").getAttribute("title"), "2026-09-01T10:00:00Z");
+  assert.equal((await page.locator('#keys-body .key-row[data-name="alpha"] .badge.grants').textContent()).trim(), "2 grants");
+  assert.equal(await page.locator('#keys-body .key-row[data-name="bravo"] .badge.grants').count(), 0, "no badge without grants");
+  // Newest/Oldest sort by the date the row now shows.
+  await page.locator("#keys-sort").selectOption("newest");
+  assert.deepEqual(await rowNames(page), ["charlie", "bravo", "alpha"]);
+  await page.locator("#keys-sort").selectOption("oldest");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Access & grants (2)").waitFor();
+  await page.keyboard.press("Escape");
+  await openRowMenu(page, "bravo");
+  await menuItem(page, "Access & grants").waitFor();
+  await page.keyboard.press("Escape");
+});
+
+test("the More menu skips disabled items, supports keyboard dismissal and stays one at a time", async (page, origin) => {
+  keys = [...baseKeys(), {
+    name: "no-gateway", provider: "fixture-no-gateway", kind: "runtime",
+    created_at: "2026-09-10T10:00:00Z", last_used_at: null, checkable: true, host: "api.example.test",
+  }];
+  customProviders = [{
+    id: "fixture-no-gateway", name: "Gatewayless Fixture", group: "yours", gateway: false,
+    host: "api.example.test", api: "openai-chat", auth_header: "Authorization", auth_prefix: "Bearer ",
+    path_prefix: "", key_prefix: "", note: "Synthetic provider with gateway disabled.",
+  }];
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="no-gateway"] .key-provider')?.textContent === "Gatewayless Fixture");
+
+  await openRowMenu(page, "no-gateway");
+  for (const label of ["Access & grants", "Turn on gateway…"]) {
+    assert.equal(await menuItem(page, label).getAttribute("aria-disabled"), "true");
+  }
+  // A greyed item says why, as a tooltip and as its accessible description.
+  const why = {
+    "Turn on gateway…": "Gatewayless Fixture needs request signing; it cannot be proxied",
+    "Access & grants": "Gatewayless Fixture cannot be proxied, so no grant",
+  };
+  for (const [label, reason] of Object.entries(why)) {
+    assert.equal(await menuItem(page, label).getAttribute("title"), reason);
+    assert.equal(await menuItem(page, label).evaluate((item) =>
+      document.getElementById(item.getAttribute("aria-describedby"))?.textContent), reason);
+  }
+  assert.equal(await menuItem(page, "Check connection").getAttribute("aria-disabled"), "false");
+  assert.equal(await menuItem(page, "Check connection").getAttribute("title"), null, "an available item carries no reason");
+  const before = requests.filter((r) => /\/(gateway|grants|check)$/.test(r.pathname)).length;
+  await menuItem(page, "Access & grants").evaluate((item) =>
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(await dialogOpen(page, "dlg-grant"), false);
+  await menuItem(page, "Turn on gateway…").evaluate((item) =>
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(requests.filter((r) => /\/(gateway|grants|check)$/.test(r.pathname)).length, before,
+    "disabled grant and gateway items issue no request");
+
+  await page.keyboard.press("Escape");
+  await openRowMenu(page, "bravo");
+  assert.equal(await menuItem(page, "Check connection").getAttribute("aria-disabled"), "true");
+  assert.equal(await menuItem(page, "Check connection").getAttribute("title"),
+    "No read-only check endpoint for this provider; nothing is sent");
+  assert.equal(await menuItem(page, "Check connection").evaluate((item) =>
+    document.getElementById(item.getAttribute("aria-describedby"))?.textContent),
+  "No read-only check endpoint for this provider; nothing is sent");
+  const checks = requests.filter((r) => /\/api\/keys\/bravo\/check$/.test(r.pathname)).length;
+  await menuItem(page, "Check connection").evaluate((item) =>
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(requests.filter((r) => /\/api\/keys\/bravo\/check$/.test(r.pathname)).length, checks);
+  assert.equal(await dialogOpen(page, "dlg-check"), false);
+  await page.keyboard.press("Escape");
+
+  const noGatewayButton = rowButton(page, "no-gateway", "menu");
+  await noGatewayButton.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#key-menu:visible").waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), "Reveal keyV");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Edit details");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Activity",
+    "ArrowDown skips the separator and both disabled items");
+  await page.keyboard.press("Home");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Reveal key");
+  await page.keyboard.press("End");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Delete key…");
+  await page.keyboard.press("Tab");
+  assert.equal(await focused(page), "no-gateway:menu", "Tab closes the menu and returns focus");
+
+  await noGatewayButton.focus();
+  await page.keyboard.press("Space");
+  await page.locator("#key-menu:visible").waitFor();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Space");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "no-gateway");
+  await page.locator("#dlg-edit [data-close]").click();
+  await waitDialog(page, "dlg-edit", false);
+  await waitFocused(page, "no-gateway:menu");
+
+  await noGatewayButton.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#key-menu:visible").waitFor();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "no-gateway");
+  await page.locator("#dlg-edit [data-close]").click();
+  await waitDialog(page, "dlg-edit", false);
+  await waitFocused(page, "no-gateway:menu");
+
+  await noGatewayButton.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#key-menu:visible").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(await focused(page), "no-gateway:menu", "Escape returns focus to More");
+
+  await page.locator('#keys-body [data-name="alpha"]').focus();
+  await page.keyboard.press("Shift+F10");
+  await page.locator("#key-menu:visible").waitFor();
+  await rowButton(page, "bravo", "menu").evaluate((button) => button.click());
+  assert.equal(await page.locator("#key-menu [role=menuitem]").count(), 8);
+  assert.equal(await rowButton(page, "alpha", "menu").getAttribute("aria-expanded"), "false");
+  assert.equal(await rowButton(page, "bravo", "menu").getAttribute("aria-expanded"), "true");
+  await page.locator("#pane-keys h1").click();
+  await page.waitForFunction(() => document.getElementById("key-menu").hidden);
+  assert.equal(await focused(page), "bravo:menu", "outside click returns focus to the invoking More button");
+});
+
+test("a busy key action leaves a skipped menu action focused and lets refresh close it safely", async (page, origin) => {
+  delays.set(rule("POST", "/api/keys/alpha/check"), 1200);
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Check connection").click();
+  for (let i = 0; i < 100 && !requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"); i++) {
+    await page.waitForTimeout(10);
+  }
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"), "check is pending");
+
+  await openRowMenu(page, "bravo");
+  await menuItem(page, "Reveal key").click();
+  assert.equal(await page.locator("#key-menu").isVisible(), true, "the skipped action leaves its menu open");
+  assert.equal(await rowButton(page, "bravo", "menu").getAttribute("aria-expanded"), "true");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label")?.textContent), "Reveal key");
+  assert.equal(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/bravo/reveal"), false,
+    "the busy action sends no second request");
+
+  await waitDialog(page, "dlg-check", true);
+  await page.waitForFunction(() => document.getElementById("key-menu").hidden);
+  await page.locator("#dlg-check [data-close]").click();
+  await waitDialog(page, "dlg-check", false);
+});
+
+test("a background key refresh closes the More menu without leaving detached focus", async (page, origin) => {
+  await page.clock.install();
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await openRowMenu(page, "alpha");
+  catalogVersion += 1;
+  await page.clock.runFor(16000);
+  await page.waitForFunction(() => document.getElementById("key-menu").hidden);
+  assert.equal(await rowButton(page, "alpha", "menu").getAttribute("aria-expanded"), "false");
+  assert.equal(await page.evaluate(() => document.activeElement === document.body || document.activeElement.isConnected), true);
+});
+
+test("deleting from the More menu updates rows, count and the provider filter", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const filter = page.locator("#keys-provider");
+  await filter.selectOption("typesafe");
+  assert.deepEqual(await rowNames(page), ["charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
+  await openRowMenu(page, "charlie");
+  await menuItem(page, "Delete key…").click();
+  await waitDialog(page, "dlg-delete", true);
+  await page.locator("#delete-confirm").click();
+  await waitDialog(page, "dlg-delete", false);
+  await page.waitForFunction(() => !document.querySelector('#keys-body [data-name="charlie"]'));
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "2 keys");
+  assert.equal(await filter.inputValue(), "");
+  assert.deepEqual(await filter.locator("option").allTextContents(), ["All providers", "Anthropic", "OpenAI"]);
+  assert.equal(await status(page), "Deleted charlie.");
+});
+
+// VAL-CROSS-001: landing on Usage, the vault is reached from the rail and search, copy and a
+// menu-driven edit all act on the same key without losing the selection.
+test("a first vault visit searches, copies and edits through the More menu", async (page, origin) => {
+  await page.clock.install();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  assert.equal(await page.locator("#pane-usage").isVisible(), true, "Usage is the default pane");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  await settleKeys(page);
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await rowButton(page, "bravo", "copy").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
+  assert.equal(await status(page), "Copied bravo. Clipboard wipes in 20 s.");
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/bravo/copy"
+    && r.token === "test-token"));
+  // Flush the deferred refresh after a copy so the resting label and the reload settle.
+  await page.clock.runFor(2600);
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
+
+  await page.locator("#keys-search").fill("");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+
+  await openRowMenu(page, "bravo");
+  await menuItem(page, "Edit details").click();
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "bravo");
+  await page.locator("#edit-form [name=notes]").fill("first-visit note");
+  await page.locator("#edit-form [type=submit]").click();
+  await waitDialog(page, "dlg-edit", false);
+  assert.equal(await status(page), "Saved bravo.");
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="bravo"] .key-notes')?.textContent === "first-visit note");
+  assert.equal(await page.locator('#keys-body .key-row[data-name="bravo"]').getAttribute("aria-current"), "true",
+    "the edited row stays selected");
+});
+
+test("provider initials follow the documented rule for one-word, multi-word and unknown providers", async (page, origin) => {
+  keys = [
+    { name: "k-google", provider: "google", created_at: "2026-09-01T10:00:00Z", last_used_at: null, checkable: false },
+    { name: "k-moonshot", provider: "moonshot", created_at: "2026-09-01T10:00:00Z", last_used_at: null, checkable: false },
+    { name: "k-made-up", provider: "made_up-provider.x", created_at: "2026-09-01T10:00:00Z", last_used_at: null, checkable: false },
+    { name: "k-none", provider: null, created_at: "2026-09-01T10:00:00Z", last_used_at: null, checkable: false },
+    { name: "k-openai-1", provider: "openai", created_at: "2026-09-01T10:00:00Z", last_used_at: null, checkable: false },
+    { name: "k-openai-2", provider: "openai", created_at: "2026-09-01T10:00:00Z", last_used_at: null, checkable: false },
+  ];
+  await openKeys(page, origin, { expectEmpty: true });
+  // The catalog's display names arrive after the first draw; wait for them.
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="k-google"] .key-avatar')?.textContent === "GG");
+  const tiles = Object.fromEntries((await avatarLook(page)).map((a) => [a.name, a]));
+  assert.equal(tiles["k-google"].initials, "GG", "Google Gemini: first letters of two words");
+  assert.equal(tiles["k-moonshot"].initials, "MK", "Moonshot (Kimi): punctuation does not count");
+  assert.equal(tiles["k-made-up"].initials, "MU", "an id the catalog does not know splits on - _ and .");
+  assert.equal(tiles["k-none"].initials, "?");
+  assert.equal(await rowCell(page, "k-none", "provider").textContent(), "No provider");
+  assert.equal(tiles["k-openai-1"].initials, "Op");
+  assert.equal(tiles["k-openai-1"].tint, tiles["k-openai-2"].tint, "one provider, one tint");
+});
+
+test("the count reads N keys, N of M keys while a search hides some, and 0 keys when empty", async (page, origin) => {
+  await openKeys(page, origin);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
+  await page.locator("#keys-search").fill("bravo");
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await page.locator("#keys-search").fill("zzz");
+  assert.equal(await page.locator("#keys-count").textContent(), "0 of 3 keys");
+  assert.equal(await page.locator("#keys-no-match").textContent(), "No keys match “zzz”.");
+  assert.equal(await page.locator("#keys-empty").isHidden(), true);
+  await page.locator("#keys-search").fill("");
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
+});
+
+test("the provider filter lists the vault's providers, combines with search and names it on a miss", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const filter = page.locator("#keys-provider");
+  // Only providers that hold a key, by display name, "All providers" first.
+  assert.deepEqual(await filter.locator("option").evaluateAll((os) => os.map((o) => [o.value, o.textContent])),
+    [["", "All providers"], ["anthropic", "Anthropic"], ["openai", "OpenAI"], ["typesafe", "TypeSafe"]]);
+
+  const box = await page.locator("#keys-search").boundingBox();
+  await filter.selectOption("anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
+  const after = await page.locator("#keys-search").boundingBox();
+  assert.deepEqual([after.x, after.y, after.width, after.height].map((n) => Math.round(n * 10) / 10),
+    [box.x, box.y, box.width, box.height].map((n) => Math.round(n * 10) / 10),
+    "the count changed under the filter, the search box did not move");
+
+  // The two are AND-ed: a row must satisfy both.
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await page.locator("#keys-search").fill("alpha");
+  assert.deepEqual(await rowNames(page), []);
+  assert.equal(await page.locator("#keys-no-match").textContent(), "No keys for Anthropic match “alpha”.",
+    "the miss names the provider whose filter hid the match");
+  assert.equal(await page.locator("#keys-count").textContent(), "0 of 3 keys");
+
+  // Search behaviour is unchanged under a filter: ArrowDown enters the filtered list, Escape clears.
+  await page.locator("#keys-search").fill("");
+  await page.locator("#keys-search").focus();
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement.closest(".key-row")?.dataset.name), "bravo");
+  await page.locator("#keys-search").fill("nothing");
+  await page.locator("#keys-search").press("Escape");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  assert.equal(await page.locator("#keys-no-match").isHidden(), true);
+
+  // All providers restores the whole list, search included.
+  await filter.selectOption("");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
+});
+
+test("the provider filter is session-only and returns to All when its provider disappears", async (page, origin) => {
+  await openKeys(page, origin);
+  const filter = page.locator("#keys-provider");
+  await filter.selectOption("anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+
+  // A reload forgets the choice: like the search, a provider filter is a look at part of the
+  // vault, not a setting to come back to (the sort is the setting that survives; its own test
+  // covers that).
+  await openKeys(page, origin);
+  assert.equal(await filter.inputValue(), "");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
+
+  // The provider's last key is deleted behind the page (a background refresh): the filter must
+  // not strand the list on a provider that no longer holds a key.
+  await filter.selectOption("anthropic");
+  keys = keys.filter((k) => k.name !== "bravo");
+  catalogVersion += 1;
+  await page.waitForFunction(() => document.getElementById("keys-provider").value === "", null, { timeout: 30000 });
+  assert.deepEqual(await rowNames(page), ["alpha", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "2 keys");
+});
+
+test("a provider filter that hides nothing reads as an unfiltered count", async (page, origin) => {
+  for (const k of keys) k.provider = "openai";
+  await openKeys(page, origin);
+  const options = await page.locator("#keys-provider option").evaluateAll((os) => os.map((o) => o.value));
+  assert.deepEqual(options, ["", "openai"], "one option per provider present, not one per key");
+  await page.locator("#keys-provider").selectOption("openai");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys", "nothing is hidden, so the count admits no 'of'");
+});
+
+test("the sort and the provider filter stay reachable and working at 390 px", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const onScreen = (sel) => page.locator(sel).evaluate((n) => {
+    const r = n.getBoundingClientRect();
+    return r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
+  });
+  assert.equal(await onScreen("#keys-provider"), true, "the provider filter is on screen");
+  assert.equal(await onScreen("#keys-sort"), true, "the sort stays on screen instead of being hidden");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1),
+    true, "no horizontal overflow");
+
+  // Both controls still work at this width, including the widest option label.
+  await page.selectOption("#keys-sort", "most");
+  assert.equal(await onScreen("#keys-sort"), true, "the widest sort label stays on screen");
+  assert.deepEqual(await rowNames(page), ["alpha", "charlie", "bravo"],
+    "Most used this month: alpha 3 calls, charlie 2, bravo 0; ties by name");
+  await page.selectOption("#keys-provider", "anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
+});
+
+test("the footer states the Keychain and the 20 s clipboard wipe, and drops the right half under 780 px", async (page, origin) => {
+  await openKeys(page, origin);
+  const read = () => page.evaluate(() => {
+    const f = document.querySelector("#pane-keys .keys-footer");
+    const list = document.getElementById("keys-list").getBoundingClientRect();
+    return {
+      left: f.querySelector(".keys-footer-left").textContent.trim(),
+      lock: !!f.querySelector(".keys-footer-left svg"),
+      right: f.querySelector(".keys-footer-right").textContent.trim(),
+      rightShown: f.querySelector(".keys-footer-right").getBoundingClientRect().width > 0,
+      below: f.getBoundingClientRect().top >= list.bottom,
+    };
+  });
+  assert.deepEqual(await read(), { left: "Stored in macOS Keychain", lock: true, right: "Copy requires approval · Clipboard clears in 20 s", rightShown: true, below: true });
+  await page.setViewportSize({ width: 780, height: 900 });
+  const narrow = await read();
+  assert.equal(narrow.left, "Stored in macOS Keychain");
+  assert.equal(narrow.rightShown, false);
+});
+
+test("a key with the gateway on shows the badge and its URL; only keys with calls show a figure", async (page, origin) => {
+  const alpha = keys.find((k) => k.name === "alpha");
+  alpha.gateway_enabled = true;
+  alpha.gateway_url = "http://127.0.0.1:12767/alpha";
+  await openKeys(page, origin);
+  const row = (n) => page.locator(`#keys-body .key-row[data-name="${n}"]`);
+  assert.equal(await row("alpha").locator(".badge").textContent(), "Gateway on");
+  assert.equal(await row("alpha").locator(".gw-url").textContent(), "http://127.0.0.1:12767/alpha");
+  assert.equal(await row("bravo").locator(".badge, .gw-url").count(), 0, "no badge for a key that is off");
+  assert.equal(await gatewayText(page, "alpha"), "3 requests");
+  assert.equal(await row("alpha").locator(".key-gateway-wrap").textContent(), "3 requests this month");
+  assert.equal(await gatewayText(page, "bravo"), null);
+  assert.equal(await gatewayText(page, "charlie"), "2 requests");
+  assert.doesNotMatch(await page.locator("#keys-list").textContent(), /\$0(?!\.0[1-9])/, "never $0");
+});
+
+test("the vault fits 780 and 540 px in both themes with last used under the provider", async (page, origin) => {
+  await openKeys(page, origin);
+  for (const theme of ["dark", "light"]) {
+    if (theme === "light") {
+      await page.getByRole("tab", { name: "Settings" }).click();
+      await page.locator("#theme-switch").click();
+      await page.getByRole("tab", { name: "Keys" }).click();
+    }
+    for (const width of [780, 540, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      const g = await page.evaluate(() => {
+        const row = document.querySelector('#keys-body .key-row[data-name="bravo"]');
+        const r = (n) => n.getBoundingClientRect();
+        return {
+          vw: innerWidth,
+          spill: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          provider: r(row.querySelector(".key-provider")), used: r(row.querySelector(".key-used")),
+          usedText: row.querySelector(".key-used").textContent,
+          copy: r(row.querySelector('[data-act="copy"]')),
+          kbd: r(document.querySelector("#btn-add kbd")).width,
+          sort: r(document.getElementById("keys-sort")),
+          avatar: r(row.querySelector(".key-avatar")).width,
+        };
+      });
+      const at = `${theme} ${width}px`;
+      assert.ok(g.spill <= 1, `${at}: spills ${g.spill}px`);
+      assert.equal(g.usedText, "Never used", `${at}: last used is still there`);
+      assert.ok(g.used.width > 0 && g.used.top >= g.provider.bottom - 1, `${at}: last used sits under the provider`);
+      assert.ok(g.copy.left >= 0 && g.copy.right <= g.vw && g.copy.width > 0, `${at}: Copy is on screen`);
+      assert.ok(g.sort.width > 0 && g.sort.right <= g.vw, `${at}: sort stays reachable`);
+      assert.equal(g.kbd > 0, width > 540, `${at}: the N hint shows only above 540 px`);
+      assert.equal(g.avatar, width > 540 ? 40 : 32, `${at}: tile size`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+});
+
+test("the grants box sits below the list and its Revoke button revokes", async (page, origin) => {
+  failures.set(rule("GET", "/api/grants"), { status: 200, body: { grants: [{
+    id: "g1", key: "alpha", host: "api.openai.com", task: "fixture task", methods: ["POST"], paths: [],
+    requests: 1, max_requests: 0, usd: 0, max_usd: 0, unpriced_calls: 0, expires_at: "2099-01-01T00:00:00Z",
+  }] } });
+  await openKeys(page, origin);
+  // The tab switch starts a second keys+grants refresh; until it lands, its grants fetch still
+  // sees the injected grant, but once the override below is removed an in-flight copy would come
+  // back empty and tear the Revoke button out from under the click. Let the network settle first.
+  await page.waitForLoadState("networkidle");
+  await page.locator("#grants:visible").waitFor();
+  assert.match(await page.locator("#grants-count").textContent(), /^1 active grant, 0 clients\./);
+  const order = await page.evaluate(() => document.getElementById("keys-list").getBoundingClientRect().bottom <= document.getElementById("grants").getBoundingClientRect().top);
+  assert.equal(order, true, "the box is below the list");
+  failures.delete(rule("GET", "/api/grants"));
+  failures.set(rule("DELETE", "/api/grants/g1"), { status: 200, body: { ok: true } });
+  await page.getByRole("button", { name: "Revoke grant g1" }).click();
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Grant g1 revoked.");
+  await page.locator("#grants").waitFor({ state: "hidden" });
+  assert.ok(requests.some((r) => r.method === "DELETE" && r.pathname === "/api/grants/g1" && r.token === "test-token"));
 });
 
 // ---------- reveal and its expiry ----------
@@ -583,7 +1363,7 @@ test("an empty vault shows the empty state and hides the table", async (page, or
 test("reveal shows the secret, counts down and auto-hides at expiry", async (page, origin) => {
   await page.clock.install();
   await openKeys(page, origin);
-  await rowButton(page, "alpha", "reveal").click();
+  await rowAct(page, "alpha", "reveal");
   await waitDialog(page, "dlg-reveal", true);
   assert.equal(await page.locator("#reveal-secret").textContent(), SECRET);
   assert.equal(await page.locator("#reveal-name").textContent(), "alpha");
@@ -605,7 +1385,7 @@ test("reveal shows the secret, counts down and auto-hides at expiry", async (pag
 test("hiding the reveal dialog early stops the timer and clears the secret", async (page, origin) => {
   await page.clock.install();
   await openKeys(page, origin);
-  await rowButton(page, "alpha", "reveal").click();
+  await rowAct(page, "alpha", "reveal");
   await waitDialog(page, "dlg-reveal", true);
   await page.locator("#dlg-reveal [data-close]").click();
   await waitDialog(page, "dlg-reveal", false);
@@ -617,16 +1397,20 @@ test("hiding the reveal dialog early stops the timer and clears the secret", asy
   assert.equal(await page.locator("#reveal-timer").textContent(), "");
 });
 
-test("a cancelled Touch ID leaves the reveal button usable and says why", async (page, origin) => {
+test("a cancelled Touch ID leaves reveal usable and says why", async (page, origin) => {
   await openKeys(page, origin);
   failures.set(rule("POST", "/api/keys/alpha/reveal"), { status: 401, body: { error: "auth_cancelled" } });
-  await rowButton(page, "alpha", "reveal").click();
+  await rowAct(page, "alpha", "reveal");
   await page.waitForFunction(() => document.getElementById("status").textContent.includes("cancelled"));
   assert.equal(await status(page), "Mac authentication cancelled.");
   assert.equal(await page.locator("#dlg-reveal").evaluate((d) => d.open), false);
-  const button = rowButton(page, "alpha", "reveal");
-  assert.equal(await button.textContent(), "Reveal");
-  assert.equal(await button.isDisabled(), false);
+  // The failure released the busy guard: the same key reveals on the next try.
+  failures.delete(rule("POST", "/api/keys/alpha/reveal"));
+  await rowAct(page, "alpha", "reveal");
+  await waitDialog(page, "dlg-reveal", true);
+  assert.equal(await page.locator("#reveal-name").textContent(), "alpha");
+  await page.locator("#dlg-reveal [data-close]").click();
+  await waitDialog(page, "dlg-reveal", false);
 });
 
 // ---------- copy and its feedback ----------
@@ -634,16 +1418,25 @@ test("a cancelled Touch ID leaves the reveal button usable and says why", async 
 test("copy reports the wipe deadline and refreshes the row afterwards", async (page, origin) => {
   await page.clock.install();
   await openKeys(page, origin);
+  // The secret goes to the clipboard on the server; the page never touches it.
+  await page.evaluate(() => { window.__clip = 0; navigator.clipboard.writeText = async () => { window.__clip += 1; }; });
+  delays.set(rule("POST", "/api/keys/bravo/copy"), 300);
   await rowButton(page, "bravo", "copy").click();
+  assert.equal(await rowButton(page, "bravo", "copy").textContent(), "Touch ID…");
+  assert.equal(await rowButton(page, "bravo", "copy").isDisabled(), true);
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
   assert.equal(await status(page), "Copied bravo. Clipboard wipes in 20 s.");
   assert.equal(await rowButton(page, "bravo", "copy").textContent(), "Copied");
+  assert.equal(await rowButton(page, "bravo", "copy").locator("svg").count(), 1, "the label changes, the icon stays");
+  const post = requests.find((r) => r.method === "POST" && r.pathname === "/api/keys/bravo/copy");
+  assert.equal(post.token, "test-token", "the copy carries the launch token");
+  assert.equal(await page.evaluate(() => window.__clip), 0, "navigator.clipboard is never used for a key");
   assert.equal((await rowCell(page, "bravo", "used").textContent()).trim(), "Just now");
 
   const before = requests.filter((r) => r.pathname === "/api/keys" && r.method === "GET").length;
   await page.clock.runFor(2600);
   // Only the deferred reload's re-render puts the resting label back.
-  await page.waitForFunction(() => document.querySelector('#keys-body tr[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
   const after = requests.filter((r) => r.pathname === "/api/keys" && r.method === "GET").length;
   assert.ok(after > before, "the deferred reload must refresh the list");
   assert.equal(await rowButton(page, "bravo", "copy").textContent(), "Copy", "button returns to its resting label");
@@ -669,7 +1462,7 @@ test("a copy whose row disappears before the deferred reload does not throw", as
   keys = keys.filter((k) => k.name !== "charlie");
   await page.clock.runFor(3000);
   await page.waitForTimeout(300);
-  assert.deepEqual(await rowNames(page), ["bravo", "alpha"]);
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo"]);
   assert.deepEqual(pageErrors, [], "a stale reload must not raise");
 });
 
@@ -704,10 +1497,13 @@ test("add creates the key, carries the launch token and selects the new row", as
   await page.locator("#add-form [name=secret]").fill(SECRET);
   await page.locator("#add-form [type=submit]").click();
   await waitDialog(page, "dlg-add", false);
-  await page.locator('#keys-body tr[data-name="delta"]').waitFor();
-  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "delta", "charlie"]);
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie", "delta"]);
   assert.equal(await status(page), "Added delta.");
-  assert.equal(await page.locator('#keys-body tr[data-name="delta"]').getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator('#keys-body .key-row[data-name="delta"]').getAttribute("aria-current"), "true");
+  assert.equal(await page.locator('#keys-body [aria-current="true"]').count(), 1, "one selected row");
+  assert.equal(await rowCell(page, "delta", "avatar").textContent(), "Op", "the new row has its initials tile");
+  assert.equal(await page.locator("#keys-count").textContent(), "4 keys");
   const post = requests.find((r) => r.method === "POST" && r.pathname === "/api/keys");
   assert.equal(post.token, "test-token", "mutations must carry the launch token");
 });
@@ -738,7 +1534,7 @@ test("the add dialog never leaves a typed secret in the DOM after it closes", as
 
 test("edit sends only changed fields and reports a server refusal in the dialog", async (page, origin) => {
   await openKeys(page, origin);
-  await rowButton(page, "alpha", "edit").click();
+  await rowAct(page, "alpha", "edit");
   await waitDialog(page, "dlg-edit", true);
 
   // Unchanged: the dialog closes without a request.
@@ -748,7 +1544,7 @@ test("edit sends only changed fields and reports a server refusal in the dialog"
   assert.equal(requests.filter((r) => r.method === "PATCH").length, before, "an unchanged edit sends nothing");
 
   failures.set(rule("PATCH", "/api/keys/alpha"), { status: 403, body: { error: "forbidden" } });
-  await rowButton(page, "alpha", "edit").click();
+  await rowAct(page, "alpha", "edit");
   await page.locator("#edit-form [name=notes]").fill("changed");
   await page.locator("#edit-form [type=submit]").click();
   await page.waitForFunction(() => document.getElementById("edit-err").textContent !== "");
@@ -760,13 +1556,13 @@ test("edit sends only changed fields and reports a server refusal in the dialog"
   await page.locator("#edit-form [type=submit]").click();
   await waitDialog(page, "dlg-edit", false);
   assert.equal(await status(page), "Saved alpha.");
-  assert.equal((await rowCell(page, "alpha", "name").textContent()).includes("changed"), true);
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="alpha"] .key-notes')?.textContent === "changed");
 });
 
 test("delete confirms first, survives a refusal and then removes the row", async (page, origin) => {
   await openKeys(page, origin);
   failures.set(rule("DELETE", "/api/keys/charlie"), { status: 404, body: { error: "not_found" } });
-  await rowButton(page, "charlie", "delete").click();
+  await rowAct(page, "charlie", "delete");
   await waitDialog(page, "dlg-delete", true);
   assert.equal(await page.locator("#delete-name").textContent(), "charlie");
 
@@ -775,20 +1571,21 @@ test("delete confirms first, survives a refusal and then removes the row", async
   assert.equal(await page.locator("#delete-err").textContent(), "That key no longer exists.");
   assert.equal(await page.locator("#dlg-delete").evaluate((d) => d.open), true);
   assert.equal(await page.locator("#delete-confirm").isDisabled(), false);
-  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "charlie"], "nothing is removed optimistically");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"], "nothing is removed optimistically");
 
   failures.delete(rule("DELETE", "/api/keys/charlie"));
   await page.locator("#delete-confirm").click();
   await waitDialog(page, "dlg-delete", false);
-  await page.waitForFunction(() => !document.querySelector('#keys-body tr[data-name="charlie"]'));
-  assert.deepEqual(await rowNames(page), ["bravo", "alpha"]);
+  await page.waitForFunction(() => !document.querySelector('#keys-body .key-row[data-name="charlie"]'));
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo"]);
   assert.equal(await status(page), "Deleted charlie.");
+  assert.equal(await page.locator("#keys-count").textContent(), "2 keys");
 });
 
 test("rotate replaces the secret, reports failure in its own dialog and clears the field", async (page, origin) => {
   await openKeys(page, origin);
   failures.set(rule("POST", "/api/keys/alpha/rotate"), { status: 401, body: { error: "auth_failed" } });
-  await rowButton(page, "alpha", "rotate").click();
+  await rowAct(page, "alpha", "rotate");
   await waitDialog(page, "dlg-rotate", true);
   assert.equal(await page.locator("#rotate-name").textContent(), "alpha");
 
@@ -807,7 +1604,7 @@ test("rotate replaces the secret, reports failure in its own dialog and clears t
   assert.equal(await status(page), "Rotated alpha (version 2).");
 
   // Cancelling after typing must not leave the new secret behind either.
-  await rowButton(page, "alpha", "rotate").click();
+  await rowAct(page, "alpha", "rotate");
   await waitDialog(page, "dlg-rotate", true);
   await page.locator("#rotate-form [name=secret]").fill(SECRET);
   await page.locator("#dlg-rotate [data-close]").click();
@@ -819,14 +1616,14 @@ test("rotate replaces the secret, reports failure in its own dialog and clears t
 
 const focused = (page) => page.evaluate(() => {
   const a = document.activeElement;
-  const tr = a && a.closest("#keys-body tr");
+  const tr = a && a.closest("#keys-body .key-row");
   return tr ? `${tr.dataset.name}${a.dataset.act ? ":" + a.dataset.act : ""}` : (a && a.id) || "";
 });
-const focusRow = (page, name) => page.locator(`#keys-body tr[data-name="${name}"]`).first().focus();
+const focusRow = (page, name) => page.locator(`#keys-body .key-row[data-name="${name}"]`).first().focus();
 // A dialog's close event, and the focus hand-back it queues, land after `open` turns false.
 const waitFocused = (page, want) => page.waitForFunction((want) => {
   const a = document.activeElement;
-  const tr = a && a.closest("#keys-body tr");
+  const tr = a && a.closest("#keys-body .key-row");
   return (tr ? `${tr.dataset.name}${a.dataset.act ? ":" + a.dataset.act : ""}` : (a && a.id) || "") === want;
 }, want, { timeout: 5000 });
 // The startup key load and the Keys tab's own load each redraw the rows (as does the provider
@@ -836,7 +1633,7 @@ async function settleKeys(page) {
   for (let i = 0; i < 100 && requests.filter((r) => r.pathname.endsWith("/clients")).length < 2 * keys.length; i++) {
     await page.waitForTimeout(50);
   }
-  await page.waitForFunction(() => document.querySelector('#keys-body tr[data-name="alpha"] .td-provider').textContent.startsWith("OpenAI"));
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="alpha"] .key-provider').textContent.startsWith("OpenAI"));
 }
 const waitEmpty = (page, selector) =>
   page.waitForFunction((sel) => document.querySelector(sel).value === "", selector, { timeout: 5000 });
@@ -844,18 +1641,19 @@ const waitEmpty = (page, selector) =>
 test("row keys move the selection and open each dialog on the focused row", async (page, origin) => {
   await openKeys(page, origin);
   await settleKeys(page);
-  // Rows are grouped by provider: bravo (Anthropic), alpha (OpenAI), charlie (TypeSafe). The
-  // group label rows between them are never a stop.
-  await focusRow(page, "bravo");
+  // One flat list in name order: alpha, bravo, charlie.
+  await focusRow(page, "alpha");
   await page.keyboard.press("ArrowDown");
-  assert.equal(await focused(page), "alpha");
+  assert.equal(await focused(page), "bravo");
   await page.keyboard.press("End");
   assert.equal(await focused(page), "charlie");
   await page.keyboard.press("j");
   assert.equal(await focused(page), "charlie", "the list clamps at the end");
   await page.keyboard.press("Home");
   await page.keyboard.press("k");
-  assert.equal(await focused(page), "bravo", "and at the start");
+  assert.equal(await focused(page), "alpha", "and at the start");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await focused(page), "bravo");
 
   // Each dialog opens on the row's key; closing it returns focus to the row that opened it.
   await page.keyboard.press("e");
@@ -885,7 +1683,7 @@ test("row keys move the selection and open each dialog on the focused row", asyn
   await waitDialog(page, "dlg-delete", false);
 
   // Delete on a button other than Delete is left to the button.
-  await rowButton(page, "bravo", "edit").focus();
+  await rowButton(page, "bravo", "copy").focus();
   await page.keyboard.press("Delete");
   assert.equal(await dialogOpen(page, "dlg-delete"), false);
 
@@ -898,7 +1696,7 @@ test("row keys move the selection and open each dialog on the focused row", asyn
 test("pane keys act on the selected key from outside the list, but copy stays list-only", async (page, origin) => {
   await openKeys(page, origin);
   await settleKeys(page);
-  await page.locator('#keys-body tr[data-name="alpha"] td').first().click();
+  await page.locator('#keys-body .key-row[data-name="alpha"] .key-name').click();
   await page.evaluate(() => document.activeElement.blur());
   await page.keyboard.press("c");
   assert.equal(requests.some((r) => r.pathname === "/api/keys/alpha/copy"), false, "c outside the list copies nothing");
@@ -907,8 +1705,8 @@ test("pane keys act on the selected key from outside the list, but copy stays li
   assert.equal(await page.locator("#edit-name").textContent(), "alpha");
   await page.locator("#dlg-edit [data-close]").click();
   await waitDialog(page, "dlg-edit", false);
-  // Opened from outside the pane, the dialog has no row to return to, so the row's button takes focus.
-  await waitFocused(page, "alpha:edit");
+  // Opened from outside the list, the dialog hands focus back to the selected row.
+  await waitFocused(page, "alpha");
 
   await page.keyboard.press("n");
   await waitDialog(page, "dlg-add", true);
@@ -939,7 +1737,7 @@ test("the grant dialog issues a grant, and a client needs a method", async (page
   await page.keyboard.press("Escape");
   await waitDialog(page, "dlg-grant", false);
 
-  await rowButton(page, "alpha", "grant").click();
+  await rowAct(page, "alpha", "grant");
   await waitDialog(page, "dlg-grant", true);
   await page.locator('.kind-switch [data-kind="client"]').click();
   for (const box of await page.locator("#grant-form [name=cm]").all()) await box.uncheck();
@@ -1315,10 +2113,10 @@ test("a key opened from the Keys pane cannot inherit another provider's filter",
 
   // alpha routes to the Vercel gateway. Charting it under the TypeSafe filter still standing in
   // the chart would ask for an intersection that cannot exist, and report nothing for a key whose
-  // calls are right there in the Keys table.
+  // calls are right there in the Keys list.
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
-  await rowCell(page, "alpha", "usd").click();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  await rowCell(page, "alpha", "gateway").click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "alpha");
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 2);
 
@@ -1516,14 +2314,14 @@ test("switching scope clears the filters that belong to the other one", async (p
   await page.waitForFunction(() => document.querySelector('[data-source="claude"]').getAttribute("aria-checked") === "true");
 });
 
-test("a key's gateway cell opens that key in the API keys scope", async (page, origin) => {
+test("a key's gateway figure opens that key in the API keys scope", async (page, origin) => {
   await openKeys(page, origin);
-  // Default unit: the column counts requests, the only figure a key's own row can always answer
+  // Default unit: the figure counts requests, the only figure a key's own row can always answer
   // for, and puts no price on screen.
-  assert.equal((await rowCell(page, "charlie", "usd").textContent()).trim(), "2 requests");
-  assert.doesNotMatch(await page.locator("#keys-table").textContent(), /\$/, "no dollars until USD is chosen");
+  assert.equal(await gatewayText(page, "charlie"), "2 requests");
+  assert.doesNotMatch(await page.locator("#keys-list").textContent(), /\$/, "no dollars until USD is chosen");
 
-  await rowCell(page, "charlie", "usd").click();
+  await rowCell(page, "charlie", "gateway").click();
   await page.waitForFunction(inKeysScope);
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
   assert.equal(await page.locator("#pane-chart").isVisible(), true);
@@ -1535,9 +2333,9 @@ test("a key's gateway cell opens that key in the API keys scope", async (page, o
   await chooseUsd(page);
   await page.waitForFunction(() => /cost unknown/.test(document.getElementById("totals").textContent));
 
-  // The same cell again must land on the same view, not toggle the filter off.
+  // The same figure again must land on the same view, not toggle the filter off.
   await page.getByRole("tab", { name: "Keys" }).click();
-  await rowCell(page, "charlie", "usd").click();
+  await rowCell(page, "charlie", "gateway").click();
   await page.waitForFunction(() => document.getElementById("pane-chart").hidden === false);
   assert.equal(await page.evaluate(inKeysScope), true);
   assert.equal(await keyPicked(page), "charlie");
@@ -1616,7 +2414,7 @@ test("the subscriptions chart leads with tokens and prices nothing until USD is 
   await page.waitForFunction(() => document.querySelector('[data-unit="tokens"]').getAttribute("aria-checked") === "true");
 });
 
-test("the Usage summary and the Keys column follow the same unit, with the switch beside them", async (page, origin) => {
+test("the Usage summary and the Keys figures follow the same unit, switched from Usage", async (page, origin) => {
   localRows = subscriptionRows();
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
@@ -1628,30 +2426,54 @@ test("the Usage summary and the Keys column follow the same unit, with the switc
   await page.waitForFunction(() => /\$/.test(document.getElementById("usage-totals").textContent));
   assert.match(await page.locator("#usage-totals").textContent(), /≈ \$0\.03/);
 
-  // One unit for the page: the Keys column answers in it too, from its own switch.
+  // One unit for the page: the Keys figures answer in it too, and the pane says which one it is.
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
-  assert.match((await rowCell(page, "alpha", "usd").textContent()).trim(), /\$0\.01/);
-  await page.getByRole("button", { name: "Showing USD; switch the gateway column to requests" }).click();
-  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-table").textContent));
-  assert.equal((await rowCell(page, "alpha", "usd").textContent()).trim(), "3 requests");
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  assert.equal((await page.locator("#keys-unit").textContent()).trim(), "USD", "the Keys pane names the unit it shows");
+  assert.match(await gatewayText(page, "alpha"), /\$0\.01/);
+  assert.equal(await gatewayText(page, "charlie"), "2 calls, unpriced", "an unpriced figure is never $0");
+  assert.equal(await gatewayText(page, "bravo"), null, "no figure for a key without gateway calls");
+  // Switched from Keys itself, and the Usage summary follows the same switch.
+  await page.getByRole("button", { name: "Showing USD; switch the gateway figures to requests" }).click();
+  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-list").textContent));
+  assert.equal(await gatewayText(page, "alpha"), "3 requests");
+  assert.equal(await gatewayText(page, "bravo"), null, "still no figure for a key without gateway calls");
+  assert.equal((await page.locator("#keys-unit").textContent()).trim(), "requests");
   await page.getByRole("tab", { name: "Usage" }).click();
-  assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/, "the summary follows the same switch");
+  assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/, "the summary follows the Keys switch");
 });
 
-test("the Keys unit switch survives the narrow layout that drops the table head", async (page, origin) => {
+test("the Keys unit switch stays visible and keyboard-reachable at 390 px", async (page, origin) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openKeys(page, origin);
-  assert.equal(await page.locator("#keys-table thead").isVisible(), false, "the narrow layout drops the head");
-  const control = page.getByRole("button", { name: "Showing requests; switch the gateway column to USD" });
+  const control = page.getByRole("button", { name: "Showing requests; switch the gateway figures to USD" });
   await control.waitFor({ state: "visible" });
-  // Reachable by keyboard, not only by pointer, and it really changes the column.
+  const box = await control.boundingBox();
+  assert.ok(box.x >= 0 && box.x + box.width <= 390, `the switch leaves the viewport: ${JSON.stringify(box)}`);
   await control.focus();
   assert.equal(await page.evaluate(() => document.activeElement.id), "keys-unit");
   await page.keyboard.press("Enter");
-  await page.waitForFunction(() => /\$/.test(document.getElementById("keys-table").textContent));
-  await page.getByRole("button", { name: "Showing USD; switch the gateway column to requests" }).click();
-  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-table").textContent));
+  await page.waitForFunction(() => /\$/.test(document.getElementById("keys-list").textContent));
+  assert.match(await gatewayText(page, "alpha"), /\$0\.01/);
+  await page.getByRole("button", { name: "Showing USD; switch the gateway figures to requests" }).click();
+  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-list").textContent));
+});
+
+test("the Keys figures follow the Chart's unit at 390 px and stay inside the row", async (page, origin) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openKeys(page, origin);
+  assert.equal(await gatewayText(page, "alpha"), "3 requests");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await chooseUsd(page);
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.waitForFunction(() => /\$/.test(document.querySelector('#keys-body .key-row[data-name="alpha"] .key-gateway').textContent));
+  const box = await rowCell(page, "alpha", "gateway").boundingBox();
+  assert.ok(box.width > 0 && box.x >= 0 && box.x + box.width <= 390, `the figure leaves the viewport: ${JSON.stringify(box)}`);
+  // Reachable by keyboard: it is a button of the selected row, and Enter opens the chart.
+  await rowCell(page, "alpha", "gateway").focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "alpha");
+  assert.equal(await page.locator("#pane-chart").isVisible(), true);
 });
 
 // The plan cards carry provider-reported money too, and they follow the same rule: what was
@@ -2237,7 +3059,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
     blue: getComputedStyle(document.documentElement).getPropertyValue("--blue").trim(),
     claude: getComputedStyle(document.documentElement).getPropertyValue("--s-claude-1").trim(),
     muted: getComputedStyle(document.documentElement).getPropertyValue("--ink-3").trim(),
-    toolbarBg: getComputedStyle(document.querySelector(".toolbar")).backgroundColor,
+    railBg: getComputedStyle(document.querySelector(".rail")).backgroundColor,
   }));
   const dark = await read();
   assert.equal(dark.attr, null);
@@ -2249,7 +3071,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
   assert.equal(dark.paneRadius, "18px", "the pane is still a rounded card");
   assert.equal(dark.blue, "#4c9aff", "the accent blue stays for links and buttons");
   // Surfaces are neutral grey, not blue-tinted: every channel within a hair of the others.
-  for (const rgb of [dark.bodyBg, dark.paneBg, dark.toolbarBg]) {
+  for (const rgb of [dark.bodyBg, dark.paneBg, dark.railBg]) {
     const [r, g, b] = rgb.match(/\d+/g).map(Number);
     assert.ok(Math.max(r, g, b) - Math.min(r, g, b) <= 3, `${rgb} is a neutral surface`);
   }
@@ -2302,7 +3124,52 @@ test("neutral dark is the default, Settings switches to the site's light look an
   assert.equal(primary.color, "rgb(255, 255, 255)");
 });
 
-test("every pane fits the viewport at 390, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
+// A theme switch is a pane round trip through Settings: the vault's session state (provider
+// filter, search, the More menu) must keep working afterwards, while the persisted choices
+// (theme, sort) survive a reload and the session-only filter resets.
+test("a theme switch keeps the vault's filter, search and menu, and a reload keeps theme and sort", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.selectOption("#keys-provider", "anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await page.selectOption("#keys-sort", "newest");
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.locator("#theme-switch").click();
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="bravo"]').waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), "rgb(245, 245, 247)");
+  assert.equal(await page.inputValue("#keys-provider"), "anthropic", "the filter survives the theme switch");
+  assert.equal(await page.inputValue("#keys-sort"), "newest", "the sort survives the theme switch");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+
+  // Search still combines with the filter and names it on a miss.
+  await page.locator("#keys-search").fill("alpha");
+  assert.deepEqual(await rowNames(page), []);
+  assert.equal(await page.locator("#keys-no-match").textContent(), "No keys for Anthropic match “alpha”.");
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await page.locator("#keys-search").fill("");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+
+  // The More menu still opens, and Escape returns focus to its button.
+  await openRowMenu(page, "bravo");
+  assert.equal(await page.locator("#key-menu").isVisible(), true);
+  await page.keyboard.press("Escape");
+  await waitFocused(page, "bravo:menu");
+
+  // A reload keeps the theme and the sort; the provider filter is session-only.
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light", "the theme survives the reload");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  assert.equal(await page.inputValue("#keys-sort"), "newest", "the sort survives the reload");
+  assert.deepEqual(await rowNames(page), ["charlie", "bravo", "alpha"], "newest by created date");
+  assert.equal(await page.inputValue("#keys-provider"), "", "the provider filter is session-only");
+});
+
+test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
   const foreign = [];
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
   plans = [droidPlan()];
@@ -2310,41 +3177,209 @@ test("every pane fits the viewport at 390, 1280 and 1920 px, and nothing loads o
   await showDroidOnUsage(page);
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  for (const width of [390, 1280, 1920]) {
+  for (const width of [390, 540, 780, 1280, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
       await page.getByRole("tab", { name: pane, exact: true }).click();
       if (pane === "Usage") await page.locator("#live-status .live-row").first().waitFor();
       else if (pane === "Chart") await page.locator("#daily-svg").waitFor();
-      else if (pane === "Keys") await page.locator("#keys-body tr[data-name]").first().waitFor();
+      else if (pane === "Keys") await page.locator("#keys-body .key-row[data-name]").first().waitFor();
       else await page.locator("#theme-switch").waitFor();
       const spill = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.ok(spill <= 1, `${pane} pane spills ${spill}px at ${width}px`);
+      // html/body clip horizontal overflow, so a document-level spill check alone cannot see a
+      // pane child (the rail made the Chart chips row 53px narrower) whose content is cut off.
+      if (pane === "Chart") {
+        const chips = await page.evaluate(() => {
+          const row = document.querySelector("#source-chips");
+          const cloud = row.querySelector('[data-source="cloud"]').getBoundingClientRect();
+          return { scroll: row.scrollWidth, client: row.clientWidth, cloudRight: cloud.right, vw: document.documentElement.clientWidth };
+        });
+        assert.ok(chips.scroll <= chips.client + 1, `#source-chips clips its chips at ${width}px (scroll ${chips.scroll} > client ${chips.client})`);
+        assert.ok(chips.cloudRight <= chips.vw, `the Cloud chip is cut off at ${width}px (right edge ${chips.cloudRight} > viewport ${chips.vw})`);
+      }
     }
   }
   assert.deepEqual(foreign, [], "every request stays on the dashboard's own origin");
 });
 
-// The header used to carry every control, so on the Keys pane with a status message the right
-// column spilled under the tabs. It now holds only the status line and help.
-test("the header stays one row and never slides under the tabs from 760 px up", async (page, origin) => {
+// The status line used to share the header with the tabs; it now has its own strip above the
+// panes, so a long message must ellipsize on one line there and never reach the rail.
+test("the status line stays one row beside the rail on every pane from 390 px up", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.evaluate(() => { document.getElementById("status").textContent = "Ingested 1,234 new rows from 56 files, 3 parse errors. ".repeat(3); });
-  for (const width of [760, 900, 1180, 1440]) {
+  for (const width of [390, 540, 780, 1180, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
       await page.getByRole("tab", { name: pane, exact: true }).click();
       const g = await page.evaluate(() => {
         const r = (sel) => document.querySelector(sel).getBoundingClientRect();
-        const seg = r("nav.seg"), end = r(".toolbar-end"), brand = r(".brand"), header = r("header.toolbar");
+        const status = r("#status"), rail = r(".rail"), pane = r("main [role=tabpanel]:not([hidden])");
         const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-        return { height: header.height, endHits: hit(seg, end), brandHits: hit(seg, brand) };
+        return { status, railHits: hit(status, rail), paneHits: hit(status, pane), vw: innerWidth };
       });
-      assert.ok(Math.abs(g.height - 48) <= 2, `${pane} at ${width}px: header is ${g.height}px tall`);
-      assert.ok(!g.endHits, `${pane} at ${width}px: the header end overlaps the tabs`);
-      assert.ok(!g.brandHits, `${pane} at ${width}px: the brand overlaps the tabs`);
+      assert.ok(g.status.height > 0 && g.status.height <= 22, `${pane} at ${width}px: status is ${g.status.height}px tall`);
+      assert.ok(g.status.left >= 0 && g.status.right <= g.vw, `${pane} at ${width}px: status leaves the viewport`);
+      assert.ok(!g.railHits, `${pane} at ${width}px: the status overlaps the rail`);
+      assert.ok(!g.paneHits, `${pane} at ${width}px: the status overlaps the pane`);
     }
+  }
+});
+
+// ---------- app shell: the rail ----------
+
+test("the rail carries the original app icon and Usage, Chart, Keys, Help and Settings in both themes", async (page, origin) => {
+  const icons = [];
+  page.on("response", (r) => { if (new URL(r.url()).pathname === "/icon.png") icons.push({ origin: new URL(r.url()).origin, status: r.status() }); });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const read = () => page.evaluate(() => {
+    const img = document.querySelector(".rail .brand-mark img");
+    const mark = getComputedStyle(document.querySelector(".rail .brand-mark"));
+    const box = img.getBoundingClientRect();
+    return {
+      src: img.getAttribute("src"), alt: img.alt, loaded: img.complete && img.naturalWidth > 0,
+      w: box.width, h: box.height,
+      markBorder: mark.borderTopWidth, markBg: mark.backgroundColor,
+      rail: document.querySelector(".rail").getBoundingClientRect().width,
+      items: [...document.querySelectorAll(".rail .rail-button")].map((b) => [b.id, b.textContent.trim(), !!b.querySelector("svg")]),
+      textBrand: !!document.querySelector(".brand-name, .brand-purpose, header.toolbar"),
+    };
+  });
+  const dark = await read();
+  assert.equal(dark.src, "/icon.png", "the original app icon, same-origin");
+  assert.equal(dark.alt, "Keysrs");
+  assert.ok(dark.loaded, "the icon loaded");
+  assert.deepEqual([dark.w, dark.h], [48, 48]);
+  assert.equal(dark.markBorder, "0px", "no extra tile around the icon");
+  assert.equal(dark.markBg, "rgba(0, 0, 0, 0)");
+  assert.equal(dark.rail, 78);
+  assert.deepEqual(dark.items, [
+    ["nav-usage", "Usage", true], ["nav-chart", "Chart", true], ["nav-keys", "Keys", true],
+    ["btn-help", "Help", true], ["nav-settings", "Settings", true],
+  ]);
+  assert.equal(dark.textBrand, false, "the old text brand and header are gone");
+  // Help and Settings sit at the foot of the rail with a divider between them.
+  const foot = await page.evaluate(() => [...document.querySelector(".rail-bottom").children].map((n) => n.id || n.className));
+  assert.deepEqual(foot, ["btn-help", "rail-divider", "nav-settings"]);
+  const gap = await page.evaluate(() => document.getElementById("btn-help").getBoundingClientRect().top - document.getElementById("nav-keys").getBoundingClientRect().bottom);
+  assert.ok(gap > 100, `the bottom group is pushed down (${gap}px below Keys)`);
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.locator("#theme-switch").click();
+  for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
+    await page.getByRole("tab", { name: pane, exact: true }).click();
+    const light = await read();
+    assert.equal(light.src, "/icon.png", `${pane}: the same icon in the light theme`);
+    assert.deepEqual([light.w, light.h], [48, 48]);
+    assert.ok(await page.locator(".rail").isVisible(), `${pane}: the rail stays`);
+  }
+  assert.ok(icons.length >= 1 && icons.every((r) => r.origin === origin && r.status === 200), JSON.stringify(icons));
+});
+
+test("rail tabs switch panes, mark the selection and step on every arrow key", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const selected = () => page.evaluate(() =>
+    [...document.querySelectorAll("[role=tab]")].filter((t) => t.getAttribute("aria-selected") === "true").map((t) => t.id));
+  for (const [name, id] of [["Keys", "nav-keys"], ["Chart", "nav-chart"], ["Settings", "nav-settings"], ["Usage", "nav-usage"]]) {
+    await page.getByRole("tab", { name, exact: true }).click();
+    assert.deepEqual(await selected(), [id], `${name} click`);
+    assert.equal(await page.locator(`#${id}`).getAttribute("tabindex"), "0");
+  }
+  await page.getByRole("tab", { name: "Keys", exact: true }).click();
+  const look = await page.evaluate(() => {
+    const tab = document.getElementById("nav-keys");
+    const cs = getComputedStyle(tab), bar = getComputedStyle(tab, "::before");
+    const other = getComputedStyle(document.getElementById("nav-chart"), "::before");
+    const root = getComputedStyle(document.documentElement);
+    const probe = document.createElement("i");
+    document.body.append(probe);
+    probe.style.color = root.getPropertyValue("--blue-ink");
+    const ink = getComputedStyle(probe).color;
+    probe.style.color = root.getPropertyValue("--blue-tint");
+    const tint = getComputedStyle(probe).color;
+    probe.style.color = root.getPropertyValue("--blue");
+    const blue = getComputedStyle(probe).color;
+    probe.remove();
+    return { color: cs.color, bg: cs.backgroundColor, bar: bar.width, barBg: bar.backgroundColor, otherBar: other.content, ink, tint, blue };
+  });
+  assert.equal(look.color, look.ink, "selected text is --blue-ink");
+  assert.equal(look.bg, look.tint, "selected fill is --blue-tint");
+  assert.equal(look.bar, "2px", "a 2px indicator on the left edge");
+  assert.equal(look.barBg, look.blue);
+  assert.equal(look.otherBar, "none", "only the selected tab has the indicator");
+
+  // The rail is vertical: Down and Up step and wrap, and focus stays on the tab even when the
+  // Keys pane (whose list also listens for Down) comes up.
+  await page.getByRole("tab", { name: "Chart", exact: true }).click();
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => !document.getElementById("pane-keys").hidden);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "nav-keys");
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => !document.getElementById("pane-settings").hidden);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "nav-settings", "Help is skipped: it is not a tab");
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
+  await page.keyboard.press("ArrowUp");
+  await page.waitForFunction(() => !document.getElementById("pane-settings").hidden);
+  assert.deepEqual(await selected(), ["nav-settings"]);
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction(() => !document.getElementById("pane-keys").hidden);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "nav-keys");
+
+  // Settings is still a member of the one tablist, though it sits below Help.
+  const owned = await page.evaluate(() => {
+    const list = document.querySelector("[role=tablist]");
+    return { owns: list.getAttribute("aria-owns"), orientation: list.getAttribute("aria-orientation"), count: document.querySelectorAll("[role=tablist]").length };
+  });
+  assert.deepEqual(owned, { owns: "nav-settings", orientation: "vertical", count: 1 });
+
+  await page.locator("#btn-help").click();
+  await waitDialog(page, "dlg-help", true);
+  assert.deepEqual(await selected(), ["nav-keys"], "Help opens the dialog without changing pane");
+});
+
+test("the rail narrows at 780 and 540 px and the logo shrinks to 40 px", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  for (const [width, rail, logo] of [[1280, 78, 48], [781, 78, 48], [780, 65, 48], [541, 65, 48], [540, 53, 40], [390, 53, 40]]) {
+    await page.setViewportSize({ width, height: 800 });
+    const g = await page.evaluate(() => {
+      const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+      const labels = [...document.querySelectorAll(".rail .rail-button")].map((b) => {
+        const box = b.getBoundingClientRect();
+        return { w: box.width, scroll: b.scrollWidth, client: b.clientWidth, size: parseFloat(getComputedStyle(b).fontSize) };
+      });
+      return { rail: r(".rail").width, logo: r(".brand-mark img").width, labels, help: r("#btn-help").bottom, vh: innerHeight };
+    });
+    assert.equal(g.rail, rail, `rail at ${width}px`);
+    assert.equal(g.logo, logo, `logo at ${width}px`);
+    for (const l of g.labels) {
+      assert.ok(l.scroll <= l.client + 1, `a rail label is clipped at ${width}px`);
+      assert.ok(l.size >= 8, `rail labels stay legible at ${width}px`);
+    }
+    assert.ok(g.help <= g.vh, `Help is on screen at ${width}px`);
+  }
+});
+
+test("the status line is visible after a copy at 1440 and 390 px", async (page, origin) => {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await openKeys(page, origin);
+    await rowButton(page, "alpha", "copy").click();
+    await page.waitForFunction(() => /^Copied alpha\./.test(document.getElementById("status").textContent));
+    assert.equal(await status(page), "Copied alpha. Clipboard wipes in 20 s.");
+    const box = await page.locator("#status").evaluate((n) => {
+      const r = n.getBoundingClientRect();
+      return { w: r.width, h: r.height, left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: innerWidth, vh: innerHeight, live: n.getAttribute("aria-live") };
+    });
+    assert.ok(box.w > 0 && box.h > 0, `status has a size at ${width}px`);
+    assert.ok(box.left >= 0 && box.right <= box.vw && box.top >= 0 && box.bottom <= box.vh, `status is on screen at ${width}px: ${JSON.stringify(box)}`);
+    assert.equal(box.live, "polite");
+    assert.ok(await page.locator("#status").isVisible());
   }
 });
 
@@ -2509,7 +3544,7 @@ test("a vault that already has keys is not interrupted by the first-use guide", 
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   await page.getByRole("tab", { name: "Usage" }).click();
   assert.equal(await page.locator("#onboard").isHidden(), true, "an existing user is not onboarded");
 });
@@ -2521,7 +3556,7 @@ test("the providers manager adds, hides and removes", async (page, origin) => {
   await page.waitForLoadState("networkidle");
   // Both the Add key and the Providers buttons belong to the Keys pane.
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body tr[data-name="alpha"]').waitFor();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   await page.getByRole("button", { name: "Providers", exact: true }).click();
   await waitDialog(page, "dlg-providers", true);
   await page.locator("#providers-list .provider-row").first().waitFor();
@@ -2635,7 +3670,7 @@ test("the first-use guide links to the agents dialog", async (page, origin) => {
 test("four panes: the shortcuts and arrow keys reach Usage, Chart, Keys and Settings and nothing else", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  const tabNames = await page.locator(".seg [role=tab]").allTextContents();
+  const tabNames = await page.locator("[role=tab]").allTextContents();
   assert.deepEqual(tabNames.map((t) => t.trim()), ["Usage", "Chart", "Keys", "Settings"]);
   const shown = () => page.evaluate(() =>
     [...document.querySelectorAll("main [role=tabpanel]")].filter((p) => !p.hidden).map((p) => p.id));
@@ -2764,7 +3799,7 @@ test("the unreachable-engine banner clears when the engine answers again", async
 test("a stale launch token is reported as a page that must be reloaded", async (page, origin) => {
   await openKeys(page, origin);
   failures.set(rule("DELETE", "/api/keys/alpha"), { status: 403, body: { error: "missing or bad token" } });
-  await rowButton(page, "alpha", "delete").click();
+  await rowAct(page, "alpha", "delete");
   await page.locator("#delete-confirm").click();
   await page.waitForFunction(() => document.getElementById("delete-err").textContent !== "");
   assert.equal(await page.locator("#delete-err").textContent(), "This page is from an older launch. Reload it.");
@@ -2773,7 +3808,7 @@ test("a stale launch token is reported as a page that must be reloaded", async (
 test("an error body that is not JSON still produces a readable message", async (page, origin) => {
   await openKeys(page, origin);
   failures.set(rule("POST", "/api/keys/alpha/reveal"), { status: 500, raw: "upstream exploded" });
-  await rowButton(page, "alpha", "reveal").click();
+  await rowAct(page, "alpha", "reveal");
   await page.waitForFunction(() => document.getElementById("status").textContent !== "");
   assert.equal(await status(page), "upstream exploded");
   assert.equal(await dialogOpen(page, "dlg-reveal"), false, "no dialog may open without a secret");
@@ -2786,7 +3821,7 @@ test("a slow key list cannot overwrite a newer one", async (page, origin) => {
   // A refresh is answered from the vault as it is now, then held back while the
   // vault changes and a second, faster refresh overtakes it.
   delays.set(rule("GET", "/api/keys"), 1500);
-  await rowButton(page, "alpha", "reveal").click();
+  await rowAct(page, "alpha", "reveal");
   await waitDialog(page, "dlg-reveal", true);
   await page.locator("#dlg-reveal [data-close]").click();   // the close handler refreshes
   await page.waitForTimeout(150);
@@ -2799,26 +3834,26 @@ test("a slow key list cannot overwrite a newer one", async (page, origin) => {
   await page.locator("#add-form [name=secret]").fill(SECRET);
   await page.locator("#add-form [type=submit]").click();
   await waitDialog(page, "dlg-add", false);
-  await page.locator('#keys-body tr[data-name="foxtrot"]').waitFor();
-  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "foxtrot"]);
+  await page.locator('#keys-body .key-row[data-name="foxtrot"]').waitFor();
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"]);
 
   // The slow reply, carrying the older vault, lands last.
   await page.waitForTimeout(1800);
-  assert.deepEqual(await rowNames(page), ["bravo", "alpha", "foxtrot"],
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"],
     "a stale list must not restore a deleted key or drop a new one");
 });
 
 test("repeated reveals of different keys never show the wrong secret", async (page, origin) => {
   await page.clock.install();
   await openKeys(page, origin);
-  await rowButton(page, "alpha", "reveal").click();
+  await rowAct(page, "alpha", "reveal");
   await waitDialog(page, "dlg-reveal", true);
   assert.equal(await page.locator("#reveal-name").textContent(), "alpha");
   await page.locator("#dlg-reveal [data-close]").click();
   await waitDialog(page, "dlg-reveal", false);
   await page.waitForTimeout(100);
 
-  await rowButton(page, "bravo", "reveal").click();
+  await rowAct(page, "bravo", "reveal");
   await waitDialog(page, "dlg-reveal", true);
   assert.equal(await page.locator("#reveal-name").textContent(), "bravo");
   // The first key's countdown must not close the second key's dialog early.
@@ -2828,12 +3863,10 @@ test("repeated reveals of different keys never show the wrong secret", async (pa
   await waitDialog(page, "dlg-reveal", false);
 });
 
-test("key sort orders rows and survives a reload", async (page, origin) => {
-  // One provider group, so the chosen sort alone decides the order inside it.
-  for (const k of keys) k.provider = "openai";
+test("key sort orders the flat list across providers and survives a reload", async (page, origin) => {
   await openKeys(page, origin);
-  await page.locator("#keys-body tr[data-name]").first().waitFor();
-  const order = () => page.locator("#keys-body tr[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
+  await page.locator("#keys-body .key-row[data-name]").first().waitFor();
+  const order = () => page.locator("#keys-body .key-row[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
   const names = keys.map((k) => k.name).sort();
   assert.deepEqual(await order(), names, "name order is the default");
   const expect = {
@@ -2849,7 +3882,7 @@ test("key sort orders rows and survives a reload", async (page, origin) => {
   }
   // A fresh load of the page opens on another pane; go back to the keys.
   await openKeys(page, origin);
-  await page.locator("#keys-body tr[data-name]").first().waitFor();
+  await page.locator("#keys-body .key-row[data-name]").first().waitFor();
   assert.equal(await page.inputValue("#keys-sort"), "oldest");
   assert.deepEqual(await order(), expect.oldest.map((k) => k.name), "the choice is remembered");
 });
@@ -2861,7 +3894,7 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   keys[0].gateway_url = "http://127.0.0.1:12767/" + keys[0].name;
   keys[0].last_check = { ok: false, checked_at: "2026-09-22T05:00:00Z", summary: "Provider rejected the synthetic key. " + "LongDiagnosticWithoutSpaces".repeat(12) };
   await openKeys(page, origin, { expectEmpty: true });
-  await page.locator("#keys-body tr[data-name]").first().waitFor();
+  await page.locator("#keys-body .key-row[data-name]").first().waitFor();
   // The key list is drawn again once grants arrive. Resolving the row
   // inside the same evaluate measures the table as it is now, not a row that redraw detached
   // (which reads as a zero-width button; seen only when the warm suite ran fast enough).
@@ -2869,18 +3902,101 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   for (const width of [390, 520, 521, 600, 720, 768, 1024, 1280, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await page.evaluate(() => {
-      const row = document.querySelector('#keys-body tr[data-name]');
+      const row = document.querySelector('#keys-body .key-row[data-name]');
+      const box = (n) => { const r = n.getBoundingClientRect(); return { left: r.left, right: r.right, width: r.width }; };
       return {
         viewport: innerWidth,
-        tableRight: document.querySelector('#keys-table').getBoundingClientRect().right,
-        actions: [...row.querySelectorAll('.row-actions button')].map(b => ({name:b.dataset.act,left:b.getBoundingClientRect().left,right:b.getBoundingClientRect().right,width:b.getBoundingClientRect().width}))
+        spill: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        listRight: document.querySelector('#keys-list').getBoundingClientRect().right,
+        rowRight: row.getBoundingClientRect().right,
+        name: box(row.querySelector('.key-name')),
+        actions: [...row.querySelectorAll('.key-actions button, .key-gateway')].map(b => ({ name: b.dataset.act, ...box(b) })),
       };
     });
-    assert.ok(geometry.tableRight <= width + 1, `table overflows at ${width}: ${geometry.tableRight}`);
+    assert.ok(geometry.spill <= 1, `the page scrolls sideways at ${width}: ${geometry.spill}`);
+    assert.ok(geometry.listRight <= width + 1 && geometry.rowRight <= width + 1, `list overflows at ${width}: ${JSON.stringify(geometry)}`);
+    assert.ok(geometry.name.right <= geometry.rowRight, `the long name runs out of its row at ${width}`);
+    assert.ok(geometry.actions.length >= 2, "Copy and the gateway figure are measured");
     for (const action of geometry.actions) assert.ok(action.left >= 0 && action.right <= width + 1 && action.width > 0, `${action.name} outside viewport at ${width}: ${JSON.stringify(action)}`);
   }
 });
 
+// The width audit's other half: the same geometry in BOTH themes, narrow and wide, with a key
+// whose name and host are far too long, plus the theme's computed palette on the Keys pane and
+// the rail and logo at each width. The More menu is opened at the narrowest and widest widths.
+test("the vault's rows, Copy and More stay inside the viewport in both themes from 390 to 1920 px, long name and host included", async (page, origin) => {
+  keys[0].name = "acceptance-" + "long-key-name-".repeat(8);
+  keys[0].host = "api.openai.com";
+  const longName = keys[0].name;
+  await openKeys(page, origin, { expectEmpty: true });
+  await page.locator("#keys-body .key-row[data-name]").first().waitFor();
+  await page.waitForLoadState("networkidle");
+  const palettes = {
+    dark: { bg: "rgb(17, 17, 19)", pane: "rgb(26, 26, 29)", blue: "#4c9aff" },
+    light: { bg: "rgb(245, 245, 247)", pane: "rgb(255, 255, 255)", blue: "#0071e3" },
+  };
+  for (const theme of ["dark", "light"]) {
+    if (theme === "light") {
+      await page.getByRole("tab", { name: "Settings" }).click();
+      await page.locator("#theme-switch").click();
+      await page.getByRole("tab", { name: "Keys" }).click();
+      await page.locator("#keys-body .key-row[data-name]").first().waitFor();
+    }
+    const palette = await page.evaluate(() => ({
+      theme: document.documentElement.dataset.theme || "dark",
+      bg: getComputedStyle(document.body).backgroundColor,
+      pane: getComputedStyle(document.getElementById("pane-keys")).backgroundColor,
+      blue: getComputedStyle(document.documentElement).getPropertyValue("--blue").trim(),
+    }));
+    assert.equal(palette.theme, theme);
+    assert.deepEqual({ bg: palette.bg, pane: palette.pane, blue: palette.blue }, palettes[theme], `${theme}: the Keys pane wears the theme's palette`);
+    for (const width of [390, 540, 1280, 1440, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      const g = await page.evaluate((name) => {
+        const rect = (n) => n.getBoundingClientRect();
+        const row = document.querySelector(`#keys-body .key-row[data-name="${name}"]`);
+        const box = (sel) => { const b = rect(row.querySelector(sel)); return { left: b.left, right: b.right, width: b.width }; };
+        return {
+          vw: innerWidth,
+          spill: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          rail: rect(document.querySelector(".rail")).width,
+          logo: rect(document.querySelector(".brand-mark img")).width,
+          rowRight: rect(row).right,
+          copy: box('[data-act="copy"]'),
+          menu: box('[data-act="menu"]'),
+        };
+      }, longName);
+      const at = `${theme} ${width}px`;
+      assert.ok(g.spill <= 1, `${at}: horizontal spill ${g.spill}px`);
+      assert.equal(g.rail, width > 780 ? 78 : width > 540 ? 65 : 53, `${at}: rail width`);
+      assert.equal(g.logo, width > 540 ? 48 : 40, `${at}: logo size`);
+      assert.ok(g.rowRight <= width + 1, `${at}: the row runs past the viewport`);
+      for (const [which, b] of [["Copy", g.copy], ["More", g.menu]]) {
+        assert.ok(b.width > 0 && b.left >= 0 && b.right <= width + 1, `${at}: ${which} leaves the viewport: ${JSON.stringify(b)}`);
+      }
+      if (width === 390 || width === 1920) {
+        await openRowMenu(page, longName);
+        const m = await page.locator("#key-menu").evaluate((n) => {
+          const b = n.getBoundingClientRect();
+          return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, vw: innerWidth, vh: innerHeight };
+        });
+        assert.ok(m.left >= 0 && m.right <= m.vw && m.top >= 0 && m.bottom <= m.vh, `${at}: the menu leaves the viewport: ${JSON.stringify(m)}`);
+        await page.keyboard.press("Escape");
+        await waitFocused(page, `${longName}:menu`);
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+});
+
+// The CSP forbids inline styles and scripts and every off-origin resource; pin the served
+// markup to that here as well as in the lint command, so the suite fails on a regression.
+test("the served markup ships no inline styles, style blocks or external resources", async () => {
+  const markup = fs.readFileSync(path.join(root, "Web", "index.html"), "utf8");
+  assert.doesNotMatch(markup, /style="/i, "an inline style attribute crept into index.html");
+  assert.doesNotMatch(markup, /<style/i, "a style block crept into index.html");
+  assert.doesNotMatch(markup, /https?:\/\/[^"']*\.(css|js|png|svg|woff2?)/i, "an external resource crept into index.html");
+});
 // ---------- runner ----------
 
 // The tester-army runner reuses this synthetic fixture, never the installed app.
@@ -3057,13 +4173,15 @@ test("Droid stays off Usage until Settings turns it on, and is never removed", a
 // ---------- key search ----------
 
 test("key search filters by name, provider and host, counts what it shows and clears on Escape", async (page, origin) => {
+  keys.find((k) => k.name === "bravo").host = "api.example.test";
+  keys.find((k) => k.name === "charlie").gateway_host = "gw.typesafe.test";
   await page.goto(`${origin}/#keys`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator("#keys-body tr[data-name]").first().waitFor();
-  const names = () => page.locator("#keys-body tr[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
-  const groups = () => page.locator("#keys-body tr.key-group").evaluateAll((rows) => rows.map((r) => r.textContent.trim()));
-  assert.equal((await groups()).length, 3, "one header row per provider");
+  await page.locator("#keys-body .key-row[data-name]").first().waitFor();
+  const names = () => page.locator("#keys-body .key-row[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
+  assert.equal(await page.locator("#keys-body > :not(.key-row)").count(), 0, "a flat list, no provider headers");
+  assert.equal(await page.locator("#keys-search").getAttribute("placeholder"), "Search keys or providers…");
 
   // "/" jumps to the search box from anywhere on the Keys pane.
   await page.locator("body").click();
@@ -3072,11 +4190,19 @@ test("key search filters by name, provider and host, counts what it shows and cl
 
   await page.keyboard.type("open");
   assert.deepEqual(await names(), ["alpha"], "provider names match");
-  assert.match(await page.locator("#keys-count").textContent(), /1 of 3 keys/);
-  assert.deepEqual((await groups()).length, 1);
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
 
   await page.locator("#keys-search").fill("CHAR");
   assert.deepEqual(await names(), ["charlie"], "case does not matter");
+
+  // The grant host and the gateway host are matchable too, and so is the provider's group name
+  // ("Labs" holds all three fixture providers; nothing else carries that string).
+  await page.locator("#keys-search").fill("example.test");
+  assert.deepEqual(await names(), ["bravo"], "hosts match");
+  await page.locator("#keys-search").fill("gw.typesafe");
+  assert.deepEqual(await names(), ["charlie"], "gateway hosts match");
+  await page.locator("#keys-search").fill("labs");
+  assert.deepEqual(await names(), ["alpha", "bravo", "charlie"], "provider group names match");
 
   await page.locator("#keys-search").fill("nothing-like-this");
   assert.deepEqual(await names(), []);
@@ -3085,8 +4211,8 @@ test("key search filters by name, provider and host, counts what it shows and cl
 
   await page.locator("#keys-search").press("Escape");
   assert.equal(await page.locator("#keys-search").inputValue(), "");
-  assert.deepEqual(await names(), ["bravo", "alpha", "charlie"]);
-  assert.match(await page.locator("#keys-count").textContent(), /^3 keys/);
+  assert.deepEqual(await names(), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
   assert.equal(await page.locator("#keys-no-match").isHidden(), true);
   assert.doesNotMatch(await page.locator("#keys-body").textContent(), new RegExp(SECRET));
 });
@@ -3116,18 +4242,18 @@ test("the search box keeps its place and size while typing, including on a miss"
   }
   assert.match(seen[3][1], /0 of 3 keys/);
   assert.equal(seen[3][3], true, "the miss line showed on the miss and still moved nothing");
-  // The count sits beside the box, never before it, so it cannot push the box around.
+  // The count sits on the line below the box, so it cannot push the box around.
   const countBox = await page.locator("#keys-count").boundingBox();
-  assert.ok(countBox.x > start.x + start.w, "the count follows the box");
+  assert.ok(countBox.y >= start.y + start.h, "the count is below the box");
 });
 
 // A relayed or tunnelled call lands in the catalog with nobody touching the page. The Keys pane
 // used to show the vault as it was when the pane was entered, so a key with fresh gateway calls
-// kept saying "—" in Via gateway until a reload or a pane switch.
-test("a catalog change while the Keys pane is open refreshes the Via gateway column", async (page, origin) => {
+// showed no gateway calls until a reload or a pane switch.
+test("a catalog change while the Keys pane is open refreshes the gateway figures", async (page, origin) => {
   await page.clock.install();
   await openKeys(page, origin);
-  assert.equal((await rowCell(page, "bravo", "usd").textContent()).trim(), "—");
+  assert.equal(await gatewayText(page, "bravo"), null, "no figure before any call");
   const before = requests.filter((r) => r.pathname === "/api/keys").length;
 
   // Two calls arrive through the relay for bravo: the engine's month count and version move.
@@ -3135,7 +4261,7 @@ test("a catalog change while the Keys pane is open refreshes the Via gateway col
   keys.find((k) => k.name === "bravo").last_used_at = "2026-09-20T12:30:00Z";
   catalogVersion += 1;
   await page.clock.runFor(16000);
-  await page.waitForFunction(() => /2 requests/.test(document.querySelector('#keys-body tr[data-name="bravo"] .td-usd').textContent));
+  await page.waitForFunction(() => /2 requests/.test(document.querySelector('#keys-body .key-row[data-name="bravo"] .key-gateway')?.textContent));
   assert.ok(requests.filter((r) => r.pathname === "/api/keys").length > before, "the list was fetched again");
 
   // An unchanged version fetches nothing: the poll is not a reload loop.
@@ -3156,7 +4282,7 @@ test("the key History drawer names every audited action and caller in words", as
     { ts: "2026-09-20T12:00:00Z", action: "client_issue", caller: "cli", detail: "#3 my script 30d POST" },
   ];
   await openKeys(page, origin);
-  await rowButton(page, "alpha", "history").click();
+  await rowAct(page, "alpha", "history");
   await page.locator("#keys-body .key-events li").first().waitFor();
   assert.deepEqual(await page.locator("#keys-body .key-events .ev-action").allTextContents(),
     ["client revoked", "gateway refused", "gateway call", "gateway call", "client issued"]);
@@ -3257,23 +4383,24 @@ test("the first-use guide walks through the command line, a key, an agent, token
   assert.equal(await page.locator("#guide-agents-title").count(), 1, "one copy of the id, in the dialog");
 });
 
-test("arrow keys step over the provider header rows", async (page, origin) => {
+test("arrow keys step through the flat list from the search box", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator("#keys-body tr[data-name]").first().waitFor();
+  await page.locator("#keys-body .key-row[data-name]").first().waitFor();
   await page.locator("#keys-search").focus();
   // Nothing is selected yet on a fresh load; ArrowDown from the search box still lands on the
   // first key row rather than doing nothing.
   await page.keyboard.press("ArrowDown");
-  const selected = () => page.evaluate(() => document.activeElement.closest("tr")?.dataset.name || null);
-  assert.equal(await selected(), "bravo");
+  const selected = () => page.evaluate(() => document.activeElement.closest(".key-row")?.dataset.name || null);
+  assert.equal(await selected(), "alpha");
   await page.keyboard.press("ArrowDown");
-  assert.equal(await selected(), "alpha", "the OpenAI header between them is skipped");
+  assert.equal(await selected(), "bravo", "the next key, whatever its provider");
   await page.keyboard.press("ArrowDown");
   assert.equal(await selected(), "charlie");
   await page.keyboard.press("ArrowUp");
-  assert.equal(await selected(), "alpha");
+  assert.equal(await selected(), "bravo");
+  assert.equal(await page.locator('#keys-body [aria-current="true"]').getAttribute("data-name"), "bravo");
 });
 
 

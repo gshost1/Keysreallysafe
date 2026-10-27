@@ -43,10 +43,22 @@ const NEW_KEY = "contract-delta";
 
 // ---------- helpers ----------
 
-const rowNames = (page) => page.locator("#keys-body tr[data-name]:not(.key-events-row)")
+const rowNames = (page) => page.locator("#keys-body .key-row[data-name]")
   .evaluateAll((rows) => rows.map((row) => row.dataset.name));
-const rowCell = (page, name, cell) => page.locator(`#keys-body tr[data-name="${name}"] .td-${cell}`).first();
-const rowButton = (page, name, act) => page.locator(`#keys-body tr[data-name="${name}"] [data-act="${act}"]`).first();
+const rowCell = (page, name, cell) => page.locator(`#keys-body .key-row[data-name="${name}"] .key-${cell}`).first();
+const rowButton = (page, name, act) => page.locator(`#keys-body .key-row[data-name="${name}"] [data-act="${act}"]`).first();
+// Copy remains a row button; More exposes the same actions as the selected-row shortcuts.
+const ROW_LETTER = { reveal: "v", edit: "e", check: "t", history: "h", delete: "Backspace" };
+async function rowAct(page, name, act) {
+  const row = page.locator(`#keys-body .key-row[data-name="${name}"]`).first();
+  await row.locator(".key-name").click();
+  await row.press(ROW_LETTER[act]);
+}
+// A key with no gateway calls this month has no figure at all.
+const gatewayText = (page, name) => page.evaluate((n) => {
+  const node = document.querySelector(`#keys-body .key-row[data-name="${n}"] .key-gateway`);
+  return node ? node.textContent.trim() : null;
+}, name);
 const status = (page) => page.locator("#status").textContent();
 const waitDialog = (page, id, open) =>
   page.waitForFunction(([name, want]) => document.getElementById(name).open === want, [id, open]);
@@ -79,7 +91,7 @@ const get = (page, url) => request(page, "GET", url, undefined, {});
 async function openKeys(page) {
   await page.goto(base, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body tr[data-name="contract-alpha"]').waitFor();
+  await page.locator('#keys-body .key-row[data-name="contract-alpha"]').waitFor();
 }
 
 const checks = [];
@@ -95,11 +107,14 @@ const chooseUsd = async (page) => {
   await page.getByRole("radio", { name: "USD", exact: true }).click();
   await page.waitForFunction(inUsd);
 };
-// The Keys pane's own switch, on the column it changes.
+// The Keys pane has no unit switch of its own; the page's unit is chosen on the Chart.
 const chooseKeysUsd = async (page) => {
-  if (await page.evaluate(inUsd)) return;
-  await page.locator("#keys-unit").click();
-  await page.waitForFunction(inUsd);
+  if (!(await page.evaluate(inUsd))) {
+    await page.getByRole("tab", { name: "Chart" }).click();
+    await chooseUsd(page);
+  }
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="contract-alpha"]').waitFor();
 };
 
 // ---------- the real key list ----------
@@ -128,16 +143,25 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
   assert.equal(providers.status, 200);
   const byId = new Map(providers.data.providers.map((p) => [p.id, p.name]));
 
-  // The default unit is what this Mac measured, so the gateway column counts the real routed
+  // The default unit is what this Mac measured, so the gateway figure counts the real routed
   // requests for every key and puts no price on screen until USD is chosen.
   for (const key of payload) {
-    const cell = (await rowCell(page, key.name, "usd").textContent()).trim();
-    if (key.gateway_month_calls === 0) assert.match(cell, /^(—|no calls yet)$/, `${key.name}: an unrouted key counts nothing`);
+    const cell = await gatewayText(page, key.name);
+    if (key.gateway_month_calls === 0) assert.equal(cell, null, `${key.name}: an unrouted key shows no figure`);
     else assert.equal(cell, `${key.gateway_month_calls} ${key.gateway_month_calls === 1 ? "request" : "requests"}`,
-      `${key.name}: the gateway column counts the real requests`);
+      `${key.name}: the gateway figure counts the real requests`);
   }
-  assert.equal((await page.locator("#keys-table").textContent()).includes("$"), false, "no dollars until USD is chosen");
-  // The switch sits on the column it changes, so the cost view is one click away from here.
+  assert.equal((await page.locator("#keys-list").textContent()).includes("$"), false, "no dollars until USD is chosen");
+  // Non-checkable keys refuse the check letter without sending anything (decided by the real
+  // provider catalog, not a fixture). Checkable ones are not pressed: that would call a provider.
+  for (const key of payload.filter((k) => !k.checkable)) {
+    const before = (await get(page, "/api/keys")).data.keys.find((k) => k.name === key.name).last_check || null;
+    await rowAct(page, key.name, "check");
+    await page.waitForFunction(() => /^No read-only check endpoint for /.test(document.getElementById("status").textContent));
+    assert.equal(await page.locator("#dlg-check").evaluate((d) => d.open), false, `${key.name}: no check dialog`);
+    const after = (await get(page, "/api/keys")).data.keys.find((k) => k.name === key.name).last_check || null;
+    assert.deepEqual(after, before, `${key.name}: nothing was checked`);
+  }
   await chooseKeysUsd(page);
 
   for (const key of payload) {
@@ -145,26 +169,23 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
     const cell = (await rowCell(page, key.name, "provider").textContent()).trim();
     assert.ok(cell.startsWith(expected),
       `${key.name}: provider cell ${JSON.stringify(cell)} does not start with the catalog name for ${key.provider}`);
-    // Dates: the real ISO strings must parse, not fall through as raw text.
-    const created = (await rowCell(page, key.name, "created").textContent()).trim();
-    assert.notEqual(created, "—", `${key.name}: no created date rendered`);
-    assert.notEqual(created, key.created_at, `${key.name}: created_at was not parsed as a date`);
-    // Only the key the harness routed synthetic gateway calls through has been used.
+    // Only the key the harness routed synthetic gateway calls through has been used, and the
+    // real ISO time must parse into a relative time rather than fall through as raw text.
     const used = (await rowCell(page, key.name, "used").textContent()).trim();
-    if (key.last_used_at == null) assert.equal(used, "Never", `${key.name}: an untouched key reads as never used`);
-    else assert.notEqual(used, "Never", `${key.name}: a routed key must show its real last-used time`);
-    // The Check affordance is decided by the real provider catalog, not a fixture.
-    assert.equal(await rowButton(page, key.name, "check").isDisabled(), !key.checkable,
-      `${key.name}: Check enablement must follow checkable=${key.checkable}`);
+    if (key.last_used_at == null) assert.equal(used, "Never used", `${key.name}: an untouched key reads as never used`);
+    else {
+      assert.notEqual(used, "Never used", `${key.name}: a routed key must show its real last-used time`);
+      assert.notEqual(used, key.last_used_at, `${key.name}: last_used_at was not parsed as a time`);
+    }
     // Zero, unknown, priced and none are different things, and the real serializer says which.
     // A key the gateway never routed reads as no dollars, not $0.00; a key whose routed calls
     // carried no cost receipt reads as unpriced, not as zero either; a key whose calls could be
     // priced reads as a figure. The harness seeds one of each.
-    const usdCell = (await rowCell(page, key.name, "usd").textContent()).trim();
+    const usdCell = await gatewayText(page, key.name);
     if (key.gateway_month_calls === 0) {
       assert.equal(key.usd_month, null, `${key.name}: an unrouted key has no dollars at all`);
       assert.equal(key.usd_month_kind, "none");
-      assert.equal(usdCell, "—", `${key.name}: an unrouted key must not show a dollar figure`);
+      assert.equal(usdCell, null, `${key.name}: an unrouted key must not show a dollar figure`);
     } else if (key.usd_month_kind === "unknown") {
       assert.equal(key.usd_month, null, `${key.name}: an unpriced call is unknown, not zero`);
       assert.equal(usdCell, `${key.gateway_month_calls} calls, unpriced`);
@@ -257,7 +278,7 @@ test("the add dialog creates a real key through POST /api/keys", async (page) =>
   await page.locator("#add-form [name=secret]").fill(DELTA_SECRET);
   await page.locator("#add-form [type=submit]").click();
   await waitDialog(page, "dlg-add", false);
-  await page.locator(`#keys-body tr[data-name="${NEW_KEY}"]`).waitFor();
+  await page.locator(`#keys-body .key-row[data-name="${NEW_KEY}"]`).waitFor();
   assert.equal(await status(page), `Added ${NEW_KEY}.`);
   assert.equal(await page.locator("#keys-count").textContent(), `${SEEDED.length + 1} keys`);
 
@@ -291,7 +312,7 @@ test("a duplicate name surfaces the real 409 already_exists", async (page) => {
 
 test("the edit dialog patches the real row and the list reflects the stored values", async (page) => {
   await openKeys(page);
-  await rowButton(page, NEW_KEY, "edit").click();
+  await rowAct(page, NEW_KEY, "edit");
   await waitDialog(page, "dlg-edit", true);
   await page.locator("#edit-form [name=kind]").selectOption("billing");
   await page.locator("#edit-form [name=notes]").fill("edited by the contract harness");
@@ -299,10 +320,9 @@ test("the edit dialog patches the real row and the list reflects the stored valu
   await waitDialog(page, "dlg-edit", false);
   assert.equal(await status(page), `Saved ${NEW_KEY}.`);
   await page.waitForFunction((name) => {
-    const row = document.querySelector(`#keys-body tr[data-name="${name}"] .td-kind`);
-    return row && row.textContent.trim() === "billing";
+    const notes = document.querySelector(`#keys-body .key-row[data-name="${name}"] .key-notes`);
+    return notes && notes.textContent === "edited by the contract harness";
   }, NEW_KEY);
-  assert.equal((await rowCell(page, NEW_KEY, "name").textContent()).includes("edited by the contract harness"), true);
   const row = (await get(page, "/api/keys")).data.keys.find((k) => k.name === NEW_KEY);
   assert.equal(row.kind, "billing");
   assert.equal(row.notes, "edited by the contract harness");
@@ -310,7 +330,7 @@ test("the edit dialog patches the real row and the list reflects the stored valu
 
 test("reveal returns exactly the secret the dialog stored", async (page) => {
   await openKeys(page);
-  await rowButton(page, NEW_KEY, "reveal").click();
+  await rowAct(page, NEW_KEY, "reveal");
   await waitDialog(page, "dlg-reveal", true);
   assert.equal(await page.locator("#reveal-name").textContent(), NEW_KEY);
   assert.equal(await page.locator("#reveal-secret").textContent(), DELTA_SECRET,
@@ -343,13 +363,13 @@ test("the history pane shows the real key events the backend recorded", async (p
   assert.ok(actions.includes("copy"), `expected a recorded copy, got ${JSON.stringify(actions)}`);
   assert.ok(actions.includes("add"), `expected a recorded add, got ${JSON.stringify(actions)}`);
   assert.equal(JSON.stringify(events.data).includes(ALPHA_SECRET), false, "an event log leaked a secret");
-  await rowButton(page, "contract-alpha", "history").click();
+  await rowAct(page, "contract-alpha", "history");
   await page.locator("#keys-body .key-events-row .key-events").waitFor();
   const rendered = await page.locator("#keys-body .key-events-row .ev-action").allTextContents();
   assert.equal(rendered.length, actions.length, "every real event must be rendered");
   assert.ok(rendered.includes("copied"), `the rendered history omits the real copy: ${JSON.stringify(rendered)}`);
   assert.ok(rendered.includes("added"), `the rendered history omits the real add: ${JSON.stringify(rendered)}`);
-  await rowButton(page, "contract-alpha", "history").click();
+  await rowAct(page, "contract-alpha", "history");
 });
 
 // ---------- profiles: the real routes, issuance and badges ----------
@@ -413,12 +433,12 @@ test("a profile bounds a real grant end to end and removes cleanly", async (page
 
 test("delete removes the real row and its stored secret", async (page) => {
   await openKeys(page);
-  await rowButton(page, NEW_KEY, "delete").click();
+  await rowAct(page, NEW_KEY, "delete");
   await waitDialog(page, "dlg-delete", true);
   assert.equal(await page.locator("#delete-name").textContent(), NEW_KEY);
   await page.locator("#delete-confirm").click();
   await waitDialog(page, "dlg-delete", false);
-  await page.waitForFunction((name) => !document.querySelector(`#keys-body tr[data-name="${name}"]`), NEW_KEY);
+  await page.waitForFunction((name) => !document.querySelector(`#keys-body .key-row[data-name="${name}"]`), NEW_KEY);
   assert.equal(await status(page), `Deleted ${NEW_KEY}.`);
   assert.deepEqual((await rowNames(page)).sort(), SEEDED);
 
