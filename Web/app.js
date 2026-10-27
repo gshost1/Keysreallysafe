@@ -555,9 +555,8 @@
     // "requests" belongs to the API keys source only, so it is not remembered for the next visit.
     if (state.unit !== "requests") { try { localStorage.setItem("ksf.unit", state.unit); } catch { /* fine */ } }
     unitChips.sync(state.unit);
-    // One unit for the whole page: the chart, the key table's gateway column and the Usage
+    // One unit for the whole page: the chart, the key rows' gateway figures and the Usage
     // summary all answer in it, so switching in one place does not leave another contradicting it.
-    syncKeysUnit();
     if (state.keys.length) renderKeys();
     renderUsageTotals();
     // The plan cards are redrawn from the status already in hand, so the switch does not wait for
@@ -565,17 +564,6 @@
     if (state.status) renderStatus();
     if (state.spend) { renderTotals(state.spend); renderMix(); drawChart(); }
   }
-  // The Keys pane has no chart chips, so the switch sits above the column it changes — outside the
-  // table head, which the narrow layout drops. Tokens are not recorded per key, so this column's
-  // two honest answers are requests and USD.
-  function syncKeysUnit() {
-    const btn = $("keys-unit");
-    if (!btn) return;
-    btn.textContent = usdMode() ? "USD" : "requests";
-    btn.setAttribute("aria-label", usdMode() ? "Showing USD; switch the gateway column to requests" : "Showing requests; switch the gateway column to USD");
-    btn.title = btn.getAttribute("aria-label");
-  }
-  $("keys-unit").addEventListener("click", () => setUnit(usdMode() ? "tokens" : "usd"));
   $("keys-sort").addEventListener("change", (e) => {
     state.keySort = keySorts[e.target.value] ? e.target.value : "name";
     try { localStorage.setItem("ksf.keysort", state.keySort); } catch { /* fine */ }
@@ -595,8 +583,8 @@
     } else if (e.key === "ArrowDown") {
       // Nothing may be selected yet (or the selection was filtered out); the first visible
       // key row is where the arrow should land then, not nowhere.
-      const tr = rowFor(state.selected) || [...$("keys-body").rows].find(isKeyRow);
-      if (tr) { e.preventDefault(); selectRow(tr.dataset.name, true); }
+      const row = rowFor(state.selected) || keyRows()[0];
+      if (row) { e.preventDefault(); selectRow(row.dataset.name, true); }
     }
   });
   const usdMode = () => state.unit === "usd";
@@ -899,32 +887,30 @@
 
   // Zero, unknown and partial are different things. usd_month is null when calls happened but
   // none could be priced; usd_month_kind says which case this is.
-  function gatewayMonthCell(k, on) {
+  // A key with no gateway calls this month gets no figure at all (null), rather than a dash or a
+  // zero that would read as a measurement. The button opens the key in the Chart's API keys view.
+  function gatewayMonthCell(k, tab) {
     const kind = k.usd_month_kind || (Number(k.usd_month) > 0 ? "estimate" : "none");
     const unpricedCalls = Number(k.gateway_month_unpriced_calls) || 0;
     const calls = Number(k.gateway_month_calls) || 0;
-    const open = () => showKeyInChart(k.name);
-    // The unit this page is in decides what this cell says. Requests are what a key's own row can
-    // always answer for, and no dollar figure is put on screen unless USD was asked for.
+    const figure = (text, title, none) => el("button", {
+      type: "button", class: "key-gateway" + (none ? " none" : ""), tabindex: tab, "data-act": "chart",
+      text, title: title + " Click to chart.",
+      "aria-label": `${text} this month through the gateway with ${k.name}; open in the chart`,
+    });
+    // The unit this page is in decides what the figure says. Requests are what a key's own row can
+    // always answer for, and no dollar figure is put on screen unless USD was asked for (on the
+    // Usage or Chart pane; the unit is shared by the whole page).
     if (!usdMode()) {
-      if (!calls) {
-        return el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Requests appear once the gateway routes this key." });
-      }
-      return el("td", {
-        class: "td-usd", "data-label": "Via gateway", text: plural(calls, "request", "requests"),
-        title: "This month, requests through the local gateway with this key. The switch above the"
-          + " table shows cost in USD instead. Click to chart.",
-        onclick: open,
-      });
+      if (!calls) return null;
+      return figure(plural(calls, "request", "requests"), "This month, requests through the local gateway with this key.");
     }
-    if (kind === "none") {
-      return el("td", { class: "td-usd none", "data-label": "Via gateway", text: on ? "no calls yet" : "—", title: "Dollars appear once the gateway routes this key." });
-    }
+    if (kind === "none") return null;
     if (kind === "unknown") {
-      return el("td", { class: "td-usd none", "data-label": "Via gateway", text: `${plural(calls, "call", "calls")}, unpriced`, title: "This month's gateway calls with this key had no usable cost receipt or list-price estimate, so the cost is unknown, not zero. Click to chart.", onclick: open });
+      return figure(`${plural(calls, "call", "calls")}, unpriced`, "This month's gateway calls with this key had no usable cost receipt or list-price estimate, so the cost is unknown, not zero.", true);
     }
     const partial = kind === "partial" ? ` ${plural(unpricedCalls, "call", "calls")} unpriced and left out.` : "";
-    return el("td", { class: "td-usd", "data-label": "Via gateway", text: (kind === "partial" ? "≥ " : "") + fmtUsd(k.usd_month), title: "This month, calls through the local gateway with this key. Uses provider-reported cost where available, otherwise a list-price estimate." + partial + " Click to chart.", onclick: open });
+    return figure((kind === "partial" ? "≥ " : "") + fmtUsd(k.usd_month), "This month, calls through the local gateway with this key. Uses provider-reported cost where available, otherwise a list-price estimate." + partial);
   }
 
   // What the rows in view are made of. The chart's own figures come from the same merged series,
@@ -1546,126 +1532,123 @@
     return [k.name, k.provider, providerName(k.provider), group && group.name, k.host, k.gateway_host]
       .some((v) => typeof v === "string" && v.toLowerCase().includes(q));
   }
-  const keyGroupLabel = (k) => (k.provider ? providerName(k.provider) : "No provider");
-  const isKeyRow = (tr) => !!tr.dataset.name && !tr.classList.contains("key-events-row");
+  const keyRows = () => [...$("keys-body").querySelectorAll(".key-row")];
+
+  // A provider's tile shows initials, never a brand mark. The rule, from the display name (the
+  // raw id when the catalog has none): split on spaces, "-", "_" and "."; keep only letters and
+  // digits of each word; two or more words give the first letter of the first two, uppercased
+  // ("Cloudflare AI Gateway" → "CA", "Moonshot (Kimi)" → "MK"); one word gives its first letter
+  // uppercased and its second lowercased ("OpenAI" → "Op", "Anthropic" → "An"); nothing left
+  // gives "?".
+  function providerInitials(id) {
+    const name = id ? providerName(id) : "";
+    const words = name.split(/[\s\-_.]+/).map((w) => w.replace(/[^\p{L}\p{N}]/gu, "")).filter(Boolean);
+    if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+    if (words.length === 1) return words[0][0].toUpperCase() + (words[0][1] || "").toLowerCase();
+    return "?";
+  }
+  // One of eight tints (styles.css .tint-0 … .tint-7, the chart's vendor colours), chosen by a
+  // hash of the provider id so a provider keeps its colour across keys, sessions and themes.
+  const TINTS = 8;
+  function providerTint(id) {
+    let h = 0;
+    for (const c of id || "") h = (h * 31 + c.codePointAt(0)) >>> 0;
+    return "tint-" + (h % TINTS);
+  }
 
   function renderKeys(opts = {}) {
     const body = $("keys-body");
     const by = keySorts[state.keySort] || keySorts.name;
     const q = state.keySearch.trim().toLowerCase();
     const all = state.keys;
-    // Grouped by provider name, then the chosen sort inside each group.
-    const keys = all.filter((k) => keyMatches(k, q)).sort((a, b) =>
-      keyGroupLabel(a).localeCompare(keyGroupLabel(b), undefined, { sensitivity: "base" })
-      || by(a, b) || keySorts.name(a, b));
+    // One flat list in the chosen order; equal keys fall back to their names.
+    const keys = all.filter((k) => keyMatches(k, q)).sort((a, b) => by(a, b) || keySorts.name(a, b));
     $("keys-sort").value = state.keySort;
     $("keys-count").textContent = q ? `${keys.length} of ${plural(all.length, "key", "keys")}` : plural(all.length, "key", "keys");
     syncOnboard();
-    $("keys-table").hidden = keys.length === 0;
-    $("keys-toolbar").hidden = all.length === 0;
-    $("keys-search").hidden = all.length === 0 && !q;
+    $("keys-list").hidden = keys.length === 0;
+    $("keys-sort-label").hidden = all.length === 0;
+    $("keys-search-box").hidden = all.length === 0 && !q;
     $("keys-empty").hidden = all.length > 0;
     $("keys-no-match").hidden = all.length === 0 || keys.length > 0;
     if (all.length > 0 && keys.length === 0) $("keys-no-match").textContent = `No keys match “${state.keySearch.trim()}”.`;
     if (!keys.some((k) => k.name === state.selected)) state.selected = keys[0] ? keys[0].name : null;
 
-    const columns = $("keys-table").tHead.rows[0].cells.length;
-    const groupSizes = new Map();
-    for (const k of keys) groupSizes.set(keyGroupLabel(k), (groupSizes.get(keyGroupLabel(k)) || 0) + 1);
-    let lastGroup = null;
-    const rows = keys.map((k) => {
-      const label = keyGroupLabel(k);
-      const head = label !== lastGroup
-        ? el("tr", { class: "key-group" }, el("th", { scope: "rowgroup", colspan: String(columns), text: `${label} · ${groupSizes.get(label)}` }))
-        : null;
-      lastGroup = label;
-      const row = keyRow(k);
-      return head ? [head, row].flat() : row;
-    });
     // A background refresh replaces the rows; if a row had focus, it would fall to <body> and the
     // next arrow key would be spent refocusing instead of moving.
-    const hadFocus = body.contains(document.activeElement) && document.activeElement.matches("tr");
-    body.replaceChildren(...rows.flat());
+    const hadFocus = body.contains(document.activeElement) && document.activeElement.classList.contains("key-row");
+    body.replaceChildren(...keys.map(keyRow).flat());
     if (state.eventsOpen) loadEvents(state.eventsOpen);
     if ((opts.focus || hadFocus) && state.selected) {
-      const tr = rowFor(state.selected);
-      if (tr) tr.focus();
+      const row = rowFor(state.selected);
+      if (row) row.focus();
     }
   }
 
+  // Name, provider and last use, as the design shows them, plus only what is true of this key:
+  // the gateway badge and URL when it is on, this month's gateway figure when there is one, the
+  // host, the last check and the notes. The actions column keeps its full width even while it
+  // holds only Copy, so adding a control there later does not move the rest of the row.
   function keyRow(k) {
     const selected = k.name === state.selected;
     const tab = selected ? "0" : "-1";
-    const tr = el("tr", { tabindex: selected ? "0" : "-1", "data-name": k.name, "aria-selected": String(selected) });
     const on = !!k.gateway_enabled;
-    const nameCell = el("td", { class: "td-name", "data-label": "Name" },
-      el("span", { class: "key-name" }, k.name,
+    const row = el("div", {
+      class: "key-row", role: "listitem", tabindex: tab, "data-name": k.name,
+      "aria-current": selected ? "true" : null,
+    });
+    const gateway = gatewayMonthCell(k, tab);
+    const meta = [
+      gateway ? el("span", { class: "key-gateway-wrap" }, gateway, el("span", { class: "key-gateway-note", text: " this month" })) : null,
+      k.last_check ? el("span", { class: "key-check", text: (k.last_check.ok ? "✓ " : "✗ ") + k.last_check.summary + " · " + relTime(k.last_check.checked_at), title: "Last read-only check " + k.last_check.checked_at }) : null,
+    ].filter(Boolean);
+    const names = el("div", { class: "key-names" },
+      el("div", { class: "key-title" },
+        el("span", { class: "key-name", text: k.name, title: k.name }),
         on ? el("span", { class: "badge", text: "Gateway on", title: "Requests to the local gateway use this key until the engine restarts" }) : null),
+      el("div", { class: "key-sub", title: k.host ? "Requests bound to " + k.host : "No fixed host" },
+        el("span", { class: "key-provider", text: k.provider ? providerName(k.provider) : "No provider" }),
+        k.host ? el("span", { class: "key-host", text: k.host }) : null),
+      meta.length ? el("div", { class: "key-meta" }, ...meta) : null,
+      on && k.gateway_url ? el("span", { class: "key-notes gw-url", text: k.gateway_url, title: "Point the SDK base URL here. Select to copy." }) : null,
+      k.notes ? el("span", { class: "key-notes", text: k.notes, title: k.notes }) : null,
     );
-    if (k.notes) nameCell.append(el("span", { class: "key-notes", text: k.notes }));
-    if (on && k.gateway_url) nameCell.append(el("span", { class: "key-notes gw-url", text: k.gateway_url, title: "Point the SDK base URL here. Select to copy." }));
-    const prov = providerById(k.provider);
-    const noGateway = prov && prov.gateway === false;
-    tr.append(
-      nameCell,
-      el("td", { class: "td-provider", "data-label": "Provider", title: k.host ? "Requests bound to " + k.host : "No fixed host" },
-        providerName(k.provider),
-        k.host ? el("span", { class: "key-host", text: k.host }) : null,
-        k.last_check ? el("span", { class: "key-host", text: (k.last_check.ok ? "✓ " : "✗ ") + k.last_check.summary + " · " + relTime(k.last_check.checked_at), title: "Last read-only check " + k.last_check.checked_at }) : null),
-      el("td", { class: "td-kind", "data-label": "Kind", text: k.kind || "—" }),
-      el("td", { class: "td-created", "data-label": "Created", text: fmtDate(k.created_at), title: k.created_at || null }),
-      el("td", { class: "td-used", "data-label": "Last used", text: relTime(k.last_used_at), title: k.last_used_at || "Never copied or revealed" }),
-      gatewayMonthCell(k, on),
-      el("td", { class: "td-actions", "data-label": "Actions" },
-        el("div", { class: "row-actions" },
-          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "copy", "aria-label": "Copy " + k.name, text: "Copy" }),
-          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "reveal", "aria-label": "Reveal " + k.name, text: "Reveal" }),
-          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "edit", "aria-label": "Edit " + k.name, text: "Edit" }),
-          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "history", "aria-pressed": String(state.eventsOpen === k.name), "aria-label": "History of " + k.name, text: "History" }),
-          el("button", { type: "button", class: "btn btn-row", tabindex: tab, "data-act": "rotate", "aria-label": "Rotate " + k.name, text: "Rotate", title: "Replace the secret, keep the name" }),
-          el("button", {
-            type: "button", class: "btn btn-row", tabindex: tab, "data-act": "gateway", "aria-pressed": String(on),
-            "aria-label": (on ? "Turn the gateway off for " : "Turn the gateway on for ") + k.name,
-            text: on ? "Gateway on" : "Gateway",
-            disabled: noGateway ? "" : null,
-            title: noGateway ? (prov.name + " needs request signing; it cannot be proxied") : on ? "Stop proxying with this key" : "One Touch ID, then http://127.0.0.1:12767/" + k.name + " forwards to the provider with this key",
-          }),
-          el("button", {
-            type: "button", class: "btn btn-row", tabindex: tab, "data-act": "grant",
-            "aria-label": "Grant temporary access to " + k.name + " or issue a long-lived client",
-            text: k.active_grants ? `Grant (${k.active_grants})` : "Grant",
-            disabled: noGateway ? "" : null,
-            title: noGateway ? (prov.name + " cannot be proxied, so no grant") : "One Touch ID for a temporary, scoped token an agent uses instead of the real key",
-          }),
-          el("button", {
-            type: "button", class: "btn btn-row", tabindex: tab, "data-act": "check",
-            "aria-label": "Check " + k.name + " against its provider",
-            text: "Check",
-            disabled: k.checkable ? null : "",
-            title: k.checkable ? "Read-only: authentication status and model list from " + (k.host || "the provider") : "No read-only check endpoint for this provider; nothing is sent",
-          }),
-          el("span", { class: "act-div", "aria-hidden": "true" }),
-          el("button", { type: "button", class: "btn btn-row btn-danger", tabindex: tab, "data-act": "delete", "aria-label": "Delete " + k.name, text: "Delete" }),
-        ),
-      ),
+    const copy = el("button", {
+      type: "button", class: "btn-copy", tabindex: tab, "data-act": "copy", "aria-label": "Copy " + k.name,
+      title: "Copy to the clipboard after Touch ID; it is wiped after 20 s",
+    }, svgIcon(COPY_ICON), el("span", { class: "btn-label", text: "Copy" }));
+    row.append(
+      el("div", { class: "key-identity" },
+        el("span", { class: ["key-avatar", providerTint(k.provider)].join(" "), "aria-hidden": "true", text: providerInitials(k.provider) }),
+        names),
+      el("span", { class: "key-used", text: k.last_used_at ? relTime(k.last_used_at) : "Never used", title: k.last_used_at || "Never copied, revealed or proxied" }),
+      el("div", { class: "key-actions" }, copy),
     );
-    if (state.eventsOpen === k.name) return [tr, eventsRow(k)];
-    return tr;
+    if (state.eventsOpen === k.name) return [row, eventsRow(k)];
+    return row;
+  }
+  const COPY_ICON = ["M15 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h4", { rect: { x: "8", y: "8", width: "12", height: "12", rx: "2.2" } }];
+  function svgIcon(parts) {
+    const svg = svgEl("svg", { class: "vicon", viewBox: "0 0 24 24", "aria-hidden": "true" });
+    for (const p of parts) {
+      if (typeof p === "string") svg.append(svgEl("path", { d: p }));
+      else for (const [tag, attrs] of Object.entries(p)) svg.append(svgEl(tag, attrs));
+    }
+    return svg;
   }
 
   function selectRow(name, focus) {
     state.selected = name;
-    for (const tr of $("keys-body").rows) {
-      if (tr.classList.contains("key-group")) continue;
-      const on = tr.dataset.name === name;
-      tr.setAttribute("aria-selected", String(on));
-      tr.tabIndex = on ? 0 : -1;
-      tr.querySelectorAll("[data-act]").forEach((btn) => { btn.tabIndex = on ? 0 : -1; });
-      if (on && focus) tr.focus();
+    for (const row of keyRows()) {
+      const on = row.dataset.name === name;
+      if (on) row.setAttribute("aria-current", "true"); else row.removeAttribute("aria-current");
+      row.tabIndex = on ? 0 : -1;
+      row.querySelectorAll("[data-act]").forEach((btn) => { btn.tabIndex = on ? 0 : -1; });
+      if (on && focus) row.focus();
     }
   }
-  const rowFor = (name) => [...$("keys-body").rows].find((tr) => isKeyRow(tr) && tr.dataset.name === name) || null;
-  const btnFor = (name, act) => { const tr = rowFor(name); return tr ? tr.querySelector(`[data-act="${act}"]`) : null; };
+  const rowFor = (name) => keyRows().find((row) => row.dataset.name === name) || null;
+  const btnFor = (name, act) => { const row = rowFor(name); return row ? row.querySelector(`[data-act="${act}"]`) : null; };
 
   function restoreKeysFocus(name, act) {
     if (state.pane !== "keys") return;
@@ -1674,33 +1657,33 @@
       const btn = btnFor(target, act);
       if (btn) { btn.focus(); return; }
     }
-    const tr = rowFor(target);
-    if (tr) tr.focus();
+    const row = rowFor(target);
+    if (row) row.focus();
   }
 
   // One table for a row's buttons and its letter keys. Copy and reveal are list-only: from
   // elsewhere in the pane c and v stay free, so only PANE_KEYS reach the selected row there.
-  const ROW_ACT = { copy: copyKey, reveal: revealKey, edit: openEdit, gateway: toggleGateway, grant: openGrant, check: runCheck, history: toggleEvents, rotate: openRotate, delete: askDelete };
+  // "chart" is the gateway figure's button and has no letter of its own.
+  const ROW_ACT = { copy: copyKey, reveal: revealKey, edit: openEdit, gateway: toggleGateway, grant: openGrant, check: runCheck, history: toggleEvents, rotate: openRotate, delete: askDelete, chart: showKeyInChart };
   const PANE_KEYS = { e: "edit", g: "gateway", a: "grant", t: "check", h: "history", r: "rotate" };
   const LIST_KEYS = { ...PANE_KEYS, c: "copy", v: "reveal" };
 
   $("keys-body").addEventListener("click", (e) => {
-    const tr = e.target.closest("tr");
-    if (!tr || tr.classList.contains("key-group")) return;
-    selectRow(tr.dataset.name, false);
+    const row = e.target.closest(".key-row");
+    if (!row) return;
+    selectRow(row.dataset.name, false);
     const btn = e.target.closest("[data-act]");
-    if (btn) ROW_ACT[btn.dataset.act]?.(tr.dataset.name);
+    if (btn) ROW_ACT[btn.dataset.act]?.(row.dataset.name);
   });
 
   // Kept apart from the document listener on purpose: its modifier, dialog and typing guards do
   // not apply here, so a focused row still answers Cmd+C as c.
   $("keys-body").addEventListener("keydown", (e) => {
-    const tr = e.target.closest("tr");
-    if (!tr) return;
+    const row = e.target.closest(".key-row");
+    if (!row) return;
     const onButton = e.target.closest("[data-act]");
-    if (!isKeyRow(tr)) return;
-    const rows = [...$("keys-body").rows].filter(isKeyRow);
-    const j = listStep(e.key, rows.indexOf(tr), rows.length);
+    const rows = keyRows();
+    const j = listStep(e.key, rows.indexOf(row), rows.length);
     if (j >= 0) { e.preventDefault(); selectRow(rows[j].dataset.name, true); return; }
     let act = LIST_KEYS[e.key];
     if (e.key === "Enter") {
@@ -1712,12 +1695,16 @@
     }
     if (!act) return;
     e.preventDefault();
-    ROW_ACT[act](tr.dataset.name);
+    // History redraws the list synchronously, which detaches e.target; the document listener
+    // would then no longer see it inside #keys-body and run the same letter a second time.
+    e.stopPropagation();
+    ROW_ACT[act](row.dataset.name);
   });
 
+  // A button may keep an icon beside its words; only the .btn-label part is rewritten then.
   function setBtn(btn, text, disabled) {
     if (!btn) return;
-    btn.textContent = text;
+    (btn.querySelector(".btn-label") || btn).textContent = text;
     btn.disabled = !!disabled;
   }
 
@@ -1731,7 +1718,7 @@
       const secs = r && r.wipes_in_s != null ? r.wipes_in_s : 20;
       setBtn(btn, "Copied");
       say(`Copied ${name}. Clipboard wipes in ${secs} s.`);
-      const used = rowFor(name) && rowFor(name).querySelector(".td-used");
+      const used = rowFor(name) && rowFor(name).querySelector(".key-used");
       if (used) used.textContent = "Just now";
       setTimeout(() => {
         const active = document.activeElement;
@@ -1770,7 +1757,7 @@
       clearInterval(revealTimer);
       revealTimer = setInterval(() => { left -= 1; if (left <= 0) dlg.close(); else tick(); }, 1000);
       dlg.showModal();
-      const used = rowFor(name) && rowFor(name).querySelector(".td-used");
+      const used = rowFor(name) && rowFor(name).querySelector(".key-used");
       if (used) used.textContent = "Just now";
     } catch (e) {
       setBtn(btn, "Reveal");
@@ -2261,12 +2248,13 @@
     return new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   };
   function eventsRow(k) {
-    const tr = el("tr", { class: "key-events-row", "data-name": k.name });
-    tr.append(el("td", { colspan: "7" }, el("div", { class: "key-events-head", text: "Loading history…" })));
-    return tr;
+    // A sibling of the key's row, so the row's own grid and its divider stay as they are.
+    const drawer = el("div", { class: "key-events-row", role: "listitem", "data-name": k.name, "aria-label": "History of " + k.name });
+    drawer.append(el("div", { class: "key-events-cell" }, el("div", { class: "key-events-head", text: "Loading history…" })));
+    return drawer;
   }
   async function loadEvents(name) {
-    const tr = [...$("keys-body").rows].find((r) => r.classList.contains("key-events-row") && r.dataset.name === name);
+    const tr = [...$("keys-body").querySelectorAll(".key-events-row")].find((r) => r.dataset.name === name);
     if (!tr) return;
     try {
       const r = await api("/api/keys/" + encodeURIComponent(name) + "/events?limit=50");
@@ -2843,7 +2831,7 @@
     }
     if (state.pane === "keys") {
       if (e.key === "n") { e.preventDefault(); openAdd(); return; }
-      if (e.key === "/" && !$("keys-search").hidden) { e.preventDefault(); $("keys-search").focus(); return; }
+      if (e.key === "/" && !$("keys-search-box").hidden) { e.preventDefault(); $("keys-search").focus(); return; }
       const act = PANE_KEYS[e.key];
       if (act && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); ROW_ACT[act](state.selected); return; }
       const inList = e.target.closest && e.target.closest("#keys-body");
@@ -3542,7 +3530,6 @@
   // ---------- start ----------
 
   loadProviders();
-  syncKeysUnit();
   syncScopeChips();
   loadModels();
   showPane("usage", { keyboard: true });

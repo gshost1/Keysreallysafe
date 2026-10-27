@@ -111,52 +111,61 @@
     </section>
 
     <section id="pane-keys" role="tabpanel" aria-labelledby="nav-keys" hidden>
+      <div class="vault">
       <p id="keys-error" class="err pane-error" role="alert"></p>
-      <!-- The search box comes first and has a fixed basis: the count beside it changes width
-           while you type ("3 keys" → "1 of 3 keys"), and nothing may move the box under the
-           cursor. -->
-      <div class="keys-tools">
-        <input type="search" id="keys-search" class="keys-search" placeholder="Search keys" aria-label="Search keys" autocomplete="off" spellcheck="false">
-        <span id="keys-count" class="count"></span>
-        <button type="button" id="btn-providers" class="btn-quiet" title="Add, remove or hide providers">Providers</button>
-        <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
+      <header class="keys-head">
+        <div>
+          <p class="eyebrow">KEYSRS</p>
+          <h1>Your keys.</h1>
+        </div>
+        <div class="keys-head-actions">
+          <button type="button" id="btn-providers" class="btn-quiet" title="Add, remove or hide providers">Providers</button>
+          <button type="button" id="btn-add" class="btn-add" title="Add key (N)">
+            <svg class="vicon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add key<kbd aria-hidden="true">N</kbd></button>
+        </div>
+      </header>
+      <!-- Full width and a fixed height: the count below it changes ("3 keys" → "1 of 3 keys")
+           while you type, and nothing may move or resize the box under the cursor. -->
+      <label class="search" id="keys-search-box">
+        <svg class="vicon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>
+        <input type="search" id="keys-search" placeholder="Search keys or providers…" aria-label="Search keys" autocomplete="off" spellcheck="false">
+        <kbd aria-hidden="true">/</kbd>
+      </label>
+      <div class="list-tools">
+        <span class="list-label">All keys <span id="keys-count" class="count-chip"></span></span>
+        <div class="list-filters" id="keys-filters">
+          <label class="keys-sort" id="keys-sort-label">
+            <svg class="vicon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14m-4-4 4 4 4-4M16 19V5m-4 4 4-4 4 4"/></svg>
+            <span class="sr">Sort by</span>
+            <select id="keys-sort">
+              <option value="name">Name</option>
+              <option value="recent">Recently used</option>
+              <option value="most">Most used this month</option>
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+            </select>
+          </label>
+        </div>
       </div>
+      <!-- One flat list ordered by the sort. Each key is a focusable .key-row[data-name]; the
+           selected one carries aria-current and is the only tab stop (roving tabindex). -->
+      <div class="key-list" id="keys-list">
+        <div id="keys-body" role="list" aria-label="Keys"></div>
+      </div>
+      <p id="keys-no-match" class="empty" hidden></p>
+      <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button> or <button type="button" class="link" id="keys-empty-help">see how Keys works</button>.</p>
       <div id="grants" class="grants" hidden>
         <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind.</span></div>
         <ul id="grants-list" class="grants-list"></ul>
         <ul id="clients-list" class="grants-list"></ul>
       </div>
-      <!-- The unit for the gateway column, outside the table head so it survives the narrow
-           layout that drops the head entirely. -->
-      <div class="keys-toolbar" id="keys-toolbar" hidden>
-        <label class="keys-sort">Sort by
-          <select id="keys-sort">
-            <option value="name">Name</option>
-            <option value="recent">Recently used</option>
-            <option value="most">Most used this month</option>
-            <option value="newest">Newest</option>
-            <option value="oldest">Oldest</option>
-          </select>
-        </label>
-        <span>Via gateway, in</span>
-        <button type="button" id="keys-unit" class="link th-unit"></button>
+      <!-- Both sentences are facts of the engine: secrets live in the Keychain, and a copy asks
+           for Touch ID and is wiped after Clipboard.swift's 20 seconds. -->
+      <footer class="keys-footer">
+        <span class="keys-footer-left"><svg class="vicon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Stored in macOS Keychain</span>
+        <span class="keys-footer-right">Copy requires approval · Clipboard clears in 20 s</span>
+      </footer>
       </div>
-      <table class="keys" id="keys-table">
-        <thead>
-          <tr>
-            <th scope="col">Name</th>
-            <th scope="col">Provider</th>
-            <th scope="col">Kind</th>
-            <th scope="col">Created</th>
-            <th scope="col">Last used</th>
-            <th scope="col" class="th-usd">Via gateway</th>
-            <th scope="col"><span class="sr">Actions</span></th>
-          </tr>
-        </thead>
-        <tbody id="keys-body"></tbody>
-      </table>
-      <p id="keys-no-match" class="empty" hidden></p>
-      <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button> or <button type="button" class="link" id="keys-empty-help">see how Keys works</button>.</p>
     </section>
 
     <section id="pane-settings" role="tabpanel" aria-labelledby="nav-settings" class="settings" hidden>
