@@ -56,13 +56,22 @@ client-token checks.
 3. **Require.** Pairing enforcement is opt-in: `keys relay pair require on`
    sets a `relay_pairing_required` flag in the catalog's `meta` table.
    Default is off, and off is byte-for-byte today's behavior — existing
-   deployments and tests are untouched. `keys relay status` shows the mode
-   and the live pairing count.
+   deployments and tests are untouched. Turning it back off is the one
+   security-lowering move in this surface, so it costs one Touch ID (a
+   cancelled prompt leaves the flag exactly as it was); turning it on costs
+   none. Both directions go through the one gated service method, from the
+   CLI (which delegates to the running app when one is up, falling back to
+   a local service) and the API's `/api/relay/pairings/required` route.
+   `keys relay status` shows the mode and the live pairing count.
 4. **Verify, per request.** With the flag on, the Mac's relay checks the
    credential when a REQUEST frame arrives: after the head is parsed, before
    the request id enters the body buffer. The check is a sub-millisecond
-   SQLite read of hashes — no Keychain access, no per-request Touch ID. A
-   missing, malformed or unknown credential is refused with
+   SQLite read of hashes — no Keychain access, no per-request Touch ID. The
+   flag read fails closed: a catalog read that throws refuses with
+   `pairing_required`, exactly like a missing credential, so a corrupt or
+   busy catalog can never silently disable enforcement, while an absent row
+   (pairing never switched on) stays a legitimate off. A missing, malformed
+   or unknown credential is refused with
    `pairing_required`; an expired one with `pairing_expired`; a revoked one
    with `pairing_revoked`; a valid pairing whose key list does not cover the
    request's target key (the first path segment of `target`) with
@@ -113,16 +122,20 @@ Mirrors `keys client issue/list/revoke`, nested under `keys relay`:
 | `keys relay pair issue <label> [--key <name>]… [--days <n>]` | mints under one Touch ID; prints the credential once |
 | `keys relay pair list` | label, hint, key scope, expiry, revoked, last used — never the credential or its hash |
 | `keys relay pair revoke <label-or-hint>` | sets `revoked_at`; ambiguous hint refuses |
-| `keys relay pair require on\|off` | flips the `relay_pairing_required` flag |
+| `keys relay pair require on\|off` | flips the `relay_pairing_required` flag; off costs one Touch ID, on none |
 | `keys relay status` | additionally shows the pairing mode and live pairing count |
 
 The commands talk to the running app through `ControlClient`, exactly like
 `keys client issue`, against a new `/api/relay/pairings` route family in the
-loopback HTTP server: mutating routes take the existing mutating-API token
-gate, mint additionally requires presence, and JSON responses carry hints and
-metadata only — the single exception being the one-time mint response that
-returns the credential, the same contract as client issue. Parse errors
-(unknown flags, zero or negative `--days`) fail before any app contact.
+loopback HTTP server — `issue` and `require` delegate when a site is up and
+fall back to a local service when not, with `require off` riding a
+`/api/relay/pairings/required` route: mutating routes take the existing
+mutating-API token gate, mint and require-off additionally require presence,
+asked in the running app (and a refused body never consumes the prompt), and
+JSON responses carry hints and metadata only — the single exception being the
+one-time mint response that returns the credential, the same contract as
+client issue. Parse errors (unknown flags, zero or negative `--days`, a
+`require` state that is not on or off) fail before any app contact.
 
 ## Threat model: what pairing does not change
 

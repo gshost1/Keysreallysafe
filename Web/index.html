@@ -169,7 +169,7 @@
       <p id="keys-no-match" class="empty" hidden></p>
       <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button> or <button type="button" class="link" id="keys-empty-help">see how Keys works</button>.</p>
       <div id="grants" class="grants" hidden>
-        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind. A profile is saved grant bounds (keys profile add), consulted only when a grant is issued. Renew re-approves an active or expired grant in place — same token, same scope — for another window of its original lifetime; a revoked grant is never renewable.</span></div>
+        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, gateway off, key rotation or restart, and an expired one can be renewed. A client is the long-lived kind. A profile is saved grant bounds (keys profile add), consulted only when a grant is issued. Renew re-approves an active or expired grant in place — same token, same scope — for another window of its original lifetime; a revoked grant is never renewable.</span></div>
         <ul id="grants-list" class="grants-list"></ul>
         <ul id="clients-list" class="grants-list"></ul>
         <ul id="profiles-list" class="grants-list" aria-label="Saved profiles"></ul>
@@ -387,7 +387,7 @@
           <input name="max_usd" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="unlimited">
         </label>
       </div>
-      <p class="hint">One Touch ID. Further calls inside this scope need no prompt. The spend cap is checked after each call, so one call can overshoot it. Dies on screen lock, revoke, expiry or a site restart.</p>
+      <p class="hint">One Touch ID. Further calls inside this scope need no prompt. The spend cap is checked after each call, so one call can overshoot it. Dies on screen lock, revoke, gateway off, key rotation or a site restart.</p>
       </div>
       <div id="client-fields" hidden>
       <label>Label (the program that will hold it)
@@ -639,7 +639,7 @@
         <li>
           <b>Use it from a tool.</b> <span class="guide-body">Keys can hand the value to one child process as an
           environment variable, or route a tool through the local gateway with a scoped grant: one key, one host,
-          a method and path scope, an expiry. A grant dies on screen lock, revoke, expiry, gateway off or restart.
+          a method and path scope, an expiry. A grant dies on screen lock, revoke, expiry, gateway off, key rotation or restart.
           You do not need a <code>.env</code> file, and nothing is written to your shell profile.</span>
         </li>
         <li>

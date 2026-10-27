@@ -182,6 +182,8 @@ final class APIHandler: @unchecked Sendable {
                 return try relayPairingsIssue(request)
             case ("DELETE", "/api/relay/pairings"):
                 return try relayPairingsRevoke(request)
+            case ("POST", "/api/relay/pairings/required"):
+                return try relayPairingsRequired(request)
             case ("POST", "/api/preferences/hidden-usage"):
                 guard let list = try jsonBody(request)["hidden"] as? [Any] else {
                     return HTTPResponse.json(400, ["error": "hidden must be a list"])
@@ -615,6 +617,22 @@ final class APIHandler: @unchecked Sendable {
     private func relayPairingsList() throws -> HTTPResponse {
         let now = Date()
         return HTTPResponse.json(200, ["pairings": try service.relayPairings().map { Self.pairingJSON($0, now: now) }])
+    }
+
+    /// The enforcement toggle, so the CLI's delegated `require` and the app share the one
+    /// gated service method. `required` false is the only security-lowering value, so it is
+    /// the only one setRelayPairingRequired ever prompts for — and both refusals below come
+    /// before it, so a bad body never consumes a prompt.
+    private func relayPairingsRequired(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard Set(obj.keys) == ["required"] else {
+            return HTTPResponse.json(400, ["error": "send required as true or false"])
+        }
+        guard let required = JSONValue.bool(obj["required"]) else {
+            return HTTPResponse.json(400, ["error": "required must be true or false"])
+        }
+        try service.setRelayPairingRequired(required)
+        return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
     }
 
     /// The target travels in the body because a label can hold any character, spaces included.

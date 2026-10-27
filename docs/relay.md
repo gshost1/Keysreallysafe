@@ -120,10 +120,12 @@ drops (see [Reconnection](#reconnection)).
 By default any agent that holds a valid `ksfc_…`/`ksf_…` token can relay
 requests. Pairing narrows that to agents you have explicitly paired with the
 Mac. It is opt-in (`keys relay pair require on`, off by default, so an
-existing deployment behaves exactly as before) and it is **in addition to,
-never instead of, the gateway's grant and client-token checks**: a paired
-request without a valid token still gets the gateway's 401, and a grant's
-key/method/path scope still applies.
+existing deployment behaves exactly as before), and turning it back **off
+costs one Touch ID** — the same user-presence rule as every other
+security-lowering move, while turning it on costs none — and it is **in
+addition to, never instead of, the gateway's grant and client-token checks**:
+a paired request without a valid token still gets the gateway's 401, and a
+grant's key/method/path scope still applies.
 
 A pairing is a credential, `ksfp_…` (24 random bytes, hex), that the Mac
 shows once at issue and stores only as a SHA-256 hash with a last-4 hint, in
@@ -145,6 +147,7 @@ keys relay pair issue "github actions" --key router --days 30
 keys relay pair list        # labels, hints, key scopes, expiry, last used — never the credential
 keys relay pair revoke "github actions"   # by label or by last-4 hint
 keys relay pair require on  # the enforcement switch; `keys relay status` shows the mode
+keys relay pair require off # one Touch ID — lowering enforcement needs you present; on needs none
 ```
 
 Because the codes are new but the frame types are not, the protocol stays
@@ -350,7 +353,7 @@ identical request cannot change the answer, only a change on the Mac can.
 | 503    | `mac_offline`    | no Mac connected within the window (60 s by default, at once with `RELAY_OFFLINE_GRACE_MS=0`): the relay is not running, or the Mac is off, asleep or offline; `Retry-After: 30` |
 | 502    | `mac_disconnected` | the Mac dropped while this request was in flight; it may be retried (see [While the Mac is away](#while-the-mac-is-away)) |
 | 502    | `gateway_unreachable` | the relay is up but the gateway on 127.0.0.1:12767 is not |
-| 403    | `pairing_required` | the Mac requires paired agents and this request carried no usable `X-KSF-Pair` credential (missing, malformed or unknown); refused at REQUEST time, before the body was buffered |
+| 403    | `pairing_required` | the Mac requires paired agents and this request carried no usable `X-KSF-Pair` credential (missing, malformed or unknown), or the Mac could not read the pairing-required flag from its catalog and refuses rather than silently enforce nothing; refused at REQUEST time, before the body was buffered |
 | 403    | `pairing_expired` | the pairing has expired; issue a new one with `keys relay pair issue` |
 | 403    | `pairing_revoked` | the pairing was revoked on the Mac |
 | 403    | `pairing_out_of_scope` | the pairing is valid but does not cover the key this request targets |
@@ -405,7 +408,10 @@ side `RelayTests` covers the verification (accept; missing, unknown and
 malformed credentials; expiry at the boundary; revocation across a
 reconnect; out-of-scope keys; the credential stripped before replay) and
 `RelayPairingTests` the management surface (issue, list, revoke, require
-on/off). All are in CI. The real transport end to end is opt-in: start `npx wrangler dev --port
+on/off — including the one Touch ID that turning enforcement off costs, the
+token-gated `/api/relay/pairings/required` toggle route that `keys relay pair
+require` delegates to through the control file, and the fail-closed refusal
+when the flag cannot be read from the catalog). All are in CI. The real transport end to end is opt-in: start `npx wrangler dev --port
 8787` in `Relay/` with a `.dev.vars` holding `RELAY_SECRET=…` (git-ignored),
 then run `swift test --filter RelayEndToEndTests` with `KEYS_RELAY_E2E_URL`
 and `KEYS_RELAY_E2E_SECRET` set. Add `--var RELAY_OFFLINE_GRACE_MS:3000` to

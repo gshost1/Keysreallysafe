@@ -1284,7 +1284,14 @@ final class KeysService: @unchecked Sendable {
         (try? catalog.metaValue(Self.relayPairingRequiredMetaKey)) == "1"
     }
 
+    /// The enforcement switch. Turning it off is the one security-lowering move in the
+    /// pairing surface, so it costs one presence prompt — asked before the catalog write,
+    /// so a cancelled prompt leaves the flag exactly as it was. Turning it on only ever
+    /// tightens and prompts for nothing.
     func setRelayPairingRequired(_ required: Bool) throws {
+        if !required {
+            try presence.require(reason: "stop requiring paired agents on the relay")
+        }
         if required {
             try catalog.setMeta(Self.relayPairingRequiredMetaKey, "1")
         } else {
@@ -1335,7 +1342,14 @@ final class KeysService: @unchecked Sendable {
         keyName: String?,
         now: Date
     ) -> RelayPairingVerdict {
-        guard (try? catalog.metaValue(relayPairingRequiredMetaKey)) == "1" else { return .notRequired }
+        // An unreadable flag must not silently disable enforcement: a thrown read fails
+        // closed as the same refusal a missing credential gets, while an absent row
+        // (pairing never switched on) stays the legitimate off.
+        do {
+            guard try catalog.metaValue(relayPairingRequiredMetaKey) == "1" else { return .notRequired }
+        } catch {
+            return .pairingRequired
+        }
         // Missing, malformed and unknown are one refusal: the wire must not distinguish them.
         guard let credential, RelayPairing.looksLikeCredential(credential) else { return .pairingRequired }
         let hash = RelayPairing.hash(credential)

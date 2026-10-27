@@ -2657,14 +2657,14 @@
     )));
     $("grants-list").replaceChildren(...list.map((g) => {
       // The engine's `status`: active and expired rows are renewable in place; a revoked
-      // row is a kill (revoke, screen lock, gateway off, key delete) and stays listed only
-      // so its fate is visible — it offers nothing.
+      // row is a kill (revoke, screen lock, gateway off, key rotation, key delete) and stays
+      // listed only so its fate is visible — it offers nothing.
       const st = g.status || "active";
       return el("li", {},
         el("span", { class: "g-id", text: g.id }),
         el("span", { class: "g-key", text: g.key + " → " + g.host }),
         el("span", { class: "g-task", text: g.task, title: g.task }),
-        el("span", { class: "badge", text: st, title: st === "active" ? "inside its window; Renew opens another of the same size" : st === "expired" ? "its window closed; Renew opens another of the same scope and size" : "killed by revoke, screen lock, gateway off or key delete; never renewable" }),
+        el("span", { class: "badge", text: st, title: st === "active" ? "inside its window; Renew opens another of the same size" : st === "expired" ? "its window closed; Renew opens another of the same scope and size" : "killed by revoke, screen lock, gateway off, key rotation or key delete; never renewable" }),
         g.profile ? el("span", { class: "badge", text: "profile " + g.profile, title: "issued within saved profile " + g.profile }) : null,
         g.unattended ? el("span", { class: "badge", text: "unattended", title: "approved to run while you are away; still dies on screen lock" }) : null,
         el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${grantUsd(g)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${st === "expired" ? "expired" : minutesLeft(g.expires_at) + " min left"}${g.renewals > 0 ? " · renewed " + g.renewals + "×" : ""}` }),
@@ -2842,7 +2842,7 @@
     $("gr-id").textContent = g.id;
     $("gr-target").textContent = `${g.key} → ${providerName(g.provider)} at ${g.host}`;
     $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + ", ends on an unpriced call" : ""}${g.profile ? " · profile " + g.profile : ""}${g.unattended ? " · unattended" : ""}`;
-    $("gr-expires").textContent = `${fmtWhenShort(g.expires_at)} (${body.minutes} min), or earlier on screen lock, revoke or site restart`;
+    $("gr-expires").textContent = `${fmtWhenShort(g.expires_at)} (${body.minutes} min), or earlier on screen lock, revoke, key rotation or site restart`;
     $("gr-base").textContent = g.base_url;
     $("gr-token").textContent = g.token;
     $("gr-hint").textContent = `Use the token as the API key (${g.auth_header} header) and the base URL as the SDK endpoint. Shown once; it is not stored anywhere. Select to copy.`;
