@@ -1008,9 +1008,10 @@ html[data-theme="light"] .tint-6 { --tint: var(--s-deepseek-3); }
   .btn-copy { min-width: 62px; padding: 0 7px; gap: 5px; }
   .btn-menu { width: 24px; }
   .key-actions { gap: 5px; }
-  .list-tools { gap: 8px; }
+  /* The rail narrowed the pane: stack the count row and the filter/sort row instead of
+     letting flex shrink clip "All providers" mid-word. */
+  .list-tools { gap: 6px 8px; flex-wrap: wrap; }
   .list-filters { gap: 8px; }
-  .keys-provider select { max-width: 84px; }
   .keys-sort select { max-width: 96px; }
   .list-filters > * + .keys-sort { padding-left: 8px; }
 }
@@ -1211,6 +1212,9 @@ html[data-theme="light"] .tint-6 { --tint: var(--s-deepseek-3); }
   .rail-button[aria-selected="true"]::before { left: -7px; }
   .brand-mark, .brand-mark img { width: 40px; height: 40px; }
   .brand-mark { margin-bottom: 30px; }
+  /* The Source chips are wider than the pane once the rail takes 53px; as a flex item they
+     sized to max-content and the pane clipped the Cloud chip. A full row lets them wrap. */
+  .chips[aria-label="Source"] { flex-basis: 100%; }
 }
 
 @media (max-width: 720px) {

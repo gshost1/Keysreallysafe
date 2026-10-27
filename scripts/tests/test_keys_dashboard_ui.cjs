@@ -20,6 +20,7 @@ const assets = new Map([
   ["/styles.css", ["text/css", asset("styles.css")]],
   ["/providers.json", ["application/json", asset("providers.json")]],
   ["/icon.png", ["image/png", asset("icon.png")]],
+  ["/icon.svg", ["image/svg+xml", asset("icon.svg")]],
 ]);
 
 // The merged catalog the engine serves at /api/providers, mirrored from the shipped file: the
@@ -2880,6 +2881,17 @@ test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothi
       else await page.locator("#theme-switch").waitFor();
       const spill = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.ok(spill <= 1, `${pane} pane spills ${spill}px at ${width}px`);
+      // html/body clip horizontal overflow, so a document-level spill check alone cannot see a
+      // pane child (the rail made the Chart chips row 53px narrower) whose content is cut off.
+      if (pane === "Chart") {
+        const chips = await page.evaluate(() => {
+          const row = document.querySelector("#source-chips");
+          const cloud = row.querySelector('[data-source="cloud"]').getBoundingClientRect();
+          return { scroll: row.scrollWidth, client: row.clientWidth, cloudRight: cloud.right, vw: document.documentElement.clientWidth };
+        });
+        assert.ok(chips.scroll <= chips.client + 1, `#source-chips clips its chips at ${width}px (scroll ${chips.scroll} > client ${chips.client})`);
+        assert.ok(chips.cloudRight <= chips.vw, `the Cloud chip is cut off at ${width}px (right edge ${chips.cloudRight} > viewport ${chips.vw})`);
+      }
     }
   }
   assert.deepEqual(foreign, [], "every request stays on the dashboard's own origin");
