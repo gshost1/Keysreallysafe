@@ -503,6 +503,20 @@ final class GrantTests: XCTestCase {
                 specified: GrantSpecified(paths: true)
             )
         }
+        // An explicitly empty path list asks for any path: wider than a scoped profile, so it
+        // is refused instead of passing as a vacuous subset. `/` was already refused by name.
+        for (paths, named) in [([String](), "any path"), (["/"], "/")] {
+            assertPrePromptRefusal(
+                .pathNotAllowed(path: named, profile: "evals", paths: ["/v1/messages"]), gate: gate
+            ) {
+                try service.issueGrant(
+                    name: "demo",
+                    request: GrantRequest(task: "x", paths: paths),
+                    profile: "evals",
+                    specified: GrantSpecified(paths: true)
+                )
+            }
+        }
         assertPrePromptRefusal(.minutesOver(requested: 481, profile: "evals", ceiling: 480), gate: gate) {
             try service.issueGrant(
                 name: "demo",

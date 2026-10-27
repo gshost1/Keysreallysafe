@@ -251,6 +251,8 @@ final class ProfileTests: XCTestCase {
         XCTAssertFalse(p.allows(paths: ["/"], providerPrefix: "/v1"))
         XCTAssertFalse(p.allows(paths: ["/messages", "/models"], providerPrefix: "/v1"))
         XCTAssertFalse(p.allows(paths: ["/messagesx"], providerPrefix: "/v1"))
+        // An empty ask is "any path", so a scoped profile refuses it.
+        XCTAssertFalse(p.allows(paths: [], providerPrefix: "/v1"))
         // Dot segments never match any scope, exactly like a grant.
         XCTAssertFalse(p.allows(paths: ["/messages/../models"], providerPrefix: "/v1"))
         XCTAssertFalse(p.allows(paths: ["/messages/./x"], providerPrefix: "/v1"))

@@ -63,9 +63,11 @@ struct Profile: Equatable, Sendable {
     /// Every requested scope must sit inside an allowed one, judged by the same rules a
     /// grant judges a request path: exact-or-subdirectory, both sides relative to the
     /// provider's path prefix, dot segments never matching. Empty profile paths allow
-    /// any requested path.
+    /// any requested path. An empty request means "any path", so a profile that names
+    /// scopes refuses it rather than letting it pass as a vacuous subset.
     func allows(paths requested: [String], providerPrefix: String) -> Bool {
-        requested.allSatisfy { GrantPath.matches(rest: $0, prefix: providerPrefix, allowed: paths) }
+        if requested.isEmpty { return paths.isEmpty }
+        return requested.allSatisfy { GrantPath.matches(rest: $0, prefix: providerPrefix, allowed: paths) }
     }
 
     /// Minutes may be shortened, never lengthened; equal is allowed.
@@ -250,7 +252,7 @@ extension Profile {
         }
         if specified.paths {
             guard allows(paths: r.paths, providerPrefix: providerPrefix) else {
-                let bad = r.paths.first { !GrantPath.matches(rest: $0, prefix: providerPrefix, allowed: paths) } ?? "?"
+                let bad = r.paths.first { !GrantPath.matches(rest: $0, prefix: providerPrefix, allowed: paths) } ?? "any path"
                 throw ProfileError.pathNotAllowed(path: bad, profile: name, paths: paths)
             }
         } else {
