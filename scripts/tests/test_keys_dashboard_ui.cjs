@@ -310,6 +310,12 @@ function handle(method, pathname, body, params) {
 
   if (pathname === "/api/keys" && method === "GET") return [200, { keys }];
   if (pathname === "/api/keys" && method === "POST") {
+    // Mirror the real server's KeyName.validate: a name outside the pattern or past 128
+    // characters is refused before anything is stored. The client pattern has no length
+    // cap, so a long lowercase name passes the browser and only the server can refuse it.
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(body.name) || body.name.length > 128) {
+      return [400, { error: `invalid name ${body.name} (expected [a-z0-9][a-z0-9._-]*)` }];
+    }
     if (keys.some((k) => k.name === body.name)) return [409, { error: "already_exists" }];
     fixtureSecrets.set(body.name, body.secret);
     keys.push({ name: body.name, provider: body.provider, kind: body.kind, notes: body.notes,
@@ -1412,25 +1418,95 @@ test("a copy whose row disappears before the deferred reload does not throw", as
 
 // ---------- CRUD ----------
 
+// The Add dialog's inputs carry no id, so activeElement is compared against the field node
+// itself: validation must focus exactly the offending control, not merely show the message.
+const addFocus = (page, field) =>
+  page.evaluate((f) => document.activeElement === document.getElementById("add-form").elements[f], field);
+
 test("add validates locally before it sends anything", async (page, origin) => {
   await openKeys(page, origin);
   await page.locator("#btn-add").click();
   await waitDialog(page, "dlg-add", true);
   const sent = requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length;
 
+  // VAL-REQ-001/002/003: each missing field is named and focused, and nothing leaves the page.
   await page.locator("#add-form [type=submit]").click();
   assert.match(await page.locator("#add-err").textContent(), /^Name:/);
+  assert.equal(await addFocus(page, "name"), true, "an empty name must focus the name field");
 
   await page.locator("#add-form [name=name]").fill("delta");
   await page.locator("#add-form [type=submit]").click();
   assert.equal(await page.locator("#add-err").textContent(), "Provider is required.");
+  assert.equal(await addFocus(page, "provider"), true, "a missing provider must focus the provider field");
 
   await page.locator("#add-form [name=provider]").fill("openai");
   await page.locator("#add-form [type=submit]").click();
   assert.equal(await page.locator("#add-err").textContent(), "Secret is required.");
+  assert.equal(await addFocus(page, "secret"), true, "a missing secret must focus the secret field");
 
   assert.equal(requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length, sent,
     "no request may leave until the form is valid");
+});
+
+// VAL-INVAL-001: the name pattern is enforced in the browser for every shape the server would
+// refuse, so none of them can reach the wire.
+test("add refuses pattern-violating names locally and sends nothing", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  const sent = () => requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length;
+  const before = sent();
+  for (const bad of ["UPPER", "spa ce", "-lead", ".dot", "café"]) {
+    await page.locator("#add-form [name=name]").fill(bad);
+    await page.locator("#add-form [type=submit]").click();
+    assert.match(await page.locator("#add-err").textContent(), /^Name:/, `"${bad}" must show the name error`);
+    assert.equal(await addFocus(page, "name"), true, `"${bad}" must focus the name field`);
+    assert.equal(sent(), before, `"${bad}" must not reach the server`);
+  }
+});
+
+// VAL-INVAL-002: a provider of only spaces trims to nothing, so it is refused like an empty one.
+test("add refuses a whitespace-only provider locally", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("   ");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  const before = requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length;
+  await page.locator("#add-form [type=submit]").click();
+  assert.equal(await page.locator("#add-err").textContent(), "Provider is required.");
+  assert.equal(await addFocus(page, "provider"), true, "a blank provider must focus the provider field");
+  assert.equal(requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length, before,
+    "a blank provider must not reach the server");
+});
+
+// VAL-INVAL-003: a 129-character lowercase name passes the client pattern (no length cap), so
+// only the server's KeyName rule refuses it. The mirrored fixture must answer the same 400 the
+// real backend does, and the dialog must stay open with the message and the typed values.
+test("add keeps the dialog open with the server's message when the name is too long", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  const longName = "a".repeat(129);
+  await page.locator("#add-form [name=name]").fill(longName);
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.match(await page.locator("#add-err").textContent(),
+    /^invalid name a{129} \(expected \[a-z0-9\]\[a-z0-9\._-\]\*\)$/,
+    "the server's message must be shown verbatim");
+  assert.equal(await page.locator("#dlg-add").evaluate((d) => d.open), true, "the dialog stays open");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), longName, "the name is preserved");
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "openai", "the provider is preserved");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue().then((v) => v.length > 0), true,
+    "the typed secret is preserved for retry");
+  assert.equal(await page.locator("#add-form [type=submit]").textContent(), "Add key");
+  assert.equal(await page.locator("#add-form [type=submit]").isDisabled(), false, "the retry must be possible");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"], "nothing was created");
 });
 
 test("add creates the key, carries the launch token and selects the new row", async (page, origin) => {
@@ -1597,6 +1673,39 @@ test("a collapsed advanced section still submits kind runtime and empty notes", 
     "the collapsed defaults submit exactly as the visible fields did before the restructure");
   await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
   assert.equal(await status(page), "Added delta.");
+});
+
+// VAL-CROSS-003: the Advanced fields are not decoration — kind and notes travel in the POST
+// and come back on the new row (and, on reopening Edit, still hold).
+test("add submits the advanced kind and notes and renders them on the new row", async (page, origin) => {
+  await openKeys(page, origin);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-advanced summary").click();
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=kind]").selectOption("billing");
+  await page.locator("#add-form [name=notes]").fill("monthly invoice");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  assert.equal(bodies.length, 1, "exactly one add POST left the page");
+  const body = JSON.parse(bodies[0]);
+  assert.deepEqual([body.name, body.provider, body.kind, body.notes], ["delta", "openai", "billing", "monthly invoice"],
+    "the advanced values must ride the POST body");
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  assert.equal(await rowCell(page, "delta", "notes").textContent(), "monthly invoice", "the row shows the notes");
+  assert.equal(await status(page), "Added delta.");
+
+  // Reopening Edit on the new row shows both stored values.
+  await rowAct(page, "delta", "edit");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-form [name=kind]").inputValue(), "billing");
+  assert.equal(await page.locator("#edit-form [name=notes]").inputValue(), "monthly invoice");
 });
 
 // VAL-ADD-005: the dialog stays inside its card and the viewport at 390 px with the

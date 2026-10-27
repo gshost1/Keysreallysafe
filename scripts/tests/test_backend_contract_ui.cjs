@@ -313,6 +313,34 @@ test("a duplicate name surfaces the real 409 already_exists", async (page) => {
   assert.equal(listed.data.keys.filter((k) => k.name === "contract-alpha").length, 1);
 });
 
+// VAL-INVAL-003: a name the client pattern accepts can still be refused by the server. The real
+// KeyName rule caps the name at 128 characters, so the dashboard must keep the dialog open with
+// the server's message and the typed values so the user can shorten the name and retry.
+test("an over-long name is refused by the real server and the dialog stays open", async (page) => {
+  await openKeys(page);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  const longName = "a".repeat(129);
+  await page.locator("#add-form [name=name]").fill(longName);
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill("sk-contract-long-NEVER-REAL");
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.equal(await page.locator("#add-err").textContent(), "name too long",
+    "the real KeyName cap's message must be shown verbatim");
+  assert.equal(await page.locator("#dlg-add").evaluate((d) => d.open), true, "the dialog stays open");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), longName, "the name is preserved");
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "openai", "the provider is preserved");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue().then((v) => v.length > 0), true,
+    "the typed secret is preserved for retry");
+  assert.equal(await page.locator("#add-form [type=submit]").isDisabled(), false, "the retry must be possible");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+  // The refusal changed nothing in the real vault.
+  const listed = await get(page, "/api/keys");
+  assert.equal(listed.data.keys.some((k) => k.name.length > 128), false, "the refused add must not create a row");
+});
+
 test("the edit dialog patches the real row and the list reflects the stored values", async (page) => {
   await openKeys(page);
   await rowAct(page, NEW_KEY, "edit");
