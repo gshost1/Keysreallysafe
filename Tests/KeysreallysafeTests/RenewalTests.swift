@@ -283,6 +283,21 @@ final class RenewalTests: XCTestCase {
         )
     }
 
+    /// A grant that ended more than a day ago is pruned by the renewal itself, not kept alive
+    /// until some later issuance happens to prune it: the README's "a day" holds.
+    func testAGrantThatEndedOverADayAgoIsPrunedAndNotRenewable() throws {
+        let (service, gate, _, _) = try renewableService()
+        let old = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(task: "old", minutes: 10, methods: ["GET"]).validated(),
+            now: Date().addingTimeInterval(-2 * 24 * 3600)
+        )
+        XCTAssertThrowsError(try service.renewGrant(id: old.grant.id, caller: "cli")) { error in
+            XCTAssertEqual(error as? RenewalError, .notFound(old.grant.id))
+        }
+        XCTAssertTrue(gate.reasons.isEmpty, "the refusal consumed no prompt")
+    }
+
     // MARK: - Refusals precede the prompt
 
     /// Every refused renewal names its error and consumes no prompt: unknown id, revoked

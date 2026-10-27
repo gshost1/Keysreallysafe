@@ -199,6 +199,45 @@ final class RenewalGatewayTests: XCTestCase {
         XCTAssertEqual(body["error"] as? String, "grant_revoked")
     }
 
+    /// The kill switches reach a grant that had already expired when they fired. It kept its
+    /// hash so it could be renewed, so a switch that skipped it would let a later renewal
+    /// revive the old token across the lock, the gateway going off or the key being replaced.
+    func testAKillSwitchAlsoKillsAnExpiredGrantSoRenewalCannotReviveIt() async throws {
+        let kills: [(String, (GatewayRig) throws -> Void)] = [
+            ("screen_lock", { $0.service.handleScreenLock() }),
+            ("gateway_off", { _ = try $0.service.setGateway(name: "demo", enabled: false, host: nil) }),
+            ("key_deleted", { rig in
+                try rig.service.remove(name: "demo")
+                try rig.key("demo", provider: "openai")
+            }),
+        ]
+        for (reason, kill) in kills {
+            let rig = try GatewayRig { _ in HTTPResponse.json(200, ["ok": true]) }
+            defer { rig.stop() }
+            try rig.key("demo", provider: "openai")
+            let past = try backDatedGrant(rig)
+            XCTAssertTrue(past.grant.isExpired(at: Date()))
+
+            try kill(rig)
+            let promptsBefore = rig.gate.reasons.count
+            XCTAssertThrowsError(try rig.service.renewGrant(id: past.grant.id, caller: "cli"), reason) { error in
+                XCTAssertEqual(error as? RenewalError, .revoked(id: past.grant.id, reason: reason))
+            }
+            XCTAssertEqual(rig.gate.reasons.count, promptsBefore, "\(reason): the refusal consumed no prompt")
+            XCTAssertTrue(
+                try rig.service.keyEvents(name: "demo").filter { $0.action == "grant_revoke" }.isEmpty,
+                "\(reason): an already-expired grant adds no revoke row to the audit log"
+            )
+            let (dead, body) = try await call(rig.gateway, "/demo/v1/models", token: past.token)
+            if reason == "gateway_off" {
+                XCTAssertNotEqual(dead, 200, "\(reason): the old token stays denied")
+            } else {
+                XCTAssertEqual(dead, 403, reason)
+                XCTAssertEqual(body["error"] as? String, "grant_revoked", reason)
+            }
+        }
+    }
+
     /// A restart is a fresh process with an empty grant table: the old token is 401
     /// `grant_invalid`, and renewing the old id is `renew_not_found`.
     func testARestartForgetsTheGrantAndRenewalIsNotFound() async throws {

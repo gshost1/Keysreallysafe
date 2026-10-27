@@ -609,6 +609,9 @@ final class KeysService: @unchecked Sendable {
     @discardableResult
     func renewGrant(id: String, caller: String = "dashboard", now: Date = Date()) throws -> Grant {
         try requireGatewayOwner()
+        // Issuance is otherwise the only pruner, so without this a grant that ended long ago
+        // stays renewable until the next `keys grant`; the README promises a day.
+        grants.prune(now: now)
         guard let g = grants.grant(id: id) else { throw RenewalError.notFound(id) }
         if g.isRevoked { throw RenewalError.revoked(id: id, reason: g.revokeReason ?? "revoked") }
         // Re-resolve the target the grant was issued against. The kill paths (key deleted,
@@ -625,7 +628,7 @@ final class KeysService: @unchecked Sendable {
             throw RenewalError.targetChanged
         }
         // No gateway-on folding: a renewable grant implies its gateway is on (gateway-off
-        // revokes), so the one prompt is the renewal itself.
+        // revokes expired grants as well as active ones), so the one prompt is the renewal itself.
         try presence.require(reason: Self.renewReason(g))
         // A revoke that landed during the prompt wins the race; the grant stays dead.
         let renewed = try grants.renew(id: id, now: now)

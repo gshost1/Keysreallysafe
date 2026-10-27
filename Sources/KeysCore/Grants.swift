@@ -403,18 +403,22 @@ final class GrantStore: @unchecked Sendable {
         return g
     }
 
-    /// Revoke every active grant, or only those for `key`. Returns the grants touched.
+    /// Revoke every unrevoked grant, or only those for `key`. Expired grants are revoked too:
+    /// an expired grant keeps its hash so it can be renewed, and a kill switch that skipped it
+    /// would let a renewal revive a token across screen lock, gateway off or a key change.
+    /// Returns only the grants that were still active, so counts and audit rows are unchanged.
     @discardableResult
     func revokeAll(key: String? = nil, reason: String, now: Date = Date()) -> [Grant] {
         lock.lock()
         defer { lock.unlock() }
         var touched: [Grant] = []
-        for (id, var g) in grants where g.isActive(at: now) && (key == nil || g.key == key) {
+        for (id, var g) in grants where !g.isRevoked && (key == nil || g.key == key) {
+            let wasActive = g.isActive(at: now)
             g.revokedAt = now
             g.revokeReason = reason
             grants[id] = g
             hashes.removeValue(forKey: id)
-            touched.append(g)
+            if wasActive { touched.append(g) }
         }
         return touched
     }
