@@ -761,6 +761,43 @@ test("the More menu has the designed order, semantics, theme and viewport placem
   await waitDialog(page, "dlg-help", true);
 });
 
+// The vault's whole surface — listing, searching, filtering, sorting, copying and the More
+// menu — runs without the secret ever entering the DOM and without a single off-origin request.
+test("no secret reaches the DOM and no request leaves the origin across list, search, filter, sort, copy and the menu", async (page, origin) => {
+  const foreign = [];
+  page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
+  const secretFree = async (step) =>
+    assert.doesNotMatch(await page.evaluate(() => document.documentElement.innerHTML), new RegExp(SECRET), step);
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await secretFree("the rendered list");
+
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await secretFree("search");
+  await page.locator("#keys-search").fill("");
+  await page.selectOption("#keys-provider", "openai");
+  assert.deepEqual(await rowNames(page), ["alpha"]);
+  await secretFree("the provider filter");
+  await page.selectOption("#keys-provider", "");
+  await page.selectOption("#keys-sort", "recent");
+  await secretFree("sorting");
+
+  await rowButton(page, "bravo", "copy").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
+  await secretFree("copy feedback");
+  await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
+  await secretFree("the post-copy refresh");
+
+  await openRowMenu(page, "alpha");
+  await secretFree("the open menu");
+  await page.keyboard.press("Escape");
+  await waitFocused(page, "alpha:menu");
+  await secretFree("after the menu closes");
+
+  assert.deepEqual(foreign, [], `off-origin requests: ${foreign.join(", ")}`);
+});
+
 test("the More menu dispatches every action through the selected key's existing handlers", async (page, origin) => {
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
   await openKeys(page, origin);
@@ -2902,6 +2939,51 @@ test("neutral dark is the default, Settings switches to the site's light look an
   assert.equal(primary.color, "rgb(255, 255, 255)");
 });
 
+// A theme switch is a pane round trip through Settings: the vault's session state (provider
+// filter, search, the More menu) must keep working afterwards, while the persisted choices
+// (theme, sort) survive a reload and the session-only filter resets.
+test("a theme switch keeps the vault's filter, search and menu, and a reload keeps theme and sort", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.selectOption("#keys-provider", "anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await page.selectOption("#keys-sort", "newest");
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.locator("#theme-switch").click();
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="bravo"]').waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), "rgb(245, 245, 247)");
+  assert.equal(await page.inputValue("#keys-provider"), "anthropic", "the filter survives the theme switch");
+  assert.equal(await page.inputValue("#keys-sort"), "newest", "the sort survives the theme switch");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+
+  // Search still combines with the filter and names it on a miss.
+  await page.locator("#keys-search").fill("alpha");
+  assert.deepEqual(await rowNames(page), []);
+  assert.equal(await page.locator("#keys-no-match").textContent(), "No keys for Anthropic match “alpha”.");
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await page.locator("#keys-search").fill("");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+
+  // The More menu still opens, and Escape returns focus to its button.
+  await openRowMenu(page, "bravo");
+  assert.equal(await page.locator("#key-menu").isVisible(), true);
+  await page.keyboard.press("Escape");
+  await waitFocused(page, "bravo:menu");
+
+  // A reload keeps the theme and the sort; the provider filter is session-only.
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light", "the theme survives the reload");
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  assert.equal(await page.inputValue("#keys-sort"), "newest", "the sort survives the reload");
+  assert.deepEqual(await rowNames(page), ["charlie", "bravo", "alpha"], "newest by created date");
+  assert.equal(await page.inputValue("#keys-provider"), "", "the provider filter is session-only");
+});
+
 test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
   const foreign = [];
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
@@ -3654,6 +3736,82 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   }
 });
 
+// The width audit's other half: the same geometry in BOTH themes, narrow and wide, with a key
+// whose name and host are far too long, plus the theme's computed palette on the Keys pane and
+// the rail and logo at each width. The More menu is opened at the narrowest and widest widths.
+test("the vault's rows, Copy and More stay inside the viewport in both themes from 390 to 1920 px, long name and host included", async (page, origin) => {
+  keys[0].name = "acceptance-" + "long-key-name-".repeat(8);
+  keys[0].host = "api.openai.com";
+  const longName = keys[0].name;
+  await openKeys(page, origin, { expectEmpty: true });
+  await page.locator("#keys-body .key-row[data-name]").first().waitFor();
+  await page.waitForLoadState("networkidle");
+  const palettes = {
+    dark: { bg: "rgb(17, 17, 19)", pane: "rgb(26, 26, 29)", blue: "#4c9aff" },
+    light: { bg: "rgb(245, 245, 247)", pane: "rgb(255, 255, 255)", blue: "#0071e3" },
+  };
+  for (const theme of ["dark", "light"]) {
+    if (theme === "light") {
+      await page.getByRole("tab", { name: "Settings" }).click();
+      await page.locator("#theme-switch").click();
+      await page.getByRole("tab", { name: "Keys" }).click();
+      await page.locator("#keys-body .key-row[data-name]").first().waitFor();
+    }
+    const palette = await page.evaluate(() => ({
+      theme: document.documentElement.dataset.theme || "dark",
+      bg: getComputedStyle(document.body).backgroundColor,
+      pane: getComputedStyle(document.getElementById("pane-keys")).backgroundColor,
+      blue: getComputedStyle(document.documentElement).getPropertyValue("--blue").trim(),
+    }));
+    assert.equal(palette.theme, theme);
+    assert.deepEqual({ bg: palette.bg, pane: palette.pane, blue: palette.blue }, palettes[theme], `${theme}: the Keys pane wears the theme's palette`);
+    for (const width of [390, 540, 1280, 1440, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      const g = await page.evaluate((name) => {
+        const rect = (n) => n.getBoundingClientRect();
+        const row = document.querySelector(`#keys-body .key-row[data-name="${name}"]`);
+        const box = (sel) => { const b = rect(row.querySelector(sel)); return { left: b.left, right: b.right, width: b.width }; };
+        return {
+          vw: innerWidth,
+          spill: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          rail: rect(document.querySelector(".rail")).width,
+          logo: rect(document.querySelector(".brand-mark img")).width,
+          rowRight: rect(row).right,
+          copy: box('[data-act="copy"]'),
+          menu: box('[data-act="menu"]'),
+        };
+      }, longName);
+      const at = `${theme} ${width}px`;
+      assert.ok(g.spill <= 1, `${at}: horizontal spill ${g.spill}px`);
+      assert.equal(g.rail, width > 780 ? 78 : width > 540 ? 65 : 53, `${at}: rail width`);
+      assert.equal(g.logo, width > 540 ? 48 : 40, `${at}: logo size`);
+      assert.ok(g.rowRight <= width + 1, `${at}: the row runs past the viewport`);
+      for (const [which, b] of [["Copy", g.copy], ["More", g.menu]]) {
+        assert.ok(b.width > 0 && b.left >= 0 && b.right <= width + 1, `${at}: ${which} leaves the viewport: ${JSON.stringify(b)}`);
+      }
+      if (width === 390 || width === 1920) {
+        await openRowMenu(page, longName);
+        const m = await page.locator("#key-menu").evaluate((n) => {
+          const b = n.getBoundingClientRect();
+          return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, vw: innerWidth, vh: innerHeight };
+        });
+        assert.ok(m.left >= 0 && m.right <= m.vw && m.top >= 0 && m.bottom <= m.vh, `${at}: the menu leaves the viewport: ${JSON.stringify(m)}`);
+        await page.keyboard.press("Escape");
+        await waitFocused(page, `${longName}:menu`);
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+  }
+});
+
+// The CSP forbids inline styles and scripts and every off-origin resource; pin the served
+// markup to that here as well as in the lint command, so the suite fails on a regression.
+test("the served markup ships no inline styles, style blocks or external resources", async () => {
+  const markup = fs.readFileSync(path.join(root, "Web", "index.html"), "utf8");
+  assert.doesNotMatch(markup, /style="/i, "an inline style attribute crept into index.html");
+  assert.doesNotMatch(markup, /<style/i, "a style block crept into index.html");
+  assert.doesNotMatch(markup, /https?:\/\/[^"']*\.(css|js|png|svg|woff2?)/i, "an external resource crept into index.html");
+});
 // ---------- runner ----------
 
 // The tester-army runner reuses this synthetic fixture, never the installed app.
