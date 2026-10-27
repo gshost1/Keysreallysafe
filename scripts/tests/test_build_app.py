@@ -30,6 +30,10 @@ def make_repo(directory: Path, version: str = "0.10.0") -> Path:
         target = repo / "Fixtures" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(f"fixture {relative}", encoding="utf-8")
+    for name in build_app.SKILL_FILES:
+        target = repo / "Skills" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"skill {name}", encoding="utf-8")
     for name in build_app.LICENSE_FILES:
         target = repo / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +102,7 @@ class BuildAppTests(unittest.TestCase):
                     "Contents/_CodeSignature/CodeResources"}
         expected |= {f"Contents/Resources/Web/{n}" for n in build_app.WEB_FILES}
         expected |= {"Contents/Resources/Fixtures/models.json"}
+        expected |= {"Contents/Resources/Skills/keysrs/SKILL.md"}
         expected |= {"Contents/Resources/LICENSE", "Contents/Resources/THIRD_PARTY_NOTICES.md",
                      "Contents/Resources/licenses/Keysreallysafe-legacy-MIT.txt",
                      "Contents/Resources/licenses/swift-argument-parser.txt"}

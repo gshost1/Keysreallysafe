@@ -21,6 +21,7 @@ Keysrs.app/Contents/
   MacOS/keys                  the one release binary: app with no arguments, CLI with arguments
   Resources/Web/              the dashboard allowlist (same files the installer used to stage)
   Resources/Fixtures/models.json
+  Resources/Skills/keysrs/SKILL.md   the agent skill, byte-for-byte from Skills/ (Agent Skills format)
   Resources/Keysrs.icns       Assets/icon/Keysrs.icns (built from Web/icon.png only if missing)
   Resources/LICENSE, THIRD_PARTY_NOTICES.md, licenses/*.txt
   _CodeSignature/CodeResources

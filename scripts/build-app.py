@@ -34,6 +34,9 @@ WEB_FILES = (
 )
 # providers.json ships inside Web/; only the price table lives beside it (LoginItem.stageFixtures).
 FIXTURE_FILES = ("models.json",)
+# The agent skill ships byte-for-byte from Skills/ (repo root), the way Web/ and Fixtures/ do;
+# its directory name must match the frontmatter `name` (pinned by AgentSkillTests).
+SKILL_FILES = ("keysrs/SKILL.md",)
 LICENSE_FILES = (
     "LICENSE", "THIRD_PARTY_NOTICES.md",
     "licenses/Keysreallysafe-legacy-MIT.txt", "licenses/swift-argument-parser.txt",
@@ -209,6 +212,8 @@ def build(repo: Path, binary: Path, output: Path, identity: str = "-", version: 
         raise BuildError(f"Web/{unlisted[0]} is not in WEB_FILES in scripts/build-app.py; add it or remove it")
     for name in FIXTURE_FILES:
         require_regular(repo / "Fixtures" / name, f"fixture {name}", repo)
+    for name in SKILL_FILES:
+        require_regular(repo / "Skills" / name, f"skill file {name}", repo)
     for name in LICENSE_FILES:
         require_regular(repo / name, f"licence file {name}", repo)
     if icns is None and (repo / DEFAULT_ICNS).is_file():
@@ -241,6 +246,8 @@ def build(repo: Path, binary: Path, output: Path, identity: str = "-", version: 
             copy_file(repo / "Web" / name, resources / "Web" / name)
         for name in FIXTURE_FILES:
             copy_file(repo / "Fixtures" / name, resources / "Fixtures" / name)
+        for name in SKILL_FILES:
+            copy_file(repo / "Skills" / name, resources / "Skills" / name)
         for name in LICENSE_FILES:
             copy_file(repo / name, resources / name)
         if icns is not None:

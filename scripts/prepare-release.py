@@ -37,6 +37,7 @@ build_app = _load_build_app()
 APP_NAME = build_app.APP_NAME
 WEB_FILES = build_app.WEB_FILES
 FIXTURE_FILES = build_app.FIXTURE_FILES
+SKILL_FILES = build_app.SKILL_FILES
 LICENSE_FILES = build_app.LICENSE_FILES
 MANIFEST_NAME = ".release-manifest.json"
 # The Finder drag-to-install target; the only symlink a package may contain.
@@ -68,6 +69,7 @@ def expected_app_files() -> dict[str, str]:
     }
     files.update({f"Contents/Resources/Web/{name}": f"Web/{name}" for name in WEB_FILES})
     files.update({f"Contents/Resources/Fixtures/{name}": f"Fixtures/{name}" for name in FIXTURE_FILES})
+    files.update({f"Contents/Resources/Skills/{name}": f"Skills/{name}" for name in SKILL_FILES})
     files.update({f"Contents/Resources/{name}": name for name in LICENSE_FILES})
     return files
 
