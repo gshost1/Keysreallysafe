@@ -10,6 +10,9 @@ public struct KeysCLI: ParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "keys",
         abstract: "Keysrs — local key vault and token spend meter.",
+        // `--version` answers from the single version constant (the same one the
+        // updater and share-to-compare report); the subcommand adds --json shape.
+        version: ProductAnalyticsConfiguration.appVersion,
         subcommands: [
             AddCommand.self,
             ListCommand.self,
@@ -20,6 +23,7 @@ public struct KeysCLI: ParsableCommand {
             IngestCommand.self,
             UsageCommand.self,
             SpendCommand.self,
+            VersionCommand.self,
             StatusCommand.self,
             DoctorCommand.self,
             LogCommand.self,
@@ -69,7 +73,8 @@ public enum KeysMain {
             var command = try KeysCLI.parseAsRoot()
             try command.run()
         } catch let error as AppError {
-            // Own exit codes: 2 not found, 3 presence or Keychain, 4 ingest or catalog.
+            // Own exit codes: 2 not found, 3 presence or Keychain, 4 ingest or catalog,
+            // 6 no running site.
             FileHandle.standardError.write(Data((error.description + "\n").utf8))
             Darwin.exit(error.exitCode)
         } catch let error as ProfileError {
@@ -339,55 +344,188 @@ struct SpendCommand: ParsableCommand {
     }
 }
 
+struct VersionCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "version",
+        abstract: "Print the Keysrs version."
+    )
+
+    @Flag var json = false
+
+    func run() throws {
+        if json {
+            try JSONValue.printLine(Self.jsonObject())
+            return
+        }
+        print(Self.humanLine())
+    }
+
+    static func humanLine() -> String {
+        "Keysrs \(ProductAnalyticsConfiguration.appVersion)"
+    }
+
+    /// The one line, sorted keys, that every `--json` flag prints.
+    static func jsonObject() -> [String: String] {
+        ["version": ProductAnalyticsConfiguration.appVersion]
+    }
+}
+
 struct StatusCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "status",
         abstract: "Local plan windows: Grok, Claude, OpenAI/Codex, and other tools."
     )
 
+    @Flag(help: "Print one JSON line, an entry per tool with its tracked state, for a script to read.")
+    var json = false
+
     func run() throws {
         let service = try AppFactory.makeService()
         let status = try service.liveStatus()
+        if json {
+            try JSONValue.printLine(Self.jsonObject(plans: status.plans))
+            return
+        }
         for row in status.plans {
-            printPlan(row)
+            for line in Self.humanLines(row) {
+                print(line)
+            }
         }
     }
 
-    private func printPlan(_ row: ToolStatus) {
-        print(row.title)
+    /// The one JSON line, sorted keys, that every `--json` flag prints: an entry per tool,
+    /// every entry saying whether Keysrs tracks it. An untracked tool carries no usage
+    /// numbers at all, so a script cannot mistake absence for a measured zero — the same
+    /// no-fake-numbers rule the prose follows.
+    static func jsonObject(plans: [ToolStatus], now: Date = Date()) -> [String: Any] {
+        ["tools": plans.map { jsonEntry($0, now: now) }]
+    }
+
+    /// True when Keysrs holds a current measured usage figure for the tool. A percent whose
+    /// window already reset is not one: it describes a window that closed, and printing it
+    /// now would let a script read a stale number as if it described the current one, the
+    /// reason every other reader nulls expired windows. A zero alone does not count either:
+    /// an idle week is an absence, not a measurement (the Usage pane's rule), so a fresh
+    /// machine reports every tool as not tracked.
+    static func isTracked(_ row: ToolStatus, now: Date) -> Bool {
+        if livePct(row.fiveHourPct, reset: row.fiveHourResetsAt, now: now) != nil { return true }
+        if livePct(row.weeklyPct, reset: row.weeklyResetsAt, now: now) != nil { return true }
+        if row.monthlyPct != nil { return true }
+        if livePct(row.fablePct, reset: row.fableResetsAt, now: now) != nil { return true }
+        if row.limitRemaining != nil || row.usageWeekly != nil { return true }
+        if let usd = row.weeklyUsd, usd > 0 { return true }
+        if let tokens = row.weeklyTokens, tokens > 0 { return true }
+        if let tokens = row.fiveHourTokens, tokens > 0 { return true }
+        if let tokens = row.monthlyTokens, tokens > 0 { return true }
+        if let prompts = row.weeklyPrompts, prompts > 0 { return true }
+        return false
+    }
+
+    private static func jsonEntry(_ row: ToolStatus, now: Date) -> [String: Any] {
+        var entry: [String: Any] = [
+            "source": row.source,
+            "title": row.title,
+            "kind": row.kind,
+        ]
+        let tracked = isTracked(row, now: now)
+        entry["tracked"] = tracked
+        if let note = row.usageNote {
+            entry["usage_note"] = note
+        }
+        guard tracked else { return entry }
+        // Only windows with something current in them appear, so a present key is a real
+        // figure. An expired window's percent is left out with its reset time; the prose
+        // hedges those with "(reset due)", a caveat a JSON number cannot carry inline.
+        if let pct = livePct(row.fiveHourPct, reset: row.fiveHourResetsAt, now: now) {
+            entry["five_hour_pct"] = pct
+            if let reset = row.fiveHourResetsAt { entry["five_hour_resets_at"] = reset }
+        }
+        if let pct = livePct(row.weeklyPct, reset: row.weeklyResetsAt, now: now) {
+            entry["weekly_pct"] = pct
+            if let reset = row.weeklyResetsAt { entry["weekly_resets_at"] = reset }
+        }
+        if let pct = livePct(row.fablePct, reset: row.fableResetsAt, now: now) {
+            entry["fable_pct"] = pct
+            if let reset = row.fableResetsAt { entry["fable_resets_at"] = reset }
+        }
+        if let pct = row.monthlyPct {
+            entry["monthly_pct"] = pct
+        }
+        // Token, spend and limit figures are counted per window, so the zeros that appear
+        // here are real zeros, counted from records that exist.
+        let measured: [(String, Any)] = [
+            ("weekly_usd", row.weeklyUsd as Any? ?? NSNull()),
+            ("weekly_tokens", row.weeklyTokens as Any? ?? NSNull()),
+            ("weekly_prompts", row.weeklyPrompts as Any? ?? NSNull()),
+            ("five_hour_tokens", row.fiveHourTokens as Any? ?? NSNull()),
+            ("monthly_tokens", row.monthlyTokens as Any? ?? NSNull()),
+            ("five_hour_limit", row.fiveHourLimit as Any? ?? NSNull()),
+            ("weekly_limit", row.weeklyLimit as Any? ?? NSNull()),
+            ("monthly_limit", row.monthlyLimit as Any? ?? NSNull()),
+            ("limit", row.limit as Any? ?? NSNull()),
+            ("limit_remaining", row.limitRemaining as Any? ?? NSNull()),
+            ("usage_weekly", row.usageWeekly as Any? ?? NSNull()),
+            ("plan", row.plan as Any? ?? NSNull()),
+            ("snapshot_at", row.snapshotAt as Any? ?? NSNull()),
+        ]
+        for (key, value) in measured where !(value is NSNull) {
+            entry[key] = value
+        }
+        if let period = row.period, row.weeklyUsd != nil || row.weeklyTokens != nil || row.weeklyPrompts != nil {
+            entry["period"] = period.jsonObject()
+        }
+        return entry
+    }
+
+    /// A percent of a window that has not closed: no reset time, or one still in the future.
+    /// A reset that cannot be parsed is treated as expired, the stricter rule the Claude
+    /// usage cache already applies.
+    private static func livePct(_ pct: Int?, reset: String?, now: Date) -> Int? {
+        guard let pct else { return nil }
+        if let reset {
+            guard let date = UTC.parse(reset), date > now else { return nil }
+        }
+        return pct
+    }
+
+    /// The prose blocks the human path prints for one tool, pulled out so a test can pin
+    /// them: `--json` grows beside this output, and it must not drift while it does.
+    static func humanLines(_ row: ToolStatus, now: Date = Date()) -> [String] {
+        var lines = [row.title]
         if row.source == "droid" {
             // Three catalog-backed windows, each with its optional limit. A limit prints the
             // percent it drives; an unlimited window prints the tokens alone.
-            print("  5 hour  \(droidWindow(row.fiveHourTokens, limit: row.fiveHourLimit))")
-            print("  weekly  \(droidWindow(row.weeklyTokens, limit: row.weeklyLimit))")
-            print("  month   \(droidWindow(row.monthlyTokens, limit: row.monthlyLimit))")
+            lines.append("  5 hour  \(droidWindow(row.fiveHourTokens, limit: row.fiveHourLimit))")
+            lines.append("  weekly  \(droidWindow(row.weeklyTokens, limit: row.weeklyLimit))")
+            lines.append("  month   \(droidWindow(row.monthlyTokens, limit: row.monthlyLimit))")
         } else {
             if let usd = row.weeklyUsd, row.weeklyTokens != nil {
-                print("  weekly  \(row.weeklyTokens ?? 0) tokens  ≈ \(String(format: "$%.2f", usd)) estimate")
+                lines.append("  weekly  \(row.weeklyTokens ?? 0) tokens  ≈ \(String(format: "$%.2f", usd)) estimate")
             } else if let usd = row.weeklyUsd {
-                print("  weekly  \(String(format: "$%.2f", usd))  local spend")
+                lines.append("  weekly  \(String(format: "$%.2f", usd))  local spend")
             } else if row.weeklyTokens != nil {
-                print("  weekly  \(row.weeklyTokens ?? 0) tokens")
+                lines.append("  weekly  \(row.weeklyTokens ?? 0) tokens")
             } else if let prompts = row.weeklyPrompts {
-                print("  weekly  \(prompts) prompts sent · limit not tracked")
+                lines.append("  weekly  \(prompts) prompts sent · limit not tracked")
             }
             if row.fiveHourPct != nil || row.source == "claude" || row.source == "openai" {
-                print("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt))")
+                lines.append("  5 hour  \(pctLine(row.fiveHourPct, reset: row.fiveHourResetsAt, now: now))")
             }
             if row.weeklyPct != nil || row.source == "openai" {
-                print("  weekly  \(pctLine(row.weeklyPct, reset: row.weeklyResetsAt))")
+                lines.append("  weekly  \(pctLine(row.weeklyPct, reset: row.weeklyResetsAt, now: now))")
             }
             if row.source == "claude" {
-                print("  Fable   \(pctLine(row.fablePct, reset: row.fableResetsAt))")
+                lines.append("  Fable   \(pctLine(row.fablePct, reset: row.fableResetsAt, now: now))")
             }
         }
         if let note = row.usageNote {
-            print("  \(note)")
+            lines.append("  \(note)")
         }
+        return lines
     }
 
     /// One Droid window: its tokens, and the percent of the limit when one is set.
-    private func droidWindow(_ tokens: Int?, limit: Int?) -> String {
+    private static func droidWindow(_ tokens: Int?, limit: Int?) -> String {
         guard let tokens else { return "—" }
         var line = "\(tokens) tokens"
         if let limit {
@@ -396,10 +534,10 @@ struct StatusCommand: ParsableCommand {
         return line
     }
 
-    private func pctLine(_ pct: Int?, reset: String?) -> String {
+    private static func pctLine(_ pct: Int?, reset: String?, now: Date) -> String {
         guard let pct else { return "—" }
         var s = "\(pct)%"
-        if let reset, let extra = LiveStatus.formatResets(at: reset, now: Date()) {
+        if let reset, let extra = LiveStatus.formatResets(at: reset, now: now) {
             s += "  (\(extra))"
         }
         return s
@@ -834,7 +972,7 @@ struct TestCommand: ParsableCommand {
             print("checked \(result.checkedAt)" + (result.endpoint.map { "  GET \($0)" } ?? ""))
             if result.ok { print("models: keys models \(name) --cached") }
         }
-        if !result.ok { Darwin.exit(result.outcome == .noCheckEndpoint ? 2 : 5) }
+        if !result.ok { Darwin.exit(result.outcome.cliExitCode) }
     }
 }
 
@@ -877,7 +1015,7 @@ struct ModelsCommand: ParsableCommand {
         guard result.ok else {
             let providerName = Providers.provider(id: result.provider)?.name ?? result.provider
             print("FAIL  \(name) -> \(providerName) (\(result.host))  \(result.summary)")
-            Darwin.exit(result.outcome == .noCheckEndpoint ? 2 : 5)
+            Darwin.exit(result.outcome.cliExitCode)
         }
         for id in ids { print(id) }
         fputs("\(ids.count) of \(result.models.count) models  checked \(result.checkedAt)\(cached ? " (cached)" : "")\n", stderr)
@@ -1484,7 +1622,7 @@ struct SetupCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "setup",
         abstract: "Write a coding agent's config so it runs on a vault key through the local gateway.",
-        usage: "keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]",
+        usage: "keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]",
         discussion: """
             Writes the agent's own config file, with a backup beside it: the gateway base URL \
             for the key and the name of the environment variable `keys agent` fills with a \
@@ -1501,6 +1639,8 @@ struct SetupCommand: ParsableCommand {
     @Option(name: .customLong("display-name"), help: "Name the agent's model picker shows. Default: Keysrs <key>.") var displayName: String?
     @Option(help: "Wire format override (droid: anthropic|openai|generic-chat-completion-api, codex: chat|responses).") var wire: String?
     @Flag(name: .customLong("set-default"), help: "Codex only: also make keysrs the default provider and set the model.") var setDefault = false
+    @Flag(help: "Print one JSON line naming the config written, the token variable and the gateway URL, for a script to read.")
+    var json = false
 
     func run() throws {
         let agent = try CodingAgent.parse(agent)
@@ -1531,6 +1671,10 @@ struct SetupCommand: ParsableCommand {
 
         switch agent {
         case .claude:
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(agent: agent, key: row.name)))
+                return
+            }
             let base = "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
             print("Claude Code needs no config file; it reads two variables at launch.")
             print("Either launch it through the vault (recommended, one Touch ID, no secret in the environment file):")
@@ -1546,6 +1690,13 @@ struct SetupCommand: ParsableCommand {
                 setDefault: setDefault, model: setDefault ? model : nil
             )
             let url = CodexSetup.configURL(home: home)
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(
+                    agent: agent, key: row.name, configPath: url.path,
+                    model: setDefault ? model : nil, wire: kind, setDefault: setDefault
+                )))
+                return
+            }
             print("wrote [\(CodexSetup.section)] in \(url.path)")
             print(SetupCommand.backupNote(for: url))
             if setDefault {
@@ -1557,8 +1708,15 @@ struct SetupCommand: ParsableCommand {
         case .grok:
             let home = agent.configHome!
             try GrokSetup.upsert(home: home, key: row.name, port: GatewayListener.port, model: model)
-            print("wrote [\(GrokSetup.section)] in \(GrokSetup.configURL(home: home).path)")
-            print(SetupCommand.backupNote(for: GrokSetup.configURL(home: home)))
+            let url = GrokSetup.configURL(home: home)
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(
+                    agent: agent, key: row.name, configPath: url.path, model: model
+                )))
+                return
+            }
+            print("wrote [\(GrokSetup.section)] in \(url.path)")
+            print(SetupCommand.backupNote(for: url))
             print("pick the model \"\(displayName ?? "Keysrs gateway")\" in grok (grok models lists it)")
             print("launch with: keys agent grok \(row.name) -- grok")
         case .droid:
@@ -1568,8 +1726,16 @@ struct SetupCommand: ParsableCommand {
                 home: agent.configHome!, key: row.name, port: GatewayListener.port, model: model,
                 displayName: name, providerKind: kind, liveKeyNames: Set(rows.map(\.name))
             )
-            print("wrote a customModels entry in \(DroidSetup.settingsURL(home: agent.configHome!).path)")
-            print(SetupCommand.backupNote(for: DroidSetup.settingsURL(home: agent.configHome!)))
+            let url = DroidSetup.settingsURL(home: agent.configHome!)
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(
+                    agent: agent, key: row.name, configPath: url.path,
+                    model: model, wire: kind, displayName: name
+                )))
+                return
+            }
+            print("wrote a customModels entry in \(url.path)")
+            print(SetupCommand.backupNote(for: url))
             print("launch with: keys agent droid \(row.name) -- droid, then pick \"\(name)\" with /model")
             print("unattended (headless droid exec): keys client issue \(row.name) --label droid --days 90, then export \(CodingAgent.droid.tokenVar!)=…")
         }
@@ -1580,6 +1746,45 @@ struct SetupCommand: ParsableCommand {
         FileManager.default.fileExists(atPath: url.appendingPathExtension("bak").path)
             ? "your previous file is kept beside it as a .bak"
             : "edits from here on keep a .bak beside it"
+    }
+
+    /// What one setup wrote, gathered so both output paths report the same step. A field
+    /// the agent's config does not carry stays nil, and the JSON leaves it out rather
+    /// than guessing — a present key is a fact, the same rule the status JSON follows.
+    struct Report {
+        let agent: CodingAgent
+        let key: String
+        var port: UInt16 = GatewayListener.port
+        var configPath: String?
+        var model: String?
+        var wire: String?
+        var displayName: String?
+        var setDefault: Bool?
+    }
+
+    /// The one JSON line, sorted keys, that every `--json` flag prints: the file that was
+    /// written, the environment variable the launcher fills with a token, and the gateway
+    /// URL — what a script needs to verify the step without parsing prose. Claude Code
+    /// writes no file, so its `config_path` is null and the two variables it reads at
+    /// launch stand in for it. Codex's model appears only under `--set-default`, the one
+    /// case that writes it.
+    static func jsonObject(_ report: Report) -> [String: Any] {
+        var entry: [String: Any] = [
+            "agent": report.agent.rawValue,
+            "base_url": "http://127.0.0.1:\(report.port)/\(report.key)",
+            "config_path": report.configPath ?? NSNull(),
+            // Claude Code reads its token from ANTHROPIC_AUTH_TOKEN, its own variable;
+            // the other agents get a Keysrs one named in their config.
+            "token_env": report.agent.tokenVar ?? "ANTHROPIC_AUTH_TOKEN",
+        ]
+        if report.agent == .claude {
+            entry["base_url_env"] = "ANTHROPIC_BASE_URL"
+        }
+        if let model = report.model { entry["model"] = model }
+        if let wire = report.wire { entry["wire"] = wire }
+        if let displayName = report.displayName { entry["display_name"] = displayName }
+        if let setDefault = report.setDefault { entry["set_default"] = setDefault }
+        return entry
     }
 
     private func resolveModel(agent: CodingAgent, provider: Providers.Record, keyName: String) throws -> String {
@@ -1637,11 +1842,17 @@ struct TunnelCommand: ParsableCommand {
         do {
             _ = try BlockingHTTP.send(req, timeout: 3)
         } catch {
-            throw AppError.usage(
-                "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
-                    + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
-            )
+            throw Self.gatewayDown()
         }
+    }
+
+    /// The gateway-not-up failure, in one place so the wording and its exit code (6, like
+    /// every other "no running site") are pinned by a test.
+    static func gatewayDown() -> AppError {
+        .siteUnavailable(
+            "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
+                + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
+        )
     }
 }
 
@@ -1892,6 +2103,11 @@ struct RelayRunCommand: ParsableCommand {
         withExtendedLifetime(held) { RunLoop.main.run() }
     }
 
+    /// The same gateway-not-up failure as `keys tunnel`: `keys relay run` hits the identical
+    /// condition, so it shares that helper — same wording, same exit code (6, like every other
+    /// "no running site").
+    static func gatewayDown() -> AppError { TunnelCommand.gatewayDown() }
+
     /// A relay to a closed gateway would only fail on the first agent call; say so here.
     private func requireGatewayUp() throws {
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(GatewayListener.port)/")!)
@@ -1899,10 +2115,7 @@ struct RelayRunCommand: ParsableCommand {
         do {
             _ = try BlockingHTTP.send(req, timeout: 3)
         } catch {
-            throw AppError.usage(
-                "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
-                    + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
-            )
+            throw Self.gatewayDown()
         }
     }
 }

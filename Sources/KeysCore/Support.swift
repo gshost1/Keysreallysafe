@@ -20,6 +20,9 @@ enum AppError: LocalizedError, CustomStringConvertible {
     case refusedBind(String)
     case sqlite(String)
     case http(String)
+    /// No running Keysrs site owns the gateway. Distinct from a usage error so a script
+    /// can tell "start Keysrs.app and retry" from "you called me wrong".
+    case siteUnavailable(String)
 
     var exitCode: Int32 {
         switch self {
@@ -31,6 +34,8 @@ enum AppError: LocalizedError, CustomStringConvertible {
             return 3
         case .ingestIO, .sqlite:
             return 4
+        case .siteUnavailable:
+            return 6
         }
     }
 
@@ -54,7 +59,7 @@ enum AppError: LocalizedError, CustomStringConvertible {
     var detail: String {
         switch self {
         case .usage(let m), .notFound(let m), .alreadyExists(let m), .authUnavailable(let m), .keychain(let m),
-             .ingestIO(let m), .sqlite(let m), .http(let m), .refusedBind(let m):
+             .ingestIO(let m), .sqlite(let m), .http(let m), .refusedBind(let m), .siteUnavailable(let m):
             return m
         case .gatewayOwned(let pid): return String(pid)
         case .authFailed, .authCancelled: return description
@@ -83,7 +88,8 @@ enum AppError: LocalizedError, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .usage(let m), .ingestIO(let m), .keychain(let m), .sqlite(let m), .http(let m):
+        case .usage(let m), .ingestIO(let m), .keychain(let m), .sqlite(let m), .http(let m),
+             .siteUnavailable(let m):
             return m
         case .notFound(let name):
             return "not found: \(name)"

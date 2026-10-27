@@ -29,6 +29,11 @@ enum ProviderCheck {
             case .noCheckEndpoint: return "no read-only check endpoint for this provider; nothing was sent"
             }
         }
+
+        /// `keys test` and `keys models` exit 2 when the provider has no read-only check
+        /// endpoint (nothing was sent) and 5 for any other failed check. The values are the
+        /// CLI's contract, pinned by ExitCodeTests.
+        var cliExitCode: Int32 { self == .noCheckEndpoint ? 2 : 5 }
     }
 
     struct Result: Equatable, Sendable {

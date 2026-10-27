@@ -60,7 +60,9 @@ struct ControlClient {
 
     static func connect(control: URL = ControlFile.url()) throws -> ControlClient {
         guard let info = ControlFile.live(at: control) else {
-            throw AppError.usage(
+            // Its own exit code (6), so a script can tell a site that is not running from a
+            // mistyped command.
+            throw AppError.siteUnavailable(
                 "no running Keysrs site owns the gateway; open Keysrs.app or run keys dashboard, then retry"
             )
         }
