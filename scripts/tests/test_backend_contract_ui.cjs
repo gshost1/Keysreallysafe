@@ -30,8 +30,9 @@ const base = process.env.KEYS_CONTRACT_BASE_URL;
 const token = process.env.KEYS_CONTRACT_TOKEN;
 const ALPHA_SECRET = process.env.KEYS_CONTRACT_ALPHA_SECRET;
 const DELTA_SECRET = process.env.KEYS_CONTRACT_DELTA_SECRET;
+const GATEWAY = process.env.KEYS_CONTRACT_GATEWAY;
 
-for (const [name, value] of Object.entries({ base, token, ALPHA_SECRET, DELTA_SECRET })) {
+for (const [name, value] of Object.entries({ base, token, ALPHA_SECRET, DELTA_SECRET, GATEWAY })) {
   if (!value) {
     console.error(`test_backend_contract_ui.cjs: missing ${name}; run it through swift test --filter BackendContractUITests`);
     process.exit(2);
@@ -164,7 +165,9 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
     if (key.gateway_month_calls === 0) {
       assert.equal(key.usd_month, null, `${key.name}: an unrouted key has no dollars at all`);
       assert.equal(key.usd_month_kind, "none");
-      assert.equal(usdCell, "—", `${key.name}: an unrouted key must not show a dollar figure`);
+      // "—" while the gateway is off; "no calls yet" once it is on (the harness keeps
+      // contract-alpha's gateway on for the renewal case's real routed call).
+      assert.match(usdCell, /^(—|no calls yet)$/, `${key.name}: an unrouted key must not show a dollar figure`);
     } else if (key.usd_month_kind === "unknown") {
       assert.equal(key.usd_month, null, `${key.name}: an unpriced call is unknown, not zero`);
       assert.equal(usdCell, `${key.gateway_month_calls} calls, unpriced`);
@@ -354,8 +357,9 @@ test("the history pane shows the real key events the backend recorded", async (p
 
 // ---------- profiles: the real routes, issuance and badges ----------
 // Sits after the history case (its event-count comparison is self-consistent by construction)
-// and before the delete case, and leaves the vault, the grants area and the profile table as
-// it found them, so the ordered scenario and the harness's end-of-run state assertions hold.
+// and before the delete case, and leaves the vault and the profile table as it found them —
+// except the killed grant row, which the renewal surface keeps listed (marked revoked) so a
+// grant's fate stays visible after its death.
 
 test("a profile bounds a real grant end to end and removes cleanly", async (page) => {
   await openKeys(page);
@@ -395,20 +399,27 @@ test("a profile bounds a real grant end to end and removes cleanly", async (page
   assert.equal(row.max_usd, 2.5);
 
   // The active row shows the profile and the unattended badge; the dialog's Revoke now both
-  // kills the grant and closes, so the grants area is left holding only the profile.
+  // kills the grant and closes. The killed row stays listed — marked revoked, offering
+  // nothing — because the renewal surface shows every grant's fate.
   const active = page.locator("#grants-list li", { hasText: "contract profile run" });
   assert.match(await active.textContent(), /profile contract-evals/);
   assert.match(await active.textContent(), /unattended/);
   await page.locator("#gr-revoke").click();
   await waitDialog(page, "dlg-grant", false);
-  await page.waitForFunction(() => !document.querySelector("#grants-list li"));
+  await page.waitForFunction(() => {
+    const li = document.querySelector("#grants-list li");
+    return li && li.textContent.includes("contract profile run") && li.textContent.includes("revoked");
+  });
+  const killed = page.locator("#grants-list li", { hasText: "contract profile run" });
+  assert.deepEqual(await killed.locator(".badge").allTextContents(), ["revoked", "profile contract-evals", "unattended"],
+    "the killed row keeps its labels under the revoked badge");
+  assert.equal(await killed.locator("button").count(), 0, "a killed grant offers neither Renew nor Revoke");
 
-  // Removing the profile goes through the real DELETE route and empties the area.
+  // Removing the profile goes through the real DELETE route and empties the profile table.
   await page.locator('#profiles-list [aria-label="Remove profile contract-evals"]').click();
   await page.waitForFunction(() => !document.querySelector("#profiles-list li"));
   const gone = await get(page, "/api/profiles");
   assert.deepEqual(gone.data.profiles, [], "the real profile table is empty again");
-  await page.waitForFunction(() => document.getElementById("grants").hidden);
 });
 
 test("delete removes the real row and its stored secret", async (page) => {
@@ -428,6 +439,53 @@ test("delete removes the real row and its stored secret", async (page) => {
   assert.equal(again.data.error, "not_found");
 });
 
+// ---------- renewal: the real renew route and the real gateway ----------
+// Appended last: it leaves one renewed grant row and one routed gateway call in the ledger
+// behind, both of which the harness's end-of-run assertions were extended to expect.
+
+test("a grant renews end to end keeping its token and scope", async (page) => {
+  await openKeys(page);
+  await rowButton(page, "contract-alpha", "grant").click();
+  await waitDialog(page, "dlg-grant", true);
+  await page.locator("#grant-form [name=task]").fill("contract renewal run");
+  await page.locator("#grant-submit").click();
+  await page.locator("#grant-result").waitFor({ state: "visible" });
+  // The token is shown once, here; issuance is the only response that ever carries it.
+  const grantId = await page.locator("#gr-id").textContent();
+  const grantToken = await page.locator("#gr-token").textContent();
+  assert.ok(/^[0-9a-f]{8}$/.test(grantId), `the issued id ${JSON.stringify(grantId)}`);
+  assert.ok(grantToken.length > 0, "issuance shows the token once");
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-grant", false);
+
+  const before = (await get(page, "/api/grants?all=1")).data.grants.find((g) => g.id === grantId);
+  assert.ok(before, "the issued grant is listed");
+  assert.equal(before.renewals, 0);
+
+  const renewed = await request(page, "POST", `/api/grants/${grantId}/renew`, undefined, { "X-KSF-Token": token });
+  assert.equal(renewed.status, 200, JSON.stringify(renewed.data));
+  assert.equal(renewed.data.id, grantId, "renewal is in place: same id");
+  // The wire clock has second resolution, so issuance and this renewal can share a second;
+  // the exact window math — new expiry = renewal moment + the original window — is the
+  // deterministic proof that the expiry moved to a fresh window.
+  assert.ok(Date.parse(renewed.data.expires_at) >= Date.parse(before.expires_at),
+    `the window never moves backward: ${before.expires_at} -> ${renewed.data.expires_at}`);
+  assert.equal(Date.parse(renewed.data.expires_at) - Date.parse(renewed.data.renewed_at),
+    before.window_minutes * 60000, "the new window opens from the renewal moment at the original size");
+  assert.ok(Date.parse(renewed.data.expires_at) > Date.now(), "the renewed grant is alive now");
+  assert.equal(renewed.data.renewals, 1);
+  assert.equal("token" in renewed.data, false, "the renew response never carries a token");
+
+  // The token from issuance — not a new one — passes the real gateway the harness bound,
+  // answered by its stub upstream.
+  const call = await fetch(`${GATEWAY}/contract-alpha/v1/models`, { headers: { Authorization: `Bearer ${grantToken}` } });
+  assert.equal(call.status, 200, "the original token passes the real gateway after renewal");
+
+  // A renewal naming scope is refused before any prompt: renewal re-approves, never widens.
+  const scoped = await request(page, "POST", `/api/grants/${grantId}/renew`, { methods: ["GET"] }, { "X-KSF-Token": token });
+  assert.equal(scoped.status, 400);
+  assert.equal(scoped.data.error, "renew_scope_immutable", "renewal takes no scope fields");
+});
 // ---------- runner ----------
 
 (async () => {

@@ -114,7 +114,7 @@
         <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
       </div>
       <div id="grants" class="grants" hidden>
-        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind. A profile is saved grant bounds (keys profile add), consulted only when a grant is issued.</span></div>
+        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind. A profile is saved grant bounds (keys profile add), consulted only when a grant is issued. Renew re-approves an active or expired grant in place — same token, same scope — for another window of its original lifetime; a revoked grant is never renewable.</span></div>
         <ul id="grants-list" class="grants-list"></ul>
         <ul id="clients-list" class="grants-list"></ul>
         <ul id="profiles-list" class="grants-list" aria-label="Saved profiles"></ul>
