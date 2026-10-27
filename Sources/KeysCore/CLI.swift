@@ -28,6 +28,7 @@ public struct KeysCLI: ParsableCommand {
             GrantCommand.self,
             GrantsCommand.self,
             RevokeCommand.self,
+            ProfileCommand.self,
             TestCommand.self,
             ModelsCommand.self,
             DashboardCommand.self,
@@ -71,6 +72,10 @@ public enum KeysMain {
             // Own exit codes: 2 not found, 3 presence or Keychain, 4 ingest or catalog.
             FileHandle.standardError.write(Data((error.description + "\n").utf8))
             Darwin.exit(error.exitCode)
+        } catch let error as ProfileError {
+            // Profile refusals print their message like usage errors do.
+            FileHandle.standardError.write(Data((error.message + "\n").utf8))
+            Darwin.exit(1)
         } catch {
             KeysCLI.exit(withError: error)
         }
@@ -619,6 +624,157 @@ struct RevokeCommand: ParsableCommand {
         guard let id, !id.isEmpty else { throw AppError.usage("give a grant id, or --all") }
         _ = try client.call(method: "DELETE", path: "/api/grants/\(id)", expect: 200)
         print("revoked \(id)")
+    }
+}
+
+struct ProfileCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "profile",
+        abstract: "Save, list or remove named grant bounds.",
+        discussion: """
+            A profile is issuance-time policy, not authority: keys grant <key> --profile <name> \
+            issues within its bounds, each grant still costing one Touch ID whose prompt names \
+            the effective scope, and a grant keeps its scope even if the profile is edited or \
+            removed afterwards. Profiles hold no secrets, so these commands work straight off \
+            the catalog — no running site, no Touch ID — and an unattended profile must carry a \
+            hard cap (--max-requests or --max-usd), because an unwatched grant is pre-committed \
+            to what it can do.
+            """,
+        subcommands: [ProfileAddCommand.self, ProfileListCommand.self, ProfileRemoveCommand.self],
+        defaultSubcommand: ProfileListCommand.self
+    )
+}
+
+struct ProfileAddCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "add",
+        abstract: "Save a named bound on grants: keys, methods, paths, minutes, caps.",
+        discussion: """
+            Every value is a default-and-ceiling: a grant under this profile may tighten a \
+            bound, never exceed it, and an out-of-bounds ask is refused before any prompt. \
+            --unattended marks grants meant to run while you are away; it requires a hard cap. \
+            An unattended grant still dies on screen lock, restart or revoke — a job that must \
+            outlive a lock needs a client token (keys client issue) instead.
+            """
+    )
+
+    @Argument(help: "Profile name: [a-z0-9][a-z0-9._-]*, unique.")
+    var name: String
+
+    @Option(help: "Comma-separated vault key names, e.g. router or router,spare.")
+    var keys: String
+
+    @Option(help: "Comma-separated HTTP methods, e.g. GET or GET,POST. Default: all.")
+    var methods: String = ""
+
+    @Option(help: "Comma-separated path prefixes under the provider prefix, e.g. /v1/messages. Default: any.")
+    var paths: String = ""
+
+    @Option(help: "Grant lifetime ceiling in minutes (1-1440). Default: \(Grant.defaultMinutes).")
+    var minutes: Int = Grant.defaultMinutes
+
+    @Option(name: .customLong("max-requests"), help: "Refuse further calls after this many, per grant.")
+    var maxRequests: Int?
+
+    @Option(name: .customLong("max-usd"), help: "Refuse further calls once a grant's spend passes this (checked after each call).")
+    var maxUsd: Double?
+
+    @Flag(help: "Grants under this profile are meant to run unattended (requires a cap).")
+    var unattended = false
+
+    @Flag(help: "Print the saved profile as JSON.")
+    var json = false
+
+    func run() throws {
+        try run(service: AppFactory.makeService())
+    }
+
+    func run(service: KeysService) throws {
+        let profile = try service.addProfile(
+            ProfileRequest(
+                name: name,
+                keys: Self.list(keys),
+                methods: methods.isEmpty ? Grant.allMethods : Set(Self.list(methods)),
+                paths: Self.list(paths),
+                minutes: minutes,
+                maxRequests: maxRequests,
+                maxUsd: maxUsd,
+                unattended: unattended
+            ),
+            caller: "cli"
+        )
+        if json {
+            try JSONValue.printLine(profile.jsonObject())
+            return
+        }
+        print("profile \(profile.name) saved")
+        print("  keys     \(profile.keys.joined(separator: ","))")
+        let methodsOut = profile.methods == Grant.allMethods ? "all" : profile.methods.sorted().joined(separator: ",")
+        print("  scope    methods \(methodsOut)  paths \(profile.paths.isEmpty ? "any" : profile.paths.joined(separator: ","))")
+        print("  ceiling  \(Self.ceiling(profile))")
+        print("  grant    keys grant <key> --profile \(profile.name)")
+    }
+
+    /// A comma-separated flag's items, trimmed, empties dropped.
+    static func list(_ csv: String) -> [String] {
+        csv.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// The bounds in the audit-detail wording, so the same numbers read everywhere.
+    static func ceiling(_ profile: Profile) -> String {
+        var parts = ["\(profile.minutes) min"]
+        if let n = profile.maxRequests { parts.append("max \(n) req") }
+        if let u = profile.maxUsd { parts.append(String(format: "max $%.2f", u)) }
+        if profile.unattended { parts.append("unattended") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+struct ProfileListCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "list", abstract: "List saved profiles.")
+
+    @Flag(help: "Print the profiles as JSON, the same objects the dashboard serves.")
+    var json = false
+
+    func run() throws {
+        try run(service: AppFactory.makeService())
+    }
+
+    func run(service: KeysService) throws {
+        let profiles = try service.listProfiles()
+        if json {
+            try JSONValue.printLine(profiles.map { $0.jsonObject() })
+            return
+        }
+        if profiles.isEmpty {
+            print("no profiles")
+            return
+        }
+        print("NAME\tKEYS\tSCOPE\tCEILING")
+        for p in profiles {
+            let methods = p.methods == Grant.allMethods ? "all" : p.methods.sorted().joined(separator: ",")
+            let paths = p.paths.isEmpty ? "any" : p.paths.joined(separator: ",")
+            print("\(p.name)\t\(p.keys.joined(separator: ","))\t\(methods) \(paths)\t\(ProfileAddCommand.ceiling(p))")
+        }
+    }
+}
+
+struct ProfileRemoveCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "remove",
+        abstract: "Delete a saved profile (grants already issued keep their scope)."
+    )
+
+    @Argument(help: "Profile name from keys profile list.")
+    var name: String
+
+    func run() throws {
+        try run(service: AppFactory.makeService())
+    }
+
+    func run(service: KeysService) throws {
+        _ = try service.removeProfile(name: name, caller: "cli")
+        print("removed profile \(name)")
     }
 }
 

@@ -647,6 +647,77 @@ final class KeysService: @unchecked Sendable {
         )
     }
 
+    // MARK: - Profiles (saved grant bounds)
+
+    /// Saves a named bound on grant issuance. No presence prompt: a profile row holds no
+    /// secret and no capability — nothing can be spent with it — so like other catalog
+    /// metadata it changes without one, and the grant prompt remains the only gate that
+    /// mints anything. Key names are checked against the vault rows so a profile cannot
+    /// promise a key that is not there.
+    func addProfile(_ raw: ProfileRequest, caller: String = "dashboard", now: Date = Date()) throws -> Profile {
+        let request = try raw.validated()
+        if try catalog.profileExists(name: request.name) {
+            throw ProfileError.nameTaken(request.name)
+        }
+        for key in request.keys {
+            guard try catalog.catalogExists(name: key) else { throw ProfileError.keyUnknown(key) }
+        }
+        let profile = Profile(
+            id: GrantToken.newID(),
+            name: request.name,
+            keys: request.keys,
+            methods: request.methods,
+            paths: request.paths,
+            minutes: request.minutes,
+            maxRequests: request.maxRequests,
+            maxUsd: request.maxUsd,
+            unattended: request.unattended,
+            createdAt: now,
+            updatedAt: now
+        )
+        try catalog.insertProfile(profile)
+        for key in profile.keys {
+            try recordKeyEvent(name: key, action: "profile_add", caller: caller, detail: Self.profileDetail(profile))
+        }
+        return profile
+    }
+
+    func listProfiles() throws -> [Profile] {
+        try catalog.listProfiles()
+    }
+
+    /// A profile by name, or the named refusal for a missing one.
+    func profile(name: String) throws -> Profile {
+        guard let profile = try catalog.profile(name: name) else { throw ProfileError.notFound(name) }
+        return profile
+    }
+
+    /// Deleting a profile changes nothing about grants already issued under it: a grant
+    /// is self-contained and the request path never reads this table. `keys revoke` is
+    /// the off-switch for a live grant.
+    @discardableResult
+    func removeProfile(name: String, caller: String = "dashboard") throws -> Profile {
+        guard let profile = try catalog.profile(name: name) else { throw ProfileError.notFound(name) }
+        guard try catalog.deleteProfile(id: profile.id) else { throw ProfileError.notFound(name) }
+        for key in profile.keys {
+            try recordKeyEvent(name: key, action: "profile_remove", caller: caller, detail: Self.profileDetail(profile))
+        }
+        return profile
+    }
+
+    /// Audit detail in the `grantDetail` shape: the profile's name and bounds, never a
+    /// secret (a profile holds none).
+    static func profileDetail(_ p: Profile) -> String {
+        var parts = [p.name, "keys " + p.keys.joined(separator: ",")]
+        if p.methods != Grant.allMethods { parts.append(p.methods.sorted().joined(separator: ",")) }
+        if !p.paths.isEmpty { parts.append(p.paths.joined(separator: ",")) }
+        parts.append("\(p.minutes) min")
+        if let n = p.maxRequests { parts.append("max \(n) req") }
+        if let u = p.maxUsd { parts.append(String(format: "max $%.2f", u)) }
+        if p.unattended { parts.append("unattended") }
+        return parts.joined(separator: " · ")
+    }
+
     // MARK: - Provider checks (read-only)
 
     /// Authentication status and model list from the provider's read-only endpoint.

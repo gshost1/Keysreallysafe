@@ -194,6 +194,26 @@ final class CatalogDB: @unchecked Sendable {
             try exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('\(Self.clientHostBackfillKey)', 'pending');")
         }
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
+        // A permission profile is a saved bound on grant issuance: key names and scope
+        // numbers only — no secret, no token, no hash — so the row is strictly less
+        // sensitive than a gateway_clients row. Consulted only by issuance; the request
+        // path never reads it, and purge empties it with everything else (wipeData walks
+        // every table by name).
+        try exec("""
+            CREATE TABLE IF NOT EXISTS grant_profiles (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL UNIQUE,
+              key_names TEXT NOT NULL,
+              methods TEXT NOT NULL,
+              paths_json TEXT NOT NULL DEFAULT '[]',
+              minutes INTEGER NOT NULL,
+              max_requests INTEGER,
+              max_usd REAL,
+              unattended INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            """)
         try exec("""
             CREATE TABLE IF NOT EXISTS custom_providers (
               id TEXT PRIMARY KEY,
@@ -685,6 +705,84 @@ final class CatalogDB: @unchecked Sendable {
 
     func touchGatewayClient(id: Int64, at iso: String) throws {
         try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
+    }
+
+    // MARK: grant profiles
+
+    private static let profileColumns =
+        "id, name, key_names, methods, paths_json, minutes, max_requests, max_usd, unattended, created_at, updated_at"
+
+    /// Paths can hold characters a CSV join would corrupt (`GrantPath.normalize` allows
+    /// commas), so they live as a JSON array; grant behavior must not change to make
+    /// storage easier. Key names cannot contain commas (`KeyName.validate`), so those
+    /// stay joined like `gateway_clients.methods`.
+    private static func encodePaths(_ paths: [String]) throws -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: paths, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            throw AppError.sqlite("grant_profiles paths could not be encoded")
+        }
+        return json
+    }
+
+    /// A paths column that does not parse refuses the whole row: decoding it as empty
+    /// would silently widen a profile to "any path", which is the one direction a bound
+    /// must never go.
+    private static func decodePaths(_ json: String) throws -> [String] {
+        guard let data = json.data(using: .utf8),
+              let paths = (try? JSONSerialization.jsonObject(with: data)) as? [String] else {
+            throw AppError.sqlite("grant_profiles row has unreadable paths")
+        }
+        return paths
+    }
+
+    private func decodeProfile(_ stmt: OpaquePointer) throws -> Profile {
+        Profile(
+            id: columnText(stmt, 0) ?? "",
+            name: columnText(stmt, 1) ?? "",
+            keys: (columnText(stmt, 2) ?? "").split(separator: ",").map(String.init),
+            methods: Set((columnText(stmt, 3) ?? "").split(separator: ",").map(String.init)),
+            paths: try Self.decodePaths(columnText(stmt, 4) ?? "[]"),
+            minutes: Int(sqlite3_column_int64(stmt, 5)),
+            maxRequests: columnOptionalInt(stmt, 6),
+            maxUsd: columnOptionalDouble(stmt, 7),
+            unattended: sqlite3_column_int64(stmt, 8) != 0,
+            createdAt: UTC.parse(columnText(stmt, 9) ?? "") ?? Date(timeIntervalSince1970: 0),
+            updatedAt: UTC.parse(columnText(stmt, 10) ?? "") ?? Date(timeIntervalSince1970: 0)
+        )
+    }
+
+    func insertProfile(_ profile: Profile) throws {
+        try withLock { () -> Void in
+            try run("""
+                INSERT INTO grant_profiles
+                  (id, name, key_names, methods, paths_json, minutes, max_requests, max_usd, unattended, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                profile.id, profile.name, profile.keys.joined(separator: ","),
+                profile.methods.sorted().joined(separator: ","), try Self.encodePaths(profile.paths),
+                profile.minutes, profile.maxRequests, profile.maxUsd, profile.unattended,
+                UTC.iso(profile.createdAt), UTC.iso(profile.updatedAt))
+        }
+    }
+
+    func profileExists(name: String) throws -> Bool {
+        try one("SELECT 1 FROM grant_profiles WHERE name = ? LIMIT 1;", name) { _ in true } ?? false
+    }
+
+    func profile(name: String) throws -> Profile? {
+        try one(
+            "SELECT \(Self.profileColumns) FROM grant_profiles WHERE name = ? LIMIT 1;", name,
+            row: decodeProfile
+        )
+    }
+
+    func listProfiles() throws -> [Profile] {
+        try query("SELECT \(Self.profileColumns) FROM grant_profiles ORDER BY name;", row: decodeProfile)
+    }
+
+    /// Returns false when no profile had the id.
+    func deleteProfile(id: String) throws -> Bool {
+        try run("DELETE FROM grant_profiles WHERE id = ?;", id) > 0
     }
 
     func catalogExists(name: String) throws -> Bool {
