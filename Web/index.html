@@ -114,9 +114,10 @@
         <button type="button" id="btn-add" class="btn" title="Add key (N)">Add key</button>
       </div>
       <div id="grants" class="grants" hidden>
-        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind.</span></div>
+        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind. A profile is saved grant bounds (keys profile add), consulted only when a grant is issued.</span></div>
         <ul id="grants-list" class="grants-list"></ul>
         <ul id="clients-list" class="grants-list"></ul>
+        <ul id="profiles-list" class="grants-list" aria-label="Saved profiles"></ul>
       </div>
       <!-- The unit for the gateway column, outside the table head so it survives the narrow
            layout that drops the head entirely. -->
@@ -313,6 +314,11 @@
         <button type="button" role="radio" aria-checked="false" data-kind="client" class="kind-btn">Long-lived client <small>days · stored as a hash</small></button>
       </div>
       <div id="grant-fields">
+      <label>Profile (saved bounds; picking one fills the fields with its defaults — <code>keys profile add</code>)
+        <select name="profile">
+          <option value="">None</option>
+        </select>
+      </label>
       <label>Task (shown in the Touch ID prompt and the audit log)
         <input name="task" autocomplete="off" spellcheck="false" placeholder="list models for the router" maxlength="120">
       </label>

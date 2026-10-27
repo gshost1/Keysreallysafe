@@ -48,6 +48,8 @@
     keys: [],
     grants: [],
     clients: [],
+    // Saved grant bounds (GET /api/profiles): names and scope numbers only, never secrets.
+    profiles: [],
     checkModels: [],
     selected: null,
     mixFilter: null,
@@ -2365,12 +2367,18 @@
 
   const fmtWhenShort = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString([], { hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" }); };
   const minutesLeft = (iso) => Math.max(0, Math.round((new Date(iso) - Date.now()) / 60000));
+  // The same span wording the Touch ID prompt uses, for saved bounds and pickers.
+  const fmtSpan = (m) => (m % 60 === 0 && m >= 60 ? (m / 60) + " h" : m + " min");
 
   async function loadGrants() {
     try {
       const r = await api("/api/grants");
       state.grants = (r && r.grants) || [];
     } catch { state.grants = []; }
+    try {
+      const p = await api("/api/profiles");
+      state.profiles = (p && p.profiles) || [];
+    } catch { state.profiles = []; }
     try {
       const lists = await Promise.all(state.keys.map((k) => api("/api/keys/" + encodeURIComponent(k.name) + "/clients").then((r) => (r && r.clients) || []).catch(() => [])));
       state.clients = lists.flat().filter((c) => c.active);
@@ -2381,8 +2389,12 @@
     const box = $("grants");
     const list = state.grants || [];
     const clients = state.clients || [];
-    box.hidden = list.length === 0 && clients.length === 0;
-    $("grants-count").textContent = plural(list.length, "active grant", "active grants") + ", " + plural(clients.length, "client", "clients") + ".";
+    const profiles = state.profiles || [];
+    box.hidden = list.length === 0 && clients.length === 0 && profiles.length === 0;
+    $("grants-count").textContent = plural(list.length, "active grant", "active grants")
+      + ", " + plural(clients.length, "client", "clients")
+      + (profiles.length ? ", " + plural(profiles.length, "profile", "profiles") : "")
+      + ".";
     $("clients-list").replaceChildren(...clients.map((c) => el("li", {},
       el("span", { class: "g-id", text: "#" + c.id + " " + (c.hint || "") }),
       el("span", { class: "g-key", text: c.key }),
@@ -2394,8 +2406,20 @@
       el("span", { class: "g-id", text: g.id }),
       el("span", { class: "g-key", text: g.key + " → " + g.host }),
       el("span", { class: "g-task", text: g.task, title: g.task }),
+      g.profile ? el("span", { class: "badge", text: "profile " + g.profile, title: "issued within saved profile " + g.profile }) : null,
+      g.unattended ? el("span", { class: "badge", text: "unattended", title: "approved to run while you are away; still dies on screen lock" }) : null,
       el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${grantUsd(g)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${minutesLeft(g.expires_at)} min left` }),
       el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke grant " + g.id, onclick: () => revokeGrant(g.id) }),
+    )));
+    // Saved bounds, not credentials: each row shows what a grant under the profile may ask
+    // for, and the unattended marker the Touch ID prompt would say.
+    $("profiles-list").replaceChildren(...profiles.map((p) => el("li", {},
+      el("span", { class: "g-id", text: "profile" }),
+      el("span", { class: "g-key", text: p.name }),
+      p.unattended ? el("span", { class: "badge", text: "unattended", title: "grants under it are approved to run while you are away; they still die on screen lock" }) : null,
+      el("span", { class: "g-task", text: "keys " + p.keys.join(", "), title: "keys " + p.keys.join(", ") }),
+      el("span", { class: "g-meta", text: `${p.methods.length === 7 ? "any method" : p.methods.join("/")} · ${p.paths.length ? p.paths.join(", ") : "any path"} · ${fmtSpan(p.minutes)}${p.max_requests ? " · max " + p.max_requests + " requests" : ""}${p.max_usd ? " · max " + fmtUsd(p.max_usd) : ""}` }),
+      el("button", { type: "button", class: "btn btn-row btn-danger", text: "Remove", "aria-label": "Remove profile " + p.name, onclick: () => removeProfile(p.id, p.name) }),
     )));
   }
   // An unpriced call is unknown money: the priced sum is only a floor, never "$0".
@@ -2419,6 +2443,15 @@
       await loadKeys();
     } catch (e) { say(e.message); }
   }
+  // Removing a profile changes nothing about grants already issued under it: a grant keeps the
+  // scope it was issued with, and the live off-switch is Revoke.
+  async function removeProfile(id, name) {
+    try {
+      await api("/api/profiles/" + encodeURIComponent(id), { method: "DELETE" });
+      say(`Profile ${name} removed. Grants issued under it keep the scope they were issued with.`);
+      await loadKeys();
+    } catch (e) { say(e.message); }
+  }
 
   function openGrant(name) {
     const k = state.keys.find((x) => x.name === name);
@@ -2429,6 +2462,8 @@
     const dlg = $("dlg-grant");
     dlg.dataset.name = name;
     $("grant-form").reset();
+    restoreGrantChoices();
+    fillGrantProfileOptions(name);
     setGrantKind("grant");
     $("grant-form").hidden = false;
     $("grant-result").hidden = true;
@@ -2438,6 +2473,57 @@
     dlg.showModal();
     $("grant-form").elements.task.focus();
   }
+  // A prefill adds choices the shipped dialog lacks (an 8-hour span, a GET,PUT method set);
+  // the next open must start from the shipped ones, so they are captured at boot and
+  // restored on every open.
+  const grantChoicesOf = (sel) => ({ def: sel.value, options: [...sel.options].map((o) => [o.value, o.textContent]) });
+  const shippedGrantChoices = {
+    minutes: grantChoicesOf($("grant-form").elements.minutes),
+    methods: grantChoicesOf($("grant-form").elements.methods),
+  };
+  function restoreGrantChoices() {
+    const f = $("grant-form").elements;
+    for (const sel of [f.minutes, f.methods]) {
+      const { def, options } = shippedGrantChoices[sel.name];
+      sel.replaceChildren(...options.map(([v, label]) => new Option(label, v, false, v === def)));
+    }
+  }
+  // Only profiles that name this key are offered: one that does not would be a named refusal
+  // waiting to happen. A stale list can never widen anything — the server re-checks every
+  // bound at issuance — but a filtered picker keeps the choice honest in the first place.
+  function fillGrantProfileOptions(name) {
+    const sel = $("grant-form").elements.profile;
+    sel.replaceChildren(el("option", { value: "", text: "None" }));
+    for (const p of state.profiles || []) {
+      if (!(p.keys || []).includes(name)) continue;
+      sel.append(el("option", { value: p.name, text: p.name + (p.unattended ? " (unattended)" : "") }));
+    }
+  }
+  // Client-side PREFILL only: the profile's defaults land in the form so the user can see and
+  // tighten them; every bound is re-enforced by the server at issuance, which refuses a widened
+  // ask with the profile's named error. Picking None leaves the fields as they are.
+  function fillGrantFromProfile(p) {
+    const f = $("grant-form").elements;
+    const pick = (sel, value, label) => {
+      if (![...sel.options].some((o) => o.value === value)) sel.add(new Option(label, value));
+      sel.value = value;
+    };
+    // A preset span the profile does not match gets its own option in the same wording.
+    pick(f.minutes, String(p.minutes),
+      p.minutes % 60 === 0 && p.minutes >= 60
+        ? (p.minutes / 60) + (p.minutes / 60 === 1 ? " hour" : " hours")
+        : p.minutes + " minutes");
+    const methods = (p.methods || []).join(",");
+    const all = (p.methods || []).length === 7;
+    pick(f.methods, all ? "" : methods, all ? "Any" : methods);
+    f.paths.value = (p.paths || []).join(", ");
+    f.max_requests.value = p.max_requests == null ? "" : String(p.max_requests);
+    f.max_usd.value = p.max_usd == null ? "" : String(p.max_usd);
+  }
+  $("grant-form").elements.profile.addEventListener("change", () => {
+    const p = (state.profiles || []).find((x) => x.name === $("grant-form").elements.profile.value);
+    if (p) fillGrantFromProfile(p);
+  });
   function grantKind() { return $("dlg-grant").dataset.kind || "grant"; }
   function setGrantKind(kind) {
     $("dlg-grant").dataset.kind = kind;
@@ -2474,6 +2560,7 @@
 
   async function issueGrant(name, f) {
     const body = { task: f.task.value.trim(), minutes: Number(f.minutes.value) };
+    if (f.profile.value) body.profile = f.profile.value;
     if (f.methods.value) body.methods = f.methods.value.split(",");
     const paths = f.paths.value.split(",").map((p) => p.trim()).filter(Boolean);
     if (paths.length) body.paths = paths;
@@ -2483,7 +2570,7 @@
     $("gr-kind").textContent = "Grant";
     $("gr-id").textContent = g.id;
     $("gr-target").textContent = `${g.key} → ${providerName(g.provider)} at ${g.host}`;
-    $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + ", ends on an unpriced call" : ""}`;
+    $("gr-scope").textContent = `${g.methods.length === 7 ? "any method" : g.methods.join(", ")} · ${g.paths.length ? g.paths.join(", ") : "any path"}${g.max_requests ? " · max " + g.max_requests + " requests" : ""}${g.max_usd ? " · max " + fmtUsd(g.max_usd) + ", ends on an unpriced call" : ""}${g.profile ? " · profile " + g.profile : ""}${g.unattended ? " · unattended" : ""}`;
     $("gr-expires").textContent = `${fmtWhenShort(g.expires_at)} (${body.minutes} min), or earlier on screen lock, revoke or site restart`;
     $("gr-base").textContent = g.base_url;
     $("gr-token").textContent = g.token;

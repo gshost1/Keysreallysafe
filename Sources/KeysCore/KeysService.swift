@@ -748,7 +748,19 @@ final class KeysService: @unchecked Sendable {
     @discardableResult
     func removeProfile(name: String, caller: String = "dashboard") throws -> Profile {
         guard let profile = try catalog.profile(name: name) else { throw ProfileError.notFound(name) }
-        guard try catalog.deleteProfile(id: profile.id) else { throw ProfileError.notFound(name) }
+        return try removeProfile(profile, caller: caller)
+    }
+
+    /// The dashboard's rows know the id, so its remove button answers the id; the refusal for
+    /// a missing row is the same named one the CLI prints.
+    @discardableResult
+    func removeProfile(id: String, caller: String = "dashboard") throws -> Profile {
+        guard let profile = try catalog.profile(id: id) else { throw ProfileError.notFound(id) }
+        return try removeProfile(profile, caller: caller)
+    }
+
+    private func removeProfile(_ profile: Profile, caller: String) throws -> Profile {
+        guard try catalog.deleteProfile(id: profile.id) else { throw ProfileError.notFound(profile.name) }
         for key in profile.keys {
             try recordKeyEvent(name: key, action: "profile_remove", caller: caller, detail: Self.profileDetail(profile))
         }

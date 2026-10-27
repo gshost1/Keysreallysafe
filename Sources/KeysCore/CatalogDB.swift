@@ -776,6 +776,15 @@ final class CatalogDB: @unchecked Sendable {
         )
     }
 
+    /// The dashboard's rows know the id, and DELETE /api/profiles/<id> is the id form of the
+    /// CLI's name-based remove.
+    func profile(id: String) throws -> Profile? {
+        try one(
+            "SELECT \(Self.profileColumns) FROM grant_profiles WHERE id = ? LIMIT 1;", id,
+            row: decodeProfile
+        )
+    }
+
     func listProfiles() throws -> [Profile] {
         try query("SELECT \(Self.profileColumns) FROM grant_profiles ORDER BY name;", row: decodeProfile)
     }
