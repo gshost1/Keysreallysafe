@@ -1209,6 +1209,10 @@ test("the grants box sits below the list and its Revoke button revokes", async (
     requests: 1, max_requests: 0, usd: 0, max_usd: 0, unpriced_calls: 0, expires_at: "2099-01-01T00:00:00Z",
   }] } });
   await openKeys(page, origin);
+  // The tab switch starts a second keys+grants refresh; until it lands, its grants fetch still
+  // sees the injected grant, but once the override below is removed an in-flight copy would come
+  // back empty and tear the Revoke button out from under the click. Let the network settle first.
+  await page.waitForLoadState("networkidle");
   await page.locator("#grants:visible").waitFor();
   assert.match(await page.locator("#grants-count").textContent(), /^1 active grant, 0 clients\./);
   const order = await page.evaluate(() => document.getElementById("keys-list").getBoundingClientRect().bottom <= document.getElementById("grants").getBoundingClientRect().top);
