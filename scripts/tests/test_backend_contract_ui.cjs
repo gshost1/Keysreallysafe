@@ -274,6 +274,9 @@ test("the add dialog creates a real key through POST /api/keys", async (page) =>
   await waitDialog(page, "dlg-add", true);
   await page.locator("#add-form [name=name]").fill(NEW_KEY);
   await page.locator("#add-form [name=provider]").fill("openai");
+  // Notes sits behind the Advanced disclosure now, and fill() cannot reach a collapsed
+  // <details>'s input, so the section is opened before the notes are typed.
+  await page.locator("#add-advanced summary").click();
   await page.locator("#add-form [name=notes]").fill("created by the contract harness");
   await page.locator("#add-form [name=secret]").fill(DELTA_SECRET);
   await page.locator("#add-form [type=submit]").click();

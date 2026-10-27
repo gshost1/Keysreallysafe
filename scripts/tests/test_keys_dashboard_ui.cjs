@@ -1476,6 +1476,173 @@ test("the add dialog never leaves a typed secret in the DOM after it closes", as
   assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "");
 });
 
+// The Add dialog keeps the three required fields up front; Kind and Notes live behind the
+// Advanced disclosure (VAL-ADD-001/002). A collapsed <details> renders no boxes, so its
+// inputs are neither visible nor focusable until the summary is activated.
+test("the add dialog keeps the essential fields up front and hides kind and notes until advanced opens", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  for (const sel of ["[name=name]", "[name=provider]", "[name=secret]"]) {
+    assert.equal(await page.locator(`#add-form ${sel}`).isVisible(), true, `${sel} is visible without expansion`);
+  }
+  assert.equal(await page.locator("#dlg-add .hint").textContent(), "Stored in the macOS Keychain. It never appears in the list.");
+  assert.equal(await page.locator("#add-advanced").isVisible(), true, "the disclosure itself is up front");
+  assert.equal(await page.locator("#add-advanced summary").textContent(), "Advanced");
+  assert.equal(await page.locator("#add-form [name=kind]").isVisible(), false, "kind hides while collapsed");
+  assert.equal(await page.locator("#add-form [name=notes]").isVisible(), false, "notes hide while collapsed");
+
+  await page.locator("#add-advanced summary").click();
+  assert.equal(await page.locator("#add-form [name=kind]").isVisible(), true, "expanding reveals kind");
+  assert.equal(await page.locator("#add-form [name=notes]").isVisible(), true, "expanding reveals notes");
+  assert.deepEqual(await page.locator("#add-form [name=kind] option").evaluateAll((os) => os.map((o) => o.value)),
+    ["runtime", "billing"], "kind offers runtime first, then billing");
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "runtime", "runtime stays the default");
+});
+
+// VAL-ADD-002: native <details> semantics give the keyboard and the expanded state for
+// free — the test only has to prove they are actually wired to the summary.
+test("the add dialog's advanced section starts collapsed and toggles by click, enter and space", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  const advanced = page.locator("#add-advanced");
+  assert.equal(await advanced.evaluate((d) => d.open), false, "advanced starts collapsed");
+  // A collapsed field cannot take focus, so a stray Tab or programmatic focus never
+  // lands inside the hidden row.
+  assert.equal(await page.evaluate(() => {
+    document.getElementById("add-form").elements.notes.focus();
+    return document.activeElement === document.getElementById("add-form").elements.notes;
+  }), false, "a collapsed field is not focusable");
+
+  await page.locator("#add-advanced summary").focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await advanced.evaluate((d) => d.open), true, "enter expands");
+  assert.equal(await page.locator("#add-form [name=notes]").isVisible(), true);
+  await page.keyboard.press("Enter");
+  assert.equal(await advanced.evaluate((d) => d.open), false, "enter collapses again");
+  await page.keyboard.press("Space");
+  assert.equal(await advanced.evaluate((d) => d.open), true, "space expands");
+  await page.keyboard.press("Space");
+  assert.equal(await advanced.evaluate((d) => d.open), false, "space collapses again");
+  await page.locator("#add-advanced summary").click();
+  assert.equal(await advanced.evaluate((d) => d.open), true, "a click expands");
+  await page.locator("#add-advanced summary").click();
+  assert.equal(await advanced.evaluate((d) => d.open), false, "a click collapses");
+});
+
+// VAL-ADD-003: every open starts fresh. form.reset() restores the fields but not the
+// disclosure, so openAdd must close Advanced itself — even after an expanded cancel or a
+// failed submit left it open with stale values.
+test("the add dialog's advanced section and its fields reset on every open", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-advanced summary").click();
+  await page.locator("#add-form [name=kind]").selectOption("billing");
+  await page.locator("#add-form [name=notes]").fill("stale note");
+  await page.locator("#add-form [name=name]").fill("alpha");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  assert.equal(await page.locator("#add-advanced").evaluate((d) => d.open), false, "advanced re-collapses after expand-and-cancel");
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "runtime", "kind resets to runtime");
+  assert.equal(await page.locator("#add-form [name=notes]").inputValue(), "", "notes reset to empty");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), "", "name resets too");
+  assert.equal(await page.locator("#add-err").textContent(), "", "no stale error");
+
+  // A 409 keeps the dialog open with values preserved; the next open must still be fresh.
+  await page.locator("#add-form [name=name]").fill("alpha");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-advanced summary").click();
+  await page.locator("#add-form [name=kind]").selectOption("billing");
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.equal(await page.locator("#dlg-add").evaluate((d) => d.open), true);
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "billing", "the failed submit preserves the typed values");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  assert.equal(await page.locator("#add-advanced").evaluate((d) => d.open), false, "advanced re-collapses after an error cycle");
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "runtime");
+  assert.equal(await page.locator("#add-form [name=notes]").inputValue(), "");
+  assert.equal(await page.locator("#add-err").textContent(), "", "the error dies with the close");
+});
+
+// VAL-ADD-004: a collapsed disclosure must not change the wire contract — the hidden
+// fields still submit, with their untouched defaults. The fixture's request log keeps
+// no bodies, so the POST is captured in the page.
+test("a collapsed advanced section still submits kind runtime and empty notes", async (page, origin) => {
+  await openKeys(page, origin);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  assert.equal(await page.locator("#add-advanced").evaluate((d) => d.open), false);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  assert.equal(bodies.length, 1, "exactly one add POST left the page");
+  const body = JSON.parse(bodies[0]);
+  assert.deepEqual([body.name, body.provider, body.kind, body.notes], ["delta", "openai", "runtime", ""],
+    "the collapsed defaults submit exactly as the visible fields did before the restructure");
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  assert.equal(await status(page), "Added delta.");
+});
+
+// VAL-ADD-005: the dialog stays inside its card and the viewport at 390 px with the
+// disclosure expanded — the row must not spill and the actions must stay reachable.
+test("the add dialog keeps its expanded advanced row inside the card at 390 px", async (page, origin) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-advanced summary").click();
+  const g = await page.evaluate(() => {
+    const r = (n) => n.getBoundingClientRect();
+    const form = document.getElementById("add-form");
+    return {
+      vw: innerWidth, vh: innerHeight,
+      dlg: r(document.getElementById("dlg-add")),
+      kind: r(form.elements.kind),
+      notes: r(form.elements.notes),
+      cancel: r(document.querySelector("#dlg-add [data-close]")),
+      submit: r(document.querySelector("#dlg-add [type=submit]")),
+      spill: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  });
+  const insideCard = (a) => a.left >= g.dlg.left - 0.5 && a.right <= g.dlg.right + 0.5 && a.top >= g.dlg.top - 0.5 && a.bottom <= g.dlg.bottom + 0.5;
+  assert.equal(insideCard(g.kind), true, "kind stays inside the dialog card");
+  assert.equal(insideCard(g.notes), true, "notes stay inside the dialog card");
+  assert.ok(g.kind.width > 0 && g.notes.width > 0 && g.notes.left - g.kind.right >= 8, "the row2 keeps its two columns");
+  assert.ok(g.kind.left >= 0 && g.notes.right <= g.vw, "the row fits the viewport");
+  assert.ok(g.cancel.top >= 0 && g.cancel.bottom <= g.vh, "Cancel is reachable");
+  assert.ok(g.submit.top >= 0 && g.submit.bottom <= g.vh, "Add key is reachable");
+  assert.equal(g.spill, 0, "the page gains no horizontal scroll");
+});
+
+// VAL-CROSS-004: the restructure touched only the Add dialog — Edit keeps its Kind and
+// Notes flat, with no disclosure to open.
+test("the edit dialog still shows kind and notes without an advanced section", async (page, origin) => {
+  await openKeys(page, origin);
+  await rowAct(page, "alpha", "edit");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#dlg-edit details").count(), 0, "edit has no disclosure");
+  assert.equal(await page.locator("#edit-form [name=kind]").isVisible(), true, "kind shows directly");
+  assert.equal(await page.locator("#edit-form [name=notes]").isVisible(), true, "notes show directly");
+  assert.equal(await page.locator("#edit-form [name=kind]").inputValue(), "runtime", "alpha is a runtime key");
+  assert.equal(await page.locator("#edit-form [name=notes]").inputValue(), "first fixture key");
+});
+
 test("edit sends only changed fields and reports a server refusal in the dialog", async (page, origin) => {
   await openKeys(page, origin);
   await rowAct(page, "alpha", "edit");

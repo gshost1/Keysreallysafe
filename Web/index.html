@@ -250,21 +250,24 @@
       <label>Provider
         <input name="provider" required autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="openai" data-picker>
       </label>
-      <div class="row2">
-        <label>Kind
-          <select name="kind">
-            <option value="runtime">runtime</option>
-            <option value="billing">billing</option>
-          </select>
-        </label>
-        <label>Notes
-          <input name="notes" autocomplete="off">
-        </label>
-      </div>
       <label>Secret
         <input name="secret" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">
       </label>
       <p class="hint">Stored in the macOS Keychain. It never appears in the list.</p>
+      <details id="add-advanced" class="advanced">
+        <summary>Advanced</summary>
+        <div class="row2">
+          <label>Kind
+            <select name="kind">
+              <option value="runtime">runtime</option>
+              <option value="billing">billing</option>
+            </select>
+          </label>
+          <label>Notes
+            <input name="notes" autocomplete="off">
+          </label>
+        </div>
+      </details>
       <p class="err" id="add-err" role="alert"></p>
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
