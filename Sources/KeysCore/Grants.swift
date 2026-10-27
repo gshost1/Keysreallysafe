@@ -37,6 +37,13 @@ struct Grant: Equatable, Sendable {
     /// and the dashboard; it changes nothing about enforcement, and the grant still dies on
     /// screen lock, restart, revoke and expiry like any other.
     var unattended: Bool = false
+    /// The window `issue` opened, in minutes. Renewal re-opens exactly this span from the
+    /// renewal moment; it is never re-asked and never compounded.
+    var windowMinutes: Int
+    /// How many times this grant has been renewed in place.
+    var renewals: Int = 0
+    /// When the latest renewal happened; nil until the first.
+    var renewedAt: Date?
 
     var isRevoked: Bool { revokedAt != nil }
     func isExpired(at now: Date) -> Bool { now >= expiresAt }
@@ -69,6 +76,9 @@ struct Grant: Equatable, Sendable {
             "revoke_reason": revokeReason as Any? ?? NSNull(),
             "profile": profile as Any? ?? NSNull(),
             "unattended": unattended,
+            "window_minutes": windowMinutes,
+            "renewals": renewals,
+            "renewed_at": renewedAt.map(UTC.iso) as Any? ?? NSNull(),
             "status": status,
         ]
     }
@@ -246,6 +256,48 @@ enum GrantDenial: Error, Equatable {
     }
 }
 
+/// A refused renewal. Every case is raised before the single presence prompt a renewal
+/// costs, so a refusal consumes no Touch ID; the messages point at `keys grant`, the only
+/// way to different bounds.
+enum RenewalError: LocalizedError, Equatable {
+    case notFound(String)
+    case revoked(id: String, reason: String)
+    case targetChanged
+    case scopeImmutable
+
+    var errorDescription: String? { message }
+
+    var code: String {
+        switch self {
+        case .notFound: return "renew_not_found"
+        case .revoked: return "renew_revoked"
+        case .targetChanged: return "renew_target_changed"
+        case .scopeImmutable: return "renew_scope_immutable"
+        }
+    }
+
+    var status: Int {
+        switch self {
+        case .notFound: return 404
+        case .revoked, .targetChanged: return 409
+        case .scopeImmutable: return 400
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .notFound(let id):
+            return "no grant \(id) to renew; a grant lives only in the running site's memory, so issue a new one with keys grant"
+        case .revoked(let id, let reason):
+            return "grant \(id) was revoked (\(reason)) and a revoked grant is never renewable; issue a new one with keys grant"
+        case .targetChanged:
+            return "the key or its host changed since this grant was issued, so it cannot be renewed; issue a new one with keys grant"
+        case .scopeImmutable:
+            return "renewal re-approves the grant exactly as it is and takes no scope fields; for different bounds issue a new grant with keys grant"
+        }
+    }
+}
+
 enum GrantToken {
     static let prefix = "ksf_"
 
@@ -314,7 +366,8 @@ final class GrantStore: @unchecked Sendable {
             maxRequests: request.maxRequests,
             maxUsd: request.maxUsd,
             profile: profile,
-            unattended: unattended
+            unattended: unattended,
+            windowMinutes: request.minutes
         )
         grants[id] = grant
         hashes[id] = GrantToken.hash(token)
@@ -364,6 +417,31 @@ final class GrantStore: @unchecked Sendable {
             touched.append(g)
         }
         return touched
+    }
+
+    /// Re-open a grant in place for another window of its ORIGINAL lifetime: expiry moves to
+    /// `now + windowMinutes`, the usage counters reset, and the renewal is counted. Identity,
+    /// scope, caps and the stored token hash are untouched. A revoked grant is never renewable —
+    /// `revoke` deletes the token hash, so a hashless row can never authorize again and must
+    /// never be revived; expiry keeps the hash, which is what makes an expired grant renewable
+    /// at all. Called only from `KeysService.renewGrant`, after its single presence prompt.
+    @discardableResult
+    func renew(id: String, now: Date = Date()) throws -> Grant {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var g = grants[id] else { throw RenewalError.notFound(id) }
+        guard !g.isRevoked, hashes[id] != nil else {
+            throw RenewalError.revoked(id: id, reason: g.revokeReason ?? "revoked")
+        }
+        g.expiresAt = now.addingTimeInterval(TimeInterval(g.windowMinutes * 60))
+        g.requests = 0
+        g.usd = 0
+        g.unpricedCalls = 0
+        g.lastUsedAt = nil
+        g.renewals += 1
+        g.renewedAt = now
+        grants[id] = g
+        return g
     }
 
     /// Authorize one request and count it. `rest` is the path after `/<key>`.
