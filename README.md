@@ -584,6 +584,7 @@ keys models <name> [--grep <text>] [--cached] [--json]
 keys ingest [all|grok|claude|openai|droid]
 keys usage import <file>...
 keys spend [--month|--week] [--json] [--by model|session|project]
+keys version [--json]
 keys status
 keys doctor
 keys log [--key <name>] [--failed] [--tail] [--limit N] [--json]

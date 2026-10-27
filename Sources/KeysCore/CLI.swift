@@ -10,6 +10,9 @@ public struct KeysCLI: ParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "keys",
         abstract: "Keysrs — local key vault and token spend meter.",
+        // `--version` answers from the single version constant (the same one the
+        // updater and share-to-compare report); the subcommand adds --json shape.
+        version: ProductAnalyticsConfiguration.appVersion,
         subcommands: [
             AddCommand.self,
             ListCommand.self,
@@ -20,6 +23,7 @@ public struct KeysCLI: ParsableCommand {
             IngestCommand.self,
             UsageCommand.self,
             SpendCommand.self,
+            VersionCommand.self,
             StatusCommand.self,
             DoctorCommand.self,
             LogCommand.self,
@@ -331,6 +335,32 @@ struct SpendCommand: ParsableCommand {
             }
         }
         print(String(format: "Grok $%.4f  Claude tokens %d  OpenAI tokens %d", report.totals.grokUsd, report.totals.claudeTokens, report.totals.openaiTokens))
+    }
+}
+
+struct VersionCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "version",
+        abstract: "Print the Keysrs version."
+    )
+
+    @Flag var json = false
+
+    func run() throws {
+        if json {
+            try JSONValue.printLine(Self.jsonObject())
+            return
+        }
+        print(Self.humanLine())
+    }
+
+    static func humanLine() -> String {
+        "Keysrs \(ProductAnalyticsConfiguration.appVersion)"
+    }
+
+    /// The one line, sorted keys, that every `--json` flag prints.
+    static func jsonObject() -> [String: String] {
+        ["version": ProductAnalyticsConfiguration.appVersion]
     }
 }
 
