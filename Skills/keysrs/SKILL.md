@@ -103,9 +103,10 @@ keys agent claude work-anthropic
 
 `keys agent` asks for one Touch ID, mints a grant whose lifetime matches the
 session, fills the agent's environment variable, and revokes the grant when the
-agent exits. Pass the agent's own arguments after `--`. For an unattended run that
-must outlive a screen lock, mint a client token instead
-(`keys client issue <key> --days 30`) and point the SDK's base URL at the gateway.
+agent exits. Pass the agent's own arguments after `--`. This is the default; prefer
+it. A run that must outlive a screen lock needs a long-lived client token, and that
+is the user's decision: ask them to run `keys client issue <key>` themselves and
+hand you the result, rather than minting one yourself.
 
 ## Scoped access for one task
 
@@ -128,8 +129,11 @@ everything for a key with `keys revoke --all --key <name>`.
 
 ## Remote and cloud agents
 
-For an agent on another machine you can SSH to, forward the loopback gateway and
-give it its own revocable token:
+Opening the gateway to another machine is the user's call, not yours. Describe
+the route below and ask the user to run the commands; don't run them unasked.
+
+For an agent on another machine the user can SSH to, forward the loopback gateway
+and give it its own revocable token:
 
 ```sh
 keys client issue router --label "cloud agent" --days 30   # one Touch ID
@@ -139,7 +143,9 @@ keys tunnel user@server.example.com --print                # show the ssh comman
 
 For a managed agent that accepts no inbound SSH (GitHub Actions, Claude Code or
 Codex cloud sessions, Modal, E2B), the relay is the other route: a Worker the user
-deploys into their own Cloudflare account, which the Mac connects *out* to.
+deploys into their own Cloudflare account, which the Mac connects *out* to. Turning
+the relay on opens an outbound connection from the user's Mac, so only the user
+turns it on.
 
 ```sh
 keys relay setup --url https://keysrs-relay.<you>.workers.dev   # prints the secret once
@@ -170,8 +176,7 @@ once it ends.
 
 One pre-existing quirk to know: `keys models --json` exits **5** for a provider
 with no check endpoint, while the non-JSON `keys models` exits **2** for the same
-condition. The JSON path reports every failed check with one code; this mission
-keeps that behavior rather than changing it.
+condition. The JSON path reports every failed check with one code.
 
 ## Machine-readable output
 
@@ -194,9 +199,10 @@ last, as calls finish.
   and `keys relay setup` print a single-use credential on stdout, and `keys grant`
   prints its token. Capture it where the SDK expects the API key; never echo it,
   log it, or paste it into a config or a public place.
-- **`keys rm` exits 0 even when you decline.** With no `--yes` it prompts; answering
-  no prints `cancelled` and returns success. Check the output, or pass `--yes` when
-  you mean it.
+- **Never delete a key unless the user explicitly asked for that key to be
+  deleted.** `keys rm --yes` skips the confirmation, so never pass `--yes`. Without
+  it, `keys rm` prompts and exits 0 even when the answer is no: check for
+  `cancelled` in the output.
 - **Never bypass user presence.** If a prompt is cancelled, the command exits 3;
   report that to the user rather than retrying or reaching for a provider auth file.
 

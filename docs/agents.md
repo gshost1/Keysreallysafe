@@ -260,7 +260,8 @@ the parts that bind an agent, stated as rules:
   command instead; `keys relay on`, `off` and `status` control the app's relay
   without blocking.
 - **`keys rm` exits 0 even when the confirm was declined.** Check the
-  output, or pass `--yes` when you mean it.
+  output for `cancelled`. An agent should never pass `--yes`, and should
+  delete a key only when the user asked for that key to be deleted.
 - **No fake numbers.** An untracked tool is not tracked, never an estimate
   dressed up as a measurement; a number you were not given does not exist.
 
