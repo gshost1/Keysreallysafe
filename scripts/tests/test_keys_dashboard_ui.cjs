@@ -1032,6 +1032,104 @@ test("the count reads N keys, N of M keys while a search hides some, and 0 keys 
   assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
 });
 
+test("the provider filter lists the vault's providers, combines with search and names it on a miss", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const filter = page.locator("#keys-provider");
+  // Only providers that hold a key, by display name, "All providers" first.
+  assert.deepEqual(await filter.locator("option").evaluateAll((os) => os.map((o) => [o.value, o.textContent])),
+    [["", "All providers"], ["anthropic", "Anthropic"], ["openai", "OpenAI"], ["typesafe", "TypeSafe"]]);
+
+  const box = await page.locator("#keys-search").boundingBox();
+  await filter.selectOption("anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
+  const after = await page.locator("#keys-search").boundingBox();
+  assert.deepEqual([after.x, after.y, after.width, after.height].map((n) => Math.round(n * 10) / 10),
+    [box.x, box.y, box.width, box.height].map((n) => Math.round(n * 10) / 10),
+    "the count changed under the filter, the search box did not move");
+
+  // The two are AND-ed: a row must satisfy both.
+  await page.locator("#keys-search").fill("bravo");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  await page.locator("#keys-search").fill("alpha");
+  assert.deepEqual(await rowNames(page), []);
+  assert.equal(await page.locator("#keys-no-match").textContent(), "No keys for Anthropic match “alpha”.",
+    "the miss names the provider whose filter hid the match");
+  assert.equal(await page.locator("#keys-count").textContent(), "0 of 3 keys");
+
+  // Search behaviour is unchanged under a filter: ArrowDown enters the filtered list, Escape clears.
+  await page.locator("#keys-search").fill("");
+  await page.locator("#keys-search").focus();
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement.closest(".key-row")?.dataset.name), "bravo");
+  await page.locator("#keys-search").fill("nothing");
+  await page.locator("#keys-search").press("Escape");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  assert.equal(await page.locator("#keys-no-match").isHidden(), true);
+
+  // All providers restores the whole list, search included.
+  await filter.selectOption("");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
+});
+
+test("the provider filter is session-only and returns to All when its provider disappears", async (page, origin) => {
+  await openKeys(page, origin);
+  const filter = page.locator("#keys-provider");
+  await filter.selectOption("anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+
+  // A reload forgets the choice: like the search, a provider filter is a look at part of the
+  // vault, not a setting to come back to (the sort is the setting that survives; its own test
+  // covers that).
+  await openKeys(page, origin);
+  assert.equal(await filter.inputValue(), "");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys");
+
+  // The provider's last key is deleted behind the page (a background refresh): the filter must
+  // not strand the list on a provider that no longer holds a key.
+  await filter.selectOption("anthropic");
+  keys = keys.filter((k) => k.name !== "bravo");
+  catalogVersion += 1;
+  await page.waitForFunction(() => document.getElementById("keys-provider").value === "", null, { timeout: 30000 });
+  assert.deepEqual(await rowNames(page), ["alpha", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "2 keys");
+});
+
+test("a provider filter that hides nothing reads as an unfiltered count", async (page, origin) => {
+  for (const k of keys) k.provider = "openai";
+  await openKeys(page, origin);
+  const options = await page.locator("#keys-provider option").evaluateAll((os) => os.map((o) => o.value));
+  assert.deepEqual(options, ["", "openai"], "one option per provider present, not one per key");
+  await page.locator("#keys-provider").selectOption("openai");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "3 keys", "nothing is hidden, so the count admits no 'of'");
+});
+
+test("the sort and the provider filter stay reachable and working at 390 px", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const onScreen = (sel) => page.locator(sel).evaluate((n) => {
+    const r = n.getBoundingClientRect();
+    return r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
+  });
+  assert.equal(await onScreen("#keys-provider"), true, "the provider filter is on screen");
+  assert.equal(await onScreen("#keys-sort"), true, "the sort stays on screen instead of being hidden");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1),
+    true, "no horizontal overflow");
+
+  // Both controls still work at this width, including the widest option label.
+  await page.selectOption("#keys-sort", "most");
+  assert.equal(await onScreen("#keys-sort"), true, "the widest sort label stays on screen");
+  assert.deepEqual(await rowNames(page), ["alpha", "charlie", "bravo"],
+    "Most used this month: alpha 3 calls, charlie 2, bravo 0; ties by name");
+  await page.selectOption("#keys-provider", "anthropic");
+  assert.deepEqual(await rowNames(page), ["bravo"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
+});
+
 test("the footer states the Keychain and the 20 s clipboard wipe, and drops the right half under 780 px", async (page, origin) => {
   await openKeys(page, origin);
   const read = () => page.evaluate(() => {

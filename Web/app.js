@@ -1574,8 +1574,10 @@
     const keys = all.filter((k) => (!state.keyProviderFilter || k.provider === state.keyProviderFilter)
       && keyMatches(k, q)).sort((a, b) => by(a, b) || keySorts.name(a, b));
     $("keys-sort").value = state.keySort;
-    const filtered = !!q || !!state.keyProviderFilter;
-    $("keys-count").textContent = filtered
+    // "N of M keys" whenever anything hid a row — search, provider filter or both — so the count
+    // is the share of the vault on screen, not a claim that fewer keys exist.
+    const hiddenSome = keys.length < all.length;
+    $("keys-count").textContent = hiddenSome
       ? `${keys.length} of ${plural(all.length, "key", "keys")}`
       : plural(all.length, "key", "keys");
     syncOnboard();
@@ -1586,8 +1588,12 @@
     $("keys-empty").hidden = all.length > 0;
     $("keys-no-match").hidden = all.length === 0 || keys.length > 0;
     if (all.length > 0 && keys.length === 0) {
-      $("keys-no-match").textContent = state.keyProviderFilter && !all.some((k) => k.provider === state.keyProviderFilter)
-        ? `No keys for ${providerName(state.keyProviderFilter)}.`
+      // Name the provider whenever its filter is part of why nothing shows: "no keys match"
+      // alone would read as an empty search result while a filter hid the match.
+      $("keys-no-match").textContent = state.keyProviderFilter
+        ? (q
+          ? `No keys for ${providerName(state.keyProviderFilter)} match “${state.keySearch.trim()}”.`
+          : `No keys for ${providerName(state.keyProviderFilter)}.`)
         : `No keys match “${state.keySearch.trim()}”.`;
     }
     if (!keys.some((k) => k.name === state.selected)) state.selected = keys[0] ? keys[0].name : null;
@@ -1609,10 +1615,19 @@
     const ids = [...new Set(state.keys.map((k) => k.provider).filter(Boolean))]
       .sort((a, b) => providerName(a).localeCompare(providerName(b)));
     if (state.keyProviderFilter && !ids.includes(state.keyProviderFilter)) state.keyProviderFilter = "";
-    select.replaceChildren(
-      el("option", { value: "", text: "All providers" }),
-      ...ids.map((id) => el("option", { value: id, text: providerName(id) })),
-    );
+    // The list redraws on every keystroke and every background refresh; replacing an open
+    // dropdown's options would snap it shut, so they are only rebuilt when the vault's provider
+    // set (or a catalog label) actually changed.
+    const same = select.options.length === ids.length + 1
+      && [...select.options].every((o, i) => (i
+        ? o.value === ids[i - 1] && o.textContent === providerName(ids[i - 1])
+        : o.value === "" && o.textContent === "All providers"));
+    if (!same) {
+      select.replaceChildren(
+        el("option", { value: "", text: "All providers" }),
+        ...ids.map((id) => el("option", { value: id, text: providerName(id) })),
+      );
+    }
     select.value = state.keyProviderFilter;
   }
 
