@@ -148,7 +148,7 @@ html, body { margin: 0; height: 100%; }
 html { overflow-x: hidden; }
 body {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: var(--bg-2);
   color: var(--ink);
   font: 13px/20px var(--sans);
@@ -177,62 +177,95 @@ kbd {
   text-align: center;
 }
 
-/* ---------- toolbar ---------- */
+/* ---------- shell: rail + content ---------- */
 
-.toolbar {
+/* The rail is the vault design's (78px, 65px ≤780, 53px ≤540) and holds the original app icon
+   untouched: no tile, border or fill around it, the same image in both themes. */
+.rail {
   flex: none;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 12px;
-  min-height: 48px;
-  padding: 6px 16px;
+  width: 78px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 23px 0 21px;
   background: var(--bg);
-  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
 }
-.brand { min-width: 0; }
-.brand-name {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 16px;
-}
-.brand-purpose {
-  font-size: 11px;
-  line-height: 14px;
-  color: var(--ink-3);
-}
-.seg {
-  display: inline-flex;
-  padding: 2px;
-  border-radius: 7px;
-  background: var(--seg-track);
-}
-.seg [role="tab"] {
-  height: 24px;
-  padding: 0 10px;
+.brand-mark {
+  flex: none;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 22px;
+  padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: 0;
   background: transparent;
-  color: var(--ink-2);
 }
-.seg [role="tab"]:hover { color: var(--ink); }
-.seg [role="tab"][aria-selected="true"] {
-  background: var(--bg);
-  color: var(--ink);
+.brand-mark img { display: block; width: 48px; height: 48px; object-fit: contain; }
+.rail-nav { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
+.rail-bottom { margin-top: auto; padding-top: 13px; display: flex; flex-direction: column; align-items: center; gap: 13px; }
+.rail-divider { width: 23px; height: 1px; background: var(--line-strong); }
+.rail-button {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 54px;
+  height: 54px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 9px;
   font-weight: 500;
-  box-shadow: 0 1px 2px var(--seg-shadow);
+  line-height: 11px;
+  letter-spacing: .01em;
+  white-space: nowrap;
 }
-.toolbar-end {
+.rail-button:hover { color: var(--ink); }
+.rail-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.rail-button[aria-selected="true"] {
+  color: var(--blue-ink);
+  background: var(--blue-tint);
+  border-color: color-mix(in srgb, var(--blue) 19%, transparent);
+}
+/* The indicator sits on the rail's own left edge, 13px outside the centred 54px button. */
+.rail-button[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  left: -13px;
+  width: 2px;
+  height: 20px;
+  border-radius: 0 2px 2px 0;
+  background: var(--blue);
+}
+
+.shell { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.status-bar {
+  flex: none;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: 0;
+  height: 30px;
+  padding: 0 16px;
 }
 .count { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
-/* The header holds only the status line and help, so the status may take the whole column
-   and still ellipsize instead of pushing under the tabs. */
+/* One line that ellipsizes, so a long message never pushes the panes down. */
 .status {
   flex: 1 1 auto;
   min-width: 0;
@@ -349,7 +382,7 @@ kbd {
 
 /* The panes are the site's cards: white, rounded, softly shadowed on the grey page, filling
    the window edge to edge (a tool's density, not the site's 1120px column). */
-main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+main { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 14px; }
 [role="tabpanel"] {
   flex: 1;
   min-width: 0;
@@ -906,31 +939,27 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
   .switch, .switch::after { transition: none; }
 }
 
+@media (max-width: 780px) {
+  .rail { width: 65px; }
+  .rail-button { width: 47px; }
+  .rail-button[aria-selected="true"]::before { left: -10px; }
+}
+
+@media (max-width: 540px) {
+  .rail { width: 53px; }
+  .rail-button { width: 40px; font-size: 8px; line-height: 10px; }
+  .rail-button[aria-selected="true"]::before { left: -7px; }
+  .brand-mark, .brand-mark img { width: 40px; height: 40px; }
+  .brand-mark { margin-bottom: 30px; }
+}
+
 @media (max-width: 1100px) {
   .keys .td-created, .keys th:nth-child(4) { display: none; }
 }
 
 @media (max-width: 720px) {
-  main { padding: 12px; gap: 12px; }
-  .toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    min-height: 0;
-    padding: 8px 12px;
-    gap: 8px 12px;
-  }
-  .brand { flex: 1 1 auto; min-width: 0; }
-  .seg {
-    order: 5;
-    flex: 1 1 100%;
-    justify-content: flex-start;
-  }
-  .toolbar-end {
-    margin-left: auto;
-    flex-wrap: wrap;
-    max-width: 100%;
-  }
-  .status { max-width: 220px; }
+  main { padding: 0 12px 12px; gap: 12px; }
+  .status-bar { padding: 0 12px; }
   .filters, .chart-top, .live-status, .caption, .chart, .usage-totals, .pane-error { padding-left: 12px; padding-right: 12px; }
   .chart svg { height: 170px; }
   .filters { gap: 8px 12px; }
@@ -941,6 +970,10 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; fle
   .live-meter-label { flex-direction: column; align-items: flex-start; gap: 2px; }
   .mix-row { grid-template-columns: 16px 1fr 72px 72px; padding: 0 12px; }
   .mix-bar { display: none; }
+}
+
+/* The key table stacks once its column (the viewport less the rail) is 720px or narrower. */
+@media (max-width: 800px) {
   .key-events li { grid-template-columns: 1fr 1fr; }
   .keys td { white-space: normal; }
   .key-name, .key-notes, .key-host { max-width: 100%; }

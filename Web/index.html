@@ -9,24 +9,32 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body data-pane="usage">
-  <header class="toolbar">
-    <div class="brand">
-      <p class="brand-name">Keysrs</p>
-      <p class="brand-purpose">local vault + usage</p>
-    </div>
-    <nav class="seg" role="tablist" aria-label="Pane">
-      <button type="button" role="tab" id="nav-usage" aria-selected="true" aria-controls="pane-usage" title="Usage (⌘1)">Usage</button>
-      <button type="button" role="tab" id="nav-chart" aria-selected="false" aria-controls="pane-chart" tabindex="-1" title="Chart (⌘2)">Chart</button>
-      <button type="button" role="tab" id="nav-keys" aria-selected="false" aria-controls="pane-keys" tabindex="-1" title="Keys (⌘3)">Keys</button>
-      <button type="button" role="tab" id="nav-settings" aria-selected="false" aria-controls="pane-settings" tabindex="-1" title="Settings (⌘4)">Settings</button>
+  <aside class="rail">
+    <div class="brand-mark"><img src="/icon.png" alt="Keysrs" width="48" height="48"></div>
+    <!-- One tablist for all four panes. Settings sits below Help at the foot of the rail, so it
+         is outside this element in the DOM and joined to the list through aria-owns. -->
+    <nav class="rail-nav" role="tablist" aria-label="Pane" aria-orientation="vertical" aria-owns="nav-settings">
+      <button type="button" role="tab" id="nav-usage" class="rail-button" aria-selected="true" aria-controls="pane-usage" title="Usage (⌘1)">
+        <svg class="rail-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19v-7m7 7V5m7 14V9"/></svg>Usage</button>
+      <button type="button" role="tab" id="nav-chart" class="rail-button" aria-selected="false" aria-controls="pane-chart" tabindex="-1" title="Chart (⌘2)">
+        <svg class="rail-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16h16M7 15l4-5 4 2 5-6"/></svg>Chart</button>
+      <button type="button" role="tab" id="nav-keys" class="rail-button" aria-selected="false" aria-controls="pane-keys" tabindex="-1" title="Keys (⌘3)">
+        <svg class="rail-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3.5" width="16" height="17" rx="3"/><circle cx="12" cy="11.5" r="3"/><path d="M12 8.5v-2m0 8v2m-3-5H7m10 0h-2M7 20.5V22m10-1.5V22"/></svg>Keys</button>
     </nav>
-    <!-- Only what every pane needs. The rest lives with its pane or in Settings, so the header
-         never outgrows its column and slides under the tabs. -->
-    <div class="toolbar-end">
-      <p id="status" class="status" role="status" aria-live="polite"></p>
-      <button type="button" id="btn-help" class="btn-quiet" aria-label="Keyboard shortcuts" title="Shortcuts">?</button>
+    <div class="rail-bottom">
+      <button type="button" id="btn-help" class="rail-button" title="Keyboard shortcuts (?)">
+        <svg class="rail-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M9.7 9a2.3 2.3 0 0 1 4.5.7c0 1.8-2.2 1.7-2.2 3.7m0 2.8v.1"/></svg>Help</button>
+      <span class="rail-divider" aria-hidden="true"></span>
+      <button type="button" role="tab" id="nav-settings" class="rail-button" aria-selected="false" aria-controls="pane-settings" tabindex="-1" title="Settings (⌘4)">
+        <svg class="rail-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 14 4l1.6 2.2 2.7.2 1.6 2.7-1.1 2.5 1.1 2.5-1.6 2.7-2.7.2L14 19.2l-2 .5-2-.5-1.6-2.2-2.7-.2-1.6-2.7 1.1-2.5-1.1-2.5 1.6-2.7 2.7-.2L10 4z"/><circle cx="12" cy="11.6" r="2.7"/></svg>Settings</button>
     </div>
-  </header>
+  </aside>
+
+  <div class="shell">
+  <!-- The status line has its own strip so a long message never covers a pane's header. -->
+  <div class="status-bar">
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </div>
 
   <main>
     <p id="engine-down" class="err engine-down" role="alert" hidden>Engine is not answering. Run keys dashboard or keys menubar, then reload.</p>
@@ -214,6 +222,7 @@
       </section>
     </section>
   </main>
+  </div>
 
   <dialog id="dlg-add" class="dlg" aria-labelledby="add-title">
     <form id="add-form" novalidate>

@@ -296,15 +296,20 @@
     else if (name === "settings") { renderSettings(); loadStatus(); loadRelay(); }
   }
 
+  // Settings lives in the rail's foot, outside the tablist element, so each tab listens itself.
+  // The step must not bubble on: the document handler would move a Down press on to the Keys
+  // list as soon as the Keys pane came up.
   for (const [name, tab] of Object.entries(tabs)) {
     tab.addEventListener("click", () => showPane(name));
+    tab.addEventListener("keydown", (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const j = ringStep(e.key, PANE_ORDER.indexOf(state.pane), PANE_ORDER.length);
+      if (j < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      showPane(PANE_ORDER[j], { keyboard: true, focusTab: true });
+    });
   }
-  document.querySelector(".seg").addEventListener("keydown", (e) => {
-    const j = ringStep(e.key, PANE_ORDER.indexOf(state.pane), PANE_ORDER.length);
-    if (j < 0) return;
-    e.preventDefault();
-    showPane(PANE_ORDER[j], { keyboard: true, focusTab: true });
-  });
 
   // ---------- chips (radiogroups) ----------
 

@@ -19,6 +19,7 @@ const assets = new Map([
   ["/analytics.js", ["application/javascript", ""]],
   ["/styles.css", ["text/css", asset("styles.css")]],
   ["/providers.json", ["application/json", asset("providers.json")]],
+  ["/icon.png", ["image/png", asset("icon.png")]],
 ]);
 
 // The merged catalog the engine serves at /api/providers, mirrored from the shipped file: the
@@ -2110,7 +2111,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
     blue: getComputedStyle(document.documentElement).getPropertyValue("--blue").trim(),
     claude: getComputedStyle(document.documentElement).getPropertyValue("--s-claude-1").trim(),
     muted: getComputedStyle(document.documentElement).getPropertyValue("--ink-3").trim(),
-    toolbarBg: getComputedStyle(document.querySelector(".toolbar")).backgroundColor,
+    railBg: getComputedStyle(document.querySelector(".rail")).backgroundColor,
   }));
   const dark = await read();
   assert.equal(dark.attr, null);
@@ -2122,7 +2123,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
   assert.equal(dark.paneRadius, "18px", "the pane is still a rounded card");
   assert.equal(dark.blue, "#4c9aff", "the accent blue stays for links and buttons");
   // Surfaces are neutral grey, not blue-tinted: every channel within a hair of the others.
-  for (const rgb of [dark.bodyBg, dark.paneBg, dark.toolbarBg]) {
+  for (const rgb of [dark.bodyBg, dark.paneBg, dark.railBg]) {
     const [r, g, b] = rgb.match(/\d+/g).map(Number);
     assert.ok(Math.max(r, g, b) - Math.min(r, g, b) <= 3, `${rgb} is a neutral surface`);
   }
@@ -2175,7 +2176,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
   assert.equal(primary.color, "rgb(255, 255, 255)");
 });
 
-test("every pane fits the viewport at 390, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
+test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
   const foreign = [];
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
   plans = [droidPlan()];
@@ -2183,7 +2184,7 @@ test("every pane fits the viewport at 390, 1280 and 1920 px, and nothing loads o
   await showDroidOnUsage(page);
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  for (const width of [390, 1280, 1920]) {
+  for (const width of [390, 540, 780, 1280, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
       await page.getByRole("tab", { name: pane, exact: true }).click();
@@ -2198,26 +2199,183 @@ test("every pane fits the viewport at 390, 1280 and 1920 px, and nothing loads o
   assert.deepEqual(foreign, [], "every request stays on the dashboard's own origin");
 });
 
-// The header used to carry every control, so on the Keys pane with a status message the right
-// column spilled under the tabs. It now holds only the status line and help.
-test("the header stays one row and never slides under the tabs from 760 px up", async (page, origin) => {
+// The status line used to share the header with the tabs; it now has its own strip above the
+// panes, so a long message must ellipsize on one line there and never reach the rail.
+test("the status line stays one row beside the rail on every pane from 390 px up", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.evaluate(() => { document.getElementById("status").textContent = "Ingested 1,234 new rows from 56 files, 3 parse errors. ".repeat(3); });
-  for (const width of [760, 900, 1180, 1440]) {
+  for (const width of [390, 540, 780, 1180, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
       await page.getByRole("tab", { name: pane, exact: true }).click();
       const g = await page.evaluate(() => {
         const r = (sel) => document.querySelector(sel).getBoundingClientRect();
-        const seg = r("nav.seg"), end = r(".toolbar-end"), brand = r(".brand"), header = r("header.toolbar");
+        const status = r("#status"), rail = r(".rail"), pane = r("main [role=tabpanel]:not([hidden])");
         const hit = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-        return { height: header.height, endHits: hit(seg, end), brandHits: hit(seg, brand) };
+        return { status, railHits: hit(status, rail), paneHits: hit(status, pane), vw: innerWidth };
       });
-      assert.ok(Math.abs(g.height - 48) <= 2, `${pane} at ${width}px: header is ${g.height}px tall`);
-      assert.ok(!g.endHits, `${pane} at ${width}px: the header end overlaps the tabs`);
-      assert.ok(!g.brandHits, `${pane} at ${width}px: the brand overlaps the tabs`);
+      assert.ok(g.status.height > 0 && g.status.height <= 22, `${pane} at ${width}px: status is ${g.status.height}px tall`);
+      assert.ok(g.status.left >= 0 && g.status.right <= g.vw, `${pane} at ${width}px: status leaves the viewport`);
+      assert.ok(!g.railHits, `${pane} at ${width}px: the status overlaps the rail`);
+      assert.ok(!g.paneHits, `${pane} at ${width}px: the status overlaps the pane`);
     }
+  }
+});
+
+// ---------- app shell: the rail ----------
+
+test("the rail carries the original app icon and Usage, Chart, Keys, Help and Settings in both themes", async (page, origin) => {
+  const icons = [];
+  page.on("response", (r) => { if (new URL(r.url()).pathname === "/icon.png") icons.push({ origin: new URL(r.url()).origin, status: r.status() }); });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const read = () => page.evaluate(() => {
+    const img = document.querySelector(".rail .brand-mark img");
+    const mark = getComputedStyle(document.querySelector(".rail .brand-mark"));
+    const box = img.getBoundingClientRect();
+    return {
+      src: img.getAttribute("src"), alt: img.alt, loaded: img.complete && img.naturalWidth > 0,
+      w: box.width, h: box.height,
+      markBorder: mark.borderTopWidth, markBg: mark.backgroundColor,
+      rail: document.querySelector(".rail").getBoundingClientRect().width,
+      items: [...document.querySelectorAll(".rail .rail-button")].map((b) => [b.id, b.textContent.trim(), !!b.querySelector("svg")]),
+      textBrand: !!document.querySelector(".brand-name, .brand-purpose, header.toolbar"),
+    };
+  });
+  const dark = await read();
+  assert.equal(dark.src, "/icon.png", "the original app icon, same-origin");
+  assert.equal(dark.alt, "Keysrs");
+  assert.ok(dark.loaded, "the icon loaded");
+  assert.deepEqual([dark.w, dark.h], [48, 48]);
+  assert.equal(dark.markBorder, "0px", "no extra tile around the icon");
+  assert.equal(dark.markBg, "rgba(0, 0, 0, 0)");
+  assert.equal(dark.rail, 78);
+  assert.deepEqual(dark.items, [
+    ["nav-usage", "Usage", true], ["nav-chart", "Chart", true], ["nav-keys", "Keys", true],
+    ["btn-help", "Help", true], ["nav-settings", "Settings", true],
+  ]);
+  assert.equal(dark.textBrand, false, "the old text brand and header are gone");
+  // Help and Settings sit at the foot of the rail with a divider between them.
+  const foot = await page.evaluate(() => [...document.querySelector(".rail-bottom").children].map((n) => n.id || n.className));
+  assert.deepEqual(foot, ["btn-help", "rail-divider", "nav-settings"]);
+  const gap = await page.evaluate(() => document.getElementById("btn-help").getBoundingClientRect().top - document.getElementById("nav-keys").getBoundingClientRect().bottom);
+  assert.ok(gap > 100, `the bottom group is pushed down (${gap}px below Keys)`);
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.locator("#theme-switch").click();
+  for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
+    await page.getByRole("tab", { name: pane, exact: true }).click();
+    const light = await read();
+    assert.equal(light.src, "/icon.png", `${pane}: the same icon in the light theme`);
+    assert.deepEqual([light.w, light.h], [48, 48]);
+    assert.ok(await page.locator(".rail").isVisible(), `${pane}: the rail stays`);
+  }
+  assert.ok(icons.length >= 1 && icons.every((r) => r.origin === origin && r.status === 200), JSON.stringify(icons));
+});
+
+test("rail tabs switch panes, mark the selection and step on every arrow key", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  const selected = () => page.evaluate(() =>
+    [...document.querySelectorAll("[role=tab]")].filter((t) => t.getAttribute("aria-selected") === "true").map((t) => t.id));
+  for (const [name, id] of [["Keys", "nav-keys"], ["Chart", "nav-chart"], ["Settings", "nav-settings"], ["Usage", "nav-usage"]]) {
+    await page.getByRole("tab", { name, exact: true }).click();
+    assert.deepEqual(await selected(), [id], `${name} click`);
+    assert.equal(await page.locator(`#${id}`).getAttribute("tabindex"), "0");
+  }
+  await page.getByRole("tab", { name: "Keys", exact: true }).click();
+  const look = await page.evaluate(() => {
+    const tab = document.getElementById("nav-keys");
+    const cs = getComputedStyle(tab), bar = getComputedStyle(tab, "::before");
+    const other = getComputedStyle(document.getElementById("nav-chart"), "::before");
+    const root = getComputedStyle(document.documentElement);
+    const probe = document.createElement("i");
+    document.body.append(probe);
+    probe.style.color = root.getPropertyValue("--blue-ink");
+    const ink = getComputedStyle(probe).color;
+    probe.style.color = root.getPropertyValue("--blue-tint");
+    const tint = getComputedStyle(probe).color;
+    probe.style.color = root.getPropertyValue("--blue");
+    const blue = getComputedStyle(probe).color;
+    probe.remove();
+    return { color: cs.color, bg: cs.backgroundColor, bar: bar.width, barBg: bar.backgroundColor, otherBar: other.content, ink, tint, blue };
+  });
+  assert.equal(look.color, look.ink, "selected text is --blue-ink");
+  assert.equal(look.bg, look.tint, "selected fill is --blue-tint");
+  assert.equal(look.bar, "2px", "a 2px indicator on the left edge");
+  assert.equal(look.barBg, look.blue);
+  assert.equal(look.otherBar, "none", "only the selected tab has the indicator");
+
+  // The rail is vertical: Down and Up step and wrap, and focus stays on the tab even when the
+  // Keys pane (whose list also listens for Down) comes up.
+  await page.getByRole("tab", { name: "Chart", exact: true }).click();
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => !document.getElementById("pane-keys").hidden);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "nav-keys");
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => !document.getElementById("pane-settings").hidden);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "nav-settings", "Help is skipped: it is not a tab");
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
+  await page.keyboard.press("ArrowUp");
+  await page.waitForFunction(() => !document.getElementById("pane-settings").hidden);
+  assert.deepEqual(await selected(), ["nav-settings"]);
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForFunction(() => !document.getElementById("pane-keys").hidden);
+  assert.equal(await page.evaluate(() => document.activeElement.id), "nav-keys");
+
+  // Settings is still a member of the one tablist, though it sits below Help.
+  const owned = await page.evaluate(() => {
+    const list = document.querySelector("[role=tablist]");
+    return { owns: list.getAttribute("aria-owns"), orientation: list.getAttribute("aria-orientation"), count: document.querySelectorAll("[role=tablist]").length };
+  });
+  assert.deepEqual(owned, { owns: "nav-settings", orientation: "vertical", count: 1 });
+
+  await page.locator("#btn-help").click();
+  await waitDialog(page, "dlg-help", true);
+  assert.deepEqual(await selected(), ["nav-keys"], "Help opens the dialog without changing pane");
+});
+
+test("the rail narrows at 780 and 540 px and the logo shrinks to 40 px", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  for (const [width, rail, logo] of [[1280, 78, 48], [781, 78, 48], [780, 65, 48], [541, 65, 48], [540, 53, 40], [390, 53, 40]]) {
+    await page.setViewportSize({ width, height: 800 });
+    const g = await page.evaluate(() => {
+      const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+      const labels = [...document.querySelectorAll(".rail .rail-button")].map((b) => {
+        const box = b.getBoundingClientRect();
+        return { w: box.width, scroll: b.scrollWidth, client: b.clientWidth, size: parseFloat(getComputedStyle(b).fontSize) };
+      });
+      return { rail: r(".rail").width, logo: r(".brand-mark img").width, labels, help: r("#btn-help").bottom, vh: innerHeight };
+    });
+    assert.equal(g.rail, rail, `rail at ${width}px`);
+    assert.equal(g.logo, logo, `logo at ${width}px`);
+    for (const l of g.labels) {
+      assert.ok(l.scroll <= l.client + 1, `a rail label is clipped at ${width}px`);
+      assert.ok(l.size >= 8, `rail labels stay legible at ${width}px`);
+    }
+    assert.ok(g.help <= g.vh, `Help is on screen at ${width}px`);
+  }
+});
+
+test("the status line is visible after a copy at 1440 and 390 px", async (page, origin) => {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await openKeys(page, origin);
+    await rowButton(page, "alpha", "copy").click();
+    await page.waitForFunction(() => /^Copied alpha\./.test(document.getElementById("status").textContent));
+    assert.equal(await status(page), "Copied alpha. Clipboard wipes in 20 s.");
+    const box = await page.locator("#status").evaluate((n) => {
+      const r = n.getBoundingClientRect();
+      return { w: r.width, h: r.height, left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: innerWidth, vh: innerHeight, live: n.getAttribute("aria-live") };
+    });
+    assert.ok(box.w > 0 && box.h > 0, `status has a size at ${width}px`);
+    assert.ok(box.left >= 0 && box.right <= box.vw && box.top >= 0 && box.bottom <= box.vh, `status is on screen at ${width}px: ${JSON.stringify(box)}`);
+    assert.equal(box.live, "polite");
+    assert.ok(await page.locator("#status").isVisible());
   }
 });
 
@@ -2373,7 +2531,7 @@ test("an empty vault gets the first-use guide, dismisses it and keeps it in help
   await page.reload();
   await page.waitForLoadState("networkidle");
   assert.equal(await page.locator("#onboard").isHidden(), true, "a dismissed guide stays dismissed");
-  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await page.getByRole("button", { name: "Help", exact: true }).click();
   await waitDialog(page, "dlg-help", true);
   assert.match(await page.locator("#dlg-help").textContent(), /Getting started/);
 });
@@ -2508,7 +2666,7 @@ test("the first-use guide links to the agents dialog", async (page, origin) => {
 test("four panes: the shortcuts and arrow keys reach Usage, Chart, Keys and Settings and nothing else", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  const tabNames = await page.locator(".seg [role=tab]").allTextContents();
+  const tabNames = await page.locator("[role=tab]").allTextContents();
   assert.deepEqual(tabNames.map((t) => t.trim()), ["Usage", "Chart", "Keys", "Settings"]);
   const shown = () => page.evaluate(() =>
     [...document.querySelectorAll("main [role=tabpanel]")].filter((p) => !p.hidden).map((p) => p.id));
@@ -2524,7 +2682,7 @@ test("four panes: the shortcuts and arrow keys reach Usage, Chart, Keys and Sett
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction(() => !document.getElementById("pane-usage").hidden);
   assert.deepEqual(await shown(), ["pane-usage"], "the arrow keys wrap from Settings back to Usage");
-  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  await page.getByRole("button", { name: "Help", exact: true }).click();
   await waitDialog(page, "dlg-help", true);
   const help = await page.locator("#dlg-help .shortcuts").textContent();
   assert.doesNotMatch(help, /Optimizer/);
