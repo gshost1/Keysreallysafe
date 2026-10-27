@@ -1101,6 +1101,10 @@ test("grant rows offer Renew on active and expired rows, never on revoked ones",
   await openKeys(page, origin);
   await page.locator("#grants-list li").nth(2).waitFor();
 
+  // ?all=1 lists every state, so the count line breaks the rows down per status
+  // instead of calling them all active.
+  assert.equal(await page.locator("#grants-count").textContent(), "1 active, 1 expired, 1 revoked grants, 0 clients.");
+
   const live = page.locator("#grants-list li", { hasText: "live task" });
   assert.deepEqual(await live.locator(".badge").allTextContents(), ["active"], "the active row carries its status badge");
   assert.match(await live.textContent(), /min left/, "an active row counts down");

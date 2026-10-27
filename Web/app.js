@@ -2393,7 +2393,15 @@
     const clients = state.clients || [];
     const profiles = state.profiles || [];
     box.hidden = list.length === 0 && clients.length === 0 && profiles.length === 0;
-    $("grants-count").textContent = plural(list.length, "active grant", "active grants")
+    // ?all=1 lists expired and revoked rows beside the active ones, so the count
+    // breaks them down per status instead of calling every listed row active;
+    // a status with no rows is left out of the line.
+    const tally = { active: 0, expired: 0, revoked: 0 };
+    for (const g of list) tally[g.status || "active"] += 1;
+    const counts = [tally.active + " active"];
+    if (tally.expired) counts.push(tally.expired + " expired");
+    if (tally.revoked) counts.push(tally.revoked + " revoked");
+    $("grants-count").textContent = counts.join(", ") + (list.length === 1 ? " grant" : " grants")
       + ", " + plural(clients.length, "client", "clients")
       + (profiles.length ? ", " + plural(profiles.length, "profile", "profiles") : "")
       + ".";
