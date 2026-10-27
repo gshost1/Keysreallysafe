@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-10-27
 
 - **`keys version` and `keys --version` print the version.** An agent could not detect which Keysrs it was talking to: both probes were parse errors, exiting 64 exactly like a usage error, so a script could not tell an old install from a new one or probe for a feature before using it. `keys version` now prints one human line (`Keysrs <version>`), `keys --version` answers the standard flag, and `keys version --json` prints one sorted-key JSON line (`{"version":"<version>"}`) so feature detection needs no text parsing. All three read the single version constant the updater and share-to-compare reports already use.
 - **`keys status --json` prints the plan windows as one JSON line.** The main agent-relevant read was unicode prose with no machine-readable option: a script had to parse indented blocks, em-dashes and "(resets in 2h)" strings, and nothing in the text said whether a tool's quota is tracked or merely quiet this week. `keys status --json` now prints one sorted-key JSON line with an entry per tool, and every entry states `tracked` explicitly. An untracked tool carries no usage numbers at all, and a percent whose window already reset is left out rather than shown as a current figure (the prose keeps it with "(reset due)", a caveat a number cannot carry inline) — the same no-fake-numbers rule as before, now machine-checkable. The human output is unchanged.
