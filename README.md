@@ -502,6 +502,15 @@ Mac. Claude Code needs an Anthropic-wire provider key; Codex and Grok need an
 OpenAI-compatible one; Droid takes either. The dashboard's **Agents** button (in Settings)
 shows the same recipes personalized to your key names, with copy buttons.
 
+Keysrs also ships an **agent skill** — `Skills/keysrs/SKILL.md` in the
+repository and `Contents/Resources/Skills/keysrs/SKILL.md` inside the
+installed Keysrs.app — that teaches an agent the workflows above, the exit
+codes and the privacy rules in the Agent Skills format its framework loads.
+It does not install itself; [docs/agents.md](docs/agents.md) explains where
+Claude Code, Droid, Codex and Grok each load skills from, with a one-line
+copy command per agent, and is the full agent guide: the supported workflows,
+the exit-code table, the `--json` flags and the privacy contract.
+
 ## Cloud agents
 
 An agent on another machine — a server, a VM, a self-hosted CI runner, a
@@ -660,11 +669,13 @@ existed show `-` for what was not kept.
 
 `keys` uses stable exit codes so a script can branch without reading prose:
 `0` success; `1` a usage or HTTP error; `2` not found (also `keys test` and
-`keys models` when the provider has no read-only check endpoint); `3` user
+`keys models` when the provider has no read-only check endpoint, except
+`keys models --json`, which reports every failed check as `5`); `3` user
 presence or the Keychain; `4` ingest or catalog; `5` a failed provider check;
 `6` no running Keysrs site owns the gateway — start Keysrs.app or run
 `keys dashboard` and retry; `64` bad arguments. `keys env`, `keys agent` and
 `keys tunnel` exit with the child command's own code once it ends.
+[docs/agents.md](docs/agents.md) states the whole table an agent reads.
 
 ## Local sources
 
