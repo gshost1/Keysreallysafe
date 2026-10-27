@@ -49,7 +49,7 @@ const rowNames = (page) => page.locator("#keys-body .key-row[data-name]")
 const rowCell = (page, name, cell) => page.locator(`#keys-body .key-row[data-name="${name}"] .key-${cell}`).first();
 const rowButton = (page, name, act) => page.locator(`#keys-body .key-row[data-name="${name}"] [data-act="${act}"]`).first();
 // Copy remains a row button; More exposes the same actions as the selected-row shortcuts.
-const ROW_LETTER = { reveal: "v", edit: "e", check: "t", history: "h", delete: "Backspace" };
+const ROW_LETTER = { reveal: "v", edit: "e", check: "t", grant: "a", history: "h", delete: "Backspace" };
 async function rowAct(page, name, act) {
   const row = page.locator(`#keys-body .key-row[data-name="${name}"]`).first();
   await row.locator(".key-name").click();
@@ -439,7 +439,7 @@ test("a profile bounds a real grant end to end and removes cleanly", async (page
   assert.equal(saved.data.name, "contract-evals");
   assert.equal(saved.data.unattended, true, "a profile answers with bounds only");
 
-  await rowButton(page, "contract-alpha", "grant").click();
+  await rowAct(page, "contract-alpha", "grant");
   await waitDialog(page, "dlg-grant", true);
   const sel = page.locator("#grant-form [name=profile]");
   await page.waitForFunction(() => document.querySelector('#grant-form [name="profile"]').options.length > 1);
@@ -513,7 +513,7 @@ test("delete removes the real row and its stored secret", async (page) => {
 
 test("a grant renews end to end keeping its token and scope", async (page) => {
   await openKeys(page);
-  await rowButton(page, "contract-alpha", "grant").click();
+  await rowAct(page, "contract-alpha", "grant");
   await waitDialog(page, "dlg-grant", true);
   await page.locator("#grant-form [name=task]").fill("contract renewal run");
   await page.locator("#grant-submit").click();

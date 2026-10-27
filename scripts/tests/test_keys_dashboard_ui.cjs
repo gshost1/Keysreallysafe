@@ -2350,7 +2350,7 @@ test("the grant dialog offers only this key's profiles, and picking one prefills
   await waitDialog(page, "dlg-grant", false);
 
   // A reopen starts at None, and issuing without picking sends no profile field at all.
-  await rowButton(page, "alpha", "grant").click();
+  await rowAct(page, "alpha", "grant");
   await waitDialog(page, "dlg-grant", true);
   assert.equal(await sel.inputValue(), "");
   assert.equal(await page.locator('#grant-form [name=minutes] option[value="480"]').count(), 0,
