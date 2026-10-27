@@ -310,10 +310,12 @@ function handle(method, pathname, body, params) {
 
   if (pathname === "/api/keys" && method === "GET") return [200, { keys }];
   if (pathname === "/api/keys" && method === "POST") {
-    // Mirror the real server's KeyName.validate: a name outside the pattern or past 128
-    // characters is refused before anything is stored. The client pattern has no length
-    // cap, so a long lowercase name passes the browser and only the server can refuse it.
-    if (!/^[a-z0-9][a-z0-9._-]*$/.test(body.name) || body.name.length > 128) {
+    // Mirror the real server's KeyName.validate, which checks the 128-char cap before the
+    // pattern, so each refusal answers the exact wire string the real backend does. The
+    // client pattern has no length cap, so a long lowercase name passes the browser and
+    // only the server can refuse it.
+    if (body.name.length > 128) return [400, { error: "name too long" }];
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(body.name)) {
       return [400, { error: `invalid name ${body.name} (expected [a-z0-9][a-z0-9._-]*)` }];
     }
     if (keys.some((k) => k.name === body.name)) return [409, { error: "already_exists" }];
@@ -1484,8 +1486,9 @@ test("add refuses a whitespace-only provider locally", async (page, origin) => {
 });
 
 // VAL-INVAL-003: a 129-character lowercase name passes the client pattern (no length cap), so
-// only the server's KeyName rule refuses it. The mirrored fixture must answer the same 400 the
-// real backend does, and the dialog must stay open with the message and the typed values.
+// only the server's KeyName rule refuses it. KeyName.validate checks the cap before the
+// pattern, so the real backend answers "name too long" — and the fixture mirrors that exact
+// string, keeping "invalid name …" for pattern violations alone.
 test("add keeps the dialog open with the server's message when the name is too long", async (page, origin) => {
   await openKeys(page, origin);
   await page.locator("#btn-add").click();
@@ -1496,9 +1499,8 @@ test("add keeps the dialog open with the server's message when the name is too l
   await page.locator("#add-form [name=secret]").fill(SECRET);
   await page.locator("#add-form [type=submit]").click();
   await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
-  assert.match(await page.locator("#add-err").textContent(),
-    /^invalid name a{129} \(expected \[a-z0-9\]\[a-z0-9\._-\]\*\)$/,
-    "the server's message must be shown verbatim");
+  assert.equal(await page.locator("#add-err").textContent(), "name too long",
+    "the server's length-cap message must be shown verbatim");
   assert.equal(await page.locator("#dlg-add").evaluate((d) => d.open), true, "the dialog stays open");
   assert.equal(await page.locator("#add-form [name=name]").inputValue(), longName, "the name is preserved");
   assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "openai", "the provider is preserved");
@@ -1550,6 +1552,121 @@ test("the add dialog never leaves a typed secret in the DOM after it closes", as
   await waitDialog(page, "dlg-add", false);
   await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
   assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "");
+});
+
+// Invented sentinels for the provider tests below, in the suite's NEVER-REAL style. The
+// sk-ant- and gsk_ shapes carry the real vendors' unique key_prefixes, which is the point
+// of the guess test; none of these is a real credential.
+const ADD_SECRET = "sk-add-NEVER-REAL-0000000000";
+const ANT_SECRET = "sk-ant-add-NEVER-REAL-0000000000";
+const PLAIN_SECRET = "plain-add-NEVER-REAL-0000000000";
+const GROQ_SECRET = "gsk_add-NEVER-REAL-0000000000";
+
+// VAL-PROV-001: a provider the user added lives in the catalog overlay under "Yours"; it
+// must be offered like a built-in and the row it produces must carry its display name.
+test("add offers a custom provider under yours and names the row with its display name", async (page, origin) => {
+  customProviders = [{
+    id: "fixture-labs", name: "Fixture Labs", group: "yours", gateway: true,
+    host: "api.fixture-labs.test", api: "openai", auth_header: "Authorization", auth_prefix: "Bearer ",
+    path_prefix: "", key_prefix: "fxl-live-", note: "Synthetic overlay provider invented for this suite.",
+  }];
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=provider]").click();
+  // The listId prefix is always three dash-separated parts (name-pick-xxxxx), so the
+  // provider id itself is everything after that.
+  const offered = await page.locator("#add-form .pick-list .pick-item")
+    .evaluateAll((nodes) => nodes.map((n) => n.id.split("-").slice(3).join("-")));
+  assert.ok(offered.includes("fixture-labs"), "a provider from the overlay is offered for new keys");
+  assert.equal(await page.locator("#add-form .pick-list .pick-group").first().textContent(), "Yours",
+    "the user's own group is offered first");
+  await page.locator("#add-form .pick-list .pick-item").filter({ hasText: "Fixture Labs" }).click();
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "fixture-labs",
+    "picking the item writes the id into the field");
+  await page.locator("#add-form [name=name]").fill("zulu");
+  await page.locator("#add-form [name=secret]").fill(ADD_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="zulu"]').waitFor();
+  assert.equal(await rowCell(page, "zulu", "provider").textContent(), "Fixture Labs",
+    "the row shows the catalog's display name, not the raw id");
+  assert.equal(JSON.parse(bodies[0]).provider, "fixture-labs", "the picked id is what rides the POST");
+});
+
+// VAL-PROV-002: a vendor that is not in the catalog is free text. The picker must say the
+// typed id will be kept, the add must go through, and the row must fall back to the raw id.
+test("add accepts an unknown provider typed by hand and shows the raw id", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=provider]").fill("vendor-zzz");
+  assert.equal(await page.locator("#add-form .pick-list .pick-none").textContent(),
+    'No match. "vendor-zzz" will be saved as typed.',
+    "the picker must promise the typed id is kept as-is");
+  await page.locator("#add-form [name=name]").fill("yankee");
+  await page.locator("#add-form [name=secret]").fill(ADD_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="yankee"]').waitFor();
+  assert.equal(await rowCell(page, "yankee", "provider").textContent(), "vendor-zzz",
+    "an unknown id has no display name, so the row shows the raw id");
+  assert.equal(JSON.parse(bodies[0]).provider, "vendor-zzz", "the typed id rides the POST untouched");
+});
+
+// VAL-PROV-004: the secret-prefix guess had no coverage anywhere. A unique key_prefix
+// pre-fills an empty provider field (and clears again when the prefix stops matching), a
+// provider typed by hand is never overwritten, a hidden provider is never guessed, and the
+// guessed id is what the POST carries.
+test("the add dialog guesses the provider from the secret but never over a typed or hidden one", async (page, origin) => {
+  // Groq's gsk_ prefix is unique and four characters, so it would match if the hidden rule broke.
+  hiddenUsers.add("groq");
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  const providerValue = () => page.evaluate(() => document.getElementById("add-form").elements.provider.value);
+  const guessed = () => page.evaluate(() => document.getElementById("add-form").elements.provider.dataset.guessed || "");
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+
+  await page.locator("#add-form [name=secret]").fill(ANT_SECRET);
+  assert.equal(await providerValue(), "anthropic", "the unique prefix pre-fills an empty provider");
+  assert.equal(await guessed(), "1", "the filled provider is marked guessed so later typing can replace it");
+
+  await page.locator("#add-form [name=secret]").fill(PLAIN_SECRET);
+  assert.equal(await providerValue(), "", "the guess clears when the prefix stops matching");
+  assert.equal(await guessed(), "");
+
+  await page.locator("#add-form [name=provider]").fill("openrouter");
+  await page.locator("#add-form [name=secret]").fill(ANT_SECRET);
+  assert.equal(await providerValue(), "openrouter", "a provider typed by hand is never overwritten");
+  assert.equal(await guessed(), "");
+
+  await page.locator("#add-form [name=provider]").fill("");
+  await page.locator("#add-form [name=secret]").fill(GROQ_SECRET);
+  assert.equal(await providerValue(), "", "a hidden provider's prefix never fills the field");
+
+  await page.locator("#add-form [name=secret]").fill(ANT_SECRET);
+  await page.locator("#add-form [name=name]").fill("echo");
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="echo"]').waitFor();
+  assert.equal(await rowCell(page, "echo", "provider").textContent(), "Anthropic",
+    "the row resolves the guessed provider's display name");
+  assert.equal(JSON.parse(bodies[0]).provider, "anthropic", "the guessed id is what gets saved");
 });
 
 // The Add dialog keeps the three required fields up front; Kind and Notes live behind the
