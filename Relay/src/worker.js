@@ -29,6 +29,16 @@ function json(status, object, extraHeaders) {
 // first where a wait makes sense (docs/relay.md, the error table).
 const RETRY_AFTER = { mac_offline: "30", relay_busy: "5" };
 const RETRYABLE = new Set(["mac_offline", "relay_busy", "mac_disconnected"]);
+// The Mac's pairing refusals are the agent's to fix on the Mac (pair, renew,
+// re-scope), so the agent hears 403 rather than the 502 every other Mac error
+// gets (docs/relay.md, the pairing section). They are not in RETRYABLE or
+// RETRY_AFTER: resending the identical request cannot change the answer.
+const MAC_ERROR_STATUS = Object.freeze({
+  pairing_required: 403,
+  pairing_expired: 403,
+  pairing_revoked: 403,
+  pairing_out_of_scope: 403,
+});
 const NOT_RUNNING = "the Keysrs relay is off (Relay for Cloud Agents in its menu, or `keys relay on`) and `keys relay` is not running, or the Mac is asleep or offline";
 const NO_MAC = `no Mac is connected to this relay: ${NOT_RUNNING}`;
 
@@ -500,7 +510,7 @@ export class RelayHub extends DurableObject {
         }
         const code = typeof detail?.code === "string" && detail.code.length <= 64 ? detail.code : "mac_error";
         const text = typeof detail?.message === "string" && detail.message.length <= 512 ? detail.message : "the Mac could not serve this request";
-        this.fail(entry, code, 502, text);
+        this.fail(entry, code, MAC_ERROR_STATUS[code] ?? 502, text);
         this.finish(frame.id);
         return;
       }

@@ -187,9 +187,13 @@ final class RelayHost: @unchecked Sendable {
 
     /// Starts relaying with credentials the caller obtained behind presence, holding `relayLock`
     /// until `stop()`. Does nothing if this host is already on.
-    func start(origin: URL, secret: String, gatewayPort: UInt16, relayLock: RelayLock) {
+    func start(origin: URL, secret: String, gatewayPort: UInt16, relayLock: RelayLock, pairing: RelayPairingVerifier? = nil) {
+        var options = RelayClient.Options(url: origin, secret: secret, gatewayPort: gatewayPort)
+        // The app's relay enforces pairing like `keys relay` in a Terminal does; the verifier
+        // reads the catalog per request, so `keys relay pair require` applies without a restart.
+        options.pairing = pairing
         let client = RelayClient(
-            options: RelayClient.Options(url: origin, secret: secret, gatewayPort: gatewayPort),
+            options: options,
             dialer: dialer,
             log: log,
             activity: { [weak self] in self?.activityChanged() }

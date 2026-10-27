@@ -325,6 +325,13 @@ final class RelayRequest: @unchecked Sendable {
     let method: String
     let target: String
     let headers: [(String, String)]
+    /// The pairing credential the agent presented (`x-ksf-pair`), kept out of `headers` so the
+    /// replay can never carry it to the gateway, the provider or the audit log. Only the
+    /// Mac's pairing check reads it.
+    let pairingCredential: String?
+    /// The gateway key the request targets: the first path segment of `target`
+    /// ("/demo/v1/…" → "demo"); nil when there is none.
+    let keyName: String?
     private let lock = NSLock()
     private var body = Data()
     private var fd: Int32 = -1
@@ -337,11 +344,18 @@ final class RelayRequest: @unchecked Sendable {
               !target.utf8.contains(where: { $0 == 0x20 || Self.isLineBreakOrNul($0) })
         else { return nil }
         var headers: [(String, String)] = []
+        var pairing: String?
         for pair in (object["headers"] as? [Any]) ?? [] {
             guard let kv = pair as? [Any], kv.count == 2,
                   let name = (kv[0] as? String)?.lowercased(), let value = kv[1] as? String,
                   Self.isToken(name), !value.utf8.contains(where: Self.isLineBreakOrNul)
             else { return nil }
+            // The pairing credential is consumed here, by the Mac; it is never replayed, so it
+            // does not go through the drop list with the merely hop-by-hop headers.
+            if name == RelayPairing.header {
+                pairing = pairing ?? value
+                continue
+            }
             if Self.dropHeaders.contains(name) || name.hasPrefix("cf-") || name.hasPrefix("x-forwarded-") { continue }
             headers.append((name, value))
         }
@@ -349,6 +363,9 @@ final class RelayRequest: @unchecked Sendable {
         self.method = method.uppercased()
         self.target = target
         self.headers = headers
+        self.pairingCredential = pairing
+        let segment = target.dropFirst().prefix(while: { $0 != "/" && $0 != "?" })
+        self.keyName = segment.isEmpty ? nil : String(segment)
     }
 
     /// Checked byte by byte: as Characters, "\r\n" is one grapheme and would slip past.
@@ -536,6 +553,9 @@ final class RelayClient: @unchecked Sendable {
         var maxBufferedRequests = RelayProtocol.maxBufferedRequests
         var maxBufferedBytes = RelayProtocol.maxBufferedBytes
         var bufferTimeout = RelayProtocol.bufferTimeout
+        /// Pairing enforcement (docs/proposals/relay-pairing.md), checked per REQUEST frame
+        /// before the body is buffered. nil leaves the relay exactly as before pairing existed.
+        var pairing: RelayPairingVerifier? = nil
     }
 
     /// What the loop is doing, for the app's menu and dashboard.
@@ -726,6 +746,29 @@ final class RelayClient: @unchecked Sendable {
             guard let request = RelayRequest(id: frame.id, head: frame.payload) else {
                 socket.sendDetached(.json(.error, id: frame.id, ["code": "bad_request_frame", "message": "the relay sent a malformed request head"]))
                 return
+            }
+            // Pairing is checked after the head parses (a framing error stays a framing error)
+            // and before the id enters the buffer: a refused request costs no memory, the
+            // gateway is never contacted, and its late BODY/END frames land in the existing
+            // unknown-id path. The refusal names expired/revoked/out-of-scope but never whether
+            // a credential exists — pairing_required covers missing, malformed and unknown.
+            if let pairing = options.pairing {
+                switch pairing(request.pairingCredential, request.keyName, now()) {
+                case .notRequired, .ok:
+                    break
+                case .pairingRequired:
+                    socket.sendDetached(.json(.error, id: frame.id, ["code": "pairing_required", "message": "this relay requires a paired agent; issue one with keys relay pair issue and send the credential as x-ksf-pair"]))
+                    return
+                case .expired:
+                    socket.sendDetached(.json(.error, id: frame.id, ["code": "pairing_expired", "message": "this pairing has expired; issue a new one with keys relay pair issue"]))
+                    return
+                case .revoked:
+                    socket.sendDetached(.json(.error, id: frame.id, ["code": "pairing_revoked", "message": "this pairing was revoked on the Mac"]))
+                    return
+                case .outOfScope:
+                    socket.sendDetached(.json(.error, id: frame.id, ["code": "pairing_out_of_scope", "message": "this pairing does not cover the key this request targets"]))
+                    return
+                }
             }
             // The Worker never reuses an id while a request is open, so a repeat means it has
             // forgotten the first one; the first must not keep running in its place.

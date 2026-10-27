@@ -155,7 +155,7 @@ describe("frames", () => {
     for (const name of ["cf-connecting-ip", "CF-Ray", "x-forwarded-for", "host", "content-length", "x-ksf-via", "connection"]) {
       expect(stripRequestHeader(name), name).toBe(true);
     }
-    for (const name of ["authorization", "x-api-key", "content-type", "anthropic-version"]) {
+    for (const name of ["authorization", "x-api-key", "content-type", "anthropic-version", "x-ksf-pair"]) {
       expect(stripRequestHeader(name), name).toBe(false);
     }
   });
@@ -176,6 +176,12 @@ describe("the front door", () => {
     expect(body.relay).toBe("keysrs");
     expect(body.protocol).toBe("1");
     expect(JSON.stringify(body)).not.toMatch(/online|offline|connected/);
+  });
+
+  it("reveals no pairing state at / either", async () => {
+    const res = await SELF.fetch(`${ORIGIN}/`);
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(await res.json())).not.toMatch(/pair/i);
   });
 
   it("refuses /connect without the secret, with a wrong one, without an upgrade, or with another protocol", async () => {
@@ -502,6 +508,57 @@ describe("relaying", () => {
     mac.ws.send("hello");
     const closed = await withTimeout(mac.closed, 5000, "close");
     expect(closed.code).toBe(1003);
+  });
+});
+
+describe("the Mac's pairing refusals", () => {
+  // docs/relay.md, the pairing section: when relay_pairing_required is on, the
+  // Mac refuses an unpaired, expired, revoked or out-of-scope request at
+  // REQUEST time. The Worker presents that as 403: the fix is a new pairing or
+  // scope on the Mac, so resending the identical request cannot help — no
+  // retryable flag, no Retry-After.
+  for (const [code, message] of [
+    ["pairing_required", "this relay requires a paired agent; issue one with keys relay pair issue and send the credential as x-ksf-pair"],
+    ["pairing_expired", "this pairing has expired; issue a new one with keys relay pair issue"],
+    ["pairing_revoked", "this pairing was revoked on the Mac"],
+    ["pairing_out_of_scope", "this pairing does not cover the key this request targets"],
+  ]) {
+    it(`answers 403 ${code} when the Mac refuses the pairing, without retry guidance`, async () => {
+      const mac = await connectMac();
+      const agent = SELF.fetch(`${ORIGIN}/router/v1/models`);
+      const req = await mac.next(FRAME.REQUEST);
+      mac.send(FRAME.ERROR, req.id, JSON.stringify({ code, message }));
+      const res = await withTimeout(agent, 5000, "agent response");
+      expect(res.status).toBe(403);
+      expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("retry-after")).toBeNull();
+      const body = await res.json();
+      expect(body.error).toBe(code);
+      expect(body.message).toBe(message);
+      expect("retryable" in body).toBe(false);
+    });
+  }
+
+  it("keeps answering 502 for the Mac's other error codes", async () => {
+    const mac = await connectMac();
+    const agent = SELF.fetch(`${ORIGIN}/router/v1/models`);
+    const req = await mac.next(FRAME.REQUEST);
+    mac.send(FRAME.ERROR, req.id, JSON.stringify({ code: "relay_buffer_full", message: "the Mac's buffer of unfinished requests is full" }));
+    const res = await withTimeout(agent, 5000, "agent response");
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe("relay_buffer_full");
+  });
+
+  it("passes x-ksf-pair through to the REQUEST frame untouched", async () => {
+    const mac = await connectMac();
+    const agent = SELF.fetch(`${ORIGIN}/router/v1/models`, {
+      headers: { "x-ksf-pair": "ksfp_0123456789abcdef0123456789abcdef0123456789abcdef" },
+    });
+    const req = await mac.next(FRAME.REQUEST);
+    expect(head(req).headers).toContainEqual(["x-ksf-pair", "ksfp_0123456789abcdef0123456789abcdef0123456789abcdef"]);
+    mac.send(FRAME.RESPONSE, req.id, JSON.stringify({ status: 204, headers: [] }));
+    expect((await withTimeout(agent, 5000, "agent response")).status).toBe(204);
   });
 });
 

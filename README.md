@@ -75,7 +75,8 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   Keysrs from the moment you turn it on, with Touch ID, until you turn it off
   or quit; never at launch by itself; or while `keys relay` runs in a
   Terminal), and feeds what arrives into the same loopback gateway with the
-  same token checks. Keys never leave the Mac over it; see
+  same token checks. Relayed requests can additionally be restricted to
+  agents you have paired with the Mac. Keys never leave the Mac over it; see
   [docs/relay.md](docs/relay.md).
   Optional product analytics
   ("share to compare") is off until the user opts in. Then, once a day, it

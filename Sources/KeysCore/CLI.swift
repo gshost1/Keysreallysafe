@@ -1443,7 +1443,7 @@ struct RelayCommand: ParsableCommand {
             """,
         subcommands: [
             RelaySetupCommand.self, RelayRunCommand.self, RelayOnCommand.self, RelayOffCommand.self,
-            RelayStatusCommand.self, RelayResetCommand.self,
+            RelayStatusCommand.self, RelayResetCommand.self, RelayPairCommand.self,
         ],
         defaultSubcommand: RelayRunCommand.self
     )
@@ -1466,6 +1466,133 @@ struct RelayCommand: ParsableCommand {
         }
         if JSONValue.bool(obj["awake"]) == true { line += ", keeping the Mac awake" }
         return line
+    }
+
+    /// The `pairing` line of `keys relay status`: the mode and the live count.
+    static func pairingLine(required: Bool, active: Int) -> String {
+        "\(required ? "required" : "off"), \(active) active"
+    }
+}
+
+struct RelayPairCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "pair",
+        abstract: "Pair remote agents with the relay: issue, list or revoke a pairing, or require pairing.",
+        subcommands: [
+            RelayPairIssueCommand.self, RelayPairListCommand.self,
+            RelayPairRevokeCommand.self, RelayPairRequireCommand.self,
+        ]
+    )
+
+    // No default verb: a bare `keys relay pair` is a usage error, never a connection attempt.
+    func run() throws {
+        throw AppError.usage("usage: keys relay pair issue|list|revoke|require … (see keys relay pair --help)")
+    }
+}
+
+struct RelayPairIssueCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "issue",
+        abstract: "Pair a remote agent with this Mac's relay (one Touch ID). The credential is shown once."
+    )
+
+    @Argument(help: "What this agent is, e.g. \"github actions\".") var label: String
+    @Option(name: .customLong("key"), help: "Key the pairing may reach; repeat for more. Default: every key.") var keys: [String] = []
+    @Option(help: "Days until the pairing expires (1 to \(RelayPairing.maxDays)). Default \(RelayPairing.defaultDays).") var days: Int = RelayPairing.defaultDays
+
+    /// Bad arguments are refused here, so a mistyped command is answered before any app contact.
+    func validate() throws {
+        _ = try RelayPairing.validateDays(days)
+        for key in keys { try KeyName.validate(key) }
+    }
+
+    func run() throws {
+        let credential: String, hint: String, scope: [String], expires: String
+        if let control = try? ControlClient.connect() {
+            // The running app mints it under one Touch ID there, exactly like keys client issue.
+            fputs("Touch ID in Keysrs…\n", stderr)
+            var body: [String: Any] = ["label": label, "days": days]
+            if !keys.isEmpty { body["keys"] = keys }
+            let obj = try control.call(method: "POST", path: "/api/relay/pairings", body: body, expect: 201)
+            credential = JSONValue.string(obj["credential"]) ?? ""
+            guard !credential.isEmpty else { throw AppError.usage("the site returned no credential") }
+            let pairing = JSONValue.object(obj["pairing"]) ?? [:]
+            hint = JSONValue.string(pairing["hint"]) ?? ""
+            scope = (pairing["keys"] as? [Any])?.compactMap { $0 as? String } ?? []
+            expires = JSONValue.string(pairing["expires_at"]) ?? ""
+        } else {
+            let service = try AppFactory.makeService()
+            let issued = try service.issueRelayPairing(label: label, keys: keys, days: days)
+            credential = issued.credential
+            hint = issued.pairing.hint
+            scope = issued.pairing.keys
+            expires = issued.pairing.expiresAt ?? ""
+        }
+        print(credential)
+        FileHandle.standardError.write(Data(("""
+        pairing "\(label)" (…\(hint)), \(scope.isEmpty ? "all keys" : "keys: " + scope.joined(separator: ", ")), expires \(expires).
+        The credential is shown once; the agent sends it on every relayed request as a header:
+          X-KSF-Pair: <credential>
+        Refusals only bite while pairing is required: keys relay pair require on
+
+        """).utf8))
+    }
+}
+
+struct RelayPairListCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List relay pairings: label, hint, key scope, expiry, state. Never the credential."
+    )
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let now = Date()
+        for pairing in try service.relayPairings() {
+            let state = pairing.revokedAt != nil ? "revoked" : (pairing.isActive(now: now) ? "active" : "expired")
+            let scope = pairing.keys.isEmpty ? "all keys" : pairing.keys.joined(separator: ",")
+            print("#\(pairing.id)\t…\(pairing.hint)\t\(state)\t\(scope)\texpires \(pairing.expiresAt ?? "-")\tlast \(pairing.lastUsedAt ?? "-")\t\(pairing.label)")
+        }
+    }
+}
+
+struct RelayPairRevokeCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "revoke",
+        abstract: "Revoke one relay pairing by label or by its last-4 hint."
+    )
+
+    @Argument(help: "Pairing label or hint from `keys relay pair list`.") var labelOrHint: String
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let pairing = try service.revokeRelayPairing(labelOrHint)
+        print("revoked pairing \"\(pairing.label)\" (…\(pairing.hint)); its credential is refused from now on")
+    }
+}
+
+struct RelayPairRequireCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "require",
+        abstract: "Require every relayed request to carry a pairing credential (on), or not (off, the default)."
+    )
+
+    @Argument(help: "on or off.") var state: String
+
+    func run() throws {
+        let required: Bool
+        switch state.lowercased() {
+        case "on": required = true
+        case "off": required = false
+        default: throw AppError.usage("usage: keys relay pair require on|off")
+        }
+        let service = try AppFactory.makeService()
+        try service.setRelayPairingRequired(required)
+        // The running relay reads the flag from the catalog per request, so this applies
+        // without a restart.
+        print(required
+            ? "relay pairing required: requests without a valid pairing credential are refused before they reach the gateway"
+            : "relay pairing off: relayed requests need only a client token, as before")
     }
 }
 
@@ -1519,8 +1646,12 @@ struct RelayRunCommand: ParsableCommand {
         }
         try requireGatewayUp()
         let (origin, secret) = try service.relayCredentials(urlOverride: url)
+        var options = RelayClient.Options(url: origin, secret: secret)
+        // Pairing is enforced when the catalog flag is on; the verifier reads hashes only,
+        // so a relayed request never prompts here either.
+        options.pairing = service.relayPairingVerifier()
         let client = RelayClient(
-            options: RelayClient.Options(url: origin, secret: secret),
+            options: options,
             log: { line in
                 FileHandle.standardError.write(Data("relay  \(line)\n".utf8))
             }
@@ -1594,6 +1725,9 @@ struct RelayStatusCommand: ParsableCommand {
         let status = service.relayStatus()
         print("url     \(status.url?.absoluteString ?? "not set")")
         print("secret  \(status.secretHint.map { "stored (…\($0))" } ?? "none")")
+        let pairings = (try? service.relayPairings()) ?? []
+        let now = Date()
+        print("pairing \(RelayCommand.pairingLine(required: service.relayPairingRequired(), active: pairings.filter { $0.isActive(now: now) }.count))")
         if !status.configured {
             print("set up with: keys relay setup --url https://<your worker>.workers.dev")
         }

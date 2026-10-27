@@ -433,4 +433,164 @@ final class RelayHostTests: XCTestCase {
         )
         XCTAssertEqual(MenubarExtra.relayLine(report(on: true, phase: .waiting(until: since))), "Not connected; retrying")
     }
+
+    // MARK: pairing routes
+
+    /// One call against /api/relay/pairings; the raw body text comes back for absence checks.
+    private func pairCall(
+        _ handler: APIHandler, _ method: String, body: [String: Any]? = nil, token: String? = nil
+    ) throws -> (status: Int, object: [String: Any], text: String) {
+        var headers = ["host": "127.0.0.1:12765"]
+        if let token { headers["x-ksf-token"] = token }
+        let response = handler.handle(HTTPRequest(
+            method: method, path: "/api/relay/pairings", query: [:], headers: headers,
+            body: try body.map(JSONValue.data) ?? Data(), serverPort: 12765
+        ))
+        let text = String(decoding: response.body, as: UTF8.self)
+        let object = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] ?? [:]
+        return (response.status, object, text)
+    }
+
+    func testPairingRoutesTakeTheMutatingToken() throws {
+        let (db, dir) = try makeDB()
+        let (service, _) = makeGatedService(db: db)
+        let handler = APIHandler(service: service, webRoot: dir)
+
+        // The shared mutating-API gate refuses before any route runs, exactly like /api/relay.
+        var (status, obj, _) = try pairCall(handler, "POST", body: ["label": "ci"])
+        XCTAssertEqual(status, 403)
+        XCTAssertEqual(obj["error"] as? String, "missing or bad token")
+        (status, _, _) = try pairCall(handler, "POST", body: ["label": "ci"], token: "wrong")
+        XCTAssertEqual(status, 403)
+        (status, _, _) = try pairCall(handler, "DELETE", body: ["target": "ci"])
+        XCTAssertEqual(status, 403)
+        XCTAssertEqual(try db.relayPairings().count, 0, "a refused mutation changes nothing")
+
+        // GET is a read like the other /api routes: no token needed.
+        (status, obj, _) = try pairCall(handler, "GET")
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual((obj["pairings"] as? [Any])?.count, 0)
+    }
+
+    func testPairingMintRefusalsHappenBeforeTouchID() throws {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        let handler = APIHandler(service: service, webRoot: dir)
+        let token = handler.originToken
+
+        // Every argument refusal precedes the prompt.
+        for bad: [String: Any] in [
+            [:], ["keys": ["demo"]], ["label": ""], ["label": "x", "days": 0], ["label": "x", "days": -3],
+            ["label": "x", "days": "30"], ["label": "x", "keys": "demo"], ["label": "x", "keys": ["not a key!"]],
+            ["label": "x", "url": "https://evil.example"],
+        ] {
+            let (status, _, _) = try pairCall(handler, "POST", body: bad, token: token)
+            XCTAssertEqual(status, 400, "\(bad)")
+        }
+        XCTAssertEqual(gate.reasons, [], "every refusal above precedes Touch ID")
+        XCTAssertEqual(try db.relayPairings().count, 0)
+
+        // The one valid mint prompts exactly once, then a duplicate label refuses silently.
+        var (status, obj, _) = try pairCall(handler, "POST", body: ["label": "ci"], token: token)
+        XCTAssertEqual(status, 201, "\(obj)")
+        XCTAssertEqual(gate.reasons, ["pair a remote agent as ci"], "the valid mint prompts exactly once")
+        (status, obj, _) = try pairCall(handler, "POST", body: ["label": "ci"], token: token)
+        XCTAssertEqual(status, 409, "\(obj)")
+        XCTAssertEqual(gate.reasons.count, 1, "the duplicate refusal precedes Touch ID")
+        XCTAssertEqual(try db.relayPairings().count, 1, "a refused duplicate never overwrites the row")
+
+        // A refused presence mints nothing.
+        gate.error = .authCancelled
+        (status, _, _) = try pairCall(handler, "POST", body: ["label": "other"], token: token)
+        XCTAssertEqual(status, 403)
+        XCTAssertEqual(gate.reasons.count, 2)
+        XCTAssertEqual(try db.relayPairings().count, 1, "a cancelled Touch ID creates no row")
+    }
+
+    func testPairingListAndRevokeRoutesShowHintsNeverHashes() throws {
+        let (db, dir) = try makeDB()
+        let (service, _) = makeGatedService(db: db)
+        let handler = APIHandler(service: service, webRoot: dir)
+        let token = handler.originToken
+
+        let (mintStatus, minted, _) = try pairCall(handler, "POST", body: ["label": "ci", "keys": ["demo"], "days": 7], token: token)
+        XCTAssertEqual(mintStatus, 201)
+        let credential = try XCTUnwrap(JSONValue.string(minted["credential"]))
+        let hash = RelayPairing.hash(credential)
+
+        let (status, obj, text) = try pairCall(handler, "GET")
+        XCTAssertEqual(status, 200)
+        let pairings = try XCTUnwrap(obj["pairings"] as? [[String: Any]])
+        XCTAssertEqual(pairings.count, 1)
+        let first = pairings[0]
+        XCTAssertEqual(JSONValue.string(first["label"]), "ci")
+        XCTAssertEqual(JSONValue.string(first["hint"]), String(credential.suffix(4)))
+        XCTAssertEqual(first["keys"] as? [String], ["demo"])
+        XCTAssertEqual(first["revoked"] as? Bool, false)
+        XCTAssertNotNil(JSONValue.string(first["expires_at"]))
+        XCTAssertTrue(first["last_used_at"] is NSNull)
+        XCTAssertFalse(text.contains(hash), "the hash never leaves the process")
+        XCTAssertFalse(text.contains(credential))
+        XCTAssertFalse(text.contains("token_hash"))
+
+        // Revoke through the API by label: the row stays, revoked.
+        let (delStatus, delObj, _) = try pairCall(handler, "DELETE", body: ["target": "ci"], token: token)
+        XCTAssertEqual(delStatus, 200, "\(delObj)")
+        XCTAssertEqual(try db.relayPairings().count, 1)
+        XCTAssertNotNil(try db.relayPairings().first?.revokedAt)
+
+        // A revoked label may be re-issued as a new row; the revoked row is untouched.
+        let (reStatus, _, _) = try pairCall(handler, "POST", body: ["label": "ci"], token: token)
+        XCTAssertEqual(reStatus, 201)
+        XCTAssertEqual(try db.relayPairings().count, 2)
+        XCTAssertEqual(try db.relayPairings().filter { $0.revokedAt != nil }.count, 1)
+
+        // An unknown target is a clean 404 and changes nothing.
+        let (missingStatus, _, _) = try pairCall(handler, "DELETE", body: ["target": "nosuch"], token: token)
+        XCTAssertEqual(missingStatus, 404)
+        XCTAssertEqual(try db.relayPairings().count, 2)
+        assertNoSentinel(credential, in: dir)
+    }
+
+    func testRelayStateReportsThePairingModeAndCount() throws {
+        let (db, dir) = try makeDB()
+        let (service, _) = makeGatedService(db: db)
+        let handler = APIHandler(service: service, webRoot: dir)
+
+        var (status, obj) = try call(handler, "GET")
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(obj["pairing_required"] as? Bool, false, "default off")
+        XCTAssertEqual(obj["active_pairings"] as? Int, 0)
+
+        _ = try pairCall(handler, "POST", body: ["label": "ci"], token: handler.originToken)
+        try service.setRelayPairingRequired(true)
+        (status, obj) = try call(handler, "GET")
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(obj["pairing_required"] as? Bool, true)
+        XCTAssertEqual(obj["active_pairings"] as? Int, 1)
+    }
+
+    func testTheAppRelayEnforcesPairingWhenRequired() async throws {
+        let (db, _) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        let socket = FakeRelaySocket()
+        service.relayHost = RelayHost(log: { _ in }, dialer: FakeRelayDialer([.success(socket)]), blocker: FakeSleepBlocker())
+        _ = try service.setupRelay(url: origin.absoluteString)
+        _ = try service.startGateway(port: 0)
+        defer { service.stopGateway() }
+        try service.setRelayPairingRequired(true)
+        _ = try service.setRelay(enabled: true)
+        defer { service.relayHost.stop() }
+        try await until("connected") { isConnected(service.relayHost.status.state) }
+
+        // A request without a pairing credential is refused by the app's relay before the
+        // gateway, proving setRelay wired the verifier into the RelayClient it started.
+        socket.push(RelayFrame(type: .request, id: 1, payload: head()))
+        let error = try socket.json(try await socket.frame(.error, id: 1))
+        XCTAssertEqual(error["code"] as? String, "pairing_required")
+        let prompts = gate.reasons.count
+        socket.push(RelayFrame(type: .request, id: 2, payload: head()))
+        _ = try await socket.frame(.error, id: 2)
+        XCTAssertEqual(gate.reasons.count, prompts, "a refused relayed request never prompts")
+    }
 }

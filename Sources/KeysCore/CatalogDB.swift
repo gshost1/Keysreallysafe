@@ -194,6 +194,21 @@ final class CatalogDB: @unchecked Sendable {
             try exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('\(Self.clientHostBackfillKey)', 'pending');")
         }
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
+        // Pairings hold hashes, not credentials, so like gateway_clients they belong in the
+        // catalog and not the Keychain. `keys` is a comma-separated scope; empty means all keys.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS relay_pairings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              label TEXT NOT NULL DEFAULT '',
+              token_hash TEXT NOT NULL UNIQUE,
+              hint TEXT NOT NULL DEFAULT '',
+              keys TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              expires_at TEXT,
+              revoked_at TEXT,
+              last_used_at TEXT
+            );
+            """)
         try exec("""
             CREATE TABLE IF NOT EXISTS custom_providers (
               id TEXT PRIMARY KEY,
@@ -685,6 +700,73 @@ final class CatalogDB: @unchecked Sendable {
 
     func touchGatewayClient(id: Int64, at iso: String) throws {
         try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
+    }
+
+    // MARK: relay pairings
+
+    func insertRelayPairing(
+        label: String,
+        tokenHash: String,
+        hint: String,
+        keys: [String],
+        createdAt: String,
+        expiresAt: String?
+    ) throws -> RelayPairingRecord {
+        try withLock {
+            try run("""
+                INSERT INTO relay_pairings (label, token_hash, hint, keys, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?);
+                """, label, tokenHash, hint, keys.joined(separator: ","), createdAt, expiresAt)
+            return RelayPairingRecord(
+                id: sqlite3_last_insert_rowid(db),
+                label: label,
+                tokenHash: tokenHash,
+                hint: hint,
+                keys: keys,
+                createdAt: createdAt,
+                expiresAt: expiresAt,
+                revokedAt: nil,
+                lastUsedAt: nil
+            )
+        }
+    }
+
+    private static let relayPairingColumns =
+        "id, label, token_hash, hint, keys, created_at, expires_at, revoked_at, last_used_at"
+
+    private func decodeRelayPairing(_ stmt: OpaquePointer) -> RelayPairingRecord {
+        RelayPairingRecord(
+            id: sqlite3_column_int64(stmt, 0),
+            label: columnText(stmt, 1) ?? "",
+            tokenHash: columnText(stmt, 2) ?? "",
+            hint: columnText(stmt, 3) ?? "",
+            keys: (columnText(stmt, 4) ?? "").split(separator: ",").map(String.init),
+            createdAt: columnText(stmt, 5) ?? "",
+            expiresAt: columnText(stmt, 6),
+            revokedAt: columnText(stmt, 7),
+            lastUsedAt: columnText(stmt, 8)
+        )
+    }
+
+    func relayPairings() throws -> [RelayPairingRecord] {
+        try query("SELECT \(Self.relayPairingColumns) FROM relay_pairings ORDER BY id;", row: decodeRelayPairing)
+    }
+
+    func relayPairing(tokenHash: String) throws -> RelayPairingRecord? {
+        try one(
+            "SELECT \(Self.relayPairingColumns) FROM relay_pairings WHERE token_hash = ? LIMIT 1;", tokenHash,
+            row: decodeRelayPairing
+        )
+    }
+
+    /// Returns false when the pairing was already revoked. The row and its hash stay: a revoked
+    /// credential must keep being recognisable as revoked.
+    func revokeRelayPairing(id: Int64, at iso: String) throws -> Bool {
+        try run("UPDATE relay_pairings SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL;", iso, id) > 0
+    }
+
+    func touchRelayPairing(id: Int64, at iso: String) throws {
+        try run("UPDATE relay_pairings SET last_used_at = ? WHERE id = ?;", iso, id)
     }
 
     func catalogExists(name: String) throws -> Bool {

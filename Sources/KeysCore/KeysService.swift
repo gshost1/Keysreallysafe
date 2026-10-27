@@ -1079,6 +1079,134 @@ final class KeysService: @unchecked Sendable {
 
     var relayLockURL: URL { RelayLock.url(beside: catalog.path) }
 
+    // MARK: relay pairing (docs/proposals/relay-pairing.md)
+
+    /// The enforcement switch in the catalog's meta table. Absent means off, and off is
+    /// byte-for-byte the relay behavior from before pairing existed.
+    static let relayPairingRequiredMetaKey = "relay_pairing_required"
+
+    func relayPairingRequired() -> Bool {
+        (try? catalog.metaValue(Self.relayPairingRequiredMetaKey)) == "1"
+    }
+
+    func setRelayPairingRequired(_ required: Bool) throws {
+        if required {
+            try catalog.setMeta(Self.relayPairingRequiredMetaKey, "1")
+        } else {
+            try catalog.deleteMeta(Self.relayPairingRequiredMetaKey)
+        }
+    }
+
+    /// Mints a pairing credential for one remote agent, behind one presence check like a
+    /// client token. The credential is returned once; only its hash and hint are stored.
+    /// A live label cannot be issued twice — revoking frees it — so a refusal here can never
+    /// silently replace an existing pairing.
+    func issueRelayPairing(
+        label: String,
+        keys: [String] = [],
+        days: Int? = nil,
+        now: Date = Date()
+    ) throws -> (credential: String, pairing: RelayPairingRecord) {
+        let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        guard !trimmedLabel.isEmpty else { throw AppError.usage("a pairing needs a label") }
+        let ttlDays = try RelayPairing.validateDays(days)
+        var scope: [String] = []
+        for key in keys {
+            try KeyName.validate(key)
+            if !scope.contains(key) { scope.append(key) }
+        }
+        if try catalog.relayPairings().contains(where: { $0.label == trimmedLabel && $0.revokedAt == nil }) {
+            throw AppError.alreadyExists("a live pairing named \(trimmedLabel) already exists; revoke it first")
+        }
+        try presence.require(reason: "pair a remote agent as \(trimmedLabel)")
+        let credential = RelayPairing.generate()
+        let pairing = try catalog.insertRelayPairing(
+            label: trimmedLabel,
+            tokenHash: RelayPairing.hash(credential),
+            hint: RelayPairing.hint(credential),
+            keys: scope,
+            createdAt: UTC.iso(now),
+            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
+        )
+        return (credential, pairing)
+    }
+
+    /// The pairing check for one relayed request. It reads the catalog only — credential
+    /// hashes, never the Keychain — and never prompts: it runs on the relay's receive loop,
+    /// where a Touch ID prompt per request would be both useless and blocking.
+    static func verifyRelayPairing(
+        catalog: CatalogDB,
+        credential: String?,
+        keyName: String?,
+        now: Date
+    ) -> RelayPairingVerdict {
+        guard (try? catalog.metaValue(relayPairingRequiredMetaKey)) == "1" else { return .notRequired }
+        // Missing, malformed and unknown are one refusal: the wire must not distinguish them.
+        guard let credential, RelayPairing.looksLikeCredential(credential) else { return .pairingRequired }
+        let hash = RelayPairing.hash(credential)
+        // The constant-time compare after the hash lookup keeps the check from answering a
+        // timing oracle on the stored hashes, the same pattern GrantStore uses.
+        guard let pairing = try? catalog.relayPairing(tokenHash: hash),
+              ConstantTime.equal(pairing.tokenHash.utf8, hash.utf8) else { return .pairingRequired }
+        if pairing.revokedAt != nil { return .revoked }
+        // Expiry is exclusive: a request at exactly expires_at is already expired.
+        if let expires = pairing.expiresAt.flatMap({ UTC.parse($0) }), now >= expires { return .expired }
+        if !pairing.keys.isEmpty {
+            guard let keyName, pairing.keys.contains(keyName) else { return .outOfScope }
+        }
+        // last_used_at means an accepted request, so a refusal must never move it.
+        try? catalog.touchRelayPairing(id: pairing.id, at: UTC.iso(now))
+        return .ok
+    }
+
+    func verifyRelayPairing(credential: String?, keyName: String?, now: Date = Date()) -> RelayPairingVerdict {
+        Self.verifyRelayPairing(catalog: catalog, credential: credential, keyName: keyName, now: now)
+    }
+
+    /// The verifier a RelayClient calls per REQUEST frame. It captures the catalog and
+    /// nothing else, so the relay holds no Keychain-backed store and no service cycle forms.
+    func relayPairingVerifier() -> RelayPairingVerifier {
+        let catalog = self.catalog
+        return { credential, keyName, now in
+            KeysService.verifyRelayPairing(catalog: catalog, credential: credential, keyName: keyName, now: now)
+        }
+    }
+
+    /// Every pairing row, live and revoked, for `keys relay pair list` and the API. Hashes
+    /// and hints only — the catalog never holds a credential.
+    func relayPairings() throws -> [RelayPairingRecord] {
+        try catalog.relayPairings()
+    }
+
+    /// Revokes one live pairing by exact label, or by hint when the hint matches exactly one.
+    /// An ambiguous hint revokes nothing and names the colliding labels, and a label that only
+    /// revoked rows carry is an error rather than a quiet no-op: a mistaken revoke must never
+    /// pass unnoticed.
+    @discardableResult
+    func revokeRelayPairing(_ labelOrHint: String, now: Date = Date()) throws -> RelayPairingRecord {
+        let target = labelOrHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { throw AppError.usage("revoke needs a pairing's label or hint") }
+        let rows = try catalog.relayPairings()
+        let live = rows.filter { $0.revokedAt == nil }
+        let match: RelayPairingRecord
+        if let byLabel = live.first(where: { $0.label == target }) {
+            match = byLabel
+        } else if rows.contains(where: { $0.label == target }) {
+            throw AppError.usage("the pairing \(target) is already revoked")
+        } else {
+            let byHint = live.filter { $0.hint == target }
+            guard !byHint.isEmpty else { throw AppError.notFound("pairing \(target)") }
+            guard byHint.count == 1 else {
+                throw AppError.usage("…\(target) matches more than one pairing (\(byHint.map(\.label).joined(separator: ", "))); revoke by label")
+            }
+            match = byHint[0]
+        }
+        guard try catalog.revokeRelayPairing(id: match.id, at: UTC.iso(now)) else {
+            throw AppError.notFound("pairing \(target)")
+        }
+        return try catalog.relayPairings().first { $0.id == match.id } ?? match
+    }
+
     /// The relay as the menu, the dashboard and `keys relay status` show it.
     struct RelayReport: Equatable {
         var configured: Bool
@@ -1087,17 +1215,25 @@ final class KeysService: @unchecked Sendable {
         /// A relay this process does not run holds the lock: `keys relay` in a Terminal.
         var elsewhere: RelayLock.Held?
         var stayAwake: Bool
+        /// The pairing enforcement flag and how many pairings are neither revoked nor expired,
+        /// so `keys relay status` and /api/relay can show the mode without a second question.
+        var pairingRequired = false
+        var activePairings = 0
     }
 
     func relayReport() -> RelayReport {
         let stored = relayStatus()
         let host = relayHost.status
+        let now = Date()
+        let pairings = (try? catalog.relayPairings()) ?? []
         return RelayReport(
             configured: stored.configured,
             url: host.origin ?? stored.url,
             host: host,
             elsewhere: host.on ? nil : RelayLock.holder(at: relayLockURL),
-            stayAwake: preferences.relayStayAwake
+            stayAwake: preferences.relayStayAwake,
+            pairingRequired: relayPairingRequired(),
+            activePairings: pairings.filter { $0.isActive(now: now) }.count
         )
     }
 
@@ -1129,7 +1265,7 @@ final class KeysService: @unchecked Sendable {
             }
             let (origin, secret) = try relayCredentials()
             relayHost.setStayAwake(preferences.relayStayAwake)
-            relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held)
+            relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held, pairing: relayPairingVerifier())
         }
         return relayReport()
     }
