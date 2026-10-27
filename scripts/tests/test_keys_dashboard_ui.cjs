@@ -3775,6 +3775,8 @@ test("Droid stays off Usage until Settings turns it on, and is never removed", a
 // ---------- key search ----------
 
 test("key search filters by name, provider and host, counts what it shows and clears on Escape", async (page, origin) => {
+  keys.find((k) => k.name === "bravo").host = "api.example.test";
+  keys.find((k) => k.name === "charlie").gateway_host = "gw.typesafe.test";
   await page.goto(`${origin}/#keys`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Keys" }).click();
@@ -3794,6 +3796,15 @@ test("key search filters by name, provider and host, counts what it shows and cl
 
   await page.locator("#keys-search").fill("CHAR");
   assert.deepEqual(await names(), ["charlie"], "case does not matter");
+
+  // The grant host and the gateway host are matchable too, and so is the provider's group name
+  // ("Labs" holds all three fixture providers; nothing else carries that string).
+  await page.locator("#keys-search").fill("example.test");
+  assert.deepEqual(await names(), ["bravo"], "hosts match");
+  await page.locator("#keys-search").fill("gw.typesafe");
+  assert.deepEqual(await names(), ["charlie"], "gateway hosts match");
+  await page.locator("#keys-search").fill("labs");
+  assert.deepEqual(await names(), ["alpha", "bravo", "charlie"], "provider group names match");
 
   await page.locator("#keys-search").fill("nothing-like-this");
   assert.deepEqual(await names(), []);
