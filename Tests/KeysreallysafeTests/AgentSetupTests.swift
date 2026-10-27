@@ -226,4 +226,36 @@ final class AgentSetupTests: XCTestCase {
         XCTAssertTrue(text.contains("keys client issue router"))
         XCTAssertTrue(text.contains("http://127.0.0.1:12767/router"))
     }
+
+    /// `keys agent --profile` rides the same bounded issuance as `keys grant`: the agent's
+    /// functional methods are named (a profile lacking them refuses before the prompt rather
+    /// than launching an agent whose calls would all fail), minutes ride only when set so the
+    /// profile's lifetime otherwise applies, and `--client` (long-lived and uncapped by
+    /// design) cannot be combined with `--profile`.
+    func testTheAgentGrantAskCarriesTheProfileAndItsFunctionalMethods() throws {
+        let plain = try XCTUnwrap(try KeysCLI.parseAsRoot(["agent", "claude", "demo"]) as? AgentCommand)
+        XCTAssertNil(plain.profile)
+        let plainBody = AgentCommand.grantBody(agent: .claude, minutes: plain.minutes, profile: plain.profile)
+        XCTAssertEqual(plainBody["task"] as? String, "a Claude Code session on this Mac")
+        XCTAssertEqual(plainBody["minutes"] as? Int, CodingAgent.grantMinutes, "no profile: the agent's long default, as today")
+        XCTAssertEqual(plainBody["methods"] as? [String], ["GET", "POST"])
+        XCTAssertEqual(plainBody["caller"] as? String, "agent")
+        XCTAssertNil(plainBody["profile"])
+
+        let profiled = try XCTUnwrap(try KeysCLI.parseAsRoot(["agent", "claude", "demo", "--profile", "evals"]) as? AgentCommand)
+        XCTAssertEqual(profiled.profile, "evals")
+        XCTAssertNil(profiled.minutes)
+        let profiledBody = AgentCommand.grantBody(agent: .claude, minutes: profiled.minutes, profile: profiled.profile)
+        XCTAssertEqual(profiledBody["profile"] as? String, "evals")
+        XCTAssertNil(profiledBody["minutes"], "an unset --minutes means the profile's minutes")
+        XCTAssertEqual(profiledBody["methods"] as? [String], ["GET", "POST"], "named, so a mismatched profile refuses pre-prompt")
+
+        let tight = try XCTUnwrap(try KeysCLI.parseAsRoot(["agent", "claude", "demo", "--profile", "evals", "--minutes", "30"]) as? AgentCommand)
+        let tightBody = AgentCommand.grantBody(agent: .claude, minutes: tight.minutes, profile: tight.profile)
+        XCTAssertEqual(tightBody["minutes"] as? Int, 30)
+        XCTAssertEqual(tightBody["profile"] as? String, "evals")
+
+        // --client mints a client token, not a grant; --profile bounds grants only.
+        XCTAssertThrowsError(try KeysCLI.parseAsRoot(["agent", "claude", "demo", "--client", "--profile", "evals"]))
+    }
 }

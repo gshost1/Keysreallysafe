@@ -480,7 +480,10 @@ struct GrantCommand: ParsableCommand {
             The grant expires, can be revoked, and dies with screen lock or a site restart, \
             on purpose: a grant is for a task you are around for. A job that must outlive a \
             screen lock needs a client token (keys client issue) instead. \
-            Within its scope no further prompts are needed. With --max-usd the spend is the \
+            Within its scope no further prompts are needed. With --profile the grant issues \
+            within the saved profile's bounds and the prompt names the profile and the \
+            effective scope; an ask outside them is refused before the prompt. \
+            With --max-usd the spend is the \
             provider's reported cost where it gives one, else a list-price estimate; a call \
             that has neither ends the grant (429 grant_usd_unpriced), because the cap could \
             no longer be checked.
@@ -493,8 +496,8 @@ struct GrantCommand: ParsableCommand {
     @Option(help: "What the access is for; shown in the Touch ID prompt and the audit log.")
     var task: String = ""
 
-    @Option(help: "Lifetime in minutes (1-1440).")
-    var minutes: Int = Grant.defaultMinutes
+    @Option(help: "Lifetime in minutes (1-1440). Default \(Grant.defaultMinutes); with --profile, the profile's minutes.")
+    var minutes: Int?
 
     @Option(help: "Comma-separated HTTP methods, e.g. GET or GET,POST. Default: all.")
     var methods: String = ""
@@ -508,13 +511,20 @@ struct GrantCommand: ParsableCommand {
     @Option(name: .customLong("max-usd"), help: "Refuse further calls once the spend passes this (checked after each call); an unpriced call also ends the grant.")
     var maxUsd: Double?
 
+    @Option(help: "Issue within this saved profile's bounds (keys profile list); the prompt names the profile and the effective scope.")
+    var profile: String?
+
     @Flag(help: "Print the grant as JSON (token included) for a script to read once.")
     var json = false
 
     func run() throws {
         try KeyName.validate(name)
         let client = try ControlClient.connect()
-        var body: [String: Any] = ["task": task, "minutes": minutes, "caller": "cli"]
+        // Minutes ride only when said: with --profile an unset --minutes means the profile's
+        // minutes, which only the site knows once the bounds are applied.
+        var body: [String: Any] = ["task": task, "caller": "cli"]
+        if let minutes { body["minutes"] = minutes }
+        if let profile { body["profile"] = profile }
         let methodList = methods.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         if !methodList.isEmpty { body["methods"] = methodList }
         let pathList = paths.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
@@ -539,7 +549,13 @@ struct GrantCommand: ParsableCommand {
         let header = JSONValue.string(obj["auth_header"]) ?? "Authorization"
         print("grant \(id)  \(name) -> \(providerName) (\(host))")
         print("  task     \(JSONValue.string(obj["task"]) ?? "")")
-        print("  expires  \(expires)  (\(minutes) min)")
+        if let p = JSONValue.string(obj["profile"]) {
+            print("  profile  \(p)\((JSONValue.bool(obj["unattended"]) ?? false) ? " · unattended" : "")")
+        }
+        let span = Self.effectiveMinutes(
+            created: JSONValue.string(obj["created_at"]), expires: expires, asked: minutes
+        )
+        print("  expires  \(expires)\(span.isEmpty ? "" : "  (\(span))")")
         print("  scope    methods \(methodsOut.isEmpty ? "all" : methodsOut)  paths \(pathsOut.isEmpty ? "any" : pathsOut.joined(separator: ","))")
         if let n = JSONValue.int(obj["max_requests"]) { print("  limit    \(n) requests") }
         if let u = JSONValue.double(obj["max_usd"]) {
@@ -553,6 +569,15 @@ struct GrantCommand: ParsableCommand {
         print("  use the token as the API key (\(header)); the gateway swaps in the real secret")
         print("  revoke   keys revoke \(id)")
     }
+
+    /// The lifetime line for the grant printout. With --profile an unset --minutes means the
+    /// profile's minutes, which only the site knows, so the span is read back from the issued
+    /// grant instead of the flag.
+    static func effectiveMinutes(created: String?, expires: String?, asked: Int?) -> String {
+        if let asked { return "\(asked) min" }
+        guard let c = created.flatMap(UTC.parse), let e = expires.flatMap(UTC.parse) else { return "" }
+        return "\(Int((e.timeIntervalSince(c) / 60).rounded())) min"
+    }
 }
 
 struct GrantsCommand: ParsableCommand {
@@ -562,6 +587,9 @@ struct GrantsCommand: ParsableCommand {
     var all = false
 
     @Flag var json = false
+
+    /// The table shape; the row seam builds against it, so the columns stay spelled out.
+    static let header = "ID\tKEY\tHOST\tTASK\tSTATUS\tEXPIRES\tREQUESTS\tUSD\tPROFILE\tUNATTENDED"
 
     func run() throws {
         let client = try ControlClient.connect()
@@ -575,16 +603,24 @@ struct GrantsCommand: ParsableCommand {
             print(all ? "no grants" : "no active grants")
             return
         }
-        print("ID\tKEY\tHOST\tTASK\tSTATUS\tEXPIRES\tREQUESTS\tUSD")
+        print(Self.header)
         for g in grants {
-            let usd = Self.usdCell(usd: JSONValue.double(g["usd"]) ?? 0, unpriced: JSONValue.int(g["unpriced_calls"]) ?? 0)
-            print([
-                JSONValue.string(g["id"]) ?? "", JSONValue.string(g["key"]) ?? "", JSONValue.string(g["host"]) ?? "",
-                JSONValue.string(g["task"]) ?? "", JSONValue.string(g["status"]) ?? "",
-                JSONValue.string(g["expires_at"]) ?? "", String(JSONValue.int(g["requests"]) ?? 0),
-                usd,
-            ].joined(separator: "\t"))
+            print(Self.row(g))
         }
+    }
+
+    /// One table row from one grant JSON. A profile-issued grant names its profile and carries
+    /// the unattended badge (the same word the Touch ID prompt used); a plain grant shows a
+    /// dash in both columns.
+    static func row(_ g: [String: Any]) -> String {
+        [
+            JSONValue.string(g["id"]) ?? "", JSONValue.string(g["key"]) ?? "", JSONValue.string(g["host"]) ?? "",
+            JSONValue.string(g["task"]) ?? "", JSONValue.string(g["status"]) ?? "",
+            JSONValue.string(g["expires_at"]) ?? "", String(JSONValue.int(g["requests"]) ?? 0),
+            usdCell(usd: JSONValue.double(g["usd"]) ?? 0, unpriced: JSONValue.int(g["unpriced_calls"]) ?? 0),
+            JSONValue.string(g["profile"]) ?? "-",
+            (JSONValue.bool(g["unattended"]) ?? false) ? "unattended" : "-",
+        ].joined(separator: "\t")
     }
 
     /// An unpriced call is unknown money, so the sum of the priced ones is only a floor.
@@ -1317,22 +1353,34 @@ struct AgentCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agent",
         abstract: "Launch a coding agent with a vault key behind the local gateway (one Touch ID).",
-        usage: "keys agent <agent> <key> [--minutes N] [--client] [--label <text>] [--] [args...]",
+        usage: "keys agent <agent> <key> [--minutes N] [--profile <name>] [--client] [--label <text>] [--] [args...]",
         discussion: """
             Claude Code, Codex, Grok and Droid are supported. One Touch ID mints a grant; the \
             agent gets the gateway's URL and the grant token where it expects an API key, and \
             the raw secret never leaves the vault. The grant is revoked when the agent exits, \
             and also dies on screen lock or expiry. Run `keys setup <agent> --key <key>` once \
-            first for codex, grok and droid; Claude Code needs no setup.
+            first for codex, grok and droid; Claude Code needs no setup. With --profile the \
+            grant issues within the saved profile's bounds and the prompt names them; the \
+            agent's methods (GET and POST) must sit inside the profile, so a mismatched one \
+            is refused before any prompt.
             """
     )
 
     @Argument(help: "claude, codex, grok or droid.") var agent: String
     @Argument(help: "Vault key name.") var key: String
-    @Option(help: "Grant life in minutes (1 to 1440). Default \(CodingAgent.grantMinutes).") var minutes: Int = CodingAgent.grantMinutes
+    @Option(help: "Grant life in minutes (1-1440). Default \(CodingAgent.grantMinutes); with --profile, the profile's minutes unless you set --minutes.") var minutes: Int?
     @Flag(help: "Mint a long-lived client token instead of a grant; it survives this launch (30 days).") var client = false
+    @Option(help: "Issue the grant within this saved profile's bounds (keys profile list).") var profile: String?
     @Option(help: "Label for the client token with --client.") var label: String = ""
     @Argument(parsing: .remaining, help: "Arguments passed to the agent after --.") var args: [String] = []
+
+    mutating func validate() throws {
+        // A client token is long-lived and uncapped by design; --profile bounds grants only,
+        // so naming both is a mistake to surface, not a flag to quietly ignore.
+        if client, profile != nil {
+            throw ValidationError("--client mints a client token, not a grant, so --profile does not apply; drop one of the two")
+        }
+    }
 
     func run() throws {
         let agent = try CodingAgent.parse(agent)
@@ -1382,7 +1430,7 @@ struct AgentCommand: ParsableCommand {
             fputs("Touch ID in the Keysrs site…\n", stderr)
             let obj = try control.call(
                 method: "POST", path: "/api/keys/\(key)/grants",
-                body: ["task": agent.task, "minutes": minutes, "methods": ["GET", "POST"], "caller": "agent"],
+                body: Self.grantBody(agent: agent, minutes: minutes, profile: profile),
                 expect: 201
             )
             token = JSONValue.string(obj["token"]) ?? ""
@@ -1413,6 +1461,22 @@ struct AgentCommand: ParsableCommand {
     ) throws -> ChildExit {
         defer { cleanup() }
         return try runner.run(argv: argv, extraEnv: env)
+    }
+
+    /// The grant ask the agent path sends to the site. Methods are the agent's functional
+    /// needs (model lists and completions), named explicitly so a profile that lacks them is
+    /// refused before the prompt instead of launching an agent whose calls would all fail.
+    /// Minutes ride only when --minutes was given, so under a profile the profile's lifetime
+    /// is the default; without one the agent's long default stays, as before.
+    static func grantBody(agent: CodingAgent, minutes: Int?, profile: String?) -> [String: Any] {
+        var body: [String: Any] = ["task": agent.task, "methods": ["GET", "POST"], "caller": "agent"]
+        if let minutes {
+            body["minutes"] = minutes
+        } else if profile == nil {
+            body["minutes"] = CodingAgent.grantMinutes
+        }
+        if let profile { body["profile"] = profile }
+        return body
     }
 }
 

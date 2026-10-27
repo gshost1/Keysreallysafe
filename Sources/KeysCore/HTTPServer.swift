@@ -200,6 +200,13 @@ final class APIHandler: @unchecked Sendable {
             }
         } catch let error as AppError {
             return mapError(error)
+        } catch let error as ProfileError {
+            // Profile refusals keep their names on the wire: the CLI control path and the
+            // dashboard both answer to the code, and a missing profile is a 404 like any
+            // other missing row. None of them consumed a Touch ID prompt.
+            let status: Int
+            if case .notFound = error { status = 404 } else { status = 400 }
+            return HTTPResponse.json(status, ["error": error.code, "message": error.message])
         } catch {
             return HTTPResponse.json(400, ["error": "bad_request"])
         }
@@ -686,27 +693,40 @@ final class APIHandler: @unchecked Sendable {
     private func keysGrant(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
         let obj = try jsonBody(request)
         var req = GrantRequest(task: JSONValue.string(obj["task"]) ?? "")
-        if let m = JSONValue.int(obj["minutes"]) { req.minutes = m }
+        // `specified` carries which bounds the caller named, so a profile defaults the rest.
+        var specified = GrantSpecified()
+        if let m = JSONValue.int(obj["minutes"]) {
+            req.minutes = m
+            specified.minutes = true
+        }
         if let methods = obj["methods"] as? [Any] {
             req.methods = Set(methods.compactMap { $0 as? String })
+            specified.methods = true
         }
         if let paths = obj["paths"] as? [Any] {
             req.paths = paths.compactMap { $0 as? String }
+            specified.paths = true
         }
         if obj.keys.contains("max_requests"), !(obj["max_requests"] is NSNull) {
             guard let n = JSONValue.int(obj["max_requests"]) else {
                 return HTTPResponse.json(400, ["error": "max_requests must be an integer"])
             }
             req.maxRequests = n
+            specified.maxRequests = true
         }
         if obj.keys.contains("max_usd"), !(obj["max_usd"] is NSNull) {
             guard let d = JSONValue.double(obj["max_usd"]) else {
                 return HTTPResponse.json(400, ["error": "max_usd must be a number"])
             }
             req.maxUsd = d
+            specified.maxUsd = true
         }
+        // An empty profile string means "no profile", the shape a cleared form produces.
+        let profile = JSONValue.string(obj["profile"]).flatMap { $0.isEmpty ? nil : $0 }
         let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "dashboard"
-        let issued = try service.issueGrant(name: name, request: req, caller: caller)
+        let issued = try service.issueGrant(
+            name: name, request: req, profile: profile, specified: specified, caller: caller
+        )
         var body = issued.grant.jsonObject()
         body["token"] = issued.token
         body["gateway_url"] = "http://127.0.0.1:\(GatewayListener.port)/\(name)"

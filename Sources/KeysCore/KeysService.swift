@@ -544,9 +544,15 @@ final class KeysService: @unchecked Sendable {
 
     /// One presence prompt per grant. Names the task, provider, host and expiry in the prompt.
     /// If the gateway is off for the key, this turns it on with the same single prompt.
+    /// Under a profile every bound check runs before that prompt: a refused ask consumes no
+    /// Touch ID, the profile's values default whatever the ask left unnamed, and a named bound
+    /// must sit inside it. The grant itself is self-contained — the request path never
+    /// consults profiles, and the profile is not read again after this returns.
     func issueGrant(
         name: String,
         request raw: GrantRequest,
+        profile profileName: String? = nil,
+        specified: GrantSpecified = GrantSpecified(),
         caller: String = "dashboard"
     ) throws -> (grant: Grant, token: String) {
         try requireGatewayOwner()
@@ -558,8 +564,22 @@ final class KeysService: @unchecked Sendable {
         guard let host = row.gatewayHost ?? provider.host else {
             throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
         }
-        let reason = Self.grantReason(
-            task: request.task, key: name, provider: provider, host: host, minutes: request.minutes
+        var effective = request
+        var under: Profile?
+        if let profileName {
+            let profile = try self.profile(name: profileName)
+            effective = try profile.bounded(
+                request: request, specified: specified, key: name, providerPrefix: provider.pathPrefix
+            )
+            under = profile
+        }
+        let reason = under.map {
+            Self.profileGrantReason(
+                task: effective.task, key: name, provider: provider, host: host,
+                minutes: effective.minutes, profile: $0, request: effective
+            )
+        } ?? Self.grantReason(
+            task: effective.task, key: name, provider: provider, host: host, minutes: effective.minutes
         )
         if let cached = lookupGateway(name: name), cached.host == host {
             try presence.require(reason: reason)
@@ -567,7 +587,10 @@ final class KeysService: @unchecked Sendable {
             _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
         }
         grants.prune()
-        let issued = grants.issue(key: name, provider: provider.id, host: host, request: request)
+        let issued = grants.issue(
+            key: name, provider: provider.id, host: host, request: effective,
+            profile: under?.name, unattended: under?.unattended ?? false
+        )
         try recordKeyEvent(
             name: name,
             action: "grant",
@@ -584,12 +607,39 @@ final class KeysService: @unchecked Sendable {
         return "grant \"\(task)\" the key \(key) for \(provider.name) at \(host), \(span)"
     }
 
+    /// The profile-grant reason: the pinned plain skeleton plus the profile name and the
+    /// EFFECTIVE scope. The prompt is the one line a local process that rewrote a saved profile
+    /// cannot cross, so the bounds the user is actually approving are spelled out — methods,
+    /// paths (or any path), each active cap, and the word unattended — instead of hiding
+    /// behind the profile's name.
+    static func profileGrantReason(
+        task: String,
+        key: String,
+        provider: Providers.Record,
+        host: String,
+        minutes: Int,
+        profile: Profile,
+        request: GrantRequest
+    ) -> String {
+        var scope = [request.methods.sorted().joined(separator: ",")]
+        scope.append(request.paths.isEmpty ? "any path" : request.paths.joined(separator: ","))
+        if let n = request.maxRequests { scope.append("max \(n) req") }
+        if let u = request.maxUsd { scope.append(String(format: "max $%.2f", u)) }
+        if profile.unattended { scope.append("unattended") }
+        return grantReason(task: task, key: key, provider: provider, host: host, minutes: minutes)
+            + ", profile \(profile.name): " + scope.joined(separator: ", ")
+    }
+
     static func grantDetail(_ g: Grant) -> String {
-        var parts = ["\(g.id)", g.task, "until \(UTC.iso(g.expiresAt))", "\(g.host)"]
+        var parts = ["\(g.id)", g.task]
+        if let p = g.profile { parts.append("profile \(p)") }
+        parts.append("until \(UTC.iso(g.expiresAt))")
+        parts.append("\(g.host)")
         if g.methods != Grant.allMethods { parts.append(g.methods.sorted().joined(separator: ",")) }
         if !g.paths.isEmpty { parts.append(g.paths.joined(separator: ",")) }
         if let n = g.maxRequests { parts.append("max \(n) req") }
         if let u = g.maxUsd { parts.append(String(format: "max $%.2f", u)) }
+        if g.unattended { parts.append("unattended") }
         return parts.joined(separator: " · ")
     }
 

@@ -133,8 +133,8 @@ struct ProfileRequest {
     }
 }
 
-/// Why a profile save or lookup was refused. The codes are the wire: the CLI prints the
-/// message, the dashboard API answers `{"error": <code>, "message": …}`, and each bad
+/// Why a profile save, lookup or bounded issuance was refused. The codes are the wire: the CLI
+/// prints the message, the dashboard API answers `{"error": <code>, "message": …}`, and each bad
 /// shape is refused with its own name so callers learn which bound they hit instead of
 /// being silently clamped. All refusals happen before any Touch ID prompt, and profile
 /// CRUD never prompts at all — a profile row holds no secret and no capability.
@@ -151,6 +151,12 @@ enum ProfileError: LocalizedError, Equatable {
     case usdCapInvalid
     case requiresCap
     case notFound(String)
+    case keyNotAllowed(key: String, profile: String, keys: [String])
+    case methodNotAllowed(method: String, profile: String, methods: [String])
+    case pathNotAllowed(path: String, profile: String, paths: [String])
+    case minutesOver(requested: Int, profile: String, ceiling: Int)
+    case requestCapOver(requested: Int, profile: String, ceiling: Int)
+    case usdCapOver(requested: Double, profile: String, ceiling: Double)
 
     var errorDescription: String? { message }
 
@@ -166,6 +172,12 @@ enum ProfileError: LocalizedError, Equatable {
         case .usdCapInvalid: return "profile_usd_cap_invalid"
         case .requiresCap: return "profile_requires_cap"
         case .notFound: return "profile_not_found"
+        case .keyNotAllowed: return "profile_key_not_allowed"
+        case .methodNotAllowed: return "profile_method_not_allowed"
+        case .pathNotAllowed: return "profile_path_not_allowed"
+        case .minutesOver: return "profile_minutes_over"
+        case .requestCapOver: return "profile_request_cap_over"
+        case .usdCapOver: return "profile_usd_cap_over"
         }
     }
 
@@ -195,6 +207,80 @@ enum ProfileError: LocalizedError, Equatable {
             return "an unattended profile needs a hard cap: give it --max-requests or --max-usd"
         case .notFound(let name):
             return "no profile named \(name)"
+        case .keyNotAllowed(let key, let name, let keys):
+            return "key \(key) is not in profile \(name); its keys: \(keys.joined(separator: ", "))"
+        case .methodNotAllowed(let method, let name, let methods):
+            return "method \(method) is outside profile \(name) (allows \(methods.joined(separator: ",")))"
+        case .pathNotAllowed(let path, let name, let paths):
+            return "path \(path) is outside profile \(name) (allows \(paths.joined(separator: ", ")))"
+        case .minutesOver(let requested, let name, let ceiling):
+            return "minutes \(requested) is above profile \(name)'s ceiling of \(ceiling) min"
+        case .requestCapOver(let requested, let name, let ceiling):
+            return "max requests \(requested) is above profile \(name)'s ceiling of \(ceiling)"
+        case .usdCapOver(let requested, let name, let ceiling):
+            return "max usd \(requested) is above profile \(name)'s ceiling of \(String(format: "$%.2f", ceiling))"
         }
+    }
+}
+
+extension Profile {
+    /// The effective grant ask under this profile: every bound the caller named must sit inside
+    /// it (tighten, never widen — a refusal names the bound it hit, never a silent clamp), and
+    /// every bound left unnamed takes the profile's value as its default. Runs before any
+    /// presence prompt, so a refused ask consumes no Touch ID. The key check rides on the key
+    /// *name*: a grant is bound to one key and its host follows from the key's provider, so a
+    /// profile lists names and hosts are deliberately not a profile field.
+    func bounded(
+        request: GrantRequest,
+        specified: GrantSpecified,
+        key: String,
+        providerPrefix: String
+    ) throws -> GrantRequest {
+        guard keys.contains(key) else {
+            throw ProfileError.keyNotAllowed(key: key, profile: name, keys: keys)
+        }
+        var r = request
+        if specified.methods {
+            guard allows(methods: r.methods) else {
+                let bad = r.methods.filter { !methods.contains($0) }.sorted().first ?? "?"
+                throw ProfileError.methodNotAllowed(method: bad, profile: name, methods: methods.sorted())
+            }
+        } else {
+            r.methods = methods
+        }
+        if specified.paths {
+            guard allows(paths: r.paths, providerPrefix: providerPrefix) else {
+                let bad = r.paths.first { !GrantPath.matches(rest: $0, prefix: providerPrefix, allowed: paths) } ?? "?"
+                throw ProfileError.pathNotAllowed(path: bad, profile: name, paths: paths)
+            }
+        } else {
+            r.paths = paths
+        }
+        if specified.minutes {
+            guard allows(minutes: r.minutes) else {
+                throw ProfileError.minutesOver(requested: r.minutes, profile: name, ceiling: minutes)
+            }
+        } else {
+            r.minutes = minutes
+        }
+        if specified.maxRequests {
+            guard allows(maxRequests: r.maxRequests) else {
+                throw ProfileError.requestCapOver(requested: r.maxRequests ?? 0, profile: name, ceiling: maxRequests ?? 0)
+            }
+        } else {
+            r.maxRequests = maxRequests
+        }
+        if specified.maxUsd {
+            guard allows(maxUsd: r.maxUsd) else {
+                throw ProfileError.usdCapOver(requested: r.maxUsd ?? 0, profile: name, ceiling: maxUsd ?? 0)
+            }
+        } else {
+            r.maxUsd = maxUsd
+        }
+        // Fail closed: an unattended grant is pre-committed to a number the user read at
+        // approval, so the cap is re-checked here even though save-time validation demands
+        // one — in case the row reached the catalog some other way.
+        if unattended, r.maxRequests == nil, r.maxUsd == nil { throw ProfileError.requiresCap }
+        return r
     }
 }
