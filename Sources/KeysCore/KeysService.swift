@@ -1172,6 +1172,41 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
+    /// Every pairing row, live and revoked, for `keys relay pair list` and the API. Hashes
+    /// and hints only — the catalog never holds a credential.
+    func relayPairings() throws -> [RelayPairingRecord] {
+        try catalog.relayPairings()
+    }
+
+    /// Revokes one live pairing by exact label, or by hint when the hint matches exactly one.
+    /// An ambiguous hint revokes nothing and names the colliding labels, and a label that only
+    /// revoked rows carry is an error rather than a quiet no-op: a mistaken revoke must never
+    /// pass unnoticed.
+    @discardableResult
+    func revokeRelayPairing(_ labelOrHint: String, now: Date = Date()) throws -> RelayPairingRecord {
+        let target = labelOrHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { throw AppError.usage("revoke needs a pairing's label or hint") }
+        let rows = try catalog.relayPairings()
+        let live = rows.filter { $0.revokedAt == nil }
+        let match: RelayPairingRecord
+        if let byLabel = live.first(where: { $0.label == target }) {
+            match = byLabel
+        } else if rows.contains(where: { $0.label == target }) {
+            throw AppError.usage("the pairing \(target) is already revoked")
+        } else {
+            let byHint = live.filter { $0.hint == target }
+            guard !byHint.isEmpty else { throw AppError.notFound("pairing \(target)") }
+            guard byHint.count == 1 else {
+                throw AppError.usage("…\(target) matches more than one pairing (\(byHint.map(\.label).joined(separator: ", "))); revoke by label")
+            }
+            match = byHint[0]
+        }
+        guard try catalog.revokeRelayPairing(id: match.id, at: UTC.iso(now)) else {
+            throw AppError.notFound("pairing \(target)")
+        }
+        return try catalog.relayPairings().first { $0.id == match.id } ?? match
+    }
+
     /// The relay as the menu, the dashboard and `keys relay status` show it.
     struct RelayReport: Equatable {
         var configured: Bool
@@ -1180,17 +1215,25 @@ final class KeysService: @unchecked Sendable {
         /// A relay this process does not run holds the lock: `keys relay` in a Terminal.
         var elsewhere: RelayLock.Held?
         var stayAwake: Bool
+        /// The pairing enforcement flag and how many pairings are neither revoked nor expired,
+        /// so `keys relay status` and /api/relay can show the mode without a second question.
+        var pairingRequired = false
+        var activePairings = 0
     }
 
     func relayReport() -> RelayReport {
         let stored = relayStatus()
         let host = relayHost.status
+        let now = Date()
+        let pairings = (try? catalog.relayPairings()) ?? []
         return RelayReport(
             configured: stored.configured,
             url: host.origin ?? stored.url,
             host: host,
             elsewhere: host.on ? nil : RelayLock.holder(at: relayLockURL),
-            stayAwake: preferences.relayStayAwake
+            stayAwake: preferences.relayStayAwake,
+            pairingRequired: relayPairingRequired(),
+            activePairings: pairings.filter { $0.isActive(now: now) }.count
         )
     }
 
@@ -1222,7 +1265,7 @@ final class KeysService: @unchecked Sendable {
             }
             let (origin, secret) = try relayCredentials()
             relayHost.setStayAwake(preferences.relayStayAwake)
-            relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held)
+            relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held, pairing: relayPairingVerifier())
         }
         return relayReport()
     }

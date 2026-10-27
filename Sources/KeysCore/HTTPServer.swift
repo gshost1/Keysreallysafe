@@ -168,6 +168,12 @@ final class APIHandler: @unchecked Sendable {
                 return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
             case ("POST", "/api/relay"):
                 return try relaySet(request)
+            case ("GET", "/api/relay/pairings"):
+                return try relayPairingsList()
+            case ("POST", "/api/relay/pairings"):
+                return try relayPairingsIssue(request)
+            case ("DELETE", "/api/relay/pairings"):
+                return try relayPairingsRevoke(request)
             case ("POST", "/api/preferences/hidden-usage"):
                 guard let list = try jsonBody(request)["hidden"] as? [Any] else {
                     return HTTPResponse.json(400, ["error": "hidden must be a list"])
@@ -562,6 +568,62 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
     }
 
+    /// Mint is the one response that ever carries a pairing credential; list and status carry
+    /// hints only. Every refusal — a bad body, a bad day count, a duplicate live label — is
+    /// thrown before issueRelayPairing asks for presence, so a refused mint never prompts.
+    private func relayPairingsIssue(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard Set(obj.keys).isSubset(of: ["label", "keys", "days"]) else {
+            return HTTPResponse.json(400, ["error": "send label, and optionally keys and days"])
+        }
+        var days: Int?
+        if obj.keys.contains("days") {
+            guard let d = obj["days"] as? Int else { return HTTPResponse.json(400, ["error": "invalid days"]) }
+            days = d
+        }
+        var keys: [String] = []
+        if obj.keys.contains("keys") {
+            guard let list = obj["keys"] as? [String] else { return HTTPResponse.json(400, ["error": "invalid keys"]) }
+            keys = list
+        }
+        let issued = try service.issueRelayPairing(label: JSONValue.string(obj["label"]) ?? "", keys: keys, days: days)
+        return HTTPResponse.json(201, [
+            "credential": issued.credential,
+            "pairing": Self.pairingJSON(issued.pairing, now: Date()),
+        ])
+    }
+
+    private func relayPairingsList() throws -> HTTPResponse {
+        let now = Date()
+        return HTTPResponse.json(200, ["pairings": try service.relayPairings().map { Self.pairingJSON($0, now: now) }])
+    }
+
+    /// The target travels in the body because a label can hold any character, spaces included.
+    private func relayPairingsRevoke(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let target = JSONValue.string(obj["target"]), !target.isEmpty else {
+            return HTTPResponse.json(400, ["error": "target is required"])
+        }
+        let revoked = try service.revokeRelayPairing(target)
+        return HTTPResponse.json(200, ["pairing": Self.pairingJSON(revoked, now: Date())])
+    }
+
+    /// Hint and metadata only: neither the credential nor its hash ever appears in an API
+    /// response other than the one-time mint.
+    static func pairingJSON(_ pairing: RelayPairingRecord, now: Date) -> [String: Any] {
+        [
+            "id": Int(pairing.id),
+            "label": pairing.label,
+            "hint": pairing.hint,
+            "keys": pairing.keys,
+            "created_at": pairing.createdAt,
+            "expires_at": pairing.expiresAt ?? NSNull(),
+            "revoked": pairing.revokedAt != nil,
+            "active": pairing.isActive(now: now),
+            "last_used_at": pairing.lastUsedAt ?? NSNull(),
+        ]
+    }
+
     /// What Settings and `keys relay on|status` read. The URL is the one agents already use;
     /// the secret and its hint are not here.
     static func relayJSON(_ report: KeysService.RelayReport) -> [String: Any] {
@@ -590,6 +652,8 @@ final class APIHandler: @unchecked Sendable {
             "elsewhere_pid": report.elsewhere?.pid.map { Int($0) } ?? NSNull(),
             "stay_awake": report.stayAwake,
             "awake": report.host.awake,
+            "pairing_required": report.pairingRequired,
+            "active_pairings": report.activePairings,
         ]
     }
 

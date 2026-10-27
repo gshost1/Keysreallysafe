@@ -642,4 +642,187 @@ final class RelayPairingTests: XCTestCase {
         XCTAssertEqual(socket.frames.filter { $0.id == 1 }.count, 1, "exactly one ERROR for the refused id")
         XCTAssertEqual(client.inflightCount, 0)
     }
+
+    // MARK: management surface (CLI and /api/relay/pairings)
+
+    /// An API handler over a fresh catalog with a recording presence gate.
+    private func makePairingAPI() throws -> (handler: APIHandler, gate: RecordingPresenceGate, db: CatalogDB, dir: URL) {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        return (APIHandler(service: service, webRoot: dir), gate, db, dir)
+    }
+
+    /// One call against /api/relay/pairings; the raw body text comes back for absence checks.
+    private func pairCall(
+        _ handler: APIHandler, _ method: String, body: [String: Any]? = nil, token: String? = nil
+    ) throws -> (status: Int, object: [String: Any], text: String) {
+        var headers = ["host": "127.0.0.1:12765"]
+        if let token { headers["x-ksf-token"] = token }
+        let response = handler.handle(HTTPRequest(
+            method: method, path: "/api/relay/pairings", query: [:], headers: headers,
+            body: try body.map(JSONValue.data) ?? Data(), serverPort: 12765
+        ))
+        let text = String(decoding: response.body, as: UTF8.self)
+        let object = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] ?? [:]
+        return (response.status, object, text)
+    }
+
+    func testIssueRouteMintsOnceAndStoresOnlyTheHash() throws {
+        let (handler, gate, db, dir) = try makePairingAPI()
+        let (status, obj, text) = try pairCall(handler, "POST", body: ["label": "github actions"], token: handler.originToken)
+        XCTAssertEqual(status, 201, text)
+        let credential = try XCTUnwrap(JSONValue.string(obj["credential"]))
+        XCTAssertTrue(RelayPairing.looksLikeCredential(credential))
+        XCTAssertEqual(gate.reasons, ["pair a remote agent as github actions"], "one presence prompt per mint")
+        XCTAssertEqual(text.components(separatedBy: credential).count - 1, 1, "the credential is returned exactly once")
+
+        let row = try XCTUnwrap(try db.relayPairings().first)
+        XCTAssertEqual(row.label, "github actions")
+        XCTAssertEqual(row.tokenHash, RelayPairing.hash(credential))
+        XCTAssertEqual(row.tokenHash.count, 64, "a SHA-256 hex digest, not the credential")
+        XCTAssertEqual(row.hint, RelayPairing.hint(credential))
+        XCTAssertEqual(row.hint.count, 4)
+        assertNoSentinel(credential, in: dir)
+        XCTAssertFalse(try db.metaRows(prefix: "").contains { $0.value.contains(credential) })
+    }
+
+    func testIssueRoutePersistsKeyScopesAndExpiryAndListShowsMetadataOnly() throws {
+        let (handler, _, db, _) = try makePairingAPI()
+        let (status, obj, _) = try pairCall(
+            handler, "POST", body: ["label": "demo", "keys": ["work", "personal"], "days": 7], token: handler.originToken
+        )
+        XCTAssertEqual(status, 201, "\(obj)")
+        let credential = try XCTUnwrap(JSONValue.string(obj["credential"]))
+        let row = try XCTUnwrap(try db.relayPairings().first)
+        XCTAssertEqual(row.keys, ["work", "personal"], "repeated --key scopes land in order")
+        let created = try XCTUnwrap(UTC.parse(row.createdAt))
+        let expiry = try XCTUnwrap(UTC.parse(try XCTUnwrap(row.expiresAt)))
+        XCTAssertEqual(expiry.timeIntervalSince(created), 7 * 86_400, accuracy: 2)
+        XCTAssertNil(row.revokedAt)
+        XCTAssertNil(row.lastUsedAt)
+
+        // No keys and no days: an empty scope (all keys) and the 30-day default; expiry always set.
+        let (allStatus, _, _) = try pairCall(handler, "POST", body: ["label": "everything"], token: handler.originToken)
+        XCTAssertEqual(allStatus, 201)
+        let all = try XCTUnwrap(try db.relayPairings().first { $0.label == "everything" })
+        XCTAssertEqual(all.keys, [], "no --key means all keys")
+        let allExpiry = try XCTUnwrap(UTC.parse(try XCTUnwrap(all.expiresAt)))
+        XCTAssertEqual(allExpiry.timeIntervalSince(try XCTUnwrap(UTC.parse(all.createdAt))), 30 * 86_400, accuracy: 2)
+
+        // GET lists hints and metadata only: never the credential, never its hash.
+        let (getStatus, list, listText) = try pairCall(handler, "GET")
+        XCTAssertEqual(getStatus, 200)
+        let pairings = try XCTUnwrap(list["pairings"] as? [[String: Any]])
+        XCTAssertEqual(pairings.count, 2)
+        let listed = try XCTUnwrap(pairings.first { JSONValue.string($0["label"]) == "demo" })
+        XCTAssertEqual(JSONValue.string(listed["hint"]), String(credential.suffix(4)))
+        XCTAssertEqual(listed["keys"] as? [String], ["work", "personal"])
+        XCTAssertEqual(listed["revoked"] as? Bool, false)
+        XCTAssertNotNil(JSONValue.string(listed["expires_at"]))
+        XCTAssertTrue(listed["last_used_at"] is NSNull)
+        XCTAssertFalse(listText.contains(credential), "the credential appears in the mint response only")
+        XCTAssertFalse(listText.contains(RelayPairing.hash(credential)))
+        XCTAssertFalse(listText.contains("token_hash"), "the hash column is never serialized")
+        XCTAssertFalse(listText.contains("ksfp_"), "no credential-shaped value on the wire")
+    }
+
+    func testRevokeByLabelOrHintRefusesAmbiguity() throws {
+        let (db, _) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        // Two live pairings share a hint; a third stands alone. Fixed synthetic credentials.
+        let sharedA = "ksfp_" + String(repeating: "a", count: 44) + "beef"
+        let sharedB = "ksfp_" + String(repeating: "b", count: 44) + "beef"
+        let solo = "ksfp_" + String(repeating: "c", count: 44) + "cafe"
+        try seedPairing(db, credential: sharedA, label: "ci", at: t0, expiresAt: t0.addingTimeInterval(3600))
+        try seedPairing(db, credential: sharedB, label: "laptop", at: t0, expiresAt: t0.addingTimeInterval(3600))
+        try seedPairing(db, credential: solo, label: "runner", at: t0, expiresAt: t0.addingTimeInterval(3600))
+
+        // An ambiguous hint revokes nothing and names the colliding labels.
+        XCTAssertThrowsError(try service.revokeRelayPairing("beef", now: t0)) { error in
+            let text = String(describing: error)
+            XCTAssertTrue(text.contains("ci"), text)
+            XCTAssertTrue(text.contains("laptop"), text)
+        }
+        XCTAssertEqual(try db.relayPairings().filter { $0.revokedAt != nil }.count, 0, "ambiguity revokes nothing")
+
+        // A unique hint revokes exactly its row; the row and its hash stay.
+        let revoked = try service.revokeRelayPairing("cafe", now: t0)
+        XCTAssertEqual(revoked.label, "runner")
+        XCTAssertEqual(revoked.revokedAt, UTC.iso(t0))
+        XCTAssertEqual(try db.relayPairings().count, 3)
+
+        // Labels work too, and a revoked credential stops verifying.
+        let byLabel = try service.revokeRelayPairing("ci", now: t0)
+        XCTAssertEqual(byLabel.hint, "beef")
+        try service.setRelayPairingRequired(true)
+        XCTAssertEqual(service.verifyRelayPairing(credential: sharedA, keyName: nil, now: t0), .revoked)
+        XCTAssertEqual(service.verifyRelayPairing(credential: sharedB, keyName: nil, now: t0), .ok,
+                       "only the named pairing was revoked")
+
+        // Unknown and already-revoked targets fail cleanly and touch nothing.
+        XCTAssertThrowsError(try service.revokeRelayPairing("nosuch", now: t0))
+        XCTAssertThrowsError(try service.revokeRelayPairing("ci", now: t0)) { error in
+            XCTAssertTrue(String(describing: error).contains("already revoked"), "\(error)")
+        }
+        XCTAssertEqual(try db.relayPairings().count, 3)
+        XCTAssertEqual(gate.reasons, [], "revocation never prompts")
+    }
+
+    func testStatusReportsPairingModeAndActiveCount() throws {
+        let (db, _) = try makeDB()
+        let (service, _) = makeGatedService(db: db)
+        let t0 = Date()
+        var report = service.relayReport()
+        XCTAssertFalse(report.pairingRequired, "default off")
+        XCTAssertEqual(report.activePairings, 0)
+
+        try seedPairing(db, credential: pairCredential, label: "live", at: t0, expiresAt: t0.addingTimeInterval(3600))
+        try seedPairing(db, credential: pairCredentialB, label: "gone", at: t0, expiresAt: t0.addingTimeInterval(3600), revoked: true)
+        try seedPairing(db, credential: unknownCredential, label: "old", at: t0, expiresAt: t0.addingTimeInterval(-60))
+        try service.setRelayPairingRequired(true)
+
+        report = service.relayReport()
+        XCTAssertTrue(report.pairingRequired)
+        XCTAssertEqual(report.activePairings, 1, "revoked and expired pairings are not active")
+
+        let json = APIHandler.relayJSON(report)
+        XCTAssertEqual(json["pairing_required"] as? Bool, true)
+        XCTAssertEqual(json["active_pairings"] as? Int, 1)
+        let text = String(decoding: try JSONValue.data(json), as: UTF8.self)
+        XCTAssertFalse(text.contains("ksfp_"), "status carries a mode and a count, never a credential")
+        XCTAssertEqual(RelayCommand.pairingLine(required: true, active: 1), "required, 1 active")
+        XCTAssertEqual(RelayCommand.pairingLine(required: false, active: 2), "off, 2 active")
+    }
+
+    func testPairCLIParsingRefusesBadInputBeforeAnyAppContact() throws {
+        // Repeated --key and --days parse like keys client issue.
+        let parsed = try RelayPairCommand.parseAsRoot(["issue", "demo", "--key", "work", "--key", "personal", "--days", "7"])
+        let issue = try XCTUnwrap(parsed as? RelayPairIssueCommand)
+        XCTAssertEqual(issue.label, "demo")
+        XCTAssertEqual(issue.keys, ["work", "personal"])
+        XCTAssertEqual(issue.days, 7)
+
+        // Zero or negative days, a non-numeric days and unknown flags fail in parsing itself
+        // (parseAsRoot runs validate()), before run() could reach the running app.
+        for bad in [
+            ["issue", "demo", "--days", "0"], ["issue", "demo", "--days", "-1"],
+            ["issue", "demo", "--bogus"], ["issue", "demo", "--days", "abc"],
+        ] {
+            XCTAssertThrowsError(try RelayPairCommand.parseAsRoot(bad), "\(bad)")
+        }
+
+        // `require` takes only on|off; anything else is a usage error in run(), still before
+        // the command opens the catalog or contacts the app.
+        var require = try XCTUnwrap(try RelayPairCommand.parseAsRoot(["require", "maybe"]) as? RelayPairRequireCommand)
+        XCTAssertThrowsError(try require.run()) { error in
+            XCTAssertTrue(String(describing: error).contains("on|off"), "\(error)")
+        }
+
+        // No verb: the group itself runs and answers with usage, not a connection attempt.
+        var bare = try RelayPairCommand.parseAsRoot([])
+        XCTAssertThrowsError(try bare.run()) { error in
+            XCTAssertTrue(String(describing: error).contains("keys relay pair"), "\(error)")
+        }
+    }
 }
