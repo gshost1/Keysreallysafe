@@ -1490,6 +1490,9 @@ final class KeysService: @unchecked Sendable {
         guard !secret.isEmpty else { throw AppError.usage("empty secret") }
         try presence.require(reason: "unlock \(name)")
         try secrets.replace(name: name, secret: secret)
+        // A rotation usually answers a leak, so grants approved against the old value die with
+        // it: a token handed out before the swap must not keep spending the new secret.
+        revokeGrants(key: name, reason: "key_rotated", caller: caller)
         let version = try catalog.incrementVersion(name: name)
         gatewayLock.withLock {
             gatewayCache[name]?.secret = secret

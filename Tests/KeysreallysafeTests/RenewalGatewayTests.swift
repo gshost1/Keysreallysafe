@@ -206,6 +206,7 @@ final class RenewalGatewayTests: XCTestCase {
         let kills: [(String, (GatewayRig) throws -> Void)] = [
             ("screen_lock", { $0.service.handleScreenLock() }),
             ("gateway_off", { _ = try $0.service.setGateway(name: "demo", enabled: false, host: nil) }),
+            ("key_rotated", { _ = try $0.service.rotate(name: "demo", secret: "rotated-synthetic") }),
             ("key_deleted", { rig in
                 try rig.service.remove(name: "demo")
                 try rig.key("demo", provider: "openai")
@@ -235,6 +236,29 @@ final class RenewalGatewayTests: XCTestCase {
                 XCTAssertEqual(dead, 403, reason)
                 XCTAssertEqual(body["error"] as? String, "grant_revoked", reason)
             }
+        }
+    }
+
+    /// Rotating a key kills its live grants: a token handed out against the old value must not
+    /// keep spending the new one. The kill is audited like any other, and renewal cannot undo it.
+    func testRotatingTheKeyRevokesItsLiveGrants() async throws {
+        let rig = try GatewayRig { _ in HTTPResponse.json(200, ["ok": true]) }
+        defer { rig.stop() }
+        try rig.key("demo", provider: "openai")
+        let issued = try rig.service.issueGrant(
+            name: "demo", request: GrantRequest(task: "x", methods: ["GET"], paths: ["/models"]), caller: "cli"
+        )
+        let (ok, _) = try await call(rig.gateway, "/demo/v1/models", token: issued.token)
+        XCTAssertEqual(ok, 200)
+
+        _ = try rig.service.rotate(name: "demo", secret: "rotated-synthetic", caller: "cli")
+        let (dead, body) = try await call(rig.gateway, "/demo/v1/models", token: issued.token)
+        XCTAssertEqual(dead, 403)
+        XCTAssertEqual(body["error"] as? String, "grant_revoked")
+        let revokes = try rig.service.keyEvents(name: "demo").filter { $0.action == "grant_revoke" }
+        XCTAssertEqual(revokes.map(\.detail), ["\(issued.grant.id) · key_rotated"])
+        XCTAssertThrowsError(try rig.service.renewGrant(id: issued.grant.id, caller: "cli")) { error in
+            XCTAssertEqual(error as? RenewalError, .revoked(id: issued.grant.id, reason: "key_rotated"))
         }
     }
 
