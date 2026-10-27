@@ -246,7 +246,8 @@ read-only endpoint, with a filter box), Rotate (`R`, a new secret under the
 same name) and Delete (`⌫`). A key with the gateway on says so on its row,
 with this month's routed requests or estimated dollars when it has any, and the
 footer states the Keychain storage and the 20 s clipboard wipe. Active grants
-sit below the list with a Revoke button each. `N` adds a key; the provider
+sit below the list with a Revoke button each, and an active or expired row
+also offers Renew. `N` adds a key; the provider
 picker is grouped into Labs, Routers, Hosts, Clouds, Local and Non-chat, and a
 pasted secret with a recognisable prefix pre-fills it. The search box (`/`) narrows
 the list by name, provider or host — the count reads "N of M keys" while it
@@ -335,7 +336,7 @@ closed with a named reason: `grant_required`, `grant_expired`,
 `grant_target_changed`. A grant is
 bound to one key and the host recorded when it was issued; editing the
 provider or host, or rotating the key, revokes it. Screen lock, `keys revoke`,
-gateway off and a restart of the app all revoke. That is deliberate: a grant is for a task you
+gateway off, a key rotation and a restart of the app all revoke. That is deliberate: a grant is for a task you
 are around for, so an unattended job that has to outlive a screen lock needs a
 client token (`keys client issue`) instead. Grants live only in the app's memory; the audit log
 keeps the id, task and scope, never the token. `--max-requests` is a hard cap.
@@ -361,8 +362,8 @@ its usage counters start over, and the audit log records a `grant_renew`
 row with the id, task, scope and renewal count — never the token. Renewal
 never happens on its own, never widens anything (it takes no scope knobs;
 for different bounds, issue a new grant with `keys grant`), and never
-revives a revoked grant: revoke, screen lock, gateway off and a key edit
-stay deliberate kills. A grant pruned a day after it ended, or gone in a
+revives a revoked grant: revoke, screen lock, gateway off, a key edit and a
+key rotation stay deliberate kills. A grant pruned a day after it ended, or gone in a
 restart, is simply not there to renew.
 
 `keys grant` talks to the running app (or a `keys dashboard` dev copy)
@@ -394,7 +395,7 @@ An unattended profile must carry at least one hard cap (`--max-requests` or
 `--max-usd`), so a grant meant to run while you are away is pre-committed to a
 number you read at approval. The prompt says "unattended", and `keys grants`
 and the dashboard badge the grant. Nothing else about it changes: it still
-dies on screen lock, expiry, revoke, gateway off and restart, so a job that
+dies on screen lock, expiry, revoke, gateway off, key rotation and restart, so a job that
 has to outlive a screen lock still needs a client token (`keys client
 issue`).
 **A client** is for a program you keep: a capability that lives in the
