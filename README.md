@@ -602,7 +602,7 @@ keys provider add <id> --name <name> [--host <host>] [--api openai|anthropic|gem
 keys provider rm <id>
 keys provider hide <id>
 keys provider unhide <id>
-keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]
+keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]
 keys agent <agent> <key> [--minutes N] [--client] [--label <text>] [--] [args...]
 keys tunnel <user@host> [--remote-port N] [--key <name>] [--print]
 keys relay [run] [--url <worker url>] | on | off | setup --url <worker url> | status | reset

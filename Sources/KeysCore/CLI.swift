@@ -1401,7 +1401,7 @@ struct SetupCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "setup",
         abstract: "Write a coding agent's config so it runs on a vault key through the local gateway.",
-        usage: "keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default]",
+        usage: "keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]",
         discussion: """
             Writes the agent's own config file, with a backup beside it: the gateway base URL \
             for the key and the name of the environment variable `keys agent` fills with a \
@@ -1418,6 +1418,8 @@ struct SetupCommand: ParsableCommand {
     @Option(name: .customLong("display-name"), help: "Name the agent's model picker shows. Default: Keysrs <key>.") var displayName: String?
     @Option(help: "Wire format override (droid: anthropic|openai|generic-chat-completion-api, codex: chat|responses).") var wire: String?
     @Flag(name: .customLong("set-default"), help: "Codex only: also make keysrs the default provider and set the model.") var setDefault = false
+    @Flag(help: "Print one JSON line naming the config written, the token variable and the gateway URL, for a script to read.")
+    var json = false
 
     func run() throws {
         let agent = try CodingAgent.parse(agent)
@@ -1448,6 +1450,10 @@ struct SetupCommand: ParsableCommand {
 
         switch agent {
         case .claude:
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(agent: agent, key: row.name)))
+                return
+            }
             let base = "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
             print("Claude Code needs no config file; it reads two variables at launch.")
             print("Either launch it through the vault (recommended, one Touch ID, no secret in the environment file):")
@@ -1463,6 +1469,13 @@ struct SetupCommand: ParsableCommand {
                 setDefault: setDefault, model: setDefault ? model : nil
             )
             let url = CodexSetup.configURL(home: home)
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(
+                    agent: agent, key: row.name, configPath: url.path,
+                    model: setDefault ? model : nil, wire: kind, setDefault: setDefault
+                )))
+                return
+            }
             print("wrote [\(CodexSetup.section)] in \(url.path)")
             print(SetupCommand.backupNote(for: url))
             if setDefault {
@@ -1474,8 +1487,15 @@ struct SetupCommand: ParsableCommand {
         case .grok:
             let home = agent.configHome!
             try GrokSetup.upsert(home: home, key: row.name, port: GatewayListener.port, model: model)
-            print("wrote [\(GrokSetup.section)] in \(GrokSetup.configURL(home: home).path)")
-            print(SetupCommand.backupNote(for: GrokSetup.configURL(home: home)))
+            let url = GrokSetup.configURL(home: home)
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(
+                    agent: agent, key: row.name, configPath: url.path, model: model
+                )))
+                return
+            }
+            print("wrote [\(GrokSetup.section)] in \(url.path)")
+            print(SetupCommand.backupNote(for: url))
             print("pick the model \"\(displayName ?? "Keysrs gateway")\" in grok (grok models lists it)")
             print("launch with: keys agent grok \(row.name) -- grok")
         case .droid:
@@ -1485,8 +1505,16 @@ struct SetupCommand: ParsableCommand {
                 home: agent.configHome!, key: row.name, port: GatewayListener.port, model: model,
                 displayName: name, providerKind: kind, liveKeyNames: Set(rows.map(\.name))
             )
-            print("wrote a customModels entry in \(DroidSetup.settingsURL(home: agent.configHome!).path)")
-            print(SetupCommand.backupNote(for: DroidSetup.settingsURL(home: agent.configHome!)))
+            let url = DroidSetup.settingsURL(home: agent.configHome!)
+            if json {
+                try JSONValue.printLine(Self.jsonObject(Report(
+                    agent: agent, key: row.name, configPath: url.path,
+                    model: model, wire: kind, displayName: name
+                )))
+                return
+            }
+            print("wrote a customModels entry in \(url.path)")
+            print(SetupCommand.backupNote(for: url))
             print("launch with: keys agent droid \(row.name) -- droid, then pick \"\(name)\" with /model")
             print("unattended (headless droid exec): keys client issue \(row.name) --label droid --days 90, then export \(CodingAgent.droid.tokenVar!)=…")
         }
@@ -1497,6 +1525,45 @@ struct SetupCommand: ParsableCommand {
         FileManager.default.fileExists(atPath: url.appendingPathExtension("bak").path)
             ? "your previous file is kept beside it as a .bak"
             : "edits from here on keep a .bak beside it"
+    }
+
+    /// What one setup wrote, gathered so both output paths report the same step. A field
+    /// the agent's config does not carry stays nil, and the JSON leaves it out rather
+    /// than guessing — a present key is a fact, the same rule the status JSON follows.
+    struct Report {
+        let agent: CodingAgent
+        let key: String
+        var port: UInt16 = GatewayListener.port
+        var configPath: String?
+        var model: String?
+        var wire: String?
+        var displayName: String?
+        var setDefault: Bool?
+    }
+
+    /// The one JSON line, sorted keys, that every `--json` flag prints: the file that was
+    /// written, the environment variable the launcher fills with a token, and the gateway
+    /// URL — what a script needs to verify the step without parsing prose. Claude Code
+    /// writes no file, so its `config_path` is null and the two variables it reads at
+    /// launch stand in for it. Codex's model appears only under `--set-default`, the one
+    /// case that writes it.
+    static func jsonObject(_ report: Report) -> [String: Any] {
+        var entry: [String: Any] = [
+            "agent": report.agent.rawValue,
+            "base_url": "http://127.0.0.1:\(report.port)/\(report.key)",
+            "config_path": report.configPath ?? NSNull(),
+            // Claude Code reads its token from ANTHROPIC_AUTH_TOKEN, its own variable;
+            // the other agents get a Keysrs one named in their config.
+            "token_env": report.agent.tokenVar ?? "ANTHROPIC_AUTH_TOKEN",
+        ]
+        if report.agent == .claude {
+            entry["base_url_env"] = "ANTHROPIC_BASE_URL"
+        }
+        if let model = report.model { entry["model"] = model }
+        if let wire = report.wire { entry["wire"] = wire }
+        if let displayName = report.displayName { entry["display_name"] = displayName }
+        if let setDefault = report.setDefault { entry["set_default"] = setDefault }
+        return entry
     }
 
     private func resolveModel(agent: CodingAgent, provider: Providers.Record, keyName: String) throws -> String {
