@@ -400,6 +400,19 @@ function handle(method, pathname, body, params) {
     delete answer.token;
     return [200, answer];
   }
+  // DELETE /api/grants/<id>, mirroring the engine: a revoke is a kill, not a removal — the
+  // row stays on the list under ?all=1 as revoked (its fate visible, offering nothing), so
+  // the page's own reload reads the same state the mutation left behind. The answer carries
+  // no token.
+  const revokeMatch = /^\/api\/grants\/([0-9a-f]{8})$/.exec(pathname);
+  if (revokeMatch && method === "DELETE") {
+    const g = grants.find((x) => x.id === revokeMatch[1]);
+    if (!g) return [404, { error: "grant_not_found" }];
+    g.status = "revoked";
+    g.revoked_at = new Date().toISOString();
+    g.revoke_reason = "revoked";
+    return [200, { ok: true }];
+  }
   // Saved grant bounds, mirroring the engine's grant_profiles rows. The page only lists and
   // removes them — `keys profile add` is the CLI's surface — so the fixture fakes GET and
   // DELETE only; a POST from the page would land in `unexpected` and fail the case.
@@ -1367,25 +1380,32 @@ test("the vault fits 780 and 540 px in both themes with last used under the prov
 });
 
 test("the grants box sits below the list and its Revoke button revokes", async (page, origin) => {
-  failures.set(rule("GET", "/api/grants"), { status: 200, body: { grants: [{
-    id: "g1", key: "alpha", host: "api.openai.com", task: "fixture task", methods: ["POST"], paths: [],
-    requests: 1, max_requests: 0, usd: 0, max_usd: 0, unpriced_calls: 0, expires_at: "2099-01-01T00:00:00Z",
-  }] } });
+  // Seeded persistent state, not a transient GET override: the DELETE route below mutates this
+  // same array, so every re-render (boot and the Keys-tab switch each run loadKeys → loadGrants
+  // → renderGrants, which rebuilds the box with replaceChildren) reproduces the same active row
+  // until the click's own DELETE lands. Nothing can empty the list and tear the Revoke button
+  // out mid-click, so no timing gate or retry is needed.
+  grants = [fixtureGrant({
+    id: "aa11bb22", key: "alpha", task: "fixture task", methods: ["POST"], paths: [],
+    requests: 1, profile: null, unattended: false, expires_at: "2099-01-01T00:00:00Z",
+  })];
   await openKeys(page, origin);
-  // The tab switch starts a second keys+grants refresh; until it lands, its grants fetch still
-  // sees the injected grant, but once the override below is removed an in-flight copy would come
-  // back empty and tear the Revoke button out from under the click. Let the network settle first.
-  await page.waitForLoadState("networkidle");
-  await page.locator("#grants:visible").waitFor();
+  await page.locator("#grants-list li").first().waitFor();
   assert.match(await page.locator("#grants-count").textContent(), /^1 active grant, 0 clients\./);
   const order = await page.evaluate(() => document.getElementById("keys-list").getBoundingClientRect().bottom <= document.getElementById("grants").getBoundingClientRect().top);
   assert.equal(order, true, "the box is below the list");
-  failures.delete(rule("GET", "/api/grants"));
-  failures.set(rule("DELETE", "/api/grants/g1"), { status: 200, body: { ok: true } });
-  await page.getByRole("button", { name: "Revoke grant g1" }).click();
-  await page.waitForFunction(() => document.getElementById("status").textContent === "Grant g1 revoked.");
-  await page.locator("#grants").waitFor({ state: "hidden" });
-  assert.ok(requests.some((r) => r.method === "DELETE" && r.pathname === "/api/grants/g1" && r.token === "test-token"));
+
+  await page.getByRole("button", { name: "Revoke grant aa11bb22" }).click();
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Grant aa11bb22 revoked.");
+  // The reload reads the mutated state: the kill stays on the list as a revoked row that
+  // offers nothing, so the count breaks out revoked instead of calling the box empty.
+  const row = page.locator("#grants-list li", { hasText: "fixture task" });
+  await row.waitFor();
+  assert.deepEqual(await row.locator(".badge").allTextContents(), ["revoked"], "the row shows its revoked fate");
+  assert.equal(await row.locator('[aria-label="Revoke grant aa11bb22"]').count(), 0, "a revoked row offers no Revoke button");
+  assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.");
+  assert.ok(requests.some((r) => r.method === "DELETE" && r.pathname === "/api/grants/aa11bb22" && r.token === "test-token"),
+    "the DELETE rides the page token");
 });
 
 // ---------- reveal and its expiry ----------
@@ -1636,10 +1656,15 @@ test("the add dialog never leaves a typed secret in the DOM after it closes", as
 // in one named constant and only ever asserted against negatively — it is never printed or
 // written into an assertion message.
 const SAFETY_SECRET = "sk-add-safety-NEVER-REAL-0000000000";
-// A full-document scan for the sentinel: negative only, and the message never embeds it.
+// A full-document scan for the sentinel — the markup plus every input and textarea value,
+// because a typed or pasted value lives in the value property and never reaches innerHTML.
+// Negative only, and the message never embeds it.
 const safetyFree = (page, step) =>
-  page.evaluate(() => document.documentElement.innerHTML)
-    .then((html) => assert.doesNotMatch(html, new RegExp(SAFETY_SECRET), step));
+  page.evaluate(() => [
+    document.documentElement.innerHTML,
+    ...[...document.querySelectorAll("input, textarea")].map((n) => n.value || ""),
+  ].join("\n"))
+    .then((blob) => assert.doesNotMatch(blob, new RegExp(SAFETY_SECRET), step));
 
 // VAL-SECRET-001: a saved key's secret must not linger anywhere in the document once the
 // dialog has closed — not in the rendered row, not in the closed dialog's markup — and the
