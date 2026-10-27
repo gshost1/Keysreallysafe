@@ -134,6 +134,13 @@
       <div class="list-tools">
         <span class="list-label">All keys <span id="keys-count" class="count-chip"></span></span>
         <div class="list-filters" id="keys-filters">
+          <label class="keys-provider" id="keys-provider-label">
+            <span class="sr">Filter keys by provider</span>
+            <select id="keys-provider" aria-label="Filter keys by provider">
+              <option value="">All providers</option>
+            </select>
+            <svg class="vicon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+          </label>
           <label class="keys-sort" id="keys-sort-label">
             <svg class="vicon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14m-4-4 4 4 4-4M16 19V5m-4 4 4-4 4 4"/></svg>
             <span class="sr">Sort by</span>
@@ -232,6 +239,7 @@
     </section>
   </main>
   </div>
+  <div id="key-menu" class="key-menu" role="menu" hidden></div>
 
   <dialog id="dlg-add" class="dlg" aria-labelledby="add-title">
     <form id="add-form" novalidate>
@@ -700,14 +708,15 @@ keys relay on</code><button type="button" class="btn-row" data-copy-cmd aria-lab
       <dt><kbd>T</kbd></dt><dd>Tokens / USD / requests (requests in the API keys view)</dd>
       <dt><kbd>N</kbd></dt><dd>Add key</dd>
       <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Move in a list</dd>
+      <dt><kbd>↵</kbd><kbd>Space</kbd><kbd>⇧ F10</kbd></dt><dd>Open More actions or activate a menu item</dd>
       <dt><kbd>C</kbd></dt><dd>Copy the selected key</dd>
-      <dt><kbd>V</kbd></dt><dd>Reveal the selected key</dd>
-      <dt><kbd>E</kbd></dt><dd>Edit the selected key</dd>
-      <dt><kbd>G</kbd></dt><dd>Gateway on / off for the selected key</dd>
-      <dt><kbd>A</kbd></dt><dd>Grant temporary, scoped access to the selected key</dd>
-      <dt><kbd>T</kbd></dt><dd>Check the selected key against its provider (read-only)</dd>
-      <dt><kbd>H</kbd></dt><dd>History of the selected key</dd>
-      <dt><kbd>R</kbd></dt><dd>Rotate the selected key</dd>
+      <dt><kbd>V</kbd></dt><dd>Reveal key for the selected key</dd>
+      <dt><kbd>E</kbd></dt><dd>Edit details for the selected key</dd>
+      <dt><kbd>G</kbd></dt><dd>Turn the gateway on or off for the selected key</dd>
+      <dt><kbd>A</kbd></dt><dd>Access &amp; grants for the selected key</dd>
+      <dt><kbd>T</kbd></dt><dd>Check connection to the selected key (read-only)</dd>
+      <dt><kbd>H</kbd></dt><dd>Activity for the selected key</dd>
+      <dt><kbd>R</kbd></dt><dd>Rotate key for the selected key</dd>
       <dt><kbd>P</kbd></dt><dd>Models / projects (Claude)</dd>
       <dt><kbd>D</kbd> <kbd>W</kbd> <kbd>M</kbd></dt><dd>Today / week / month</dd>
       <dt><kbd>X</kbd></dt><dd>Download spend rows as CSV (also in Settings)</dd>

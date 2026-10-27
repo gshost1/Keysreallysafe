@@ -7,7 +7,7 @@ async function reset(app: App) {
   await app.open('/');
 }
 const row = (browser: Browser, name: string) => browser.locator(`#keys-body .key-row[data-name="${name}"]`).first();
-// Copy is the row's button; the other actions are the selected row's letter keys (see the help dialog).
+// Copy and More are row buttons; the other shortcuts remain available on the selected row.
 async function act(browser: Browser, name: string, key: string) {
   await browser.locator(`#keys-body .key-row[data-name="${name}"] .key-name`).first().click();
   await row(browser, name).press(key);

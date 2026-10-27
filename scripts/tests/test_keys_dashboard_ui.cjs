@@ -344,6 +344,23 @@ function handle(method, pathname, body, params) {
     fixtureSecrets.set(name, body.secret);
     return [200, { version: 2 }];
   }
+  if (keyMatch && leaf === "/gateway" && method === "POST") {
+    const key = found();
+    if (!key) return [404, { error: "not_found" }];
+    key.gateway_enabled = !!body.enabled;
+    key.gateway_url = key.gateway_enabled ? `http://127.0.0.1:12767/${name}` : null;
+    return [200, { gateway_url: key.gateway_url }];
+  }
+  if (keyMatch && leaf === "/check" && method === "POST") {
+    const key = found();
+    if (!key) return [404, { error: "not_found" }];
+    const result = {
+      ok: true, provider: key.provider, host: key.host || "api.example.test", endpoint: "/v1/models",
+      checked_at: "2026-10-27T12:00:00Z", model_count: 2, models: ["fixture-small", "fixture-large"],
+    };
+    key.last_check = { ok: true, checked_at: result.checked_at, summary: "2 models" };
+    return [200, result];
+  }
   if (keyMatch && leaf === "/events") return [200, { events: keyEvents }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
   if (pathname === "/api/grants") return [200, { grants: [] }];
@@ -520,8 +537,12 @@ const rowNames = (page) => page.locator("#keys-body .key-row[data-name]")
 // A row's parts: name, provider, host, used, gateway (this month's figure), notes, avatar.
 const rowCell = (page, name, cell) => page.locator(`#keys-body .key-row[data-name="${name}"] .key-${cell}`).first();
 const rowButton = (page, name, act) => page.locator(`#keys-body .key-row[data-name="${name}"] [data-act="${act}"]`).first();
-// Copy is the row's only button until the actions menu exists; every other action is the
-// selected row's letter key, exactly as the help dialog lists them.
+const menuItem = (page, label) => page.getByRole("menuitem", { name: label, exact: true });
+const openRowMenu = async (page, name) => {
+  await rowButton(page, name, "menu").click();
+  await page.locator("#key-menu:visible").waitFor();
+};
+// The row's letter actions remain available alongside Copy and the More menu.
 const ROW_LETTER = { reveal: "v", edit: "e", gateway: "g", grant: "a", check: "t", history: "h", rotate: "r", delete: "Backspace", copy: "c" };
 async function rowAct(page, name, act) {
   const row = page.locator(`#keys-body .key-row[data-name="${name}"]`).first();
@@ -632,8 +653,9 @@ test("key rows show an initials tile, a mono name, the provider, last used and C
   for (const r of rows) {
     assert.match(r.font, /monospace|Menlo|SF Mono/, `${r.name}: the name is monospaced`);
     assert.equal(r.buttons.filter((b) => b.startsWith("copy:"))[0], "copy:Copy");
-    // No dead control: Copy and, only where real, the gateway figure. The rest is the letter keys.
-    assert.ok(r.buttons.every((b) => /^(copy|chart):/.test(b)), `${r.name}: unexpected buttons ${r.buttons}`);
+    // Copy, More, and only where real, the gateway figure. More exposes the existing actions.
+    assert.ok(r.buttons.every((b) => /^(copy|menu|chart):/.test(b)), `${r.name}: unexpected buttons ${r.buttons}`);
+    assert.ok(r.buttons.some((b) => b.startsWith("menu:")), `${r.name}: the More button is visible`);
     assert.equal(r.columns, "99px 118px", `${r.name}: the last-used and actions columns`);
     assert.ok(r.height >= 62, `${r.name}: row is ${r.height}px tall`);
   }
@@ -670,6 +692,308 @@ test("key rows show an initials tile, a mono name, the provider, last used and C
   assert.deepEqual(palette, { page: "rgb(245, 245, 247)", add: "rgb(0, 113, 227)" });
   assert.doesNotMatch(await page.evaluate(() => document.body.innerHTML), new RegExp(SECRET));
   assert.deepEqual(foreign, []);
+});
+
+test("the More menu has the designed order, semantics, theme and viewport placement", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const menuButton = rowButton(page, "alpha", "menu");
+  assert.equal(await menuButton.isVisible(), true, "More is visible without hovering");
+  assert.equal(await menuButton.getAttribute("aria-haspopup"), "menu");
+  assert.equal(await menuButton.getAttribute("aria-label"), "More actions for alpha");
+
+  const order = async () => page.locator("#key-menu").evaluate((menu) =>
+    [...menu.children].map((node) => node.getAttribute("role") === "separator"
+      ? "separator" : node.querySelector(".key-menu-label").textContent));
+  let menuShortcuts = [];
+  for (const theme of ["dark", "light"]) {
+    if (theme === "light") {
+      await page.getByRole("tab", { name: "Settings" }).click();
+      await page.locator("#theme-switch").click();
+      await page.getByRole("tab", { name: "Keys" }).click();
+      await settleKeys(page);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openRowMenu(page, "charlie");
+    assert.deepEqual(await order(), [
+      "Reveal key", "Edit details", "separator", "Access & grants", "Turn on gateway…",
+      "Activity", "Check connection", "Rotate key…", "separator", "Delete key…",
+    ]);
+    const geometry = await page.evaluate(() => {
+      const menu = document.getElementById("key-menu").getBoundingClientRect();
+      const button = document.querySelector('#keys-body [data-name="charlie"] [data-act="menu"]').getBoundingClientRect();
+      return {
+      left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom,
+      buttonLeft: button.left, buttonRight: button.right, buttonTop: button.top, buttonBottom: button.bottom,
+        background: getComputedStyle(document.getElementById("key-menu")).backgroundColor,
+        viewportWidth: innerWidth, viewportHeight: innerHeight,
+      };
+    });
+    assert.ok(geometry.left >= 0 && geometry.right <= geometry.viewportWidth, `${theme}: menu stays inside horizontally: ${JSON.stringify(geometry)}`);
+    assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.viewportHeight, `${theme}: menu stays inside vertically: ${JSON.stringify(geometry)}`);
+    assert.ok(Math.abs(geometry.right - geometry.buttonRight) <= 1, `${theme}: menu is right-aligned to its button`);
+    assert.ok(geometry.top >= geometry.buttonBottom || geometry.bottom <= geometry.buttonTop,
+      `${theme}: menu opens below or flips above: ${JSON.stringify(geometry)}`);
+    assert.equal(await page.locator("#key-menu").getAttribute("role"), "menu");
+    assert.equal(await page.locator("#key-menu").getAttribute("aria-label"), "More actions for charlie");
+    assert.equal(await page.locator("#key-menu [role=menuitem]").count(), 8);
+    menuShortcuts = await page.locator("#key-menu [role=menuitem]").evaluateAll((items) =>
+      items.map((item) => [item.dataset.act, item.querySelector(".key-menu-shortcut")?.textContent || ""]));
+    assert.equal(await rowButton(page, "charlie", "menu").getAttribute("aria-expanded"), "true");
+    assert.equal(await page.locator("#key-menu").evaluate((n) => getComputedStyle(n).backgroundColor), geometry.background);
+    assert.doesNotMatch(await page.evaluate(() => document.body.innerHTML), new RegExp(SECRET));
+    await page.keyboard.press("Escape");
+    await waitFocused(page, "charlie:menu");
+  }
+  await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
+  const help = await page.locator("#dlg-help .shortcuts").evaluate((box) => ({
+    keys: [...box.querySelectorAll("dt")].map((dt) => [...dt.querySelectorAll("kbd")].map((k) => k.textContent.trim()).join("")),
+    text: box.textContent,
+  }));
+  for (const [act, key] of menuShortcuts) {
+    if (!key) continue;
+    assert.ok(help.keys.includes(key), `${act} has ${key} in the help list`);
+  }
+  for (const phrase of ["Reveal key", "Edit details", "Access & grants", "Turn the gateway on or off", "Activity", "Check connection", "Rotate key"]) {
+    assert.ok(help.text.includes(phrase), `help describes ${phrase}`);
+  }
+  await waitDialog(page, "dlg-help", true);
+});
+
+test("the More menu dispatches every action through the selected key's existing handlers", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await openKeys(page, origin);
+  await settleKeys(page);
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Reveal key").click();
+  await waitDialog(page, "dlg-reveal", true);
+  assert.equal(await page.locator("#reveal-name").textContent(), "alpha");
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/reveal"));
+  await page.locator("#dlg-reveal [data-close]").click();
+  await waitFocused(page, "alpha:menu");
+  await page.waitForFunction(() => !document.body.innerHTML.includes("sk-fixture-NEVER-REAL"));
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Edit details").click();
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "alpha");
+  await page.locator("#edit-form [name=notes]").fill("edited through More");
+  await page.locator("#edit-form [type=submit]").click();
+  await waitDialog(page, "dlg-edit", false);
+  assert.equal(await status(page), "Saved alpha.");
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="alpha"] .key-notes')?.textContent === "edited through More");
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Access & grants").click();
+  await waitDialog(page, "dlg-grant", true);
+  assert.equal(await page.locator("#grant-name").textContent(), "alpha");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await waitDialog(page, "dlg-grant", false);
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Turn on gateway…").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Gateway on."));
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/gateway"));
+  assert.match(await status(page), /^Gateway on\. Base URL http:\/\/127\.0\.0\.1:12767\/alpha\./);
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="alpha"] .badge')?.textContent === "Gateway on");
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Turn off gateway").waitFor();
+  await menuItem(page, "Turn off gateway").click();
+  await page.waitForFunction(() => document.getElementById("status").textContent === "Gateway off for alpha.");
+  assert.equal(requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/gateway").length, 2);
+  await page.waitForFunction(() => !document.querySelector('#keys-body [data-name="alpha"] .badge'));
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Activity").click();
+  await page.locator('#keys-body .key-events-row[data-name="alpha"]').waitFor();
+  assert.ok(requests.some((r) => r.pathname === "/api/keys/alpha/events"));
+  await waitFocused(page, "alpha:menu");
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Activity").click();
+  await page.locator('#keys-body .key-events-row[data-name="alpha"]').waitFor({ state: "detached" });
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Check connection").click();
+  await waitDialog(page, "dlg-check", true);
+  assert.equal(await page.locator("#check-name").textContent(), "alpha");
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"));
+  await page.locator("#dlg-check [data-close]").click();
+  await waitDialog(page, "dlg-check", false);
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Rotate key…").click();
+  await waitDialog(page, "dlg-rotate", true);
+  assert.equal(await page.locator("#rotate-name").textContent(), "alpha");
+  await page.locator("#dlg-rotate [data-close]").click();
+  await waitDialog(page, "dlg-rotate", false);
+  await waitFocused(page, "alpha:menu");
+
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Delete key…").click();
+  await waitDialog(page, "dlg-delete", true);
+  assert.equal(await page.locator("#delete-name").textContent(), "alpha");
+  await page.locator("#dlg-delete [data-close]").click();
+  await waitDialog(page, "dlg-delete", false);
+  await waitFocused(page, "alpha:menu");
+});
+
+test("the More menu skips disabled items, supports keyboard dismissal and stays one at a time", async (page, origin) => {
+  keys = [...baseKeys(), {
+    name: "no-gateway", provider: "fixture-no-gateway", kind: "runtime",
+    created_at: "2026-09-10T10:00:00Z", last_used_at: null, checkable: true, host: "api.example.test",
+  }];
+  customProviders = [{
+    id: "fixture-no-gateway", name: "Gatewayless Fixture", group: "yours", gateway: false,
+    host: "api.example.test", api: "openai-chat", auth_header: "Authorization", auth_prefix: "Bearer ",
+    path_prefix: "", key_prefix: "", note: "Synthetic provider with gateway disabled.",
+  }];
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await page.waitForFunction(() => document.querySelector('#keys-body [data-name="no-gateway"] .key-provider')?.textContent === "Gatewayless Fixture");
+
+  await openRowMenu(page, "no-gateway");
+  for (const label of ["Access & grants", "Turn on gateway…"]) {
+    assert.equal(await menuItem(page, label).getAttribute("aria-disabled"), "true");
+  }
+  assert.equal(await menuItem(page, "Check connection").getAttribute("aria-disabled"), "false");
+  const before = requests.filter((r) => /\/(gateway|grants|check)$/.test(r.pathname)).length;
+  await menuItem(page, "Access & grants").evaluate((item) =>
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(await dialogOpen(page, "dlg-grant"), false);
+  await menuItem(page, "Turn on gateway…").evaluate((item) =>
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(requests.filter((r) => /\/(gateway|grants|check)$/.test(r.pathname)).length, before,
+    "disabled grant and gateway items issue no request");
+
+  await page.keyboard.press("Escape");
+  await openRowMenu(page, "bravo");
+  assert.equal(await menuItem(page, "Check connection").getAttribute("aria-disabled"), "true");
+  const checks = requests.filter((r) => /\/api\/keys\/bravo\/check$/.test(r.pathname)).length;
+  await menuItem(page, "Check connection").evaluate((item) =>
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  assert.equal(requests.filter((r) => /\/api\/keys\/bravo\/check$/.test(r.pathname)).length, checks);
+  assert.equal(await dialogOpen(page, "dlg-check"), false);
+  await page.keyboard.press("Escape");
+
+  const noGatewayButton = rowButton(page, "no-gateway", "menu");
+  await noGatewayButton.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#key-menu:visible").waitFor();
+  assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), "Reveal keyV");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Edit details");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Activity",
+    "ArrowDown skips the separator and both disabled items");
+  await page.keyboard.press("Home");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Reveal key");
+  await page.keyboard.press("End");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label").textContent), "Delete key…");
+  await page.keyboard.press("Tab");
+  assert.equal(await focused(page), "no-gateway:menu", "Tab closes the menu and returns focus");
+
+  await noGatewayButton.focus();
+  await page.keyboard.press("Space");
+  await page.locator("#key-menu:visible").waitFor();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Space");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "no-gateway");
+  await page.locator("#dlg-edit [data-close]").click();
+  await waitDialog(page, "dlg-edit", false);
+  await waitFocused(page, "no-gateway:menu");
+
+  await noGatewayButton.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#key-menu:visible").waitFor();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-name").textContent(), "no-gateway");
+  await page.locator("#dlg-edit [data-close]").click();
+  await waitDialog(page, "dlg-edit", false);
+  await waitFocused(page, "no-gateway:menu");
+
+  await noGatewayButton.focus();
+  await page.keyboard.press("Enter");
+  await page.locator("#key-menu:visible").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(await focused(page), "no-gateway:menu", "Escape returns focus to More");
+
+  await page.locator('#keys-body [data-name="alpha"]').focus();
+  await page.keyboard.press("Shift+F10");
+  await page.locator("#key-menu:visible").waitFor();
+  await rowButton(page, "bravo", "menu").evaluate((button) => button.click());
+  assert.equal(await page.locator("#key-menu [role=menuitem]").count(), 8);
+  assert.equal(await rowButton(page, "alpha", "menu").getAttribute("aria-expanded"), "false");
+  assert.equal(await rowButton(page, "bravo", "menu").getAttribute("aria-expanded"), "true");
+  await page.locator("#pane-keys h1").click();
+  await page.waitForFunction(() => document.getElementById("key-menu").hidden);
+  assert.equal(await focused(page), "bravo:menu", "outside click returns focus to the invoking More button");
+});
+
+test("a busy key action leaves a skipped menu action focused and lets refresh close it safely", async (page, origin) => {
+  delays.set(rule("POST", "/api/keys/alpha/check"), 1200);
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await openRowMenu(page, "alpha");
+  await menuItem(page, "Check connection").click();
+  for (let i = 0; i < 100 && !requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"); i++) {
+    await page.waitForTimeout(10);
+  }
+  assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"), "check is pending");
+
+  await openRowMenu(page, "bravo");
+  await menuItem(page, "Reveal key").click();
+  assert.equal(await page.locator("#key-menu").isVisible(), true, "the skipped action leaves its menu open");
+  assert.equal(await rowButton(page, "bravo", "menu").getAttribute("aria-expanded"), "true");
+  assert.equal(await page.evaluate(() => document.activeElement.querySelector(".key-menu-label")?.textContent), "Reveal key");
+  assert.equal(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/bravo/reveal"), false,
+    "the busy action sends no second request");
+
+  await waitDialog(page, "dlg-check", true);
+  await page.waitForFunction(() => document.getElementById("key-menu").hidden);
+  await page.locator("#dlg-check [data-close]").click();
+  await waitDialog(page, "dlg-check", false);
+});
+
+test("a background key refresh closes the More menu without leaving detached focus", async (page, origin) => {
+  await page.clock.install();
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await openRowMenu(page, "alpha");
+  catalogVersion += 1;
+  await page.clock.runFor(16000);
+  await page.waitForFunction(() => document.getElementById("key-menu").hidden);
+  assert.equal(await rowButton(page, "alpha", "menu").getAttribute("aria-expanded"), "false");
+  assert.equal(await page.evaluate(() => document.activeElement === document.body || document.activeElement.isConnected), true);
+});
+
+test("deleting from the More menu updates rows, count and the provider filter", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const filter = page.locator("#keys-provider");
+  await filter.selectOption("typesafe");
+  assert.deepEqual(await rowNames(page), ["charlie"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "1 of 3 keys");
+  await openRowMenu(page, "charlie");
+  await menuItem(page, "Delete key…").click();
+  await waitDialog(page, "dlg-delete", true);
+  await page.locator("#delete-confirm").click();
+  await waitDialog(page, "dlg-delete", false);
+  await page.waitForFunction(() => !document.querySelector('#keys-body [data-name="charlie"]'));
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo"]);
+  assert.equal(await page.locator("#keys-count").textContent(), "2 keys");
+  assert.equal(await filter.inputValue(), "");
+  assert.deepEqual(await filter.locator("option").allTextContents(), ["All providers", "Anthropic", "OpenAI"]);
+  assert.equal(await status(page), "Deleted charlie.");
 });
 
 test("provider initials follow the documented rule for one-word, multi-word and unknown providers", async (page, origin) => {

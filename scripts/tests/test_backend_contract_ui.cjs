@@ -47,7 +47,7 @@ const rowNames = (page) => page.locator("#keys-body .key-row[data-name]")
   .evaluateAll((rows) => rows.map((row) => row.dataset.name));
 const rowCell = (page, name, cell) => page.locator(`#keys-body .key-row[data-name="${name}"] .key-${cell}`).first();
 const rowButton = (page, name, act) => page.locator(`#keys-body .key-row[data-name="${name}"] [data-act="${act}"]`).first();
-// Copy is a row button; the other actions are the selected row's letter keys.
+// Copy remains a row button; More exposes the same actions as the selected-row shortcuts.
 const ROW_LETTER = { reveal: "v", edit: "e", check: "t", history: "h", delete: "Backspace" };
 async function rowAct(page, name, act) {
   const row = page.locator(`#keys-body .key-row[data-name="${name}"]`).first();

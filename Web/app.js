@@ -66,6 +66,7 @@
     relayPending: null,
     // Session-only: a search is a momentary lookup, not a view to come back to.
     keySearch: "",
+    keyProviderFilter: "",
   };
 
   // Hand-picked shades per family. It is a palette size, not a limit on how many models a family
@@ -274,6 +275,7 @@
 
   function showPane(name, opts = {}) {
     const changed = state.pane !== name;
+    if (name !== "keys") closeKeyMenu({ restoreFocus: false });
     state.pane = name;
     if (changed && COUNTED_VIEWS.has(name)) window.KeysAnalytics?.event(`view_${name}`);
     document.body.dataset.pane = name;
@@ -567,6 +569,10 @@
   $("keys-sort").addEventListener("change", (e) => {
     state.keySort = keySorts[e.target.value] ? e.target.value : "name";
     try { localStorage.setItem("ksf.keysort", state.keySort); } catch { /* fine */ }
+    renderKeys();
+  });
+  $("keys-provider").addEventListener("change", (e) => {
+    state.keyProviderFilter = e.target.value;
     renderKeys();
   });
   $("keys-search").addEventListener("input", (e) => {
@@ -1533,6 +1539,8 @@
       .some((v) => typeof v === "string" && v.toLowerCase().includes(q));
   }
   const keyRows = () => [...$("keys-body").querySelectorAll(".key-row")];
+  let keyMenuFor = null;
+  let menuFocusReturn = null;
 
   // A provider's tile shows initials, never a brand mark. The rule, from the display name (the
   // raw id when the catalog has none): split on spaces, "-", "_" and "."; keep only letters and
@@ -1561,28 +1569,51 @@
     const by = keySorts[state.keySort] || keySorts.name;
     const q = state.keySearch.trim().toLowerCase();
     const all = state.keys;
+    renderKeysProviderFilter();
     // One flat list in the chosen order; equal keys fall back to their names.
-    const keys = all.filter((k) => keyMatches(k, q)).sort((a, b) => by(a, b) || keySorts.name(a, b));
+    const keys = all.filter((k) => (!state.keyProviderFilter || k.provider === state.keyProviderFilter)
+      && keyMatches(k, q)).sort((a, b) => by(a, b) || keySorts.name(a, b));
     $("keys-sort").value = state.keySort;
-    $("keys-count").textContent = q ? `${keys.length} of ${plural(all.length, "key", "keys")}` : plural(all.length, "key", "keys");
+    const filtered = !!q || !!state.keyProviderFilter;
+    $("keys-count").textContent = filtered
+      ? `${keys.length} of ${plural(all.length, "key", "keys")}`
+      : plural(all.length, "key", "keys");
     syncOnboard();
     $("keys-list").hidden = keys.length === 0;
     $("keys-sort-label").hidden = all.length === 0;
+    $("keys-provider-label").hidden = all.length === 0;
     $("keys-search-box").hidden = all.length === 0 && !q;
     $("keys-empty").hidden = all.length > 0;
     $("keys-no-match").hidden = all.length === 0 || keys.length > 0;
-    if (all.length > 0 && keys.length === 0) $("keys-no-match").textContent = `No keys match “${state.keySearch.trim()}”.`;
+    if (all.length > 0 && keys.length === 0) {
+      $("keys-no-match").textContent = state.keyProviderFilter && !all.some((k) => k.provider === state.keyProviderFilter)
+        ? `No keys for ${providerName(state.keyProviderFilter)}.`
+        : `No keys match “${state.keySearch.trim()}”.`;
+    }
     if (!keys.some((k) => k.name === state.selected)) state.selected = keys[0] ? keys[0].name : null;
 
     // A background refresh replaces the rows; if a row had focus, it would fall to <body> and the
     // next arrow key would be spent refocusing instead of moving.
     const hadFocus = body.contains(document.activeElement) && document.activeElement.classList.contains("key-row");
+    if (keyMenuFor) closeKeyMenu({ restoreFocus: false });
     body.replaceChildren(...keys.map(keyRow).flat());
     if (state.eventsOpen) loadEvents(state.eventsOpen);
     if ((opts.focus || hadFocus) && state.selected) {
       const row = rowFor(state.selected);
       if (row) row.focus();
     }
+  }
+
+  function renderKeysProviderFilter() {
+    const select = $("keys-provider");
+    const ids = [...new Set(state.keys.map((k) => k.provider).filter(Boolean))]
+      .sort((a, b) => providerName(a).localeCompare(providerName(b)));
+    if (state.keyProviderFilter && !ids.includes(state.keyProviderFilter)) state.keyProviderFilter = "";
+    select.replaceChildren(
+      el("option", { value: "", text: "All providers" }),
+      ...ids.map((id) => el("option", { value: id, text: providerName(id) })),
+    );
+    select.value = state.keyProviderFilter;
   }
 
   // Name, provider and last use, as the design shows them, plus only what is true of this key:
@@ -1617,17 +1648,27 @@
       type: "button", class: "btn-copy", tabindex: tab, "data-act": "copy", "aria-label": "Copy " + k.name,
       title: "Copy to the clipboard after Touch ID; it is wiped after 20 s",
     }, svgIcon(COPY_ICON), el("span", { class: "btn-label", text: "Copy" }));
+    const more = el("button", {
+      type: "button", class: "btn-menu", tabindex: tab, "data-act": "menu",
+      "aria-haspopup": "menu", "aria-expanded": "false", "aria-controls": "key-menu",
+      "aria-label": "More actions for " + k.name, title: "More actions",
+    }, svgIcon(MORE_ICON));
     row.append(
       el("div", { class: "key-identity" },
         el("span", { class: ["key-avatar", providerTint(k.provider)].join(" "), "aria-hidden": "true", text: providerInitials(k.provider) }),
         names),
       el("span", { class: "key-used", text: k.last_used_at ? relTime(k.last_used_at) : "Never used", title: k.last_used_at || "Never copied, revealed or proxied" }),
-      el("div", { class: "key-actions" }, copy),
+      el("div", { class: "key-actions" }, copy, more),
     );
     if (state.eventsOpen === k.name) return [row, eventsRow(k)];
     return row;
   }
   const COPY_ICON = ["M15 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h4", { rect: { x: "8", y: "8", width: "12", height: "12", rx: "2.2" } }];
+  const MORE_ICON = [
+    { circle: { cx: "5", cy: "12", r: "1", fill: "currentColor" } },
+    { circle: { cx: "12", cy: "12", r: "1", fill: "currentColor" } },
+    { circle: { cx: "19", cy: "12", r: "1", fill: "currentColor" } },
+  ];
   function svgIcon(parts) {
     const svg = svgEl("svg", { class: "vicon", viewBox: "0 0 24 24", "aria-hidden": "true" });
     for (const p of parts) {
@@ -1653,6 +1694,11 @@
   function restoreKeysFocus(name, act) {
     if (state.pane !== "keys") return;
     const target = name || state.selected;
+    if (menuFocusReturn && menuFocusReturn.name === target
+        && (!act || menuFocusReturn.act === act)) {
+      const more = btnFor(target, "menu");
+      if (more) { more.focus(); return; }
+    }
     if (act) {
       const btn = btnFor(target, act);
       if (btn) { btn.focus(); return; }
@@ -1667,13 +1713,163 @@
   const ROW_ACT = { copy: copyKey, reveal: revealKey, edit: openEdit, gateway: toggleGateway, grant: openGrant, check: runCheck, history: toggleEvents, rotate: openRotate, delete: askDelete, chart: showKeyInChart };
   const PANE_KEYS = { e: "edit", g: "gateway", a: "grant", t: "check", h: "history", r: "rotate" };
   const LIST_KEYS = { ...PANE_KEYS, c: "copy", v: "reveal" };
+  const KEY_MENU_ITEMS = [
+    { act: "reveal", label: "Reveal key", shortcut: "V", icon: ["M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z", { circle: { cx: "12", cy: "12", r: "2.5" } }] },
+    { act: "edit", label: "Edit details", shortcut: "E", icon: ["m14 5 5 5M4 20l4.5-1 12-12a2 2 0 0 0-5-5l-12 12z"] },
+    null,
+    { act: "grant", label: "Access & grants", shortcut: "A", icon: ["M7 14a4 4 0 1 1 2.8-6.8L21 18.4l-2.6 2.6-2-2-2 1-2-2 1-2-2-2"] },
+    { act: "gateway", label: "", shortcut: "G", icon: ["M4 12a8 8 0 1 0 2.3-5.7", "M4 4v4h4"] },
+    { act: "history", label: "Activity", shortcut: "H", icon: [{ circle: { cx: "12", cy: "12", r: "8.5" } }, "M12 7v5l3 2"] },
+    { act: "check", label: "Check connection", shortcut: "T", icon: [{ circle: { cx: "12", cy: "12", r: "8.5" } }, "m8 12 3 3 5-6"] },
+    { act: "rotate", label: "Rotate key…", shortcut: "R", icon: ["M20 10a8 8 0 1 0-2 8", "M20 4v6h-6"] },
+    null,
+    { act: "delete", label: "Delete key…", icon: ["M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"], destructive: true },
+  ];
+
+  function menuItemDisabled(act, key) {
+    const provider = providerById(key.provider);
+    return ((act === "gateway" || act === "grant") && provider && provider.gateway === false)
+      || (act === "check" && !key.checkable);
+  }
+  function renderKeyMenu(key) {
+    $("key-menu").replaceChildren(...KEY_MENU_ITEMS.map((item) => {
+      if (!item) return el("div", { class: "key-menu-separator", role: "separator" });
+      const disabled = menuItemDisabled(item.act, key);
+      const label = item.act === "gateway"
+        ? (key.gateway_enabled ? "Turn off gateway" : "Turn on gateway…")
+        : item.label;
+      return el("button", {
+        type: "button", class: "key-menu-item" + (item.destructive ? " destructive" : ""),
+        role: "menuitem", tabindex: "-1", "data-act": item.act,
+        "aria-disabled": String(!!disabled),
+      },
+      svgIcon(item.icon),
+      el("span", { class: "key-menu-label", text: label }),
+      item.shortcut ? el("span", { class: "key-menu-shortcut", "aria-hidden": "true", text: item.shortcut }) : null);
+    }));
+  }
+  function positionKeyMenu() {
+    if (!keyMenuFor) return;
+    const button = btnFor(keyMenuFor, "menu");
+    const menu = $("key-menu");
+    if (!button || !button.isConnected || menu.hidden) {
+      closeKeyMenu({ restoreFocus: false });
+      return;
+    }
+    const anchor = button.getBoundingClientRect();
+    const box = menu.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.max(margin, Math.min(anchor.right - box.width, innerWidth - box.width - margin));
+    const below = anchor.bottom + 8;
+    const above = anchor.top - box.height - 8;
+    const top = below + box.height <= innerHeight - margin
+      ? below
+      : above >= margin
+        ? above
+        : Math.max(margin, Math.min(below, innerHeight - box.height - margin));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+  function closeKeyMenu({ restoreFocus = true } = {}) {
+    if (!keyMenuFor) return;
+    const name = keyMenuFor;
+    const button = btnFor(name, "menu");
+    const menu = $("key-menu");
+    keyMenuFor = null;
+    if (button) button.setAttribute("aria-expanded", "false");
+    menu.hidden = true;
+    menu.replaceChildren();
+    menu.removeAttribute("aria-label");
+    if (restoreFocus && button && button.isConnected) button.focus();
+  }
+  function openKeyMenu(name, button = btnFor(name, "menu")) {
+    if (!button || !button.isConnected) return;
+    if (keyMenuFor === name) { closeKeyMenu(); return; }
+    if (keyMenuFor) closeKeyMenu({ restoreFocus: false });
+    menuFocusReturn = null;
+    selectRow(name, false);
+    keyMenuFor = name;
+    const key = state.keys.find((entry) => entry.name === name);
+    if (!key) { keyMenuFor = null; return; }
+    const menu = $("key-menu");
+    renderKeyMenu(key);
+    menu.setAttribute("aria-label", "More actions for " + name);
+    button.setAttribute("aria-expanded", "true");
+    menu.hidden = false;
+    positionKeyMenu();
+    menu.querySelector('[role="menuitem"]:not([aria-disabled="true"])')?.focus();
+  }
+  function activateKeyMenuItem(button) {
+    if (!keyMenuFor || button.getAttribute("aria-disabled") === "true") return;
+    const name = keyMenuFor, act = button.dataset.act;
+    if (!ROW_ACT[act]) return;
+    if (state.busy && ["reveal", "gateway", "check"].includes(act)) return;
+    menuFocusReturn = { name, act };
+    closeKeyMenu({ restoreFocus: false });
+    ROW_ACT[act](name);
+    if (act === "grant" && !$("dlg-grant").open && !$("dlg-host").open) {
+      menuFocusReturn = null;
+      restoreKeysFocus(name, "menu");
+    }
+  }
+
+  $("key-menu").addEventListener("click", (e) => {
+    const item = e.target.closest('[role="menuitem"]');
+    if (!item) return;
+    e.preventDefault();
+    e.stopPropagation();
+    activateKeyMenuItem(item);
+  });
+  $("key-menu").addEventListener("keydown", (e) => {
+    const menu = $("key-menu");
+    const enabled = [...menu.querySelectorAll('[role="menuitem"]:not([aria-disabled="true"])')];
+    const current = enabled.indexOf(document.activeElement);
+    let next = -1;
+    if (e.key === "ArrowDown") next = (current + 1 + enabled.length) % enabled.length;
+    else if (e.key === "ArrowUp") next = (current - 1 + enabled.length) % enabled.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = enabled.length - 1;
+    if (next >= 0 && enabled.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      enabled[next].focus();
+      return;
+    }
+    if (e.key === "Escape" || e.key === "Tab") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeKeyMenu();
+      return;
+    }
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const act = LIST_KEYS[e.key.toLowerCase()];
+      const item = act && menu.querySelector(`[role="menuitem"][data-act="${act}"]`);
+      if (item) {
+        e.preventDefault();
+        e.stopPropagation();
+        activateKeyMenuItem(item);
+        return;
+      }
+    }
+    e.stopPropagation();
+  });
+  document.addEventListener("click", (e) => {
+    if (!keyMenuFor) return;
+    const button = btnFor(keyMenuFor, "menu");
+    if ($("key-menu").contains(e.target) || button?.contains(e.target)) return;
+    closeKeyMenu();
+  });
+  window.addEventListener("resize", positionKeyMenu);
+  window.addEventListener("scroll", positionKeyMenu, true);
 
   $("keys-body").addEventListener("click", (e) => {
     const row = e.target.closest(".key-row");
     if (!row) return;
     selectRow(row.dataset.name, false);
     const btn = e.target.closest("[data-act]");
-    if (btn) ROW_ACT[btn.dataset.act]?.(row.dataset.name);
+    if (btn?.dataset.act !== "menu") menuFocusReturn = null;
+    if (btn?.dataset.act === "menu") openKeyMenu(row.dataset.name, btn);
+    else if (btn) ROW_ACT[btn.dataset.act]?.(row.dataset.name);
   });
 
   // Kept apart from the document listener on purpose: its modifier, dialog and typing guards do
@@ -1682,6 +1878,13 @@
     const row = e.target.closest(".key-row");
     if (!row) return;
     const onButton = e.target.closest("[data-act]");
+    if ((e.key === "ContextMenu" || e.key === "Menu" || (e.key === "F10" && e.shiftKey))
+        && (onButton?.dataset.act === "menu" || !onButton)) {
+      e.preventDefault();
+      e.stopPropagation();
+      openKeyMenu(row.dataset.name, btnFor(row.dataset.name, "menu"));
+      return;
+    }
     const rows = keyRows();
     const j = listStep(e.key, rows.indexOf(row), rows.length);
     if (j >= 0) { e.preventDefault(); selectRow(rows[j].dataset.name, true); return; }
@@ -1695,6 +1898,7 @@
     }
     if (!act) return;
     e.preventDefault();
+    menuFocusReturn = null;
     // History redraws the list synchronously, which detaches e.target; the document listener
     // would then no longer see it inside #keys-body and run the same letter a second time.
     e.stopPropagation();
@@ -1762,6 +1966,7 @@
     } catch (e) {
       setBtn(btn, "Reveal");
       say(e.message);
+      if (menuFocusReturn?.name === name && menuFocusReturn.act === "reveal") restoreKeysFocus(name, "menu");
     } finally {
       state.busy = false;
     }
@@ -1819,6 +2024,7 @@
       setBtn(btn, "Delete", false);
     }
   });
+  restoreOnClose("delete");
 
   // ---------- providers (grouped picker fed by /api/providers) ----------
 
@@ -2336,6 +2542,7 @@
     } catch (e) {
       setBtn(btn, on ? "Gateway on" : "Gateway");
       say(e.message);
+      if (menuFocusReturn?.name === name && menuFocusReturn.act === "gateway") restoreKeysFocus(name, "menu");
     } finally {
       state.busy = false;
     }
@@ -2576,6 +2783,7 @@
       loadKeys({ quiet: true });
     } catch (e) {
       if (dlg.open) $("check-err").textContent = e.message; else say(e.message);
+      if (!dlg.open && menuFocusReturn?.name === name && menuFocusReturn.act === "check") restoreKeysFocus(name, "menu");
     } finally {
       setBtn(btn, "Check");
       state.busy = false;
@@ -2833,7 +3041,12 @@
       if (e.key === "n") { e.preventDefault(); openAdd(); return; }
       if (e.key === "/" && !$("keys-search-box").hidden) { e.preventDefault(); $("keys-search").focus(); return; }
       const act = PANE_KEYS[e.key];
-      if (act && state.selected && !e.target.closest("#keys-body")) { e.preventDefault(); ROW_ACT[act](state.selected); return; }
+      if (act && state.selected && !e.target.closest("#keys-body")) {
+        e.preventDefault();
+        menuFocusReturn = null;
+        ROW_ACT[act](state.selected);
+        return;
+      }
       const inList = e.target.closest && e.target.closest("#keys-body");
       if (!inList && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "j" || e.key === "k")) {
         const tr = rowFor(state.selected);
