@@ -1085,6 +1085,15 @@ html[data-theme="light"] .tint-6 { --tint: var(--s-deepseek-3); }
 .dlg input::placeholder { color: var(--ink-3); }
 .dlg input:user-invalid { border-color: var(--red); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* The Add dialog's optional fields sit behind a native disclosure, built like the Agents
+   dialog's cards: a bordered rounded card, hover fill on the summary, a hairline under the
+   open header. The labels inside already carry their own bottom margin, so the row2 only
+   pads its top and sides. */
+.dlg .advanced { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; }
+.dlg .advanced summary { cursor: pointer; padding: 6px 10px; font-size: 12px; font-weight: 500; color: var(--ink-2); user-select: none; }
+.dlg .advanced summary:hover { background: var(--bg-3); }
+.dlg .advanced[open] summary { border-bottom: 1px solid var(--line); }
+.dlg .advanced .row2 { padding: 10px 10px 0; }
 .hint { font-size: 12px; color: var(--ink-3); margin-bottom: 12px; }
 .err { font-size: 12px; color: var(--red); margin-bottom: 10px; }
 .err:empty { display: none; }

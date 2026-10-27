@@ -2378,7 +2378,10 @@
 
   // ---------- add / edit ----------
 
-  function openAdd() { openKeyDialog("add", null, "name"); }
+  // form.reset() refreshes the fields on every open but never touches the Advanced
+  // disclosure, so openAdd collapses it here: a section left open from a previous dialog
+  // would pass last time's kind and notes off as this one's.
+  function openAdd() { openKeyDialog("add", null, "name", () => $("add-advanced").removeAttribute("open")); }
   $("btn-add").addEventListener("click", openAdd);
   $("add-form").elements.secret.addEventListener("input", (e) => {
     const form = $("add-form");

@@ -315,6 +315,14 @@ function handle(method, pathname, body, params) {
 
   if (pathname === "/api/keys" && method === "GET") return [200, { keys }];
   if (pathname === "/api/keys" && method === "POST") {
+    // Mirror the real server's KeyName.validate, which checks the 128-char cap before the
+    // pattern, so each refusal answers the exact wire string the real backend does. The
+    // client pattern has no length cap, so a long lowercase name passes the browser and
+    // only the server can refuse it.
+    if (body.name.length > 128) return [400, { error: "name too long" }];
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(body.name)) {
+      return [400, { error: `invalid name ${body.name} (expected [a-z0-9][a-z0-9._-]*)` }];
+    }
     if (keys.some((k) => k.name === body.name)) return [409, { error: "already_exists" }];
     fixtureSecrets.set(body.name, body.secret);
     keys.push({ name: body.name, provider: body.provider, kind: body.kind, notes: body.notes,
@@ -1468,25 +1476,95 @@ test("a copy whose row disappears before the deferred reload does not throw", as
 
 // ---------- CRUD ----------
 
+// The Add dialog's inputs carry no id, so activeElement is compared against the field node
+// itself: validation must focus exactly the offending control, not merely show the message.
+const addFocus = (page, field) =>
+  page.evaluate((f) => document.activeElement === document.getElementById("add-form").elements[f], field);
+
 test("add validates locally before it sends anything", async (page, origin) => {
   await openKeys(page, origin);
   await page.locator("#btn-add").click();
   await waitDialog(page, "dlg-add", true);
   const sent = requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length;
 
+  // VAL-REQ-001/002/003: each missing field is named and focused, and nothing leaves the page.
   await page.locator("#add-form [type=submit]").click();
   assert.match(await page.locator("#add-err").textContent(), /^Name:/);
+  assert.equal(await addFocus(page, "name"), true, "an empty name must focus the name field");
 
   await page.locator("#add-form [name=name]").fill("delta");
   await page.locator("#add-form [type=submit]").click();
   assert.equal(await page.locator("#add-err").textContent(), "Provider is required.");
+  assert.equal(await addFocus(page, "provider"), true, "a missing provider must focus the provider field");
 
   await page.locator("#add-form [name=provider]").fill("openai");
   await page.locator("#add-form [type=submit]").click();
   assert.equal(await page.locator("#add-err").textContent(), "Secret is required.");
+  assert.equal(await addFocus(page, "secret"), true, "a missing secret must focus the secret field");
 
   assert.equal(requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length, sent,
     "no request may leave until the form is valid");
+});
+
+// VAL-INVAL-001: the name pattern is enforced in the browser for every shape the server would
+// refuse, so none of them can reach the wire.
+test("add refuses pattern-violating names locally and sends nothing", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  const sent = () => requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length;
+  const before = sent();
+  for (const bad of ["UPPER", "spa ce", "-lead", ".dot", "café"]) {
+    await page.locator("#add-form [name=name]").fill(bad);
+    await page.locator("#add-form [type=submit]").click();
+    assert.match(await page.locator("#add-err").textContent(), /^Name:/, `"${bad}" must show the name error`);
+    assert.equal(await addFocus(page, "name"), true, `"${bad}" must focus the name field`);
+    assert.equal(sent(), before, `"${bad}" must not reach the server`);
+  }
+});
+
+// VAL-INVAL-002: a provider of only spaces trims to nothing, so it is refused like an empty one.
+test("add refuses a whitespace-only provider locally", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("   ");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  const before = requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length;
+  await page.locator("#add-form [type=submit]").click();
+  assert.equal(await page.locator("#add-err").textContent(), "Provider is required.");
+  assert.equal(await addFocus(page, "provider"), true, "a blank provider must focus the provider field");
+  assert.equal(requests.filter((r) => r.method === "POST" && r.pathname === "/api/keys").length, before,
+    "a blank provider must not reach the server");
+});
+
+// VAL-INVAL-003: a 129-character lowercase name passes the client pattern (no length cap), so
+// only the server's KeyName rule refuses it. KeyName.validate checks the cap before the
+// pattern, so the real backend answers "name too long" — and the fixture mirrors that exact
+// string, keeping "invalid name …" for pattern violations alone.
+test("add keeps the dialog open with the server's message when the name is too long", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  const longName = "a".repeat(129);
+  await page.locator("#add-form [name=name]").fill(longName);
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.equal(await page.locator("#add-err").textContent(), "name too long",
+    "the server's length-cap message must be shown verbatim");
+  assert.equal(await page.locator("#dlg-add").evaluate((d) => d.open), true, "the dialog stays open");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), longName, "the name is preserved");
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "openai", "the provider is preserved");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue().then((v) => v.length > 0), true,
+    "the typed secret is preserved for retry");
+  assert.equal(await page.locator("#add-form [type=submit]").textContent(), "Add key");
+  assert.equal(await page.locator("#add-form [type=submit]").isDisabled(), false, "the retry must be possible");
+  assert.deepEqual(await rowNames(page), ["alpha", "bravo", "charlie"], "nothing was created");
 });
 
 test("add creates the key, carries the launch token and selects the new row", async (page, origin) => {
@@ -1530,6 +1608,450 @@ test("the add dialog never leaves a typed secret in the DOM after it closes", as
   await waitDialog(page, "dlg-add", false);
   await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
   assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "");
+});
+
+// The sentinel for the secret-safety tests below: invented, never a real credential, held
+// in one named constant and only ever asserted against negatively — it is never printed or
+// written into an assertion message.
+const SAFETY_SECRET = "sk-add-safety-NEVER-REAL-0000000000";
+// A full-document scan for the sentinel: negative only, and the message never embeds it.
+const safetyFree = (page, step) =>
+  page.evaluate(() => document.documentElement.innerHTML)
+    .then((html) => assert.doesNotMatch(html, new RegExp(SAFETY_SECRET), step));
+
+// VAL-SECRET-001: a saved key's secret must not linger anywhere in the document once the
+// dialog has closed — not in the rendered row, not in the closed dialog's markup — and the
+// secret input itself must come back blank for the next key.
+test("add leaves no trace of the typed secret in the dom after it saves", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SAFETY_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "",
+    "the secret input must come back blank");
+  await safetyFree(page, "no secret in DOM after save");
+});
+
+// VAL-SECRET-002: nothing the add flow sends back may carry the typed secret. The responses
+// are read off the wire (the POST's own body and the listing the page refetches), and the
+// audit endpoint the History drawer reads is fetched from the page over the fixture's
+// invented add row, which mirrors the shape the real engine audits for a created key.
+test("no add-flow response echoes the typed secret", async (page, origin) => {
+  keyEvents = [{ ts: "2026-10-27T12:00:00Z", action: "add", caller: "add", detail: null }];
+  await openKeys(page, origin);
+  const addResponses = [];
+  const listings = [];
+  page.on("response", (r) => {
+    if (new URL(r.url()).pathname !== "/api/keys") return;
+    if (r.request().method() === "POST") addResponses.push(r);
+    if (r.request().method() === "GET") listings.push(r);
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SAFETY_SECRET);
+  const listingsBefore = listings.length;
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  assert.equal(addResponses.length, 1, "exactly one add POST was answered");
+  assert.equal((await addResponses[0].text()).includes(SAFETY_SECRET), false,
+    "the add response must not echo the typed secret");
+  assert.ok(listings.length > listingsBefore, "the page refetched the listing after the add");
+  assert.equal((await listings[listings.length - 1].text()).includes(SAFETY_SECRET), false,
+    "the listing must not echo the typed secret");
+  const eventsText = await page.evaluate(async () => (await fetch("/api/keys/delta/events")).text());
+  assert.equal(JSON.parse(eventsText).events.length, 1, "the fixture's audit row for the add is served");
+  assert.equal(eventsText.includes(SAFETY_SECRET), false, "the audit endpoint must not echo the typed secret");
+});
+
+// VAL-SECRET-003: a refused submit is a retry, not a dead end. While the dialog stays open
+// every typed value survives (the secret included, so the user does not retype it), and the
+// close that abandons the retry wipes the secret like every other close path.
+test("a duplicate 409 keeps every typed value for the retry and wipes the secret when the dialog closes", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=name]").fill("alpha");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SAFETY_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.equal(await dialogOpen(page, "dlg-add"), true, "the dialog stays open for the retry");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), "alpha", "the name is preserved");
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "openai", "the provider is preserved");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue().then((v) => v.length > 0), true,
+    "the typed secret is preserved while the dialog stays open");
+  assert.equal(await page.locator("#add-form [type=submit]").isDisabled(), false, "the retry must be possible");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue(), "",
+    "closing after the refusal wipes the secret");
+  await safetyFree(page, "no trace of the abandoned secret may stay in the dom");
+});
+
+// VAL-SECRET-003: the wipe is the property of every close path, not just Cancel. Escape
+// counts twice — plain, and with the provider list open where the first Escape must close
+// only the list (the secret surviving until the dialog itself closes) — and so does the
+// backdrop click outside the card.
+test("cancel, escape and the backdrop each wipe the typed secret when they close the add dialog", async (page, origin) => {
+  await openKeys(page, origin);
+  const secretInput = page.locator("#add-form [name=secret]");
+  const typedAndWiped = async (close, step) => {
+    await page.locator("#btn-add").click();
+    await waitDialog(page, "dlg-add", true);
+    await secretInput.fill(SAFETY_SECRET);
+    await close();
+    await waitDialog(page, "dlg-add", false);
+    await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+    assert.equal(await secretInput.inputValue(), "", `${step} must wipe the secret input`);
+    await safetyFree(page, `no trace of the typed secret may stay in the dom after ${step}`);
+  };
+  await typedAndWiped(() => page.locator("#dlg-add [data-close]").click(), "cancel");
+  await typedAndWiped(() => page.keyboard.press("Escape"), "escape");
+
+  // Escape with the picker list open: the first Escape closes only the list, so the typed
+  // secret must still be there for the retry; the second closes the dialog and wipes it.
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await secretInput.fill(SAFETY_SECRET);
+  await page.locator("#add-form [name=provider]").click();
+  await page.locator("#add-form .pick-list:visible").waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(await dialogOpen(page, "dlg-add"), true, "the first escape closes only the picker list");
+  assert.equal(await page.locator("#add-form .pick-list").isHidden(), true, "the picker list is closed");
+  assert.equal(await secretInput.inputValue().then((v) => v.length > 0), true,
+    "the secret survives while the dialog stays open");
+  await page.keyboard.press("Escape");
+  await waitDialog(page, "dlg-add", false);
+  await page.waitForFunction(() => document.getElementById("add-form").elements.secret.value === "");
+  assert.equal(await secretInput.inputValue(), "", "the second escape wipes the secret input");
+  await safetyFree(page, "no trace of the typed secret may stay in the dom after the picker escape");
+
+  await typedAndWiped(() => page.mouse.click(8, 8), "a backdrop click");
+});
+
+// Invented sentinels for the provider tests below, in the suite's NEVER-REAL style. The
+// sk-ant- and gsk_ shapes carry the real vendors' unique key_prefixes, which is the point
+// of the guess test; none of these is a real credential.
+const ADD_SECRET = "sk-add-NEVER-REAL-0000000000";
+const ANT_SECRET = "sk-ant-add-NEVER-REAL-0000000000";
+const PLAIN_SECRET = "plain-add-NEVER-REAL-0000000000";
+const GROQ_SECRET = "gsk_add-NEVER-REAL-0000000000";
+
+// VAL-PROV-001: a provider the user added lives in the catalog overlay under "Yours"; it
+// must be offered like a built-in and the row it produces must carry its display name.
+test("add offers a custom provider under yours and names the row with its display name", async (page, origin) => {
+  customProviders = [{
+    id: "fixture-labs", name: "Fixture Labs", group: "yours", gateway: true,
+    host: "api.fixture-labs.test", api: "openai", auth_header: "Authorization", auth_prefix: "Bearer ",
+    path_prefix: "", key_prefix: "fxl-live-", note: "Synthetic overlay provider invented for this suite.",
+  }];
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=provider]").click();
+  // The listId prefix is always three dash-separated parts (name-pick-xxxxx), so the
+  // provider id itself is everything after that.
+  const offered = await page.locator("#add-form .pick-list .pick-item")
+    .evaluateAll((nodes) => nodes.map((n) => n.id.split("-").slice(3).join("-")));
+  assert.ok(offered.includes("fixture-labs"), "a provider from the overlay is offered for new keys");
+  assert.equal(await page.locator("#add-form .pick-list .pick-group").first().textContent(), "Yours",
+    "the user's own group is offered first");
+  await page.locator("#add-form .pick-list .pick-item").filter({ hasText: "Fixture Labs" }).click();
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "fixture-labs",
+    "picking the item writes the id into the field");
+  await page.locator("#add-form [name=name]").fill("zulu");
+  await page.locator("#add-form [name=secret]").fill(ADD_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="zulu"]').waitFor();
+  assert.equal(await rowCell(page, "zulu", "provider").textContent(), "Fixture Labs",
+    "the row shows the catalog's display name, not the raw id");
+  assert.equal(JSON.parse(bodies[0]).provider, "fixture-labs", "the picked id is what rides the POST");
+});
+
+// VAL-PROV-002: a vendor that is not in the catalog is free text. The picker must say the
+// typed id will be kept, the add must go through, and the row must fall back to the raw id.
+test("add accepts an unknown provider typed by hand and shows the raw id", async (page, origin) => {
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-form [name=provider]").fill("vendor-zzz");
+  assert.equal(await page.locator("#add-form .pick-list .pick-none").textContent(),
+    'No match. "vendor-zzz" will be saved as typed.',
+    "the picker must promise the typed id is kept as-is");
+  await page.locator("#add-form [name=name]").fill("yankee");
+  await page.locator("#add-form [name=secret]").fill(ADD_SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="yankee"]').waitFor();
+  assert.equal(await rowCell(page, "yankee", "provider").textContent(), "vendor-zzz",
+    "an unknown id has no display name, so the row shows the raw id");
+  assert.equal(JSON.parse(bodies[0]).provider, "vendor-zzz", "the typed id rides the POST untouched");
+});
+
+// VAL-PROV-004: the secret-prefix guess had no coverage anywhere. A unique key_prefix
+// pre-fills an empty provider field (and clears again when the prefix stops matching), a
+// provider typed by hand is never overwritten, a hidden provider is never guessed, and the
+// guessed id is what the POST carries.
+test("the add dialog guesses the provider from the secret but never over a typed or hidden one", async (page, origin) => {
+  // Groq's gsk_ prefix is unique and four characters, so it would match if the hidden rule broke.
+  hiddenUsers.add("groq");
+  await openKeys(page, origin);
+  await settleKeys(page);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  const providerValue = () => page.evaluate(() => document.getElementById("add-form").elements.provider.value);
+  const guessed = () => page.evaluate(() => document.getElementById("add-form").elements.provider.dataset.guessed || "");
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+
+  await page.locator("#add-form [name=secret]").fill(ANT_SECRET);
+  assert.equal(await providerValue(), "anthropic", "the unique prefix pre-fills an empty provider");
+  assert.equal(await guessed(), "1", "the filled provider is marked guessed so later typing can replace it");
+
+  await page.locator("#add-form [name=secret]").fill(PLAIN_SECRET);
+  assert.equal(await providerValue(), "", "the guess clears when the prefix stops matching");
+  assert.equal(await guessed(), "");
+
+  await page.locator("#add-form [name=provider]").fill("openrouter");
+  await page.locator("#add-form [name=secret]").fill(ANT_SECRET);
+  assert.equal(await providerValue(), "openrouter", "a provider typed by hand is never overwritten");
+  assert.equal(await guessed(), "");
+
+  await page.locator("#add-form [name=provider]").fill("");
+  await page.locator("#add-form [name=secret]").fill(GROQ_SECRET);
+  assert.equal(await providerValue(), "", "a hidden provider's prefix never fills the field");
+
+  await page.locator("#add-form [name=secret]").fill(ANT_SECRET);
+  await page.locator("#add-form [name=name]").fill("echo");
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  await page.locator('#keys-body .key-row[data-name="echo"]').waitFor();
+  assert.equal(await rowCell(page, "echo", "provider").textContent(), "Anthropic",
+    "the row resolves the guessed provider's display name");
+  assert.equal(JSON.parse(bodies[0]).provider, "anthropic", "the guessed id is what gets saved");
+});
+
+// The Add dialog keeps the three required fields up front; Kind and Notes live behind the
+// Advanced disclosure (VAL-ADD-001/002). A collapsed <details> renders no boxes, so its
+// inputs are neither visible nor focusable until the summary is activated.
+test("the add dialog keeps the essential fields up front and hides kind and notes until advanced opens", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  for (const sel of ["[name=name]", "[name=provider]", "[name=secret]"]) {
+    assert.equal(await page.locator(`#add-form ${sel}`).isVisible(), true, `${sel} is visible without expansion`);
+  }
+  assert.equal(await page.locator("#dlg-add .hint").textContent(), "Stored in the macOS Keychain. It never appears in the list.");
+  assert.equal(await page.locator("#add-advanced").isVisible(), true, "the disclosure itself is up front");
+  assert.equal(await page.locator("#add-advanced summary").textContent(), "Advanced");
+  assert.equal(await page.locator("#add-form [name=kind]").isVisible(), false, "kind hides while collapsed");
+  assert.equal(await page.locator("#add-form [name=notes]").isVisible(), false, "notes hide while collapsed");
+
+  await page.locator("#add-advanced summary").click();
+  assert.equal(await page.locator("#add-form [name=kind]").isVisible(), true, "expanding reveals kind");
+  assert.equal(await page.locator("#add-form [name=notes]").isVisible(), true, "expanding reveals notes");
+  assert.deepEqual(await page.locator("#add-form [name=kind] option").evaluateAll((os) => os.map((o) => o.value)),
+    ["runtime", "billing"], "kind offers runtime first, then billing");
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "runtime", "runtime stays the default");
+});
+
+// VAL-ADD-002: native <details> semantics give the keyboard and the expanded state for
+// free — the test only has to prove they are actually wired to the summary.
+test("the add dialog's advanced section starts collapsed and toggles by click, enter and space", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  const advanced = page.locator("#add-advanced");
+  assert.equal(await advanced.evaluate((d) => d.open), false, "advanced starts collapsed");
+  // A collapsed field cannot take focus, so a stray Tab or programmatic focus never
+  // lands inside the hidden row.
+  assert.equal(await page.evaluate(() => {
+    document.getElementById("add-form").elements.notes.focus();
+    return document.activeElement === document.getElementById("add-form").elements.notes;
+  }), false, "a collapsed field is not focusable");
+
+  await page.locator("#add-advanced summary").focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await advanced.evaluate((d) => d.open), true, "enter expands");
+  assert.equal(await page.locator("#add-form [name=notes]").isVisible(), true);
+  await page.keyboard.press("Enter");
+  assert.equal(await advanced.evaluate((d) => d.open), false, "enter collapses again");
+  await page.keyboard.press("Space");
+  assert.equal(await advanced.evaluate((d) => d.open), true, "space expands");
+  await page.keyboard.press("Space");
+  assert.equal(await advanced.evaluate((d) => d.open), false, "space collapses again");
+  await page.locator("#add-advanced summary").click();
+  assert.equal(await advanced.evaluate((d) => d.open), true, "a click expands");
+  await page.locator("#add-advanced summary").click();
+  assert.equal(await advanced.evaluate((d) => d.open), false, "a click collapses");
+});
+
+// VAL-ADD-003: every open starts fresh. form.reset() restores the fields but not the
+// disclosure, so openAdd must close Advanced itself — even after an expanded cancel or a
+// failed submit left it open with stale values.
+test("the add dialog's advanced section and its fields reset on every open", async (page, origin) => {
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-advanced summary").click();
+  await page.locator("#add-form [name=kind]").selectOption("billing");
+  await page.locator("#add-form [name=notes]").fill("stale note");
+  await page.locator("#add-form [name=name]").fill("alpha");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  assert.equal(await page.locator("#add-advanced").evaluate((d) => d.open), false, "advanced re-collapses after expand-and-cancel");
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "runtime", "kind resets to runtime");
+  assert.equal(await page.locator("#add-form [name=notes]").inputValue(), "", "notes reset to empty");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), "", "name resets too");
+  assert.equal(await page.locator("#add-err").textContent(), "", "no stale error");
+
+  // A 409 keeps the dialog open with values preserved; the next open must still be fresh.
+  await page.locator("#add-form [name=name]").fill("alpha");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-advanced summary").click();
+  await page.locator("#add-form [name=kind]").selectOption("billing");
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.equal(await page.locator("#dlg-add").evaluate((d) => d.open), true);
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "billing", "the failed submit preserves the typed values");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  assert.equal(await page.locator("#add-advanced").evaluate((d) => d.open), false, "advanced re-collapses after an error cycle");
+  assert.equal(await page.locator("#add-form [name=kind]").inputValue(), "runtime");
+  assert.equal(await page.locator("#add-form [name=notes]").inputValue(), "");
+  assert.equal(await page.locator("#add-err").textContent(), "", "the error dies with the close");
+});
+
+// VAL-ADD-004: a collapsed disclosure must not change the wire contract — the hidden
+// fields still submit, with their untouched defaults. The fixture's request log keeps
+// no bodies, so the POST is captured in the page.
+test("a collapsed advanced section still submits kind runtime and empty notes", async (page, origin) => {
+  await openKeys(page, origin);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  assert.equal(await page.locator("#add-advanced").evaluate((d) => d.open), false);
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  assert.equal(bodies.length, 1, "exactly one add POST left the page");
+  const body = JSON.parse(bodies[0]);
+  assert.deepEqual([body.name, body.provider, body.kind, body.notes], ["delta", "openai", "runtime", ""],
+    "the collapsed defaults submit exactly as the visible fields did before the restructure");
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  assert.equal(await status(page), "Added delta.");
+});
+
+// VAL-CROSS-003: the Advanced fields are not decoration — kind and notes travel in the POST
+// and come back on the new row (and, on reopening Edit, still hold).
+test("add submits the advanced kind and notes and renders them on the new row", async (page, origin) => {
+  await openKeys(page, origin);
+  const bodies = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && new URL(r.url()).pathname === "/api/keys") bodies.push(r.postData());
+  });
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-advanced summary").click();
+  await page.locator("#add-form [name=name]").fill("delta");
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=kind]").selectOption("billing");
+  await page.locator("#add-form [name=notes]").fill("monthly invoice");
+  await page.locator("#add-form [name=secret]").fill(SECRET);
+  await page.locator("#add-form [type=submit]").click();
+  await waitDialog(page, "dlg-add", false);
+  assert.equal(bodies.length, 1, "exactly one add POST left the page");
+  const body = JSON.parse(bodies[0]);
+  assert.deepEqual([body.name, body.provider, body.kind, body.notes], ["delta", "openai", "billing", "monthly invoice"],
+    "the advanced values must ride the POST body");
+  await page.locator('#keys-body .key-row[data-name="delta"]').waitFor();
+  assert.equal(await rowCell(page, "delta", "notes").textContent(), "monthly invoice", "the row shows the notes");
+  assert.equal(await status(page), "Added delta.");
+
+  // Reopening Edit on the new row shows both stored values.
+  await rowAct(page, "delta", "edit");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#edit-form [name=kind]").inputValue(), "billing");
+  assert.equal(await page.locator("#edit-form [name=notes]").inputValue(), "monthly invoice");
+});
+
+// VAL-ADD-005: the dialog stays inside its card and the viewport at 390 px with the
+// disclosure expanded — the row must not spill and the actions must stay reachable.
+test("the add dialog keeps its expanded advanced row inside the card at 390 px", async (page, origin) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openKeys(page, origin);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  await page.locator("#add-advanced summary").click();
+  const g = await page.evaluate(() => {
+    const r = (n) => n.getBoundingClientRect();
+    const form = document.getElementById("add-form");
+    return {
+      vw: innerWidth, vh: innerHeight,
+      dlg: r(document.getElementById("dlg-add")),
+      kind: r(form.elements.kind),
+      notes: r(form.elements.notes),
+      cancel: r(document.querySelector("#dlg-add [data-close]")),
+      submit: r(document.querySelector("#dlg-add [type=submit]")),
+      spill: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    };
+  });
+  const insideCard = (a) => a.left >= g.dlg.left - 0.5 && a.right <= g.dlg.right + 0.5 && a.top >= g.dlg.top - 0.5 && a.bottom <= g.dlg.bottom + 0.5;
+  assert.equal(insideCard(g.kind), true, "kind stays inside the dialog card");
+  assert.equal(insideCard(g.notes), true, "notes stay inside the dialog card");
+  assert.ok(g.kind.width > 0 && g.notes.width > 0 && g.notes.left - g.kind.right >= 8, "the row2 keeps its two columns");
+  assert.ok(g.kind.left >= 0 && g.notes.right <= g.vw, "the row fits the viewport");
+  assert.ok(g.cancel.top >= 0 && g.cancel.bottom <= g.vh, "Cancel is reachable");
+  assert.ok(g.submit.top >= 0 && g.submit.bottom <= g.vh, "Add key is reachable");
+  assert.equal(g.spill, 0, "the page gains no horizontal scroll");
+});
+
+// VAL-CROSS-004: the restructure touched only the Add dialog — Edit keeps its Kind and
+// Notes flat, with no disclosure to open.
+test("the edit dialog still shows kind and notes without an advanced section", async (page, origin) => {
+  await openKeys(page, origin);
+  await rowAct(page, "alpha", "edit");
+  await waitDialog(page, "dlg-edit", true);
+  assert.equal(await page.locator("#dlg-edit details").count(), 0, "edit has no disclosure");
+  assert.equal(await page.locator("#edit-form [name=kind]").isVisible(), true, "kind shows directly");
+  assert.equal(await page.locator("#edit-form [name=notes]").isVisible(), true, "notes show directly");
+  assert.equal(await page.locator("#edit-form [name=kind]").inputValue(), "runtime", "alpha is a runtime key");
+  assert.equal(await page.locator("#edit-form [name=notes]").inputValue(), "first fixture key");
 });
 
 test("edit sends only changed fields and reports a server refusal in the dialog", async (page, origin) => {

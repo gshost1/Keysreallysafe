@@ -270,10 +270,20 @@ test("the API keys scope charts the real gateway ledger and keeps an unpriced co
 
 test("the add dialog creates a real key through POST /api/keys", async (page) => {
   await openKeys(page);
+  // VAL-SECRET-002: nothing the add flow sends back may carry the typed secret. The POST's
+  // own response body is captured off the wire, the listing is re-requested after the add,
+  // and the audit rows the key's History reads are fetched below — each scanned negatively.
+  const addResponses = [];
+  page.on("response", (r) => {
+    if (r.request().method() === "POST" && new URL(r.url()).pathname === "/api/keys") addResponses.push(r);
+  });
   await page.locator("#btn-add").click();
   await waitDialog(page, "dlg-add", true);
   await page.locator("#add-form [name=name]").fill(NEW_KEY);
   await page.locator("#add-form [name=provider]").fill("openai");
+  // Notes sits behind the Advanced disclosure now, and fill() cannot reach a collapsed
+  // <details>'s input, so the section is opened before the notes are typed.
+  await page.locator("#add-advanced summary").click();
   await page.locator("#add-form [name=notes]").fill("created by the contract harness");
   await page.locator("#add-form [name=secret]").fill(DELTA_SECRET);
   await page.locator("#add-form [type=submit]").click();
@@ -281,6 +291,11 @@ test("the add dialog creates a real key through POST /api/keys", async (page) =>
   await page.locator(`#keys-body .key-row[data-name="${NEW_KEY}"]`).waitFor();
   assert.equal(await status(page), `Added ${NEW_KEY}.`);
   assert.equal(await page.locator("#keys-count").textContent(), `${SEEDED.length + 1} keys`);
+
+  assert.equal(addResponses.length, 1, "exactly one add POST was answered");
+  assert.equal(addResponses[0].status(), 201, "the real add route answers 201 created");
+  assert.equal((await addResponses[0].text()).includes(DELTA_SECRET), false,
+    "the add response must not echo the typed secret");
 
   const listed = await get(page, "/api/keys");
   const row = listed.data.keys.find((k) => k.name === NEW_KEY);
@@ -290,6 +305,13 @@ test("the add dialog creates a real key through POST /api/keys", async (page) =>
   assert.equal(row.notes, "created by the contract harness");
   assert.equal(row.version, 1);
   assert.equal(JSON.stringify(listed.data).includes(DELTA_SECRET), false, "the typed secret must not come back");
+
+  // The audit rows this key's History drawer reads: the add is in there, the secret is not.
+  const events = await get(page, `/api/keys/${NEW_KEY}/events?limit=50`);
+  assert.equal(events.status, 200);
+  assert.ok(events.data.events.some((e) => e.action === "add"), "the real backend audited the add");
+  assert.equal(JSON.stringify(events.data).includes(DELTA_SECRET), false,
+    "the audit endpoint must not echo the typed secret");
 });
 
 test("a duplicate name surfaces the real 409 already_exists", async (page) => {
@@ -308,6 +330,34 @@ test("a duplicate name surfaces the real 409 already_exists", async (page) => {
   // The refusal changed nothing in the real vault.
   const listed = await get(page, "/api/keys");
   assert.equal(listed.data.keys.filter((k) => k.name === "contract-alpha").length, 1);
+});
+
+// VAL-INVAL-003: a name the client pattern accepts can still be refused by the server. The real
+// KeyName rule caps the name at 128 characters, so the dashboard must keep the dialog open with
+// the server's message and the typed values so the user can shorten the name and retry.
+test("an over-long name is refused by the real server and the dialog stays open", async (page) => {
+  await openKeys(page);
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  const longName = "a".repeat(129);
+  await page.locator("#add-form [name=name]").fill(longName);
+  await page.locator("#add-form [name=provider]").fill("openai");
+  await page.locator("#add-form [name=secret]").fill("sk-contract-long-NEVER-REAL");
+  await page.locator("#add-form [type=submit]").click();
+  await page.waitForFunction(() => document.getElementById("add-err").textContent !== "");
+  assert.equal(await page.locator("#add-err").textContent(), "name too long",
+    "the real KeyName cap's message must be shown verbatim");
+  assert.equal(await page.locator("#dlg-add").evaluate((d) => d.open), true, "the dialog stays open");
+  assert.equal(await page.locator("#add-form [name=name]").inputValue(), longName, "the name is preserved");
+  assert.equal(await page.locator("#add-form [name=provider]").inputValue(), "openai", "the provider is preserved");
+  assert.equal(await page.locator("#add-form [name=secret]").inputValue().then((v) => v.length > 0), true,
+    "the typed secret is preserved for retry");
+  assert.equal(await page.locator("#add-form [type=submit]").isDisabled(), false, "the retry must be possible");
+  await page.locator("#dlg-add [data-close]").click();
+  await waitDialog(page, "dlg-add", false);
+  // The refusal changed nothing in the real vault.
+  const listed = await get(page, "/api/keys");
+  assert.equal(listed.data.keys.some((k) => k.name.length > 128), false, "the refused add must not create a row");
 });
 
 test("the edit dialog patches the real row and the list reflects the stored values", async (page) => {

@@ -246,8 +246,8 @@ same name) and Delete (`⌫`). A key with the gateway on says so on its row,
 with this month's routed requests or estimated dollars when it has any, and the
 footer states the Keychain storage and the 20 s clipboard wipe. Active grants
 sit below the list with a Revoke button each. `N` adds a key; the provider
-picker is grouped into Labs, Routers, Hosts, Clouds and Non-chat, and a pasted
-secret with a recognisable prefix pre-fills it. The search box (`/`) narrows
+picker is grouped into Labs, Routers, Hosts, Clouds, Local and Non-chat, and a
+pasted secret with a recognisable prefix pre-fills it. The search box (`/`) narrows
 the list by name, provider or host — the count reads "N of M keys" while it
 does, and `Esc` clears it — a provider filter shows one provider's keys, and
 the sort orders by name, recency, use or age, remembered across launches. `?`
