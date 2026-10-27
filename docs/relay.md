@@ -31,11 +31,15 @@ cloud agent ──HTTPS──▶ your Worker ──WebSocket (opened by the Mac)
    Object.
 2. The agent calls `https://<your worker>/<key name>/v1/…` with its usual
    `ksfc_…` client token or `ksf_…` grant as the API key, exactly as it would
-   call `http://127.0.0.1:12767/<key name>/v1/…` through a tunnel.
-3. The Worker frames the request over the socket. The relay replays it as
-   an HTTP request to the local gateway on loopback, with the `Host` header
-   rewritten to `127.0.0.1:12767` and a marker header (`X-KSF-Via: relay`) so
-   the audit log can show the path the call took.
+   call `http://127.0.0.1:12767/<key name>/v1/…` through a tunnel. When the
+   Mac requires pairing, it also sends `X-KSF-Pair: ksfp_…`
+   ([Pairing](#pairing)).
+3. The Worker frames the request over the socket, the pairing credential
+   included: the Worker is a pipe and checks nothing. The relay verifies the
+   pairing, strips the credential header so it can never reach the gateway,
+   and replays the request to the local gateway on loopback, with the `Host`
+   header rewritten to `127.0.0.1:12767` and a marker header (`X-KSF-Via:
+   relay`) so the audit log can show the path the call took.
 4. The gateway does what it always does: refuses without a valid token,
    checks scope, swaps in the Keychain secret, forwards, streams the response
    and records usage. The relay streams the response back through the
@@ -110,6 +114,44 @@ The relay needs the gateway running (it always is inside Keysrs.app; for
 `keys relay`, Keysrs.app or `keys dashboard`) and turned on for the key, the
 same precondition as `keys tunnel`. It reconnects on its own when the socket
 drops (see [Reconnection](#reconnection)).
+
+## Pairing
+
+By default any agent that holds a valid `ksfc_…`/`ksf_…` token can relay
+requests. Pairing narrows that to agents you have explicitly paired with the
+Mac. It is opt-in (`keys relay pair require on`, off by default, so an
+existing deployment behaves exactly as before) and it is **in addition to,
+never instead of, the gateway's grant and client-token checks**: a paired
+request without a valid token still gets the gateway's 401, and a grant's
+key/method/path scope still applies.
+
+A pairing is a credential, `ksfp_…` (24 random bytes, hex), that the Mac
+shows once at issue and stores only as a SHA-256 hash with a last-4 hint, in
+the catalog next to the gateway's client tokens. The agent sends it as the
+`X-KSF-Pair: ksfp_…` header on every relayed request. The Worker passes the
+header through untouched — it arrives framed as `x-ksf-pair`, header names
+being lower-cased — and the Mac verifies it at REQUEST time, after the head
+parses and before the body is buffered, then strips the header before the
+request is replayed, so the gateway, the provider and the audit log never
+see the credential. A refused request costs the Mac no memory and the gateway
+is never contacted; the Worker's answer is one of the four 403 codes in the
+error table below. An accepted pairing's scope is a list of key names (empty
+means every key), matched against the first path segment of the target, and
+its `last_used_at` is updated on each accepted request.
+
+```sh
+keys relay pair issue "github actions" --key router --days 30
+#    one Touch ID; prints the ksfp_… credential once (default expiry 30 days)
+keys relay pair list        # labels, hints, key scopes, expiry, last used — never the credential
+keys relay pair revoke "github actions"   # by label or by last-4 hint
+keys relay pair require on  # the enforcement switch; `keys relay status` shows the mode
+```
+
+Because the codes are new but the frame types are not, the protocol stays
+version 1: an older Worker that predates this mapping degrades a pairing
+rejection to its default 502 with the code preserved — a refusal either way,
+so the mismatch fails closed. Redeploying the Worker from this checkout turns
+the 502 into the precise 403.
 
 ## Sleep
 
@@ -192,7 +234,10 @@ gateway then treats the call like any dropped loopback client. Besides
 `payload_too_large`, `gateway_write_failed`, `gateway_read_failed`,
 `upload_timeout` (a REQUEST whose END did not arrive within the Mac's buffer
 timeout) and `relay_buffer_full` (the oldest unfinished upload, evicted to
-stay within the Mac's buffer bounds).
+stay within the Mac's buffer bounds). With pairing on, a request the pairing
+check refuses is answered with one of the four `pairing_*` codes from the
+error table below, sent instead of RESPONSE, at REQUEST time, before the body
+is buffered.
 
 Request ids are chosen by the Worker (random 32-bit, unique among requests
 in flight on that socket) and echoed by the Mac. Frames for an unknown id are
@@ -296,13 +341,19 @@ is capped in number, in bytes and in time. The Worker's own platform limits
 (request headers, CPU time per invocation, free-plan request counts) apply on
 top. Agent errors from the Worker itself are JSON with an `error` code and a
 `message`, and the three an agent may simply send again (`mac_offline`,
-`mac_disconnected`, `relay_busy`) also carry `"retryable": true`:
+`mac_disconnected`, `relay_busy`) also carry `"retryable": true`. The four
+pairing codes carry neither that flag nor a `Retry-After`: resending the
+identical request cannot change the answer, only a change on the Mac can.
 
 | status | error            | meaning                                                   |
 |--------|------------------|-----------------------------------------------------------|
 | 503    | `mac_offline`    | no Mac connected within the window (60 s by default, at once with `RELAY_OFFLINE_GRACE_MS=0`): the relay is not running, or the Mac is off, asleep or offline; `Retry-After: 30` |
 | 502    | `mac_disconnected` | the Mac dropped while this request was in flight; it may be retried (see [While the Mac is away](#while-the-mac-is-away)) |
 | 502    | `gateway_unreachable` | the relay is up but the gateway on 127.0.0.1:12767 is not |
+| 403    | `pairing_required` | the Mac requires paired agents and this request carried no usable `X-KSF-Pair` credential (missing, malformed or unknown); refused at REQUEST time, before the body was buffered |
+| 403    | `pairing_expired` | the pairing has expired; issue a new one with `keys relay pair issue` |
+| 403    | `pairing_revoked` | the pairing was revoked on the Mac |
+| 403    | `pairing_out_of_scope` | the pairing is valid but does not cover the key this request targets |
 | 502    | other Mac codes  | the relay on the Mac could not serve it: `gateway_read_failed`, `upload_timeout`, `relay_buffer_full`, … |
 | 503    | `relay_busy`     | 32 requests are already in flight or waiting, or the waiting ones hold 32 MiB of bodies; `Retry-After: 5` |
 | 504    | `relay_timeout`  | the Mac sent no response head within 960 s                |
@@ -346,8 +397,15 @@ mid-dial, and the Worker fails what was in flight on it with 502
 secret (no account, no network); `swift test --filter RelayTests` drives the
 Mac side with a fake socket against the real gateway on loopback, and
 `RelayHostTests` the app's relay (the lock, turning it on and off, the
-idle-sleep assertion with a fake in place of IOKit, `/api/relay`). All are in
-CI. The real transport end to end is opt-in: start `npx wrangler dev --port
+idle-sleep assertion with a fake in place of IOKit, `/api/relay`). The Worker
+suite also pins the pairing surface: each of the four `pairing_*` ERROR codes
+becoming its 403 with no retry guidance, the other Mac codes staying 502, and
+`x-ksf-pair` passing through into the REQUEST frame untouched. On the Mac
+side `RelayTests` covers the verification (accept; missing, unknown and
+malformed credentials; expiry at the boundary; revocation across a
+reconnect; out-of-scope keys; the credential stripped before replay) and
+`RelayPairingTests` the management surface (issue, list, revoke, require
+on/off). All are in CI. The real transport end to end is opt-in: start `npx wrangler dev --port
 8787` in `Relay/` with a `.dev.vars` holding `RELAY_SECRET=…` (git-ignored),
 then run `swift test --filter RelayEndToEndTests` with `KEYS_RELAY_E2E_URL`
 and `KEYS_RELAY_E2E_SECRET` set. Add `--var RELAY_OFFLINE_GRACE_MS:3000` to
@@ -403,6 +461,11 @@ Cloudflare's edge, can and cannot do.
 - Read the usage catalog, the audit log, the dashboard, or other keys. The
   dashboard API is a different listener and its CSRF token is not accepted
   by the gateway.
+- Spend anything with a stolen `ksfp_…` pairing credential on its own.
+  Pairing is verified by the Mac in addition to the gateway's grant and
+  client-token checks, never instead of them: without a valid token the
+  request still gets the gateway's 401, and with one it stays inside that
+  token's scope and caps.
 
 **Can:**
 
@@ -421,6 +484,20 @@ Cloudflare's edge, can and cannot do.
   bodies, tokens or `Authorization` headers, and `observability` is disabled
   in `Relay/wrangler.jsonc`; what Cloudflare records about requests to a
   Worker is governed by your account settings.
+- Tell `pairing_expired` and `pairing_revoked` apart from `pairing_required`
+  when the Mac requires pairing. The distinct codes are a deliberate,
+  documented trade-off: they tell the agent's owner which fix applies, and
+  they are visible to anyone who can already reach the Worker.
+  `pairing_required` itself covers missing, malformed and unknown credentials
+  alike, so it gives away nothing about whether a credential ever existed.
+
+Pairing state — the `relay_pairings` table and the `relay_pairing_required`
+flag — lives only on the Mac, in the catalog beside the gateway's client
+tokens; the Worker stores none of it and frames `X-KSF-Pair` like any other
+header. Brute-forcing a `ksfp_…` against the relay is bounded by the
+constant-time comparison the Mac applies to it, by the existing bounds on
+both sides (the Worker's 32 in-flight slots and the Mac's buffer caps) and by
+the credential being 24 random bytes.
 
 Someone who learns the **relay secret** can impersonate the Mac: connect to
 your Worker, replace the real Mac's socket and receive the agent's requests,
@@ -460,5 +537,9 @@ back.
   macOS Keychain under the service `keysreallysafe.relay`, shown once at
   setup, and never written to a config file. The Worker URL is stored in the
   catalog's `meta` table. `keys purge` removes both.
+- Pairing credentials (`ksfp_…`) follow the same discipline as the gateway's
+  client tokens: shown once at issue, stored on the Mac as SHA-256 hashes
+  with a last-4 hint, never held or logged by the Worker. `keys purge`
+  removes them and the pairing-required flag.
 - Keysrs the project sends nothing to and receives nothing from your Worker;
   the only parties are your Mac, your Worker and your agent.
