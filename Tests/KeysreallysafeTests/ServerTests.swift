@@ -768,6 +768,141 @@ final class ServerTests: XCTestCase {
         XCTAssertFalse(events.contains { ($0.detail ?? "").contains("ksf_") })
     }
 
+
+    // MARK: - Grant renewal over the dashboard API
+
+    /// A handler over a catalog with one key and a visible presence gate, so a refused
+    /// renewal can prove it consumed no prompt.
+    private func makeRenewalHandler() throws -> (APIHandler, KeysService, RecordingPresenceGate) {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+        try "<html><head></head><title>Keysrs</title></html>".write(
+            to: web.appendingPathComponent("index.html"), atomically: true, encoding: .utf8
+        )
+        return (APIHandler(service: service, webRoot: web), service, gate)
+    }
+
+    /// The renew route re-approves the grant in place: 200 with the renewed grant's JSON —
+    /// same id, renewals 1, the window fields — and NO token anywhere in the body (contrast
+    /// issuance, the one response that carries one). The renewed row then lists with its
+    /// renewal count, active again.
+    func testGrantRenewRouteReturnsTheRenewedGrantWithoutAToken() throws {
+        let (handler, service, gate) = try makeRenewalHandler()
+        let issued = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(
+                task: "night evals", minutes: 60, methods: ["POST"], paths: ["/v1/messages"]
+            ).validated()
+        )
+        XCTAssertEqual(gate.reasons, [], "issuing straight into the store prompts nothing")
+
+        let renewed = handle(
+            handler, method: "POST", path: "/api/grants/\(issued.grant.id)/renew",
+            body: try JSONValue.data([:]))
+        XCTAssertEqual(renewed.status, 200, String(decoding: renewed.body, as: UTF8.self))
+        let obj = try object(renewed)
+        XCTAssertEqual(obj["id"] as? String, issued.grant.id)
+        XCTAssertEqual(obj["key"] as? String, "demo")
+        XCTAssertEqual(obj["task"] as? String, "night evals")
+        XCTAssertEqual(obj["renewals"] as? Int, 1)
+        XCTAssertEqual(obj["window_minutes"] as? Int, 60)
+        XCTAssertNil(obj["token"], "the renew response never carries a token")
+        XCTAssertFalse(String(decoding: renewed.body, as: UTF8.self).contains(issued.token))
+        XCTAssertEqual(gate.reasons.count, 1, "exactly one prompt, for the renewal")
+        XCTAssertTrue(gate.reasons.last?.hasPrefix("renew \"night evals\"") ?? false, gate.reasons.last ?? "")
+
+        let listed = try object(handle(handler, method: "GET", path: "/api/grants"))
+        let rows = try XCTUnwrap(listed["grants"] as? [[String: Any]])
+        let row = try XCTUnwrap(rows.first { $0["id"] as? String == issued.grant.id })
+        XCTAssertEqual(row["renewals"] as? Int, 1, "the renewal count is visible in the list")
+        XCTAssertNil(row["token"])
+    }
+
+    /// The renew route rides the same pre-routing gates as every other mutation: no token or
+    /// a wrong one is a flat 403 before the route is even looked up.
+    func testGrantRenewRouteNeedsTheToken() throws {
+        let (handler, service, _) = try makeRenewalHandler()
+        let issued = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(task: "x").validated()
+        )
+        let path = "/api/grants/\(issued.grant.id)/renew"
+        let missing = handle(handler, method: "POST", path: path, token: false)
+        XCTAssertEqual(missing.status, 403)
+        XCTAssertEqual(try object(missing)["error"] as? String, "missing or bad token")
+        let wrong = handle(
+            handler, method: "POST", path: path,
+            headers: ["x-ksf-token": "deadbeef"], token: false)
+        XCTAssertEqual(wrong.status, 403)
+        XCTAssertEqual(try object(wrong)["error"] as? String, "missing or bad token")
+        XCTAssertEqual(service.grants.grant(id: issued.grant.id)?.renewals, 0, "a refused ask renewed nothing")
+    }
+
+    /// A bad id shape is the plain 404 any unknown grant gets; a well-shaped unknown id is the
+    /// named renew_not_found; a revoked grant is renew_revoked naming the reason — each in the
+    /// error envelope the CLI reads back, and none of them consumed a prompt.
+    func testGrantRenewRouteNamesItsRefusals() throws {
+        let (handler, service, gate) = try makeRenewalHandler()
+
+        for badID in ["nothex", "zzzzzzzz", "a1b2c3d"] {
+            let badShape = handle(handler, method: "POST", path: "/api/grants/\(badID)/renew")
+            XCTAssertEqual(badShape.status, 404, badID)
+            XCTAssertEqual(try object(badShape)["error"] as? String, "not_found", badID)
+        }
+
+        let unknown = handle(handler, method: "POST", path: "/api/grants/deadbeef/renew")
+        XCTAssertEqual(unknown.status, 404)
+        let unknownObj = try object(unknown)
+        XCTAssertEqual(unknownObj["error"] as? String, "renew_not_found")
+        XCTAssertTrue((unknownObj["message"] as? String ?? "").contains("keys grant"))
+
+        let revoked = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(task: "x").validated()
+        )
+        _ = try service.revokeGrant(id: revoked.grant.id)
+        let dead = handle(handler, method: "POST", path: "/api/grants/\(revoked.grant.id)/renew")
+        XCTAssertEqual(dead.status, 409)
+        let deadObj = try object(dead)
+        XCTAssertEqual(deadObj["error"] as? String, "renew_revoked")
+        XCTAssertTrue((deadObj["message"] as? String ?? "").contains("revoked"))
+
+        XCTAssertEqual(gate.reasons, [], "no refusal consumed a prompt")
+    }
+
+    /// Renewal takes no scope fields: a body naming any of them is refused 400
+    /// renew_scope_immutable BEFORE the service runs — the prompt log stays empty and the
+    /// grant is untouched. No body and `{}` are the accepted shapes.
+    func testGrantRenewRouteRefusesScopeFieldsBeforeAnyPrompt() throws {
+        let (handler, service, gate) = try makeRenewalHandler()
+        let issued = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(task: "x", minutes: 30).validated()
+        )
+        let path = "/api/grants/\(issued.grant.id)/renew"
+        let scoped: [[String: Any]] = [
+            ["key": "demo"], ["host": "api.openai.com"], ["methods": ["GET"]],
+            ["paths": ["/models"]], ["minutes": 30], ["max_requests": 5], ["max_usd": 1],
+            ["task": "y"], ["profile": "evals"], ["unattended": true],
+        ]
+        for body in scoped {
+            let refused = handle(handler, method: "POST", path: path, body: try JSONValue.data(body))
+            XCTAssertEqual(refused.status, 400, "\(body)")
+            XCTAssertEqual(try object(refused)["error"] as? String, "renew_scope_immutable", "\(body)")
+        }
+        XCTAssertEqual(gate.reasons, [], "a scope-carrying body is refused before any prompt")
+        XCTAssertEqual(service.grants.grant(id: issued.grant.id)?.renewals, 0)
+
+        XCTAssertEqual(handle(handler, method: "POST", path: path).status, 200, "no body at all renews")
+        XCTAssertEqual(
+            handle(handler, method: "POST", path: path, body: try JSONValue.data([:])).status, 200,
+            "an empty object renews")
+        XCTAssertEqual(service.grants.grant(id: issued.grant.id)?.renewals, 2)
+        XCTAssertEqual(gate.reasons.count, 2, "one prompt per accepted renewal")
+    }
     private func localDate(
         _ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int,
         timeZone: TimeZone

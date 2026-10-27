@@ -144,6 +144,8 @@ final class APIHandler: @unchecked Sendable {
                 return grantsRevokeAll(request)
             case ("DELETE", let p) where p.hasPrefix("/api/grants/"):
                 return try grantRevoke(p)
+            case ("POST", let p) where p.hasPrefix("/api/grants/") && p.hasSuffix("/renew"):
+                return try grantRenew(request, path: p)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -213,6 +215,10 @@ final class APIHandler: @unchecked Sendable {
             let status: Int
             if case .notFound = error { status = 404 } else { status = 400 }
             return HTTPResponse.json(status, ["error": error.code, "message": error.message])
+        } catch let error as RenewalError {
+            // Renewal refusals keep their names on the wire the same way, and every one of
+            // them ran before the single prompt a renewal costs.
+            return HTTPResponse.json(error.status, ["error": error.code, "message": error.message])
         } catch {
             return HTTPResponse.json(400, ["error": "bad_request"])
         }
@@ -756,6 +762,27 @@ final class APIHandler: @unchecked Sendable {
         guard id.count == 8, id.allSatisfy({ $0.isHexDigit }) else { throw AppError.notFound(id) }
         let g = try service.revokeGrant(id: id, caller: "dashboard")
         return HTTPResponse.json(200, g.jsonObject())
+    }
+
+    /// The scope fields a renew body may never carry: renewal re-approves exactly what the
+    /// stored grant already holds, so an ask naming scope is refused (never clamped) before
+    /// the service runs and before any prompt.
+    private static let renewScopeFields: Set<String> = [
+        "key", "host", "methods", "paths", "minutes", "max_requests", "max_usd", "task", "profile", "unattended",
+    ]
+
+    /// POST /api/grants/<id>/renew re-approves the grant in place — same id, token, key, host,
+    /// scope and caps — for another window of its original lifetime. Unlike issuance the
+    /// response never carries a token: the one from issuance keeps working.
+    private func grantRenew(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
+        let id = String(path.dropFirst("/api/grants/".count).dropLast("/renew".count))
+        guard id.count == 8, id.allSatisfy({ $0.isHexDigit }) else { throw AppError.notFound(id) }
+        if let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object),
+           obj.keys.contains(where: Self.renewScopeFields.contains)
+        {
+            throw RenewalError.scopeImmutable
+        }
+        return HTTPResponse.json(200, try service.renewGrant(id: id, caller: "dashboard").jsonObject())
     }
 
     private func grantsRevokeAll(_ request: HTTPRequest) -> HTTPResponse {

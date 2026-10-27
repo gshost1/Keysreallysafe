@@ -28,6 +28,7 @@ public struct KeysCLI: ParsableCommand {
             GrantCommand.self,
             GrantsCommand.self,
             RevokeCommand.self,
+            RenewCommand.self,
             ProfileCommand.self,
             TestCommand.self,
             ModelsCommand.self,
@@ -567,6 +568,7 @@ struct GrantCommand: ParsableCommand {
         if let first = pathsOut.first { print("  allows   \(base)\(first)") }
         print("  token    \(token)")
         print("  use the token as the API key (\(header)); the gateway swaps in the real secret")
+        print("  renew    keys renew \(id)")
         print("  revoke   keys revoke \(id)")
     }
 
@@ -660,6 +662,44 @@ struct RevokeCommand: ParsableCommand {
         guard let id, !id.isEmpty else { throw AppError.usage("give a grant id, or --all") }
         _ = try client.call(method: "DELETE", path: "/api/grants/\(id)", expect: 200)
         print("revoked \(id)")
+    }
+}
+
+struct RenewCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "renew",
+        abstract: "Renew an active or expired grant in place (same key, host, scope and caps; one Touch ID).",
+        discussion: """
+            Re-approves the grant exactly as it is for another window of its original \
+            lifetime: same id and same token, so a running agent keeps working, and the usage \
+            counters start over. Renewal takes no scope knobs — for different bounds issue a \
+            new grant with keys grant. A revoked grant is never renewable.
+            """
+    )
+
+    @Argument(help: "Grant id from keys grants.")
+    var id: String
+
+    @Flag(help: "Print the renewed grant as JSON.")
+    var json = false
+
+    func run() throws {
+        let client = try ControlClient.connect()
+        fputs("Touch ID in the Keysrs site…\n", stderr)
+        let obj = try client.call(method: "POST", path: "/api/grants/\(id)/renew", body: [:], expect: 200)
+        if json {
+            try JSONValue.printLine(obj)
+            return
+        }
+        let provider = JSONValue.string(obj["provider"]) ?? ""
+        let providerName = Providers.provider(id: provider)?.name ?? provider
+        let key = JSONValue.string(obj["key"]) ?? ""
+        let host = JSONValue.string(obj["host"]) ?? ""
+        print("renewed \(id)  \(key) -> \(providerName) (\(host))")
+        print("  task     \(JSONValue.string(obj["task"]) ?? "")")
+        print("  expires  \(JSONValue.string(obj["expires_at"]) ?? "")")
+        print("  renewals \(JSONValue.int(obj["renewals"]) ?? 0)")
+        // No token line: the one printed at issuance keeps working and is never repeated.
     }
 }
 

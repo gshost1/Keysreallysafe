@@ -374,4 +374,98 @@ final class RenewalTests: XCTestCase {
         )
         assertNoSentinel(fixtureSecret, in: dir)
     }
+    // MARK: - `keys renew` on the CLI
+
+    /// `keys renew` takes the grant id and --json and nothing else: renewal has no scope
+    /// knobs by design, so every scope flag fails parsing, and a missing id is a usage error
+    /// before any connection is attempted.
+    func testRenewCommandParsesWithHouseStyleFlags() throws {
+        let renew = try XCTUnwrap(try KeysCLI.parseAsRoot(["renew", "a1b2c3d4"]) as? RenewCommand)
+        XCTAssertEqual(renew.id, "a1b2c3d4")
+        XCTAssertFalse(renew.json)
+
+        let asJSON = try XCTUnwrap(try KeysCLI.parseAsRoot(["renew", "a1b2c3d4", "--json"]) as? RenewCommand)
+        XCTAssertEqual(asJSON.id, "a1b2c3d4")
+        XCTAssertTrue(asJSON.json)
+
+        XCTAssertThrowsError(try KeysCLI.parseAsRoot(["renew"]), "the id is required")
+        let scopeKnobs = [
+            ["--minutes", "30"], ["--task", "x"], ["--methods", "GET"], ["--paths", "/v1"],
+            ["--max-requests", "5"], ["--max-usd", "2"], ["--profile", "evals"], ["--unattended"],
+            ["--nonsense"],
+        ]
+        for flag in scopeKnobs {
+            XCTAssertThrowsError(
+                try KeysCLI.parseAsRoot(["renew", "a1b2c3d4"] + flag),
+                "renewal has no scope knob \(flag)")
+        }
+    }
+
+    /// A renew refusal over the wire reads back as its message with the house usage exit
+    /// code — the same mapping the profile refusals take — so `keys renew` prints exactly
+    /// what a local RenewalError would say.
+    func testRenewalWireCodesSurviveTheControlClientMapping() {
+        let cases: [RenewalError] = [
+            .notFound("deadbeef"), .revoked(id: "a1b2c3d4", reason: "screen_lock"),
+            .targetChanged, .scopeImmutable,
+        ]
+        for error in cases {
+            let mapped = AppError(
+                wireCode: error.code, status: error.status,
+                body: ["error": error.code, "message": error.message])
+            guard case AppError.usage(let m) = mapped else {
+                XCTFail("\(error.code) mapped to \(mapped)")
+                continue
+            }
+            XCTAssertEqual(m, error.message, "\(error.code): the wire message is what the CLI prints")
+            XCTAssertEqual(mapped.exitCode, 1, "\(error.code)")
+        }
+    }
+
+    /// Through the control file (the CLI's real path): renew on a live in-process site
+    /// returns the renewed grant — same id, renewals 1, no token anywhere — and the refusals
+    /// read back as their messages without consuming a prompt.
+    func testRenewalRoundTripsThroughTheControlFile() throws {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+        let handler = APIHandler(service: service, webRoot: web)
+        let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
+        server.start()
+        defer { server.stop() }
+        let control = ControlFile.url(beside: db.path)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+
+        let client = try ControlClient.connect(control: control)
+        let issued = try client.call(
+            method: "POST", path: "/api/keys/demo/grants",
+            body: ["task": "cli", "minutes": 5, "methods": ["GET"], "caller": "cli"], expect: 201)
+        let id = try XCTUnwrap(issued["id"] as? String)
+        let token = try XCTUnwrap(issued["token"] as? String)
+
+        let renewed = try client.call(method: "POST", path: "/api/grants/\(id)/renew", body: [:], expect: 200)
+        XCTAssertEqual(renewed["id"] as? String, id, "renewal is in place: same id")
+        XCTAssertEqual(renewed["renewals"] as? Int, 1)
+        XCTAssertNil(renewed["token"], "the renew response never carries a token")
+        XCTAssertFalse(try String(decoding: JSONValue.data(renewed), as: UTF8.self).contains(token))
+        XCTAssertEqual(gate.reasons.count, 2, "one prompt at issuance, one at renewal")
+
+        // Refusals over the wire read back as their messages with the house exit code.
+        XCTAssertThrowsError(try client.call(method: "POST", path: "/api/grants/deadbeef/renew", body: [:], expect: 200)) { error in
+            guard case AppError.usage(let m) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(m.contains("deadbeef"), m)
+            XCTAssertTrue(m.contains("keys grant"), m)
+            XCTAssertEqual((error as? AppError)?.exitCode, 1)
+        }
+        XCTAssertThrowsError(try client.call(
+            method: "POST", path: "/api/grants/\(id)/renew", body: ["minutes": 30], expect: 200)
+        ) { error in
+            guard case AppError.usage(let m) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(m.contains("takes no scope fields"), m)
+        }
+        XCTAssertEqual(gate.reasons.count, 2, "the refusals consumed no prompt")
+        assertNoSentinel(fixtureSecret, in: dir)
+    }
 }
