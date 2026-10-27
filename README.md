@@ -658,6 +658,14 @@ so a script can tell the gateway's failures from a provider's own 502 by
 `reason`. The log holds no body, token or key value; calls stored before it
 existed show `-` for what was not kept.
 
+`keys` uses stable exit codes so a script can branch without reading prose:
+`0` success; `1` a usage or HTTP error; `2` not found (also `keys test` and
+`keys models` when the provider has no read-only check endpoint); `3` user
+presence or the Keychain; `4` ingest or catalog; `5` a failed provider check;
+`6` no running Keysrs site owns the gateway — start Keysrs.app or run
+`keys dashboard` and retry; `64` bad arguments. `keys env`, `keys agent` and
+`keys tunnel` exit with the child command's own code once it ends.
+
 ## Local sources
 
 | Source | Path | Feeds |

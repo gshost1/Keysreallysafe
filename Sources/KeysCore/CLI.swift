@@ -72,7 +72,8 @@ public enum KeysMain {
             var command = try KeysCLI.parseAsRoot()
             try command.run()
         } catch let error as AppError {
-            // Own exit codes: 2 not found, 3 presence or Keychain, 4 ingest or catalog.
+            // Own exit codes: 2 not found, 3 presence or Keychain, 4 ingest or catalog,
+            // 6 no running site.
             FileHandle.standardError.write(Data((error.description + "\n").utf8))
             Darwin.exit(error.exitCode)
         } catch {
@@ -779,7 +780,7 @@ struct TestCommand: ParsableCommand {
             print("checked \(result.checkedAt)" + (result.endpoint.map { "  GET \($0)" } ?? ""))
             if result.ok { print("models: keys models \(name) --cached") }
         }
-        if !result.ok { Darwin.exit(result.outcome == .noCheckEndpoint ? 2 : 5) }
+        if !result.ok { Darwin.exit(result.outcome.cliExitCode) }
     }
 }
 
@@ -822,7 +823,7 @@ struct ModelsCommand: ParsableCommand {
         guard result.ok else {
             let providerName = Providers.provider(id: result.provider)?.name ?? result.provider
             print("FAIL  \(name) -> \(providerName) (\(result.host))  \(result.summary)")
-            Darwin.exit(result.outcome == .noCheckEndpoint ? 2 : 5)
+            Darwin.exit(result.outcome.cliExitCode)
         }
         for id in ids { print(id) }
         fputs("\(ids.count) of \(result.models.count) models  checked \(result.checkedAt)\(cached ? " (cached)" : "")\n", stderr)
@@ -1621,11 +1622,17 @@ struct TunnelCommand: ParsableCommand {
         do {
             _ = try BlockingHTTP.send(req, timeout: 3)
         } catch {
-            throw AppError.usage(
-                "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
-                    + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
-            )
+            throw Self.gatewayDown()
         }
+    }
+
+    /// The gateway-not-up failure, in one place so the wording and its exit code (6, like
+    /// every other "no running site") are pinned by a test.
+    static func gatewayDown() -> AppError {
+        .siteUnavailable(
+            "the gateway is not listening on 127.0.0.1:\(GatewayListener.port); "
+                + "open Keysrs.app (or run keys dashboard) and turn the gateway on for the key first"
+        )
     }
 }
 
