@@ -116,7 +116,8 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   Copy, reveal, env and rotate ask for user presence every time.
 - No open gateway. A request through the gateway needs a grant token: one
   Touch ID per task, bound to one key, one host, a method and path scope and
-  an expiry. Screen lock, revoke, gateway off or a restart kills it. That
+  an expiry. Screen lock, revoke, gateway off, a key rotation or a restart
+  kills it. That
   holds for a relayed request too: the relay secret lets a Worker talk to
   this Mac, never to a provider. After five consecutive upstream 401/403
   answers the gateway pauses the key for a minute and says so, instead of
@@ -333,8 +334,8 @@ closed with a named reason: `grant_required`, `grant_expired`,
 `grant_request_limit`, `grant_usd_limit`, `grant_usd_unpriced`,
 `grant_target_changed`. A grant is
 bound to one key and the host recorded when it was issued; editing the
-provider or host revokes it. Screen lock, `keys revoke`, gateway off and a
-restart of the app all revoke. That is deliberate: a grant is for a task you
+provider or host, or rotating the key, revokes it. Screen lock, `keys revoke`,
+gateway off and a restart of the app all revoke. That is deliberate: a grant is for a task you
 are around for, so an unattended job that has to outlive a screen lock needs a
 client token (`keys client issue`) instead. Grants live only in the app's memory; the audit log
 keeps the id, task and scope, never the token. `--max-requests` is a hard cap.
@@ -347,9 +348,22 @@ grants` and the dashboard show such spend as "unpriced", never $0. Reads
 (GET) and failed calls don't count.
 
 If the gateway is off for the key, `keys grant` turns it on with the same
-single prompt. `keys grants` lists what is active, `keys revoke <id>` or
-`keys revoke --all [--key name]` ends it. The dashboard has the same three
-under Grant (`A`).
+single prompt. `keys grants` lists what is active (`--all` adds the expired
+and the revoked), `keys revoke <id>` or `keys revoke --all [--key name]`
+ends it. The dashboard has the same three under Grant (`A`).
+
+**Renewing a grant** re-approves it exactly as it is. `keys renew <id>` (or
+the Renew button on an active or expired row in the dashboard) costs one
+Touch ID whose prompt names the same full scope as at issuance, and the
+grant keeps its id and its token, so a running agent keeps working with the
+token it already has. The grant gets another window of its original size,
+its usage counters start over, and the audit log records a `grant_renew`
+row with the id, task, scope and renewal count — never the token. Renewal
+never happens on its own, never widens anything (it takes no scope knobs;
+for different bounds, issue a new grant with `keys grant`), and never
+revives a revoked grant: revoke, screen lock, gateway off and a key edit
+stay deliberate kills. A grant pruned a day after it ended, or gone in a
+restart, is simply not there to renew.
 
 `keys grant` talks to the running app (or a `keys dashboard` dev copy)
 through a 0600 file under Application Support; without one it says so and
@@ -619,6 +633,7 @@ keys env <name> <VAR> [<name> <VAR> ...] -- <command> [args...]
 keys grant <name> [--task <text>] [--minutes N] [--methods GET,POST] [--paths /a,/b] [--max-requests N] [--max-usd X] [--profile <name>] [--json]
 keys grants [--all] [--json]
 keys revoke <id> | --all [--key <name>]
+keys renew <id> [--json]
 keys profile add <name> --keys <a,b> [--methods GET,POST] [--paths /a,/b] [--minutes N] [--max-requests N] [--max-usd X] [--unattended] [--json]
 keys profile list [--json]
 keys profile remove <name>

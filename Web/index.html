@@ -169,7 +169,7 @@
       <p id="keys-no-match" class="empty" hidden></p>
       <p id="keys-empty" class="empty" hidden>No keys yet. <button type="button" class="link" data-action="add">Add one</button> or <button type="button" class="link" id="keys-empty-help">see how Keys works</button>.</p>
       <div id="grants" class="grants" hidden>
-        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind. A profile is saved grant bounds (keys profile add), consulted only when a grant is issued.</span></div>
+        <div class="grants-head"><span id="grants-count"></span> <span class="hint-inline">a grant is a temporary, scoped token an agent uses instead of the real key; it dies on screen lock, revoke, expiry or restart. A client is the long-lived kind. A profile is saved grant bounds (keys profile add), consulted only when a grant is issued. Renew re-approves an active or expired grant in place — same token, same scope — for another window of its original lifetime; a revoked grant is never renewable.</span></div>
         <ul id="grants-list" class="grants-list"></ul>
         <ul id="clients-list" class="grants-list"></ul>
         <ul id="profiles-list" class="grants-list" aria-label="Saved profiles"></ul>
@@ -317,7 +317,7 @@
       <label>New secret
         <input name="secret" type="password" required autocomplete="new-password" data-1p-ignore data-lpignore="true">
       </label>
-      <p class="hint">Replaces the Keychain value under the same name. The old value is gone. A gateway that is on switches to the new value at once.</p>
+      <p class="hint">Replaces the Keychain value under the same name. The old value is gone. A gateway that is on switches to the new value at once, and grants for this key are revoked.</p>
       <p class="err" id="rotate-err" role="alert"></p>
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>

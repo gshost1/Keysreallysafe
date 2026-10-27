@@ -600,6 +600,42 @@ final class KeysService: @unchecked Sendable {
         return issued
     }
 
+    /// Renewal re-approves an existing grant in place — same id, token, key, host, scope
+    /// and caps — for another window of its original lifetime, behind exactly one presence
+    /// prompt that names the full effective scope. The ordering discipline is issueGrant's:
+    /// every refusal runs before the prompt, so a refused renewal consumes no Touch ID.
+    /// Nothing auto-renews (the HTTP route is the only caller) and nothing widens (renewal
+    /// takes no scope parameters; the stored row is the only source).
+    @discardableResult
+    func renewGrant(id: String, caller: String = "dashboard", now: Date = Date()) throws -> Grant {
+        try requireGatewayOwner()
+        // Issuance is otherwise the only pruner, so without this a grant that ended long ago
+        // stays renewable until the next `keys grant`; the README promises a day.
+        grants.prune(now: now)
+        guard let g = grants.grant(id: id) else { throw RenewalError.notFound(id) }
+        if g.isRevoked { throw RenewalError.revoked(id: id, reason: g.revokeReason ?? "revoked") }
+        // Re-resolve the target the grant was issued against. The kill paths (key deleted,
+        // target changed) revoke first, so this should never fire — it exists so a state they
+        // missed still fails closed.
+        do {
+            let row = try existingRow(g.key)
+            guard let provider = Providers.provider(id: row.provider),
+                  (row.gatewayHost ?? provider.host) == g.host
+            else { throw RenewalError.targetChanged }
+        } catch let error as RenewalError {
+            throw error
+        } catch {
+            throw RenewalError.targetChanged
+        }
+        // No gateway-on folding: a renewable grant implies its gateway is on (gateway-off
+        // revokes expired grants as well as active ones), so the one prompt is the renewal itself.
+        try presence.require(reason: Self.renewReason(g))
+        // A revoke that landed during the prompt wins the race; the grant stays dead.
+        let renewed = try grants.renew(id: id, now: now)
+        try recordKeyEvent(name: renewed.key, action: "grant_renew", caller: caller, detail: Self.renewDetail(renewed))
+        return renewed
+    }
+
     /// The OS renders the prompt as `"<App>" is trying to <reason>.`, so reasons
     /// start lowercase to read mid-sentence; proper nouns keep their case.
     static func grantReason(task: String, key: String, provider: Providers.Record, host: String, minutes: Int) -> String {
@@ -641,6 +677,32 @@ final class KeysService: @unchecked Sendable {
         if let u = g.maxUsd { parts.append(String(format: "max $%.2f", u)) }
         if g.unattended { parts.append("unattended") }
         return parts.joined(separator: " · ")
+    }
+
+    /// The renewal prompt re-commits to the exact scope the grant already holds. The prompt is
+    /// the one line a local process cannot cross, so it spells the scope out again — window,
+    /// methods, paths, caps, the unattended/profile labels — rather than leaning on the id.
+    /// The span rule is the issuance rule (N h for whole hours >= 60, else N min).
+    static func renewReason(_ g: Grant) -> String {
+        let span = g.windowMinutes % 60 == 0 && g.windowMinutes >= 60
+            ? "\(g.windowMinutes / 60) h" : "\(g.windowMinutes) min"
+        let providerName = Providers.provider(id: g.provider)?.name ?? g.provider
+        var parts = [
+            "renew \"\(g.task)\" the key \(g.key) for \(providerName) at \(g.host)",
+            span,
+            g.methods.sorted().joined(separator: ","),
+            g.paths.isEmpty ? "any path" : g.paths.joined(separator: ","),
+        ]
+        if let n = g.maxRequests { parts.append("max \(n) req") }
+        if let u = g.maxUsd { parts.append(String(format: "max $%.2f", u)) }
+        if g.unattended { parts.append("unattended") }
+        if let p = g.profile { parts.append("profile \(p)") }
+        return parts.joined(separator: ", ")
+    }
+
+    /// The issuance detail plus the renewal ordinal; the token stays out, as at issuance.
+    static func renewDetail(_ g: Grant) -> String {
+        grantDetail(g) + " · renewal \(g.renewals)"
     }
 
     func listGrants(includeInactive: Bool = false) -> [Grant] {
@@ -1564,6 +1626,9 @@ final class KeysService: @unchecked Sendable {
         guard !secret.isEmpty else { throw AppError.usage("empty secret") }
         try presence.require(reason: "unlock \(name)")
         try secrets.replace(name: name, secret: secret)
+        // A rotation usually answers a leak, so grants approved against the old value die with
+        // it: a token handed out before the swap must not keep spending the new secret.
+        revokeGrants(key: name, reason: "key_rotated", caller: caller)
         let version = try catalog.incrementVersion(name: name)
         gatewayLock.withLock {
             gatewayCache[name]?.secret = secret

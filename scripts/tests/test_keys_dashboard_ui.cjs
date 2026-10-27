@@ -377,7 +377,29 @@ function handle(method, pathname, body, params) {
   }
   if (keyMatch && leaf === "/events") return [200, { events: keyEvents }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
-  if (pathname === "/api/grants") return [200, { grants }];
+  // Mirrors the engine: a plain GET lists active grants only; ?all=1 keeps the expired
+  // (still renewable) and revoked rows the dashboard's renewal surface shows.
+  if (pathname === "/api/grants") {
+    const all = params.get("all") === "1" || params.get("all") === "true";
+    return [200, { grants: all ? grants : grants.filter((g) => g.status === "active") }];
+  }
+  // POST /api/grants/<id>/renew, mirroring the engine: an active or expired grant re-opens
+  // for another window of its original span — same id, and the answer never carries the
+  // token. A revoked grant is the named refusal (a revoke that raced the click lands here).
+  const renewMatch = /^\/api\/grants\/([0-9a-f]{8})\/renew$/.exec(pathname);
+  if (renewMatch && method === "POST") {
+    const g = grants.find((x) => x.id === renewMatch[1]);
+    if (!g) return [404, { error: "renew_not_found" }];
+    if (g.status === "revoked") return [409, { error: "renew_revoked" }];
+    g.renewals += 1;
+    g.renewed_at = new Date().toISOString();
+    g.expires_at = new Date(Date.now() + g.window_minutes * 60000).toISOString();
+    g.requests = 0; g.usd = 0; g.unpriced_calls = 0; g.last_used_at = null;
+    g.status = "active";
+    const answer = { ...g };
+    delete answer.token;
+    return [200, answer];
+  }
   // Saved grant bounds, mirroring the engine's grant_profiles rows. The page only lists and
   // removes them — `keys profile add` is the CLI's surface — so the fixture fakes GET and
   // DELETE only; a POST from the page would land in `unexpected` and fail the case.
@@ -2279,6 +2301,9 @@ const fixtureGrant = (over = {}) => ({
   id: "g9", key: "alpha", provider: "openai", host: "api.openai.com", task: "fixture task",
   methods: ["GET", "POST"], paths: ["/v1/messages"], requests: 0, usd: 0, unpriced_calls: 0,
   max_requests: 500, max_usd: 2.5, profile: "evals", unattended: true,
+  // The renewal fields the engine's jsonObject carries: the window a renew re-opens and
+  // the state marker the row badge reads. `token`/`base_url` appear only at issuance.
+  window_minutes: 480, renewals: 0, renewed_at: null, revoked_at: null, revoke_reason: null, status: "active",
   created_at: "2026-09-20T12:00:00Z", expires_at: "2026-09-20T20:00:00Z",
   base_url: "http://127.0.0.1:12767/g/g9", token: "ksf-grant-fixture", auth_header: "Authorization",
   ...over,
@@ -2354,7 +2379,7 @@ test("grant rows show the profile and the unattended badge, and unpriced spend n
   assert.match(await profiled.textContent(), /unpriced \(2 calls\)/, "unpriced spend stays unpriced");
   assert.doesNotMatch(await profiled.textContent(), /· \$0 ·/, "unknown money is never rendered as $0");
   const plain = page.locator("#grants-list li", { hasText: "plain ask" });
-  assert.equal(await plain.locator(".badge").count(), 0, "a plain grant row carries no badges");
+  assert.deepEqual(await plain.locator(".badge").allTextContents(), ["active"], "a plain grant row carries only its status badge");
 });
 
 test("the grants area lists saved profiles with their bounds, and Remove deletes them", async (page, origin) => {
@@ -2381,6 +2406,72 @@ test("the grants area lists saved profiles with their bounds, and Remove deletes
   assert.equal(await page.locator("#profiles-list li", { hasText: "evals" }).count(), 0, "the removed row is gone after the reload");
 });
 
+// ---------- renewal: status badges and the Renew button ----------
+// UI mechanics only, like the profile cases above: the fixture is a mimic, and the named
+// refusals' wording is the Swift suites' business.
+
+test("grant rows offer Renew on active and expired rows, never on revoked ones", async (page, origin) => {
+  const soon = new Date(Date.now() + 3600_000).toISOString();
+  const past = new Date(Date.now() - 3600_000).toISOString();
+  grants = [
+    fixtureGrant({ id: "aa11bb22", task: "live task", expires_at: soon, renewals: 2, renewed_at: soon, profile: null, unattended: false }),
+    fixtureGrant({ id: "bb22cc33", task: "stale task", expires_at: past, status: "expired", profile: null, unattended: false }),
+    fixtureGrant({ id: "cc33dd44", task: "dead task", expires_at: past, status: "revoked", revoked_at: past, revoke_reason: "revoked", profile: null, unattended: false }),
+  ];
+  await openKeys(page, origin);
+  await page.locator("#grants-list li").nth(2).waitFor();
+
+  // ?all=1 lists every state, so the count line breaks the rows down per status
+  // instead of calling them all active.
+  assert.equal(await page.locator("#grants-count").textContent(), "1 active, 1 expired, 1 revoked grants, 0 clients.");
+
+  const live = page.locator("#grants-list li", { hasText: "live task" });
+  assert.deepEqual(await live.locator(".badge").allTextContents(), ["active"], "the active row carries its status badge");
+  assert.match(await live.textContent(), /min left/, "an active row counts down");
+  assert.match(await live.textContent(), /renewed 2×/, "the renewal count shows once there is one");
+  assert.equal(await live.locator('[aria-label="Renew grant aa11bb22"]').count(), 1);
+  assert.equal(await live.locator('[aria-label="Revoke grant aa11bb22"]').count(), 1);
+
+  const stale = page.locator("#grants-list li", { hasText: "stale task" });
+  assert.deepEqual(await stale.locator(".badge").allTextContents(), ["expired"], "the expired row carries its status badge");
+  assert.match(await stale.textContent(), /expired/, "an expired row says so instead of counting down");
+  assert.doesNotMatch(await stale.textContent(), /min left/, "no countdown on an expired row");
+  assert.doesNotMatch(await stale.textContent(), /renewed/, "no renewal marker before the first renewal");
+  assert.equal(await stale.locator('[aria-label="Renew grant bb22cc33"]').count(), 1, "an expired grant is the renewable one");
+  assert.equal(await stale.locator('[aria-label="Revoke grant bb22cc33"]').count(), 0, "there is nothing left to revoke");
+
+  const dead = page.locator("#grants-list li", { hasText: "dead task" });
+  assert.deepEqual(await dead.locator(".badge").allTextContents(), ["revoked"], "the revoked row carries its status badge");
+  assert.equal(await dead.locator('[aria-label="Renew grant cc33dd44"]').count(), 0, "a killed grant is never renewable");
+  assert.equal(await dead.locator('[aria-label="Revoke grant cc33dd44"]').count(), 0, "a killed grant cannot be revoked twice");
+});
+
+test("renewing a grant posts to the renew route and refreshes the row, and a refusal is shown", async (page, origin) => {
+  const soon = new Date(Date.now() + 3600_000).toISOString();
+  grants = [
+    fixtureGrant({ id: "dd44ee55", task: "renewable task", expires_at: soon, profile: null, unattended: false }),
+  ];
+  await openKeys(page, origin);
+  await page.locator("#grants-list li").first().waitFor();
+
+  await page.locator('[aria-label="Renew grant dd44ee55"]').click();
+  await page.waitForFunction(() => document.querySelector("#grants-list li").textContent.includes("renewed 1×"));
+  const call = requests.find((r) => r.method === "POST" && r.pathname === "/api/grants/dd44ee55/renew");
+  assert.ok(call, "the click POSTs the renew route");
+  assert.equal(call.token, "test-token", "the page's token rides on the renewal");
+  const row = await page.locator("#grants-list li", { hasText: "renewable task" }).textContent();
+  assert.match(row, /renewed 1×/, "the refreshed row counts the renewal");
+  assert.match(row, /min left/, "the refreshed row counts down from the new expiry");
+  assert.match(await status(page), /^Grant dd44ee55 renewed until /, "the confirmation names the new expiry");
+
+  // A revoke that raced the click answers 409 renew_revoked: the refusal reads as an
+  // error through the same friendly() path every API error uses, and the list survives.
+  failures.set(rule("POST", "/api/grants/dd44ee55/renew"), { status: 409, body: { error: "renew_revoked" } });
+  await page.locator('[aria-label="Renew grant dd44ee55"]').click();
+  await page.waitForFunction(() => document.getElementById("status").textContent === "renew_revoked");
+  assert.equal(await page.locator("#grants-list li").count(), 1, "the list still renders");
+  assert.equal(await page.locator('[aria-label="Renew grant dd44ee55"]').count(), 1, "the row keeps its Renew button");
+});
 test("chips and pickers wrap on the arrow keys", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");

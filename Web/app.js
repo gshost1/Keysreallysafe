@@ -2615,7 +2615,9 @@
 
   async function loadGrants() {
     try {
-      const r = await api("/api/grants");
+      // ?all=1 keeps the expired (still renewable) and revoked rows visible beside the
+      // active ones; each row's status badge says which is which.
+      const r = await api("/api/grants?all=1");
       state.grants = (r && r.grants) || [];
     } catch { state.grants = []; }
     try {
@@ -2634,7 +2636,15 @@
     const clients = state.clients || [];
     const profiles = state.profiles || [];
     box.hidden = list.length === 0 && clients.length === 0 && profiles.length === 0;
-    $("grants-count").textContent = plural(list.length, "active grant", "active grants")
+    // ?all=1 lists expired and revoked rows beside the active ones, so the count
+    // breaks them down per status instead of calling every listed row active;
+    // a status with no rows is left out of the line.
+    const tally = { active: 0, expired: 0, revoked: 0 };
+    for (const g of list) tally[g.status || "active"] += 1;
+    const counts = [tally.active + " active"];
+    if (tally.expired) counts.push(tally.expired + " expired");
+    if (tally.revoked) counts.push(tally.revoked + " revoked");
+    $("grants-count").textContent = counts.join(", ") + (list.length === 1 ? " grant" : " grants")
       + ", " + plural(clients.length, "client", "clients")
       + (profiles.length ? ", " + plural(profiles.length, "profile", "profiles") : "")
       + ".";
@@ -2645,15 +2655,23 @@
       el("span", { class: "g-meta", text: `client · ${c.methods.join("/")} · ${c.path_prefix ? c.path_prefix : "any path"} · expires ${fmtWhenShort(c.expires_at)}${c.last_used_at ? " · used " + relTime(c.last_used_at) : ""}` }),
       el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke client " + c.id, onclick: () => revokeClient(c.key, c.id) }),
     )));
-    $("grants-list").replaceChildren(...list.map((g) => el("li", {},
-      el("span", { class: "g-id", text: g.id }),
-      el("span", { class: "g-key", text: g.key + " → " + g.host }),
-      el("span", { class: "g-task", text: g.task, title: g.task }),
-      g.profile ? el("span", { class: "badge", text: "profile " + g.profile, title: "issued within saved profile " + g.profile }) : null,
-      g.unattended ? el("span", { class: "badge", text: "unattended", title: "approved to run while you are away; still dies on screen lock" }) : null,
-      el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${grantUsd(g)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${minutesLeft(g.expires_at)} min left` }),
-      el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke grant " + g.id, onclick: () => revokeGrant(g.id) }),
-    )));
+    $("grants-list").replaceChildren(...list.map((g) => {
+      // The engine's `status`: active and expired rows are renewable in place; a revoked
+      // row is a kill (revoke, screen lock, gateway off, key delete) and stays listed only
+      // so its fate is visible — it offers nothing.
+      const st = g.status || "active";
+      return el("li", {},
+        el("span", { class: "g-id", text: g.id }),
+        el("span", { class: "g-key", text: g.key + " → " + g.host }),
+        el("span", { class: "g-task", text: g.task, title: g.task }),
+        el("span", { class: "badge", text: st, title: st === "active" ? "inside its window; Renew opens another of the same size" : st === "expired" ? "its window closed; Renew opens another of the same scope and size" : "killed by revoke, screen lock, gateway off or key delete; never renewable" }),
+        g.profile ? el("span", { class: "badge", text: "profile " + g.profile, title: "issued within saved profile " + g.profile }) : null,
+        g.unattended ? el("span", { class: "badge", text: "unattended", title: "approved to run while you are away; still dies on screen lock" }) : null,
+        el("span", { class: "g-meta", text: `${g.methods.length === 7 ? "any method" : g.methods.join("/")} · ${g.paths.length ? g.paths.join(", ") : "any path"} · ${g.requests} req${g.max_requests ? "/" + g.max_requests : ""} · ${grantUsd(g)}${g.max_usd ? "/" + fmtUsd(g.max_usd) : ""} · ${st === "expired" ? "expired" : minutesLeft(g.expires_at) + " min left"}${g.renewals > 0 ? " · renewed " + g.renewals + "×" : ""}` }),
+        st !== "revoked" ? el("button", { type: "button", class: "btn btn-row", text: "Renew", "aria-label": "Renew grant " + g.id, onclick: () => renewGrant(g.id) }) : null,
+        st === "active" ? el("button", { type: "button", class: "btn btn-row btn-danger", text: "Revoke", "aria-label": "Revoke grant " + g.id, onclick: () => revokeGrant(g.id) }) : null,
+      );
+    }));
     // Saved bounds, not credentials: each row shows what a grant under the profile may ask
     // for, and the unattended marker the Touch ID prompt would say.
     $("profiles-list").replaceChildren(...profiles.map((p) => el("li", {},
@@ -2683,6 +2701,16 @@
     try {
       await api("/api/grants/" + encodeURIComponent(id), { method: "DELETE" });
       say(`Grant ${id} revoked.`);
+      await loadKeys();
+    } catch (e) { say(e.message); }
+  }
+  // Renewal re-approves the grant in place — same id, token and scope — for one more
+  // window of its original lifetime. A refusal (a raced revoke, a restart) reads like any
+  // other API error through friendly().
+  async function renewGrant(id) {
+    try {
+      const g = await api("/api/grants/" + encodeURIComponent(id) + "/renew", { method: "POST" });
+      say(`Grant ${id} renewed until ${fmtWhenShort(g.expires_at)}.`);
       await loadKeys();
     } catch (e) { say(e.message); }
   }

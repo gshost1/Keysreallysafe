@@ -113,11 +113,22 @@ final class BackendContractUITests: XCTestCase {
         defer { server.stop() }
         let base = "http://127.0.0.1:\(server.boundPort)"
 
+        // The renewal case ends with a real gateway call: a stub upstream and a real
+        // GatewayListener, both on ephemeral ports, with contract-alpha's gateway pointed
+        // at the stub. The installed app's fixed ports stay untouched.
+        let upstream = try LoopbackHTTPServer(port: 0) { _ in HTTPResponse.json(200, ["ok": true]) }
+        let gateway = try GatewayListener(service: service, port: 0)
+        upstream.start()
+        gateway.start()
+        defer { gateway.stop(); upstream.stop() }
+        _ = try service.setGateway(name: "contract-alpha", enabled: true, host: "127.0.0.1:\(upstream.boundPort)", caller: "harness")
+
         var environment = ProcessInfo.processInfo.environment
         environment["KEYS_CONTRACT_BASE_URL"] = base
         environment["KEYS_CONTRACT_TOKEN"] = handler.originToken
         environment["KEYS_CONTRACT_ALPHA_SECRET"] = Self.alphaSecret
         environment["KEYS_CONTRACT_DELTA_SECRET"] = Self.deltaSecret
+        environment["KEYS_CONTRACT_GATEWAY"] = "http://127.0.0.1:\(gateway.boundPort)"
         if environment["NODE_PATH"] == nil {
             environment["NODE_PATH"] = Self.repoRoot.appendingPathComponent("scripts/tests/node_modules").path
         }
@@ -173,9 +184,16 @@ final class BackendContractUITests: XCTestCase {
         let events = try service.keyEvents(name: "contract-alpha", limit: 50).map(\.action)
         XCTAssertTrue(events.contains("copy"), "\(events)")
 
-        // Reading the API keys view changes nothing in the ledger it reported.
-        let afterBrowsing = try service.spend(range: .month, by: .model, source: .keys)
-        XCTAssertEqual(afterBrowsing.totals.gatewayCalls, 3)
-        XCTAssertEqual(Set(afterBrowsing.rows.compactMap(\.key)), ["contract-typesafe", "contract-vercel"])
+        // Reading the API keys view changes nothing in the ledger it reported — except the
+        // one call the renewal case routed through the real gateway for contract-alpha.
+        // The gateway answers the client before it records usage, so wait (boundedly) for
+        // that row to land.
+        var afterBrowsing = try service.spend(range: .month, by: .model, source: .keys)
+        for _ in 0..<200 where afterBrowsing.totals.gatewayCalls < 4 {
+            Thread.sleep(forTimeInterval: 0.025)
+            afterBrowsing = try service.spend(range: .month, by: .model, source: .keys)
+        }
+        XCTAssertEqual(afterBrowsing.totals.gatewayCalls, 4)
+        XCTAssertEqual(Set(afterBrowsing.rows.compactMap(\.key)), ["contract-alpha", "contract-typesafe", "contract-vercel"])
     }
 }
