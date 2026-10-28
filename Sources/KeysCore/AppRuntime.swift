@@ -78,6 +78,10 @@ enum AppRuntime {
             .first { $0.processIdentifier != getpid() }
         if let running {
             running.activate(options: [.activateAllWindows])
+            // The running app is headless at rest: activation alone would bring
+            // no window forward, so ask it to show its own window over the same
+            // control channel `keys dashboard` uses, then exit.
+            AppRuntime.requestShowFromRunningInstance()
             return
         }
         let binary = Bundle.main.executableURL!
@@ -114,21 +118,66 @@ enum AppRuntime {
         }
         let url = URL(string: "http://127.0.0.1:\(server.boundPort)/")!
         runOnMainActor {
-            let app = NSApplication.shared
-            app.setActivationPolicy(.regular)
-            let extra = MenubarExtra(service: service, server: server, url: url)
-            extra.appWindow = AppWindowController(url: url, preferences: service.preferences)
-            extra.appWindow?.installMenu(extra: extra)
-            MenubarRuntime.extra = extra
-            app.delegate = extra
-            IngestScheduler.scheduleRepeating(service: service)
-            OpenRouterScheduler.schedule(service: service)
+            _ = AppRuntime.assembleApp(service: service, server: server, url: url, log: log)
+            NSApplication.shared.run()
+        }
+    }
+
+    /// A direct second invocation (a person opening Keysrs.app again, or running
+    /// the binary while the app is up) asks the running app to present its
+    /// window through the same token-gated control channel `keys dashboard`
+    /// uses, then exits. The launch is the app's own show path, so it becomes
+    /// `.regular` while the window is shown; a failure is ignored, because a
+    /// first launch that is still binding its site will show it itself.
+    /// Returns whether a live site was asked.
+    @discardableResult
+    static func requestShowFromRunningInstance(
+        control: URL = ControlFile.url(),
+        client: (ControlFile.Info) -> ControlClient = { ControlClient(info: $0) }
+    ) -> Bool {
+        guard let info = ControlFile.live(at: control) else { return false }
+        _ = try? client(info).call(method: "POST", path: "/api/mcp/app/show", expect: 200)
+        return true
+    }
+
+    /// The main-actor half of `run()`: the long-lived app assembled around the
+    /// bound site, split out with injected seams so the headless launch contract
+    /// is testable without a bundle or a window server. Launch applies the
+    /// resting `.accessory` policy, runs the one-time 0.13 preference migration
+    /// before any surface reads a preference, starts no dashboard window and
+    /// raises no welcome — presentation waits for an approved show path — while
+    /// the ingest scheduler, the OpenRouter scheduler and the first ingest pass
+    /// all start, because they are services, not presentation.
+    @MainActor
+    static func assembleApp(
+        service: KeysService,
+        server: LoopbackHTTPServer,
+        url: URL,
+        log: (String) -> Void = { _ in },
+        activationApplier: @escaping (AppActivation.Policy) -> Void = AppActivation.applyPolicy,
+        window: (any DashboardWindow)? = nil,
+        makeItemController: @escaping () -> MenubarItemController = { MenubarItemController() },
+        scheduleIngest: (KeysService) -> Void = { IngestScheduler.scheduleRepeating(service: $0) },
+        scheduleOpenRouter: (KeysService) -> Void = { OpenRouterScheduler.schedule(service: $0) },
+        ingestInitially: (KeysService) -> Void = { service in
             DispatchQueue.global(qos: .utility).async {
                 _ = try? service.ingest(.all)
                 try? service.pollOpenRouter()
             }
-            app.run()
         }
+    ) -> MenubarExtra {
+        do { try service.preferences.applyHeadlessDefaults() }
+        catch { log("headless defaults pending: \(error.localizedDescription)") }
+        let activation = AppActivation(apply: activationApplier)
+        let extra = MenubarExtra(service: service, server: server, url: url, makeItemController: makeItemController)
+        extra.appWindow = AppWindowController(url: url, preferences: service.preferences, activation: activation, window: window)
+        extra.appWindow?.installMenu(extra: extra)
+        MenubarRuntime.extra = extra
+        NSApplication.shared.delegate = extra
+        scheduleIngest(service)
+        scheduleOpenRouter(service)
+        ingestInitially(service)
+        return extra
     }
 }
 

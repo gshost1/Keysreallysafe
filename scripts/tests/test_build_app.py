@@ -127,7 +127,11 @@ class BuildAppTests(unittest.TestCase):
         self.assertEqual(info["LSMinimumSystemVersion"], "14.0")
         self.assertIs(info["NSHighResolutionCapable"], True)
         self.assertEqual(info["LSApplicationCategoryType"], "public.app-category.developer-tools")
-        self.assertNotIn("LSUIElement", info)  # a regular app with a Dock icon
+        # Pinned on purpose: the app is headless at launch through its own runtime
+        # .accessory activation policy, never through agent-app bundle identity. An
+        # explicit false keeps the bundle a regular application so it can become a
+        # Dock-visible app while the dashboard window is shown.
+        self.assertIs(info["LSUIElement"], False)
 
     def test_version_override_and_bad_version(self):
         app = self.build(version="1.2.3")

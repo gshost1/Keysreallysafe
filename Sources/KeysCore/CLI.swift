@@ -1116,7 +1116,9 @@ struct MenubarCommand: ParsableCommand {
             app.setActivationPolicy(.accessory)
             IngestScheduler.scheduleRepeating(service: service)
             OpenRouterScheduler.schedule(service: service)
-            let extra = MenubarExtra(service: service, server: server, url: url)
+            // The explicit command always creates its requested status item,
+            // independent of the app-mode menu-bar preference (off by default).
+            let extra = MenubarExtra(service: service, server: server, url: url, itemVisible: true)
             MenubarRuntime.extra = extra
             app.delegate = extra
             app.run()

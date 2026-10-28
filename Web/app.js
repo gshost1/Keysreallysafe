@@ -54,6 +54,9 @@
     selected: null,
     mixFilter: null,
     busy: false,
+    // The persisted app choices (GET /api/preferences): the meter, the menu-bar
+    // item and automatic updates. The app menu reads the same store.
+    preferences: null,
     colors: new Map(),
     slots: new Map(),
     providers: null,
@@ -297,7 +300,7 @@
     if (name === "usage") loadStatus();
     else if (name === "chart") loadSpend();
     else if (name === "keys") loadKeys({ focus: !!opts.keyboard && !opts.focusTab });
-    else if (name === "settings") { renderSettings(); loadStatus(); loadRelay(); }
+    else if (name === "settings") { renderSettings(); loadStatus(); loadRelay(); loadPreferences(); }
   }
 
   // Settings lives in the rail's foot, outside the tablist element, so each tab listens itself.
@@ -3647,6 +3650,16 @@
     if (!data) return;
     renderSettings();
     const box = $("live-status");
+    // The Show usage meter preference hides the plan-window meter, not the data:
+    // the rows are still measured and still count in the Chart and the totals, and
+    // turning the switch back on renders them again from the same status.
+    if (state.preferences && !state.preferences.show_usage_meter) {
+      box.hidden = true;
+      box.replaceChildren();
+      $("usage-empty").hidden = true;
+      $("usage-hidden").hidden = true;
+      return;
+    }
     // Hidden cards leave this pane only: they are not zero and not "not tracked", and the
     // Chart, the totals and ingest never consult these preferences.
     if (!hiddenSynced) syncHiddenUsage(true);
@@ -3717,6 +3730,7 @@
   function renderSettings() {
     setSwitch($("theme-switch"), readTheme() === "light");
     setSwitch($("droid-switch"), showDroid());
+    renderAppSettings();
     const status = state.status;
     const list = $("usage-cards-list");
     if (!status) {
@@ -3745,6 +3759,57 @@
     setUsageHidden(btn.dataset.usageId, btn.getAttribute("aria-checked") === "true");
   });
   document.querySelectorAll('[data-action="settings"]').forEach((b) => b.addEventListener("click", () => showPane("settings")));
+
+  // ---------- the Keysrs app's own choices (meter, menu bar item, auto updates, Quit) ----------
+
+  // These live in the catalog, not this browser, because the app menu shows the same values and
+  // the menu bar has no browser storage. Every read is the persisted truth; every write rides the
+  // page token through the mutating /api/preferences/* routes.
+  function renderAppSettings() {
+    const p = state.preferences;
+    if (!p) return;
+    setSwitch($("meter-switch"), !!p.show_usage_meter);
+    setSwitch($("menubar-item-switch"), !!p.menubar_item);
+    setSwitch($("auto-update-switch"), !!p.update_checks);
+  }
+
+  async function loadPreferences() {
+    try {
+      state.preferences = await api("/api/preferences");
+    } catch { /* the switches keep their last state; the status line reports the outage */ }
+    renderSettings();
+    renderStatus();
+  }
+
+  async function setPreference(path, on) {
+    try {
+      state.preferences = await api(path, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }),
+      });
+    } catch (e) { say(e.message); }
+    renderSettings();
+    renderStatus();
+  }
+
+  const switchOn = (id) => $(id).getAttribute("aria-checked") !== "true";
+  $("meter-switch").addEventListener("click", () => setPreference("/api/preferences/show-usage-meter", switchOn("meter-switch")));
+  $("menubar-item-switch").addEventListener("click", () => setPreference("/api/preferences/menubar-item", switchOn("menubar-item-switch")));
+  $("auto-update-switch").addEventListener("click", () => setPreference("/api/preferences/update-checks", switchOn("auto-update-switch")));
+
+  // Quit is the app's own shutdown, the same path the Keysrs menu uses. The route answers before
+  // it terminates, so this fetch sees its 200 instead of a dropped connection.
+  $("btn-quit").addEventListener("click", async () => {
+    const btn = $("btn-quit");
+    btn.disabled = true;
+    try {
+      await api("/api/app/quit", { method: "POST" });
+      $("quit-hint").textContent = "Quitting Keysrs and its background services.";
+      say("Quitting Keysrs…", true);
+    } catch (e) {
+      btn.disabled = false;
+      say(e.message);
+    }
+  });
 
   // ---------- relay (the app's own: one Touch ID to turn on, off again at every launch) ----------
 
@@ -3908,6 +3973,9 @@
   document.addEventListener("DOMContentLoaded", () => window.KeysAnalytics?.event("view_usage"), { once: true });
   loadUsageTotals();
   loadKeys({ quiet: true });
+  // The meter's own preference arrives with the first status, so the Usage pane
+  // honors Show usage meter without a flash of a meter the person turned off.
+  loadPreferences();
   setInterval(loadStatus, 15000);
   // The relay's line moves on its own (a reconnect, a call opening), so it is read again while shown.
   setInterval(() => { if (state.pane === "settings" && !document.hidden && !state.relayPending) loadRelay(); }, 5000);

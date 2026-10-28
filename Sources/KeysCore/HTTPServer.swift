@@ -119,17 +119,39 @@ final class APIHandler: @unchecked Sendable {
     /// agent's open_app must never open a browser. Injectable so a test can watch
     /// the one invocation.
     private let showAppWindow: () -> Void
+    /// The app-reaction seams for the persisted preferences and Quit: the store
+    /// is written first, then the running app's surface follows the same choice.
+    /// Defaults front the running app through MenubarRuntime; injectable so
+    /// tests watch the calls without an app.
+    private let setMenubarItem: (Bool) -> Void
+    private let setUpdateChecks: (Bool) -> Void
+    /// The running app's own shutdown action, or nil when no app owns this
+    /// dashboard (the dev `keys dashboard` copy), which must refuse rather than
+    /// exit someone else's process.
+    private let quitApp: () -> (() -> Void)?
+    /// How a successful Quit is handed off: the dashboard's fetch must receive
+    /// its 200 before termination stops the loopback server, so the shutdown is
+    /// scheduled, never run inside the request handler.
+    private let scheduleQuit: (@escaping () -> Void) -> Void
 
     init(
         service: KeysService,
         webRoot: URL,
         originToken: String = OriginToken.generate(),
-        showAppWindow: @escaping () -> Void = APIHandler.frontKeysrsWindow
+        showAppWindow: @escaping () -> Void = APIHandler.frontKeysrsWindow,
+        setMenubarItem: @escaping (Bool) -> Void = APIHandler.applyMenubarItemPreference,
+        setUpdateChecks: @escaping (Bool) -> Void = APIHandler.applyUpdateChecksPreference,
+        quitApp: @escaping () -> (() -> Void)? = APIHandler.quitKeysrsApp,
+        scheduleQuit: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
     ) {
         self.service = service
         self.webRoot = webRoot
         self.originToken = originToken
         self.showAppWindow = showAppWindow
+        self.setMenubarItem = setMenubarItem
+        self.setUpdateChecks = setUpdateChecks
+        self.quitApp = quitApp
+        self.scheduleQuit = scheduleQuit
         service.analytics?.start()
     }
 
@@ -139,6 +161,65 @@ final class APIHandler: @unchecked Sendable {
     /// any browser and no LaunchServices call on this path.
     static func frontKeysrsWindow() {
         runOnMainActor { MenubarRuntime.extra?.appWindow?.show() }
+    }
+
+    /// The real preference reactions, on the main actor where the surfaces live.
+    /// A site no app owns simply has no surface to update: the store is already
+    /// written, so the answer is still the persisted truth.
+    static func applyMenubarItemPreference(_ on: Bool) {
+        runOnMainActor { MenubarRuntime.extra?.setMenubarItemShown(on) }
+    }
+
+    static func applyUpdateChecksPreference(_ on: Bool) {
+        runOnMainActor { MenubarRuntime.extra?.appWindow?.applyUpdateChecks(on) }
+    }
+
+    /// The app's own Quit, as an action the route can schedule. Reports nil when
+    /// no running app accepted the request, so a dashboard served by something
+    /// else can refuse honestly. The action is not run here: stopping the
+    /// loopback server inside the request handler would drop the dashboard's
+    /// successful fetch.
+    static func quitKeysrsApp() -> (() -> Void)? {
+        var owned = false
+        runOnMainActor { owned = MenubarRuntime.extra != nil }
+        guard owned else { return nil }
+        // The action re-enters the main actor when it runs, so the returned
+        // closure carries no isolation of its own.
+        return { runOnMainActor { MenubarRuntime.extra?.quit() } }
+    }
+
+    /// GET /api/preferences — the persisted choices both surfaces read.
+    private func preferencesStatus() -> HTTPResponse {
+        HTTPResponse.json(200, [
+            "show_usage_meter": service.preferences.showUsageMeter,
+            "menubar_item": service.preferences.menubarItem,
+            "update_checks": service.preferences.updateChecks,
+        ])
+    }
+
+    /// The `{"on": bool}` body every preference write carries; exactly one
+    /// boolean field and nothing else.
+    private func preferenceFlag(_ request: HTTPRequest) throws -> Bool? {
+        let obj = try jsonBody(request)
+        guard obj.count == 1, let on = JSONValue.bool(obj["on"]) else { return nil }
+        return on
+    }
+
+    private func preferenceSet(_ request: HTTPRequest, _ write: (Bool) throws -> Void) throws -> HTTPResponse {
+        guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
+        try write(on)
+        return preferencesStatus()
+    }
+
+    /// POST /api/app/quit — the token-gated Quit behind the Settings button. The
+    /// 200 is built first and the shutdown dispatched afterwards, so the
+    /// dashboard's fetch is not dropped when the loopback server stops.
+    private func appQuit() -> HTTPResponse {
+        guard let terminate = quitApp() else {
+            return HTTPResponse.json(409, ["error": "no app owns this dashboard; stop it in its Terminal instead"])
+        }
+        scheduleQuit(terminate)
+        return HTTPResponse.json(200, ["ok": true])
     }
 
     func handle(_ request: HTTPRequest) -> HTTPResponse {
@@ -228,6 +309,31 @@ final class APIHandler: @unchecked Sendable {
                 }
                 try service.preferences.setHiddenUsage(list.compactMap { $0 as? String })
                 return HTTPResponse.json(200, ["hidden": service.preferences.hiddenUsage.sorted()])
+            // The persisted app choices one Settings pane and the in-window app menu
+            // both read. GET is open like the other status routes (booleans, nothing
+            // secret); every write rides the house token gate above.
+            case ("GET", "/api/preferences"):
+                return preferencesStatus()
+            case ("POST", "/api/preferences/show-usage-meter"):
+                return try preferenceSet(request) { try service.preferences.setShowUsageMeter($0) }
+            case ("POST", "/api/preferences/menubar-item"):
+                guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
+                try service.preferences.setMenubarItem(on)
+                setMenubarItem(on)
+                return preferencesStatus()
+            case ("POST", "/api/preferences/update-checks"):
+                guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
+                // The store is written here (the site owns it, app or not); the
+                // app seam re-reads it to reschedule its update timer.
+                try service.preferences.setUpdateChecks(on)
+                setUpdateChecks(on)
+                return preferencesStatus()
+            // Quit from the dashboard Settings: the same shutdown path the app
+            // menu's Quit uses. Token-gated like every mutating route; a site no
+            // app owns (the dev `keys dashboard` copy) refuses rather than exiting
+            // someone else's process.
+            case ("POST", "/api/app/quit"):
+                return appQuit()
             case ("GET", "/api/limits"):
                 return try limitsList()
             case ("PUT", let p) where p.hasPrefix("/api/limits/"):

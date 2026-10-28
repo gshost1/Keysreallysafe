@@ -7,52 +7,101 @@ import WebKit
 final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, NSMenuDelegate {
     private let url: URL
     private let preferences: AppPreferences
-    private var window: NSWindow?
+    private let activation: AppActivation
+    private let window: any DashboardWindow
     private var loginItem: NSMenuItem?
+    private var meterItem: NSMenuItem?
+    private var menubarToggleItem: NSMenuItem?
     private var updateItem: NSMenuItem?
+    private var relayAppItem: NSMenuItem?
+    private var relayAppStatusItem: NSMenuItem?
+    private var relayAppAwakeItem: NSMenuItem?
     private var updateTimer: Timer?
     private var checking = false
     private weak var menubar: MenubarExtra?
     private var installer: UpdateInstaller?
     private var updateWindow: UpdateProgressWindow?
     private var updating = false
+    /// App-owned alerts raised before a window existed (a failed login
+    /// registration). Headless launch must present nothing, so they wait for the
+    /// first window show instead of popping over a Dock-less app.
+    private var deferredAlerts: [(title: String, text: String)] = []
+    /// The modal presenter and login registration, injected so the headless
+    /// launch contract is testable without a real NSAlert or SMAppService call.
+    private let presentAlert: (String, String) -> Void
+    private let registerLoginItem: () throws -> Void
+    /// The release lookup, injected so a launch test never reaches the network.
+    private let latestRelease: () async throws -> ReleaseInfo
 
-    init(url: URL, preferences: AppPreferences) {
+    init(
+        url: URL,
+        preferences: AppPreferences,
+        activation: AppActivation = AppActivation(),
+        window: (any DashboardWindow)? = nil,
+        presentAlert: ((String, String) -> Void)? = nil,
+        registerLoginItem: (() throws -> Void)? = nil,
+        latestRelease: (() async throws -> ReleaseInfo)? = nil
+    ) {
         self.url = url
         self.preferences = preferences
+        self.activation = activation
+        self.window = window ?? AppKitDashboardWindow(url: url)
+        self.presentAlert = presentAlert ?? { title, text in
+            let alert = NSAlert(); alert.messageText = title; alert.informativeText = text; alert.runModal()
+        }
+        self.registerLoginItem = registerLoginItem ?? { try SMAppService.mainApp.register() }
+        self.latestRelease = latestRelease ?? { try await UpdateCheck.latestRelease() }
+        super.init()
+        if let real = self.window as? AppKitDashboardWindow {
+            real.configure = { [weak self] web in
+                web.navigationDelegate = self
+                web.uiDelegate = self
+            }
+        }
+        // Closing the window is not Quit: activation returns to accessory and
+        // the app's services keep running until an explicit Quit.
+        self.window.onClosed = { [weak self] in self?.activation.windowHidden() }
     }
 
     func show() {
-        if window == nil {
-            let configuration = WKWebViewConfiguration()
-            configuration.websiteDataStore = .default()
-            let web = WKWebView(frame: .zero, configuration: configuration)
-            web.navigationDelegate = self
-            web.uiDelegate = self
-            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 800),
-                                   styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            created.title = "Keysrs"
-            created.minSize = NSSize(width: 760, height: 560)
-            created.isReleasedWhenClosed = false
-            created.contentView = web
-            created.center()
-            window = created
-            web.load(URLRequest(url: url))
+        activation.windowShown()
+        window.orderFront()
+        // The deferred welcome and any launch-time error wait for a visible
+        // window; both run after the show returns, so a remote caller
+        // (MCP open_app) is not blocked behind a modal answer.
+        let present = menubar?.presentWelcome
+        let deferred = deferredAlerts
+        deferredAlerts = []
+        DispatchQueue.main.async { [weak self] in
+            present?()
+            for note in deferred { self?.presentAlert(note.title, note.text) }
         }
-        window?.deminiaturize(nil)
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Hide (⌘H) also leaves no visible window: same accessory return as close.
+    func noteWindowHidden() {
+        activation.windowHidden()
     }
 
     func didLaunch() {
-        show()
+        // Headless launch: no window is shown here. The app registers its login
+        // item and starts the daily update check as background work; the window
+        // appears only when a show path asks for it.
         if !preferences.loginRegistrationAttempted {
             do {
-                try SMAppService.mainApp.register()
+                try registerLoginItem()
                 try preferences.recordLoginRegistration()
-            } catch { alert("Start at Login", "Registration could not finish. Try Start at Login from the Keysrs menu. \(error.localizedDescription)") }
+            } catch { deferAlert("Start at Login", "Registration could not finish. Try Start at Login from the Keysrs menu. \(error.localizedDescription)") }
         }
         scheduleUpdates()
+    }
+
+    /// A launch-time app-owned alert: shown at once only when a window is
+    /// already visible, otherwise held until the first show. A headless launch
+    /// never raises a modal.
+    private func deferAlert(_ title: String, _ text: String) {
+        if activation.current == .regular { presentAlert(title, text) }
+        else { deferredAlerts.append((title, text)) }
     }
 
     func installMenu(extra: MenubarExtra) {
@@ -72,8 +121,22 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         appMenu.addItem(.separator())
         loginItem = add("Start at Login", #selector(toggleLogin), self)
         _ = add("Install Command Line Tool…", #selector(installCLI), self)
+        appMenu.addItem(.separator())
+        meterItem = add("Show Usage Meter", #selector(toggleShowUsageMeter), self)
+        menubarToggleItem = add("Show Menu Bar Item", #selector(toggleMenubarItem), self)
+        appMenu.addItem(.separator())
         _ = add("Check for Updates…", #selector(checkForUpdates), self)
-        updateItem = add("Automatically Check for Updates", #selector(toggleUpdates), self)
+        updateItem = add("Install Updates Automatically", #selector(toggleUpdates), self)
+        appMenu.addItem(.separator())
+        // The same relay controls the menu bar item carries; the app menu is
+        // what is visible while the window is shown and the item may be off.
+        relayAppItem = add("Relay for Cloud Agents", #selector(MenubarExtra.toggleRelay), extra)
+        let relayStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        relayStatus.indentationLevel = 1
+        relayStatus.isHidden = true
+        appMenu.addItem(relayStatus)
+        relayAppStatusItem = relayStatus
+        relayAppAwakeItem = add("Keep Mac Awake for Relay Calls", #selector(MenubarExtra.toggleRelayAwake), extra)
         appMenu.addItem(.separator())
         _ = add("Hide Keysrs", #selector(NSApplication.hide(_:)), NSApp, "h")
         _ = add("Quit Keysrs", #selector(MenubarExtra.quit), extra, "q")
@@ -96,7 +159,16 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
 
     func menuWillOpen(_ menu: NSMenu) {
         loginItem?.state = startsAtLogin ? .on : .off
+        meterItem?.state = preferences.showUsageMeter ? .on : .off
+        menubarToggleItem?.state = preferences.menubarItem ? .on : .off
         updateItem?.state = preferences.updateChecks ? .on : .off
+        if let relay = menubar?.relayMenuState() {
+            relayAppItem?.state = relay.on ? .on : .off
+            relayAppStatusItem?.title = relay.line
+            relayAppStatusItem?.isHidden = relay.line.isEmpty
+            relayAppStatusItem?.toolTip = relay.lastError
+            relayAppAwakeItem?.state = relay.awake ? .on : .off
+        }
     }
 
     @objc func toggleLogin() {
@@ -106,6 +178,19 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
             else { try SMAppService.mainApp.register() }
             try preferences.recordLoginRegistration()
         } catch { alert("Start at Login", error.localizedDescription) }
+    }
+
+    @objc func toggleShowUsageMeter() {
+        do { try preferences.setShowUsageMeter(!preferences.showUsageMeter) }
+        catch { alert("Show Usage Meter", error.localizedDescription) }
+    }
+
+    @objc func toggleMenubarItem() {
+        let on = !preferences.menubarItem
+        do {
+            try preferences.setMenubarItem(on)
+            menubar?.setMenubarItemShown(on)
+        } catch { alert("Menu Bar Item", error.localizedDescription) }
     }
 
     @objc func installCLI() {
@@ -126,7 +211,13 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     }
 
     @objc private func toggleUpdates() {
-        do { try preferences.setUpdateChecks(!preferences.updateChecks); scheduleUpdates() }
+        applyUpdateChecks(!preferences.updateChecks)
+    }
+
+    /// The one setter behind both the app menu and the dashboard Settings
+    /// switch: the persisted choice plus the scheduler that follows it.
+    func applyUpdateChecks(_ on: Bool) {
+        do { try preferences.setUpdateChecks(on); scheduleUpdates() }
         catch { alert("Updates", error.localizedDescription) }
     }
 
@@ -147,9 +238,13 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         Task {
             defer { checking = false }
             do {
-                let release = try await UpdateCheck.latestRelease()
+                let release = try await latestRelease()
                 if UpdateCheck.isNewer(release.version, than: ProductAnalyticsConfiguration.appVersion) {
-                    offerUpdate(release)
+                    // Only the person's Check for Updates offers the modal. The
+                    // scheduled check runs at headless launch, so it never raises
+                    // an app-owned dialog over a Dock-less app; its install path
+                    // is the background updater.
+                    if manual { offerUpdate(release) }
                 } else if manual {
                     alert("Keysrs Is Up to Date", "Keysrs \(ProductAnalyticsConfiguration.appVersion) is the newest release.")
                 }
@@ -203,7 +298,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     }
 
     private func alert(_ title: String, _ text: String) {
-        let alert = NSAlert(); alert.messageText = title; alert.informativeText = text; alert.runModal()
+        presentAlert(title, text)
     }
 
     // Keep API-origin privileges inside our loopback page. External links use the default browser.
@@ -236,7 +331,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
                   completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = URL(fileURLWithPath: suggestedFilename).lastPathComponent
-        guard let window else { completionHandler(nil); return }
+        guard let window = window.nsWindow else { completionHandler(nil); return }
         panel.beginSheetModal(for: window) { result in
             completionHandler(result == .OK ? panel.url : nil)
         }
