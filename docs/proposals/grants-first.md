@@ -196,3 +196,45 @@ checklist for the owner.
   relaunch at once, notify.
 - **Whether `keys unwrap` needs the app running** — `keys wrap` does.
   Recommended: follow `keys env` (in-process); it only reads and rewrites.
+
+## Owner review (2026-10-27, approved with these changes)
+
+Approved for building. Where this section and the text above disagree, this
+section wins.
+
+- **One Touch ID for import.** `import_and_wrap` shows one prompt naming the
+  keys and the project; it covers storing the keys and issuing the project's
+  token. Onboarding step 2's "a second issues the token" is withdrawn.
+- **Server instructions** are: never open or read `.env` files yourself (use
+  `scan_project`); ask the user before importing keys or requesting a grant;
+  prefer the gateway token over raw keys; if no key exists, ask the user to
+  run `keys add` in their own terminal; after a failure offer `send_feedback`
+  but never send it; don't repeat tokens back unless asked.
+- **`check_exposure`** returns, per env file: gitignored or not, tracked or
+  not, ever present in git history, and a rotation recommendation for any key
+  that was committed. It never returns file contents or diffs.
+- **`test_keys`** takes a `confirm` argument; without `confirm: true` in that
+  call it makes no network request.
+- **A project** is the canonical, symlink-resolved folder path, stored locally
+  with a display label (folder name, disambiguated by its parent when labels
+  collide) and referenced by a new `gateway_clients` column. The path never
+  leaves the Mac or enters analytics; the scrubber removes labels.
+- **Quit and relay toggles** move to the dashboard's settings (and the app
+  menu while the window is shown).
+- **Background install** runs on the daily check when the setting is on,
+  installs when idle (no pending Touch ID prompt, no in-flight gateway
+  request), relaunches, and notifies. Same checksum and signing checks as the
+  manual path.
+- **`keys unwrap`** auto-launches the app like `keys wrap`, so token
+  revocation stays in the one process that owns `gateway_clients`.
+- **Added by the owner:** a guided `keys add` for the headless app (no
+  arguments: provider picker with type-ahead from the catalog and overlay,
+  e.g. "o" lists OpenAI, OpenRouter, Ollama; a suggested name; the existing
+  hidden, confirmed prompt) and "did you mean" for an unknown `--provider`.
+  A `set_analytics_sharing(enabled)` tool records the onboarding answer.
+- **Build split**, five missions: (1) MCP core, project identity, grants and
+  read tools, with a tool registry and one output guard; (2) onboarding,
+  (3) headless app plus guided `keys add`, and (4) feedback, analytics,
+  `revoke_all` and `activity` each depend only on (1) and run in parallel;
+  (5) integration merges 2–4, bumps 0.14.0, writes the CHANGELOG entry, the
+  Homebrew cask and the manual checklist.
