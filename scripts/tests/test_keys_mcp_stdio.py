@@ -8,6 +8,13 @@ network, no real credential. This is the process half of VAL-MCP-LIFECYCLE-008/0
 MCPServerShutdownTests. CI runs this via
 `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`, after `swift test`
 has built the binary.
+
+Every session also runs the app-connection isolation rules (VAL-CONNECT-005) in
+their spawned-process form: the catalog — and with it the control file — is
+guarded to an explicit temp location before the process is spawned, and the
+test-only KEYS_TEST_NO_LAUNCH seam is set so the subprocess's production launch
+pair fails closed: an app-bound call against a down site can only ever answer
+the plain not-running sentence, never reach LaunchServices or the installed app.
 """
 import json
 import os
@@ -24,6 +31,39 @@ REPO = HERE.parent.parent
 KEYS = REPO / ".build" / "debug" / "keys"
 SHUTDOWN_BOUND_S = 2.0  # the documented shutdown bound
 IDLE_S = 5.0            # the no-idle-timeout probe must outlive this
+# The exact pinned not-running sentence, copied verbatim from the Swift seam.
+NOT_RUNNING = "Keysrs isn't running. Open Keysrs from Applications, then try again."
+# The fail-closed bounds: with the no-launch seam an app-bound call against a
+# down site answers in milliseconds, while the real clock would spend the two
+# 10 s launch budgets. The generous margins below are for machine load right
+# after a full swift test run (the CI order), not for the seam: a quietly
+# regressed seam misses the read bound outright.
+FAIL_CLOSED_BOUND_S = 10.0
+FAIL_CLOSED_READ_S = 15.0
+
+
+def isolation_guard(catalog):
+    """The spawned-process half of the app-connection isolation guard.
+
+    Compares the CONFIGURED paths only — never stats, opens or reads any
+    control file — and refuses, before the process is spawned, a catalog whose
+    control file would land inside production state. Raises AssertionError so
+    the rig fails closed instead of reaching the real app.
+    """
+    catalog = str(catalog)
+    production = Path.home() / "Library" / "Application Support" / "Keysreallysafe"
+    if catalog == str(production) or catalog.startswith(str(production) + "/"):
+        raise AssertionError("test isolation rejected %s: the production app-support "
+                              "directory; use an explicit temporary catalog" % catalog)
+    installed = "/Applications/Keysrs.app"
+    if catalog == installed or catalog.startswith(installed + "/"):
+        raise AssertionError("test isolation rejected %s: the installed app bundle; "
+                             "use an explicit temporary catalog" % catalog)
+    root = tempfile.gettempdir()
+    temp_roots = {root} if root.startswith("/private") else {root, "/private" + root}
+    if not any(catalog == r or catalog.startswith(r + "/") for r in temp_roots):
+        raise AssertionError("test isolation rejected %s: the catalog must be an "
+                             "explicit temporary path" % catalog)
 
 
 def frame(method, id, params=None):
@@ -45,8 +85,15 @@ class Session:
         self.test = test
         self.tmp = tempfile.TemporaryDirectory()
         test.addCleanup(self.tmp.cleanup)
+        catalog = Path(self.tmp.name) / "catalog.db"
+        # The isolation guard runs before anything is spawned: an explicit
+        # temporary catalog (the control file follows it) and the test-only
+        # no-launch seam, so the subprocess cannot reach LaunchServices or the
+        # installed app even if a test drives an app-bound tool with no site up.
+        isolation_guard(catalog)
         env = dict(os.environ)
-        env["KEYS_CATALOG"] = str(Path(self.tmp.name) / "catalog.db")
+        env["KEYS_CATALOG"] = str(catalog)
+        env["KEYS_TEST_NO_LAUNCH"] = "1"
         self.proc = subprocess.Popen(
             [str(KEYS), "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=env)
@@ -206,6 +253,30 @@ class KeysMCPStdioTests(unittest.TestCase):
         self.assertEqual(s.wait(), 0, "no message-level failure may exit the process")
         s.drain_stdout_after_exit()
         self.assertNotIn("jsonrpc", s.stderr_text())
+
+    def test_no_app_fails_closed_without_launching(self):
+        """VAL-CONNECT-005's spawned-process half: with no control file at all,
+        an app-bound tool call is the exact pinned not-running sentence as a
+        tool result, inside the fail-closed bound — the KEYS_TEST_NO_LAUNCH
+        seam refused every open and never slept, so nothing reached
+        LaunchServices or the installed app (a quietly regressed seam would
+        spend the two ~10 s launch budgets and miss the bound)."""
+        s = Session(self)
+        s.send(initialize())
+        s.read_frame(timeout=FAIL_CLOSED_READ_S)
+        started = time.monotonic()
+        s.send(frame("tools/call", "dead", {"name": "request_grant", "arguments": {"key": "demo"}}))
+        answer = s.read_frame(timeout=FAIL_CLOSED_READ_S)
+        elapsed = time.monotonic() - started
+        self.assertEqual(answer["id"], "dead")
+        self.assertTrue(answer["result"]["isError"], "a dead site is a tool result, never an exit")
+        text = answer["result"]["content"][0]["text"]
+        self.assertEqual(text, NOT_RUNNING, "the exact pinned sentence, byte for byte")
+        self.assertLess(elapsed, FAIL_CLOSED_BOUND_S,
+                        "the fail-closed path is fast: %.2fs" % elapsed)
+        s.close_stdin()
+        self.assertEqual(s.wait(), 0)
+        s.drain_stdout_after_exit()
 
     def test_help_and_bogus_flag_start_no_server(self):
         help_run = subprocess.run([str(KEYS), "mcp", "--help"], capture_output=True,

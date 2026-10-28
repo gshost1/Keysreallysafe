@@ -49,8 +49,11 @@ final class MCPGrantTests: XCTestCase {
         let control: URL
         let clock: Clock
 
-        var registry: MCPToolRegistry {
-            MCPRoster.registry(
+        /// The site-wired roster: every production group over THIS site's control
+        /// file, so the tools answer from THIS catalog and service. Building it
+        /// runs the shared isolation guard first (inside `MCPRoster.registry`).
+        func registry() throws -> MCPToolRegistry {
+            try MCPRoster.registry(
                 catalog: { db },
                 control: control,
                 fetchLatestRelease: { throw AppError.usage("the grant rig fetches no release") },
@@ -64,10 +67,16 @@ final class MCPGrantTests: XCTestCase {
         clock: Clock = Clock(),
         gatewayOn: Bool = true
     ) throws -> Site {
-        let (db, dir) = try makeDB()
+        // The guarded world first: the control URL beside the catalog, with the
+        // rig's fake secret stores, fail-closed-checked before any fixture, file
+        // or socket operation runs.
+        let secrets = MemorySecretStore()
+        let relaySecrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let db = try CatalogDB(path: catalog)
         let service = KeysService(
             catalog: db,
-            secrets: MemorySecretStore(),
+            secrets: secrets,
             presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
@@ -76,7 +85,7 @@ final class MCPGrantTests: XCTestCase {
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
             openRouter: OpenRouterHTTP(),
-            relaySecrets: MemorySecretStore()
+            relaySecrets: relaySecrets
         )
         service.mcpPendingGrants.inject(now: { clock.current })
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
@@ -90,7 +99,6 @@ final class MCPGrantTests: XCTestCase {
         let handler = APIHandler(service: service, webRoot: web)
         let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
         server.start()
-        let control = ControlFile.url(beside: db.path)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         let site = Site(
             service: service, db: db, dir: dir, gate: gate, handler: handler,
@@ -148,7 +156,7 @@ final class MCPGrantTests: XCTestCase {
         let (frames, _) = try MCPSession.run([
             MCPSession.initialize(),
             #"{"jsonrpc":"2.0","id":"t","method":"tools/call","params":{"name":"\#(name)","arguments":\#(argumentsJSON)}}"#,
-        ], registry: site.registry)
+        ], registry: try site.registry())
         XCTAssertEqual(frames.last, "", file: file, line: line)
         let result = try MCPSession.assertResult(frames[1], id: "t", file: file, line: line)
         let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
@@ -483,6 +491,7 @@ final class MCPGrantTests: XCTestCase {
         server.start()
         addTeardownBlock { server.stop() }
         let control = ControlFile.url(beside: rig.db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
 
         let created = handle(handler, method: "POST", path: "/api/mcp/grants", body: try JSONValue.data(
@@ -930,8 +939,13 @@ final class MCPGrantTests: XCTestCase {
     /// the key's resolved host with the row untouched; an existing grant is
     /// field-for-field unchanged; a repeat ask is a new request and a new grant.
     func testNoHostInputGrantsUntouched() throws {
-        // The schema: exactly the pinned property set, host absent.
-        let schema = (MCPGrantTools().tools().first { $0.name == "request_grant" })!.inputSchema
+        // The schema: exactly the pinned property set, host absent. Even a
+        // schema-only construction runs behind the guard: an explicit temporary
+        // control URL and the never-launching pair, never the production
+        // defaults a bare MCPGrantTools() would carry.
+        let (_, _, schemaControl) = try AppConnectionIsolationGuard.makeWorld()
+        let schema = (MCPGrantTools(control: schemaControl, launch: .neverLaunching)
+            .tools().first { $0.name == "request_grant" })!.inputSchema
         let properties = schema["properties"] as! [String: Any]
         XCTAssertEqual(Set(properties.keys),
                        ["key", "task", "methods", "paths", "minutes", "max_requests", "max_usd", "profile"],
@@ -1191,7 +1205,9 @@ final class MCPGrantTests: XCTestCase {
     func testOwnerCheckAtCreate() throws {
         let site = try makeSite()
         // A second live site owns the gateway: the control file still reaches this
-        // site, but it names another live process as the owner.
+        // site, but it names another live process as the owner. The guard runs
+        // before the site's control file is rewritten.
+        try AppConnectionIsolationGuard.assertIsolated(control: site.control, launch: .neverLaunching)
         let other = getppid()
         try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, pid: other, to: site.control)
 
@@ -1257,10 +1273,11 @@ final class MCPGrantTests: XCTestCase {
             "the existing grant is revoked as today")
         XCTAssertTrue(locked.service.listGrants().isEmpty, "nothing is live after the lock")
 
-        // No app running: the exact sentence, byte for byte.
-        let nowhere = try TempDir.make()
+        // No app running: the exact sentence, byte for byte. The nowhere world is
+        // guarded before the grant group is built over it.
+        let (_, _, nowhereControl) = try AppConnectionIsolationGuard.makeWorld()
         let tools = MCPGrantTools(
-            control: ControlFile.url(beside: nowhere.appendingPathComponent("catalog.db")),
+            control: nowhereControl,
             launch: .neverLaunching
         )
         XCTAssertThrowsError(try tools.call("request_grant", arguments: ["key": "demo"])) { error in

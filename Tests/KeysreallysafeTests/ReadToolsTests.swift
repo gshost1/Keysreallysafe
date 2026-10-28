@@ -47,6 +47,20 @@ final class ReadToolsTests: XCTestCase {
         return (service, db, dir, gate)
     }
 
+    /// The same vault, built inside an already-guarded world: the caller holds
+    /// a temporary directory whose control URL, launch pair and secret store
+    /// the isolation guard has already fail-closed-checked.
+    @discardableResult
+    private func makeVault(in dir: URL, catalog: URL, secrets: MemorySecretStore) throws -> (
+        service: KeysService, db: CatalogDB, gate: RecordingPresenceGate
+    ) {
+        let db = try CatalogDB(path: catalog)
+        let (service, gate) = makeGatedService(db: db, secrets: secrets)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
+        return (service, db, gate)
+    }
+
     /// A real folder under `dir`, which itself sits behind the `/var` →
     /// `/private/var` symlink, so every resolution also exercises that spelling.
     private func makeFolder(_ dir: URL, _ name: String) throws -> URL {
@@ -72,13 +86,17 @@ final class ReadToolsTests: XCTestCase {
     }
 
     private func makeSite(show: ShowSpy = ShowSpy()) throws -> Site {
-        let (service, db, dir, _) = try makeVault()
+        // The guarded world first: the control URL beside the catalog, the fake
+        // launch pair and the fake secret store, fail-closed-checked before any
+        // fixture, file or socket operation.
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let (service, db, _) = try makeVault(in: dir, catalog: catalog, secrets: secrets)
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try fm.createDirectory(at: web, withIntermediateDirectories: true)
         let handler = APIHandler(service: service, webRoot: web, showAppWindow: { show.show() })
         let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
         server.start()
-        let control = ControlFile.url(beside: db.path)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         let tools = MCPReadTools(
             catalog: { db },
@@ -96,10 +114,10 @@ final class ReadToolsTests: XCTestCase {
     /// check_update tests exercise the release fetcher alone, and an accidental
     /// app or catalog call fails loudly instead of reaching the machine's real state.
     private func updateTools(fetch: @escaping () throws -> ReleaseInfo) throws -> MCPReadTools {
-        let dir = try TempDir.make()
+        let (_, _, control) = try AppConnectionIsolationGuard.makeWorld()
         return MCPReadTools(
             catalog: { throw AppError.usage("check_update reads no catalog") },
-            control: ControlFile.url(beside: dir.appendingPathComponent("catalog.db")),
+            control: control,
             fetchLatestRelease: fetch,
             launch: .neverLaunching
         )
@@ -157,13 +175,15 @@ final class ReadToolsTests: XCTestCase {
     /// model has no per-key last-4 and no per-key expiry), an empty vault yielding
     /// an empty list as a success, and no secret value or token shape anywhere.
     func testListKeysShape() throws {
-        let (service, db, dir, _) = try makeVault()
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let (service, db, _) = try makeVault(in: dir, catalog: catalog, secrets: secrets)
         try service.add(name: "second", provider: "anthropic", kind: "billing", notes: "", secret: fixtureSecret)
         let project = try service.resolveProject(folder: try makeFolder(dir, "shape-proj").path)
         _ = try service.issueGatewayClient(name: "demo", label: "agent", project: project.id)
         let tools = MCPReadTools(
             catalog: { db },
-            control: ControlFile.url(beside: db.path),
+            control: control,
             fetchLatestRelease: { throw AppError.usage("list_keys checks no release") },
             launch: .neverLaunching
         )
@@ -195,10 +215,11 @@ final class ReadToolsTests: XCTestCase {
         XCTAssertEqual(demo["projects"] as? [String], [project.label], "labels only")
 
         // An empty vault is an empty list: a success, no prose error, no tool error.
-        let (emptyDB, _) = try makeDB()
+        let (_, emptyCatalog, emptyControl) = try AppConnectionIsolationGuard.makeWorld()
+        let emptyDB = try CatalogDB(path: emptyCatalog)
         let emptyTools = MCPReadTools(
             catalog: { emptyDB },
-            control: ControlFile.url(beside: emptyDB.path),
+            control: emptyControl,
             fetchLatestRelease: { throw AppError.usage("list_keys checks no release") },
             launch: .neverLaunching
         )
@@ -221,7 +242,9 @@ final class ReadToolsTests: XCTestCase {
     /// with no restart; an expired token's project is filtered at read time with
     /// the row itself untouched; a dangling reference is skipped without error.
     func testInUseProjects() throws {
-        let (service, db, dir, _) = try makeVault()
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let (service, db, _) = try makeVault(in: dir, catalog: catalog, secrets: secrets)
         let projectA = try service.resolveProject(folder: try makeFolder(dir, "work").path)
         let projectB = try service.resolveProject(folder: try makeFolder(dir, "side").path)
         _ = try service.issueGatewayClient(name: "demo", label: "agent a", project: projectA.id)
@@ -231,7 +254,7 @@ final class ReadToolsTests: XCTestCase {
 
         let tools = MCPReadTools(
             catalog: { db },
-            control: ControlFile.url(beside: db.path),
+            control: control,
             fetchLatestRelease: { throw AppError.usage("list_keys checks no release") },
             launch: .neverLaunching
         )
@@ -419,11 +442,12 @@ final class ReadToolsTests: XCTestCase {
     /// payload alongside it, and the session alive. "No grants" must not be
     /// indistinguishable from "cannot see grants".
     func testGatewayInfoWholeFail() throws {
-        let (service, db, dir, _) = try makeVault()
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let (service, db, _) = try makeVault(in: dir, catalog: catalog, secrets: secrets)
         let project = try service.resolveProject(folder: try makeFolder(dir, "whole-fail-proj").path)
         _ = try service.issueGatewayClient(name: "demo", label: "agent", project: project.id)
         try db.setMeta("pref_docker_access", "on")
-        let control = ControlFile.url(beside: db.path)
         XCTAssertFalse(FileManager.default.fileExists(atPath: control.path), "no live site owns this catalog")
         let tools = MCPReadTools(
             catalog: { db },
@@ -530,10 +554,11 @@ final class ReadToolsTests: XCTestCase {
 
         // With no app: the exact sentence as a tool result, and nothing else
         // happened.
-        let (db, _) = try makeDB()
+        let (_, bareCatalog, bareControl) = try AppConnectionIsolationGuard.makeWorld()
+        let bareDB = try CatalogDB(path: bareCatalog)
         let tools = MCPReadTools(
-            catalog: { db },
-            control: ControlFile.url(beside: db.path),
+            catalog: { bareDB },
+            control: bareControl,
             fetchLatestRelease: { throw AppError.usage("open_app checks no release") },
             launch: .neverLaunching
         )

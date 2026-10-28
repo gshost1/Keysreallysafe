@@ -33,8 +33,25 @@ struct AppLaunchSeam: Sendable {
     var launcher: any AppLauncher = LaunchServicesAppLauncher()
     var clock: any AppLaunchClock = ThreadAppLaunchClock()
 
-    /// LaunchServices and the wall clock: what every production caller runs with.
-    static let production = AppLaunchSeam()
+    /// LaunchServices and the wall clock: what every production caller runs
+    /// with. `KEYS_TEST_NO_LAUNCH` — ours, the `KEYS_*` fixture-variable
+    /// convention — swaps in the fail-closed test pair below: a spawned `keys`
+    /// subprocess runs production code and cannot be handed a Swift closure,
+    /// so the environment is the one injection channel its test rig has, and
+    /// with it the process CANNOT reach LaunchServices or the installed app
+    /// even on a down site — opens are refused and the clock never sleeps, so
+    /// an app-bound call fails closed to the plain not-running sentence, fast
+    /// and bounded. An empty value means unset, the `Paths.env` convention.
+    static var production: AppLaunchSeam { production(environment: ProcessInfo.processInfo.environment) }
+
+    /// The resolved pair for an explicit environment — the testable form of
+    /// the default above.
+    static func production(environment: [String: String]) -> AppLaunchSeam {
+        guard let flag = environment["KEYS_TEST_NO_LAUNCH"], !flag.isEmpty else {
+            return AppLaunchSeam()
+        }
+        return AppLaunchSeam(launcher: NoLaunchAppLauncher(), clock: NoSleepAppLaunchClock())
+    }
 }
 
 /// Production: LaunchServices resolves the bundle id to its app and opens it; the
@@ -59,4 +76,24 @@ struct ThreadAppLaunchClock: AppLaunchClock {
     func sleep(for interval: TimeInterval) {
         Thread.sleep(forTimeInterval: interval)
     }
+}
+
+/// Test-only (`KEYS_TEST_NO_LAUNCH`): the launcher that never opens anything.
+/// Both forms answer false, so the one seam's launch loop is a pure refusal —
+/// nothing resolves through LaunchServices, and nothing can reach the
+/// installed app from a subprocess under test. The refusal is what a rig
+/// wants: a down site then fails closed to the plain sentence instead of
+/// ever touching the user's real app.
+struct NoLaunchAppLauncher: AppLauncher {
+    func open(bundleID: String) -> Bool { false }
+    func open(installedAt url: URL) -> Bool { false }
+}
+
+/// Test-only (`KEYS_TEST_NO_LAUNCH`): the clock that never sleeps, so the
+/// bounded wait runs its whole schedule instantly — a down site fails closed
+/// in milliseconds instead of spending the two launch budgets a real wait
+/// would, which is also what proves the seam was active: a test whose
+/// subprocess quietly regressed to the real clock would take its 20 s.
+struct NoSleepAppLaunchClock: AppLaunchClock {
+    func sleep(for interval: TimeInterval) {}
 }

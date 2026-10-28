@@ -34,6 +34,10 @@ struct AppConnectionProbeGroup: MCPToolGroup {
     }
 
     func call(_ name: String, arguments: [String: Any]) throws -> MCPToolResult {
+        // The probe guards its own world on every call: the control URL and the
+        // launch pair are fail-closed-checked before the connect below, so a rig
+        // that wired this probe at production state aborts here.
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch)
         let app = try AppConnection.connect(control: control, launch: launch)
         let answer = try app.call(
             method: "POST", path: "/api/preferences/hidden-usage", body: ["hidden": [] as [String]], expect: 200
@@ -167,15 +171,16 @@ final class MCPAppConnectionTests: XCTestCase {
     /// loops drive the REAL tool groups against THIS test's site shape, never the
     /// machine's installed app (which the groups' default control URL would find,
     /// since the real app is running on this machine). The unwired seams fail
-    /// loudly if a loop ever strays off the app-bound names.
-    private static func appBoundRoster(control: URL) -> MCPToolRegistry {
+    /// loudly if a loop ever strays off the app-bound names. Building the roster
+    /// runs the shared isolation guard first (inside `MCPRoster.groups`).
+    private static func appBoundRoster(control: URL) throws -> MCPToolRegistry {
         let unwiredCatalog: () throws -> CatalogDB = {
             throw AppError.usage("the app-bound loop reads no catalog")
         }
         let unwiredFetch: () throws -> ReleaseInfo = {
             throw AppError.usage("the app-bound loop fetches no release")
         }
-        return MCPToolRegistry(groups: MCPRoster.groups(
+        return MCPToolRegistry(groups: try MCPRoster.groups(
             catalog: unwiredCatalog,
             control: control,
             fetchLatestRelease: unwiredFetch
@@ -220,10 +225,14 @@ final class MCPAppConnectionTests: XCTestCase {
 
     /// A real site over a temp catalog — an APIHandler behind a loopback server on
     /// an ephemeral port, with the request log the token assertions read (the
-    /// `ListCommandTests` rig).
+    /// `ListCommandTests` rig). The world is guarded before any fixture: the
+    /// control URL beside the catalog, the fake launch pair and the fake secret
+    /// store are fail-closed-checked first.
     private static func makeSite() throws -> (server: LoopbackHTTPServer, handler: APIHandler, log: RequestLog, control: URL) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let db = try CatalogDB(path: catalog)
+        let (service, _) = makeGatedService(db: db, secrets: secrets)
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         let handler = APIHandler(service: service, webRoot: web)
@@ -233,19 +242,22 @@ final class MCPAppConnectionTests: XCTestCase {
             return handler.handle(request)
         }
         server.start()
-        return (server, handler, log, ControlFile.url(beside: db.path))
+        return (server, handler, log, control)
     }
 
     /// Every control-file shape that reads as "no live site" — the contract's list:
     /// the file absent, its owning process gone, and each body `ControlFile.read`
-    /// rejects (invalid JSON, port 0, port 70000, pid 0, negative pid).
+    /// rejects (invalid JSON, port 0, port 70000, pid 0, negative pid). Each
+    /// shape's URL is derived and fail-closed-checked BEFORE it is written.
     private static func notRunningControls() throws -> [(label: String, control: URL)] {
         var shapes: [(label: String, control: URL)] = []
         // Absent: the parent directory itself does not exist, like a fresh machine.
-        let absent = try TempDir.make().appendingPathComponent("never-created").appendingPathComponent("control.json")
+        let (absentDir, _, _) = try AppConnectionIsolationGuard.makeWorld()
+        let absent = absentDir.appendingPathComponent("never-created").appendingPathComponent("control.json")
+        try AppConnectionIsolationGuard.assertIsolated(control: absent, launch: .neverLaunching)
         shapes.append(("file absent", absent))
         // A dead owning pid: a child that exited and was reaped, like a quit app.
-        let dead = try TempDir.make().appendingPathComponent("control.json")
+        let (_, _, dead) = try AppConnectionIsolationGuard.makeWorld()
         try ControlFile.write(port: 443, token: "dead-owner", pid: reapedChildPID(), to: dead)
         shapes.append(("dead pid", dead))
         // Malformed bodies, written raw so ControlFile.write's own validation is bypassed.
@@ -256,7 +268,7 @@ final class MCPAppConnectionTests: XCTestCase {
             ("pid 0", #"{"port":443,"pid":0,"token":"t"}"#),
             ("pid negative", #"{"port":443,"pid":-1,"token":"t"}"#),
         ] {
-            let url = try TempDir.make().appendingPathComponent("control.json")
+            let (_, _, url) = try AppConnectionIsolationGuard.makeWorld()
             try Data(body.utf8).write(to: url)
             shapes.append((label, url))
         }
@@ -271,10 +283,15 @@ final class MCPAppConnectionTests: XCTestCase {
     func testLiveRoundTripTokenOnEveryCall() throws {
         let (server, handler, log, control) = try Self.makeSite()
         defer { server.stop() }
+        // The guard runs before the site's world is written to or connected to:
+        // the explicit temporary control URL and an explicit fake launch pair.
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
 
-        // The one decision: connect() succeeds against a live site.
-        let app = try AppConnection.connect(control: control)
+        // The one decision: connect() succeeds against a live site. The seam is
+        // injected explicitly — never the default production pair — so even a
+        // mid-test site loss could not reach LaunchServices or the installed app.
+        let app = try AppConnection.connect(control: control, launch: .neverLaunching)
 
         // A read round-trips (GET /api/grants → 200)…
         let grants = try app.call(method: "GET", path: "/api/grants", expect: 200)
@@ -308,11 +325,15 @@ final class MCPAppConnectionTests: XCTestCase {
         let appBound = try Self.registeredAppBoundRows()
 
         for (label, control) in try Self.notRunningControls() {
+            // The guard runs before the roster and probe are wired at this shape:
+            // every not-running shape is an explicit temporary control URL behind
+            // a fake launch pair.
+            try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
             // The probe rides beside the control-wired production roster, so the
             // session drives the same sentence through both the seam itself and
             // every registered app-bound tool.
             let registry = MCPToolRegistry(
-                groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+                groups: try Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
             )
             var lines = [MCPSession.initialize(id: "open")]
             lines.append(#"{"jsonrpc":"2.0","id":"probe","method":"tools/call","params":{"name":"needs_app"}}"#)
@@ -368,12 +389,15 @@ final class MCPAppConnectionTests: XCTestCase {
             if sitter.isRunning { sitter.terminate() }
             sitter.waitUntilExit()
         }
+        // The guard before the site's world is written to or driven: the rig's
+        // control URL and the never-launching default pair.
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, pid: sitter.processIdentifier, to: control)
         // The probe beside the control-wired production roster: this loop drives
         // the seam, and the roster stays pointed at THIS site should a later edit
         // add a registered-tool call.
         let registry = MCPToolRegistry(
-            groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+            groups: try Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
         )
 
         func probe(_ id: String) throws -> (isError: Bool, text: String) {
@@ -460,13 +484,13 @@ final class MCPAppConnectionTests: XCTestCase {
         XCTAssertEqual(AppConnection.appCallTimeout, 10, "the contract's 10 s app-call timeout")
         let stub = try HungSiteStub()
         defer { stub.stop() }
-        let control = try TempDir.make().appendingPathComponent("control.json")
+        let (_, _, control) = try AppConnectionIsolationGuard.makeWorld()
         try ControlFile.write(port: stub.port, token: "hung-site", pid: ProcessInfo.processInfo.processIdentifier, to: control)
         // The app-bound production tools wired over the HUNG site's control file,
         // so the bound below drives the real groups against the stub, never the
         // machine's installed app.
         let registry = MCPToolRegistry(
-            groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+            groups: try Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
         )
 
         // The probe call sits out the whole 10 s app-call timeout and comes back.
@@ -519,13 +543,13 @@ final class MCPAppConnectionTests: XCTestCase {
     /// result (the exact sentence), never an exit. The process half (exit 0 at EOF
     /// with no app) is `scripts/tests/test_keys_mcp_stdio.py` plus the spawned check.
     func testServerServesWithoutApp() throws {
-        // An empty directory is the whole world: no catalog, no control file.
-        let empty = try TempDir.make()
-        let control = empty.appendingPathComponent("control.json")
+        // An empty directory is the whole world: no catalog, no control file. The
+        // guard runs before anything is built in it.
+        let (empty, _, control) = try AppConnectionIsolationGuard.makeWorld()
         // The control-wired production roster, so even this test's roster can only
         // ever see the app-less world.
         let registry = MCPToolRegistry(
-            groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+            groups: try Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
         )
 
         // Construction and the handshake never touch the app: had anything tried
@@ -569,8 +593,10 @@ final class MCPAppConnectionTests: XCTestCase {
     private static func makeShowSite() throws -> (
         server: LoopbackHTTPServer, handler: APIHandler, log: RequestLog, control: URL, show: ShowSpy
     ) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let db = try CatalogDB(path: catalog)
+        let (service, _) = makeGatedService(db: db, secrets: secrets)
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         let show = ShowSpy()
@@ -581,7 +607,7 @@ final class MCPAppConnectionTests: XCTestCase {
             return handler.handle(request)
         }
         server.start()
-        return (server, handler, log, ControlFile.url(beside: db.path), show)
+        return (server, handler, log, control, show)
     }
 
     /// With no live app, `connect()` opens the installed app by bundle id and waits
@@ -597,6 +623,9 @@ final class MCPAppConnectionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: control.path), "no live app owns this catalog")
 
         let launch = RecordingAppLaunch()
+        // The guard with the rig's own values, before the drive: the explicit
+        // temporary control URL and the recording fake pair.
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         launch.onSleep = { count in
             if count == 2 {
                 try? ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
@@ -632,6 +661,7 @@ final class MCPAppConnectionTests: XCTestCase {
         defer { server.stop() }
         let launch = RecordingAppLaunch()
         launch.openBundleID = false
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         launch.onSleep = { count in
             if count == 1 {
                 try? ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
@@ -653,10 +683,12 @@ final class MCPAppConnectionTests: XCTestCase {
     /// the plain sentence with exit 6 — and the whole wait is bounded: two budgets
     /// of backoff on the pinned capped schedule, never more.
     func testFailedLaunchRetriesOnceThenThePlainSentence() throws {
-        let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
         let launch = RecordingAppLaunch()
         launch.openBundleID = false
         launch.openInstalledPath = false
+        // The nowhere control URL, derived and guarded before the drive: this
+        // rig never builds a site, and its refused launch pair is the point.
+        let (_, _, control) = try AppConnectionIsolationGuard.makeWorld(launch: launch.seam)
 
         XCTAssertThrowsError(try AppConnection.connect(control: control, launch: launch.seam)) { error in
             guard case AppError.siteUnavailable(let message) = error else {
@@ -691,6 +723,7 @@ final class MCPAppConnectionTests: XCTestCase {
         let (server, handler, log, control, show) = try Self.makeShowSite()
         defer { server.stop() }
         let launch = RecordingAppLaunch()
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         launch.onSleep = { count in
             if count == 1 {
                 try? ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
@@ -727,6 +760,7 @@ final class MCPAppConnectionTests: XCTestCase {
         let launch = RecordingAppLaunch()
         launch.openBundleID = false
         launch.openInstalledPath = false
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         let tools = MCPReadTools(
             catalog: { throw AppError.usage("open_app reads no catalog") },
             control: control,
@@ -749,12 +783,14 @@ final class MCPAppConnectionTests: XCTestCase {
     /// only when an app-bound call needs the control service, and that call is the
     /// plain not-running tool result.
     func testAppFreeCallsNeverLaunchUntilAnAppBoundCall() throws {
-        let (db, _) = try makeDB()
-        let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
+        // The guarded world: the nowhere control URL beside a fresh catalog, and
+        // the would-fail launch pair, checked before any of it is used.
         let launch = RecordingAppLaunch()
         launch.failOnOpen = true
+        let (_, catalog, control) = try AppConnectionIsolationGuard.makeWorld(launch: launch.seam)
+        let db = try CatalogDB(path: catalog)
         let registry = MCPToolRegistry(
-            groups: MCPRoster.groups(
+            groups: try MCPRoster.groups(
                 catalog: { db },
                 control: control,
                 fetchLatestRelease: { MCPSweepRig.fetchedRelease },

@@ -24,9 +24,12 @@ final class AppLaunchSeamTests: XCTestCase {
 
     /// A control file path that no app owns: beside a temp catalog that does not
     /// exist, like a fresh machine. Every drive in this suite is confined to one
-    /// of these, never the default catalog location.
+    /// of these, never the default catalog location — the guard fails closed on
+    /// the URL before the drive runs.
     private func nowhereControl() throws -> URL {
-        ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
+        let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
+        return control
     }
 
     // MARK: - The eligible caller table (VAL-CONNECT-003)
@@ -37,6 +40,9 @@ final class AppLaunchSeamTests: XCTestCase {
     /// caller's own wording anywhere.
     func testEligibleCallersLaunchThroughTheOneSeam() throws {
         let nowhere = try nowhereControl()
+        // The guard with the drives' own values: the explicit temporary control
+        // URL and the refused fake pair every case below runs with.
+        try AppConnectionIsolationGuard.assertIsolated(control: nowhere, launch: refusedLaunch().seam)
         let cases: [(label: String, drive: (RecordingAppLaunch) throws -> Void)] = [
             ("keys grant", { seam in
                 try XCTUnwrap(try KeysCLI.parseAsRoot(["grant", "demo"]) as? GrantCommand)
@@ -126,9 +132,11 @@ final class AppLaunchSeamTests: XCTestCase {
         let file = dir.appendingPathComponent("agent.env")
         try Data("OPENAI_API_KEY=sk-synthetic-\(UUID().uuidString)\n".utf8).write(to: file)
         let launch = refusedLaunch()
+        let control = try nowhereControl()
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         let command = try XCTUnwrap(try KeysCLI.parseAsRoot(["wrap", file.path, "--yes"]) as? WrapCommand)
 
-        XCTAssertThrowsError(try command.run(launch: launch.seam, control: try nowhereControl())) { error in
+        XCTAssertThrowsError(try command.run(launch: launch.seam, control: control)) { error in
             guard case AppError.siteUnavailable(let message) = error else {
                 return XCTFail("expected .siteUnavailable, got \(error)")
             }
@@ -151,10 +159,11 @@ final class AppLaunchSeamTests: XCTestCase {
     func testTunnelKeepsGatewayDownWhenTheAppIsHealthy() throws {
         let (server, handler, log, control) = try Self.makeSite()
         defer { server.stop() }
-        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
-
         let launch = RecordingAppLaunch()
         launch.failOnOpen = true
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+
         let command = try XCTUnwrap(
             try KeysCLI.parseAsRoot(["tunnel", "user@server.example.com", "--print-only"]) as? TunnelCommand
         )
@@ -176,10 +185,11 @@ final class AppLaunchSeamTests: XCTestCase {
     func testRelayRunKeepsGatewayDownWhenTheAppIsHealthy() throws {
         let (server, handler, _, control) = try Self.makeSite()
         defer { server.stop() }
-        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
-
         let launch = RecordingAppLaunch()
         launch.failOnOpen = true
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+
         let relay = RelayRunCommand()
         XCTAssertThrowsError(
             try relay.requireGatewayUp(control: control, launch: launch.seam, gatewayListening: { false })
@@ -198,6 +208,7 @@ final class AppLaunchSeamTests: XCTestCase {
         let (server, handler, log, control) = try Self.makeSite()
         defer { server.stop() }
         let launch = RecordingAppLaunch()
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         launch.onSleep = { count in
             if count == 1 {
                 try? ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
@@ -231,8 +242,10 @@ final class AppLaunchSeamTests: XCTestCase {
 
         let launch = RecordingAppLaunch()
         launch.failOnOpen = true
+        let control = try nowhereControl()
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         let command = try XCTUnwrap(try KeysCLI.parseAsRoot(["wrap", file.path, "--yes"]) as? WrapCommand)
-        try command.run(launch: launch.seam, control: try nowhereControl())
+        try command.run(launch: launch.seam, control: control)
         XCTAssertFalse(launch.opened, "nothing to wrap: no running app is needed, none is launched")
     }
 
@@ -242,7 +255,9 @@ final class AppLaunchSeamTests: XCTestCase {
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: ControlFile.url(beside: db.path).path))
+        let control = ControlFile.url(beside: db.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: control.path))
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
 
         let rows = try ListCommand.jsonRows(service: service)
         XCTAssertEqual(rows.count, 1, "the app-free merge answers from the local rows")
@@ -302,7 +317,7 @@ final class AppLaunchSeamTests: XCTestCase {
             ["GrantCommand", "GrantsCommand", "RevokeCommand", "RenewCommand", "GatewayCommand", "WrapCommand",
              "AgentCommand", "RelayOnCommand", "RelayOffCommand", "TunnelCommand", "RelayRunCommand",
              "DashboardCommand"],
-            "exactly the eligible population routes through AppConnection.connect()"
+            "exactly the eligible population routes through AppConnection.connect"
         )
 
         // Who stays on the graceful control client. ProviderUnhideCommand routes
@@ -320,13 +335,17 @@ final class AppLaunchSeamTests: XCTestCase {
     // MARK: - Rigs
 
     /// A synthetic app site — the real APIHandler behind a loopback server on an
-    /// ephemeral port — for the healthy-app cases. Never the installed app, never
-    /// ports 12765/12766/12767.
+    /// ephemeral port — for the healthy-app cases. The world is guarded before
+    /// any fixture: the control URL beside the catalog, the fake launch pair and
+    /// the fake secret store are fail-closed-checked first. Never the installed
+    /// app, never ports 12765/12766/12767.
     private static func makeSite() throws -> (
         server: LoopbackHTTPServer, handler: APIHandler, log: RequestLog, control: URL
     ) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let db = try CatalogDB(path: catalog)
+        let (service, _) = makeGatedService(db: db, secrets: secrets)
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         let handler = APIHandler(service: service, webRoot: web)
@@ -336,7 +355,7 @@ final class AppLaunchSeamTests: XCTestCase {
             return handler.handle(request)
         }
         server.start()
-        return (server, handler, log, ControlFile.url(beside: db.path))
+        return (server, handler, log, control)
     }
 
     /// CLI.swift cut into one block per top-level `struct`, keyed by name.

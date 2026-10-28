@@ -20,13 +20,17 @@ final class DashboardCommandTests: XCTestCase {
 
     /// A synthetic app site: the real APIHandler behind a loopback server on an
     /// ephemeral port, with a show spy standing in for the window controller and
-    /// the request log the ordering assertions read. Never the installed app, never
-    /// ports 12765/12766/12767.
+    /// the request log the ordering assertions read. The world is guarded before
+    /// any fixture: the control URL beside the catalog, the fake launch pair and
+    /// the fake secret store are fail-closed-checked first. Never the installed
+    /// app, never ports 12765/12766/12767.
     private func makeSite() throws -> (
         server: LoopbackHTTPServer, handler: APIHandler, log: RequestLog, control: URL, show: ShowSpy
     ) {
-        let (db, dir) = try makeDB()
-        let (service, _, _) = makeService(db: db)
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let db = try CatalogDB(path: catalog)
+        let (service, _) = makeGatedService(db: db, secrets: secrets)
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         let show = ShowSpy()
@@ -37,7 +41,7 @@ final class DashboardCommandTests: XCTestCase {
             return handler.handle(request)
         }
         server.start()
-        return (server, handler, log, ControlFile.url(beside: db.path), show)
+        return (server, handler, log, control, show)
     }
 
     /// The parsed command, driven with a given launch seam.
@@ -53,11 +57,12 @@ final class DashboardCommandTests: XCTestCase {
     func testDashboardShowsTheAppWindowThroughTheSharedSeam() throws {
         let (server, handler, log, control, show) = try makeSite()
         defer { server.stop() }
+        let launch = RecordingAppLaunch()
+        launch.failOnOpen = true
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
 
         let month = try command(["--month"])
-        let launch = RecordingAppLaunch()
-        launch.failOnOpen = true
         try month.run(launch: launch.seam, control: control)
 
         XCTAssertFalse(launch.opened, "a healthy app means no launch at all")
@@ -90,6 +95,7 @@ final class DashboardCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: control.path), "no live app")
 
         let launch = RecordingAppLaunch()
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
         launch.onSleep = { count in
             if count == 1 {
                 try? ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
@@ -118,6 +124,7 @@ final class DashboardCommandTests: XCTestCase {
         let launch = RecordingAppLaunch()
         launch.openBundleID = false
         launch.openInstalledPath = false
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
 
         XCTAssertThrowsError(try command().run(launch: launch.seam, control: control)) { error in
             guard case AppError.siteUnavailable(let message) = error else {

@@ -47,6 +47,10 @@ final class MCPClientFlowTests: XCTestCase {
         let gate: BlockingPresenceGate
         let handler: APIHandler
         let server: LoopbackHTTPServer
+        /// The control file the subprocess connects through — written beside the
+        /// temp catalog, so the subprocess finds the synthetic app exactly as the
+        /// real one finds the installed Keysrs.app.
+        let control: URL
         /// Every request that reached the loopback server — what the subprocess
         /// actually sent, as observed, never inferred.
         let requests: RequestLog
@@ -57,11 +61,17 @@ final class MCPClientFlowTests: XCTestCase {
     }
 
     private func makeRig() throws -> Rig {
-        let (db, dir) = try makeDB()
+        // The guarded world first: the control URL beside the catalog, with the
+        // rig's fake secret stores, fail-closed-checked before any fixture, file
+        // or socket operation runs.
+        let secrets = MemorySecretStore()
+        let relaySecrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let db = try CatalogDB(path: catalog)
         let gate = BlockingPresenceGate()
         let service = KeysService(
             catalog: db,
-            secrets: MemorySecretStore(),
+            secrets: secrets,
             presence: gate,
             clipboard: FakeClipboard(),
             grokHome: Fixtures.grokHome,
@@ -70,7 +80,7 @@ final class MCPClientFlowTests: XCTestCase {
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
             openRouter: OpenRouterHTTP(),
-            relaySecrets: MemorySecretStore()
+            relaySecrets: relaySecrets
         )
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         // The gateway target cached, so the grant's prompt is the grant itself.
@@ -103,7 +113,6 @@ final class MCPClientFlowTests: XCTestCase {
             return handler.handle(request)
         }
         server.start()
-        let control = ControlFile.url(beside: db.path)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
 
         let agentCwd = try makeFolder(dir, "agent-cwd")
@@ -114,7 +123,7 @@ final class MCPClientFlowTests: XCTestCase {
         }
         return Rig(
             service: service, db: db, dir: dir, gate: gate, handler: handler,
-            server: server, requests: requests, analytics: analytics,
+            server: server, control: control, requests: requests, analytics: analytics,
             transport: transport, agentCwd: agentCwd
         )
     }
@@ -174,9 +183,16 @@ final class MCPClientFlowTests: XCTestCase {
             // Only the catalog is redirected: the control file follows it, so
             // the subprocess finds the synthetic app exactly as the real one
             // finds the installed Keysrs.app. Everything else is inherited,
-            // and nothing in `keys mcp` reads a real home.
+            // and nothing in `keys mcp` reads a real home. The test-only
+            // no-launch seam is set for the subprocess: it runs production
+            // code and cannot be handed a Swift closure, so KEYS_TEST_NO_LAUNCH
+            // is what makes its default launch pair fail closed — every open
+            // refused, no clock sleep — and an app-bound call against a down
+            // site can only ever answer the plain sentence, never reach
+            // LaunchServices or the installed app.
             var environment = ProcessInfo.processInfo.environment
             environment["KEYS_CATALOG"] = catalog.path
+            environment["KEYS_TEST_NO_LAUNCH"] = "1"
             process.environment = environment
         }
 
@@ -331,9 +347,19 @@ final class MCPClientFlowTests: XCTestCase {
                       "\(binary.path) must exist and be executable; run swift test to build it")
         let rig = try makeRig()
 
+        // The guard with the rig's own values, before the subprocess is spawned:
+        // the explicit temporary control URL and the fail-closed pair the
+        // subprocess will run with (its KEYS_TEST_NO_LAUNCH seam).
+        try AppConnectionIsolationGuard.assertIsolated(
+            control: rig.control,
+            launch: AppLaunchSeam(launcher: NoLaunchAppLauncher(), clock: NoSleepAppLaunchClock())
+        )
+
         let client = PipeClient(binary: binary, cwd: rig.agentCwd, catalog: rig.db.path)
         try client.start()
         addTeardownBlock { client.halt() }
+        XCTAssertEqual(client.process.environment?["KEYS_TEST_NO_LAUNCH"], "1",
+                       "the subprocess runs with the test-only no-launch seam")
 
         // initialize: the handshake, with the frozen shape.
         try client.send(MCPSession.initialize())
@@ -431,6 +457,26 @@ final class MCPClientFlowTests: XCTestCase {
         XCTAssertEqual(later["delivered"] as? Bool, true)
         XCTAssertEqual(later["id"] as? String, id)
         XCTAssertEqual(Set(later.keys), ["status", "id", "delivered"], "the token never crosses twice")
+
+        // The isolation tail: the site dies and its control file goes away —
+        // exactly what a quit app leaves behind. The spawned process must fail
+        // CLOSED here: its KEYS_TEST_NO_LAUNCH seam refuses every open
+        // (LaunchServices is never reached) and its clock never sleeps, so the
+        // app-bound call answers the exact not-running sentence as a tool
+        // result, promptly — never the installed app, never the two launch
+        // budgets the real clock would spend.
+        rig.server.stop()
+        try fm.removeItem(at: rig.control)
+        let deadStarted = Date()
+        try client.send(#"{"jsonrpc":"2.0","id":"dead","method":"tools/call","params":{"name":"grant_status","arguments":{"id":"\#(id)"}}}"#)
+        responses += 1
+        let deadFrame = try client.frame()
+        XCTAssertLessThan(Date().timeIntervalSince(deadStarted), 5,
+                          "the fail-closed path is fast: the no-launch seam never waits the launch budgets")
+        let dead = try MCPSession.assertResult(deadFrame, id: "dead")
+        XCTAssertEqual(dead["isError"] as? Bool, true, "a dead site is a tool result, never an exit")
+        XCTAssertEqual(((dead["content"] as? [[String: Any]])?.first?["text"] as? String),
+                       AppConnection.notRunningMessage, "the exact pinned sentence")
 
         // The prompt count is still exactly the one ask: polls and the handover
         // never prompt, and the one reason names the key, the resolved host and
