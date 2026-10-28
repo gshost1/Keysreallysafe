@@ -25,13 +25,19 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
     /// default — as the create body carries it. Injectable so a test names a folder
     /// it built; production never overrides it.
     private let projectFolder: () -> String
+    /// The launch seams behind `AppConnection.connect()`: the grant tools
+    /// auto-launch the installed app when no live one exists, and tests wire
+    /// recording fakes so no test path ever opens the real app or sleeps.
+    private let launch: AppLaunchSeam
 
     init(
         control: URL = ControlFile.url(),
-        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
+        launch: AppLaunchSeam = .production
     ) {
         self.control = control
         self.projectFolder = projectFolder
+        self.launch = launch
     }
 
     func tools() -> [MCPTool] { [requestGrant, grantStatus] }
@@ -112,7 +118,7 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
         }
         if let maxUsd = arguments["max_usd"], !(maxUsd is NSNull) { body["max_usd"] = maxUsd }
         if let profile = JSONValue.string(arguments["profile"]) { body["profile"] = profile }
-        let app = try AppConnection.connect(control: control)
+        let app = try AppConnection.connect(control: control, launch: launch)
         return try MCPToolResult.json(
             try app.call(method: "POST", path: "/api/mcp/grants", body: body, expect: 200)
         )
@@ -123,7 +129,7 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
     /// the output guard lets exactly it through — every other token shape in any
     /// result is the guard's to refuse.
     private func serveGrantStatus(_ arguments: [String: Any]) throws -> MCPToolResult {
-        let app = try AppConnection.connect(control: control)
+        let app = try AppConnection.connect(control: control, launch: launch)
         if let id = JSONValue.string(arguments["id"]) {
             // The id shapes the route's path, so it is checked here too: anything
             // that is not the 8-hex id the app issued is a plain refusal, never a

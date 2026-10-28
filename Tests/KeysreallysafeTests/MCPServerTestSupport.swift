@@ -212,12 +212,13 @@ enum MCPRoster {
         catalog: @escaping () throws -> CatalogDB,
         control: URL,
         fetchLatestRelease: @escaping () throws -> ReleaseInfo,
-        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
+        launch: AppLaunchSeam = .neverLaunching
     ) -> [any MCPToolGroup] {
         [
             MCPVersionTool(),
-            MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease),
-            MCPGrantTools(control: control, projectFolder: projectFolder),
+            MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease, launch: launch),
+            MCPGrantTools(control: control, projectFolder: projectFolder, launch: launch),
         ]
     }
 
@@ -225,9 +226,13 @@ enum MCPRoster {
         catalog: @escaping () throws -> CatalogDB,
         control: URL,
         fetchLatestRelease: @escaping () throws -> ReleaseInfo,
-        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
+        launch: AppLaunchSeam = .neverLaunching
     ) -> MCPToolRegistry {
-        MCPToolRegistry(groups: groups(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease, projectFolder: projectFolder))
+        MCPToolRegistry(groups: groups(
+            catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease,
+            projectFolder: projectFolder, launch: launch
+        ))
     }
 }
 

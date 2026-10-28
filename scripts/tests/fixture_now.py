@@ -16,12 +16,15 @@ read, and the checked-in fixtures are never touched.
 Usage:
     python3 scripts/tests/fixture_now.py --out /tmp/keys-now
 
-Then point an isolated dashboard at it (KEYS_CATALOG temp, never the real one):
+Then point an isolated Keysrs at it (KEYS_CATALOG temp, never the real one) and
+open the URL the command prints — `keys dashboard` no longer serves a site, it
+shows the installed app's window, so the checkout copy that still binds its own
+loopback site is `keys menubar`:
 
-    KEYS_NO_OPEN=1 KEYS_CATALOG=/tmp/keys-now/catalog.db \\
+    KEYS_CATALOG=/tmp/keys-now/catalog.db \\
       KEYS_DROID_HOME=/tmp/keys-now/droid-home \\
       CLAUDE_CONFIG_DIR=/tmp/keys-now/claude-home \\
-      ./.build/debug/keys dashboard
+      ./.build/debug/keys menubar
 """
 import argparse
 from datetime import datetime, timedelta, timezone

@@ -1259,7 +1259,10 @@ final class MCPGrantTests: XCTestCase {
 
         // No app running: the exact sentence, byte for byte.
         let nowhere = try TempDir.make()
-        let tools = MCPGrantTools(control: ControlFile.url(beside: nowhere.appendingPathComponent("catalog.db")))
+        let tools = MCPGrantTools(
+            control: ControlFile.url(beside: nowhere.appendingPathComponent("catalog.db")),
+            launch: .neverLaunching
+        )
         XCTAssertThrowsError(try tools.call("request_grant", arguments: ["key": "demo"])) { error in
             XCTAssertEqual((error as? AppError)?.description, AppConnection.notRunningMessage)
         }

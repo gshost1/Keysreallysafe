@@ -228,12 +228,4 @@ final class DroidIngestTests: XCTestCase {
         XCTAssertEqual(droid["files"] as? Int, 2)
         XCTAssertEqual(droid["inserted"] as? Int, 7)
     }
-
-    func testDashboardNoOpenSwitch() {
-        XCTAssertFalse(Paths.noOpenBrowser(environment: [:]))
-        XCTAssertFalse(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": ""]))
-        XCTAssertFalse(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": "0"]))
-        XCTAssertTrue(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": "1"]))
-        XCTAssertTrue(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": "true"]))
-    }
 }

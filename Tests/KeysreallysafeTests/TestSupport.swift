@@ -435,3 +435,90 @@ extension CodexIngest {
         return text.split(separator: "\n").compactMap { parser.consume(String($0)) }
     }
 }
+
+// MARK: - The launch seams behind AppConnection.connect()
+
+/// The launch-seam fake: one recording object standing in for both the launcher
+/// and the clock, so a test runs the REAL bounded schedule and the REAL retry of
+/// `AppConnection.connect()` and asserts the trace afterwards. `onSleep` is the
+/// hook a rig stands its synthetic site up from — the clock is what the schedule
+/// actually waits on. `failOnOpen` turns any open into a test failure, for the
+/// callers the contract says must never launch.
+final class RecordingAppLaunch: AppLauncher, AppLaunchClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var targets: [String] = []
+    private var slept: [TimeInterval] = []
+    /// Set before the drive; receives the 1-based count of sleeps so far.
+    var onSleep: (@Sendable (Int) -> Void)?
+    /// True once any open reached this fake.
+    private(set) var opened = false
+    /// Whether an open by bundle id is accepted; false simulates a bundle id
+    /// LaunchServices cannot resolve (forcing the installed-path fallback).
+    var openBundleID = true
+    /// Whether an open of the installed path is accepted; false simulates nothing
+    /// being installed.
+    var openInstalledPath = true
+    /// When true, an open is a test failure — for the zero-launch contracts.
+    var failOnOpen = false
+
+    func open(bundleID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if failOnOpen { XCTFail("launching \(bundleID): this caller must not launch the app") }
+        opened = true
+        targets.append("bundle:\(bundleID)")
+        return openBundleID
+    }
+
+    func open(installedAt url: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if failOnOpen { XCTFail("launching \(url.path): this caller must not launch the app") }
+        opened = true
+        targets.append("path:\(url.path)")
+        return openInstalledPath
+    }
+
+    func sleep(for interval: TimeInterval) {
+        lock.lock()
+        let count = slept.count + 1
+        slept.append(interval)
+        lock.unlock()
+        onSleep?(count)
+    }
+
+    /// The opens the one seam attempted, in order: "bundle:<id>" / "path:<url>".
+    var launchTargets: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return targets
+    }
+
+    /// The backoff schedule the one seam asked for, in order.
+    var sleeps: [TimeInterval] {
+        lock.lock(); defer { lock.unlock() }
+        return slept
+    }
+
+    var sleepTotal: TimeInterval { sleeps.reduce(0, +) }
+
+    /// The seam `AppConnection.connect(launch:)` runs with.
+    var seam: AppLaunchSeam { AppLaunchSeam(launcher: self, clock: self) }
+}
+
+extension AppLaunchSeam {
+    /// The tests' never-launching default: opens are refused and no wait passes,
+    /// so an app-bound call answers the plain not-running sentence instantly and
+    /// no rig can reach the installed app or the wall clock by forgetting a seam.
+    static var neverLaunching: AppLaunchSeam {
+        AppLaunchSeam(launcher: RecordingAppLaunch(), clock: RecordingAppLaunch())
+    }
+}
+
+/// The show-route spy: the app-side window seam `POST /api/mcp/app/show` drives.
+/// Counts the shows so a test can prove one show and no browser anywhere.
+final class ShowSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func show() { lock.lock(); count += 1; lock.unlock() }
+    var calls: Int { lock.lock(); defer { lock.unlock() }; return count }
+}

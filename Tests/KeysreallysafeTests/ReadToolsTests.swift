@@ -83,7 +83,8 @@ final class ReadToolsTests: XCTestCase {
         let tools = MCPReadTools(
             catalog: { db },
             control: control,
-            fetchLatestRelease: { throw AppError.usage("the site rig fetches no release") }
+            fetchLatestRelease: { throw AppError.usage("the site rig fetches no release") },
+            launch: .neverLaunching
         )
         return Site(
             server: server, handler: handler, service: service, db: db, dir: dir,
@@ -99,7 +100,8 @@ final class ReadToolsTests: XCTestCase {
         return MCPReadTools(
             catalog: { throw AppError.usage("check_update reads no catalog") },
             control: ControlFile.url(beside: dir.appendingPathComponent("catalog.db")),
-            fetchLatestRelease: fetch
+            fetchLatestRelease: fetch,
+            launch: .neverLaunching
         )
     }
 
@@ -162,7 +164,8 @@ final class ReadToolsTests: XCTestCase {
         let tools = MCPReadTools(
             catalog: { db },
             control: ControlFile.url(beside: db.path),
-            fetchLatestRelease: { throw AppError.usage("list_keys checks no release") }
+            fetchLatestRelease: { throw AppError.usage("list_keys checks no release") },
+            launch: .neverLaunching
         )
 
         let result = try tools.call("list_keys", arguments: [:])
@@ -196,7 +199,8 @@ final class ReadToolsTests: XCTestCase {
         let emptyTools = MCPReadTools(
             catalog: { emptyDB },
             control: ControlFile.url(beside: emptyDB.path),
-            fetchLatestRelease: { throw AppError.usage("list_keys checks no release") }
+            fetchLatestRelease: { throw AppError.usage("list_keys checks no release") },
+            launch: .neverLaunching
         )
         let empty = try emptyTools.call("list_keys", arguments: [:])
         XCTAssertEqual(empty.isError, false)
@@ -228,7 +232,8 @@ final class ReadToolsTests: XCTestCase {
         let tools = MCPReadTools(
             catalog: { db },
             control: ControlFile.url(beside: db.path),
-            fetchLatestRelease: { throw AppError.usage("list_keys checks no release") }
+            fetchLatestRelease: { throw AppError.usage("list_keys checks no release") },
+            launch: .neverLaunching
         )
         func projectsOfDemo() throws -> [String] {
             let body = try payload(try tools.call("list_keys", arguments: [:]))
@@ -423,7 +428,8 @@ final class ReadToolsTests: XCTestCase {
         let tools = MCPReadTools(
             catalog: { db },
             control: control,
-            fetchLatestRelease: { throw AppError.usage("gateway_info checks no release") }
+            fetchLatestRelease: { throw AppError.usage("gateway_info checks no release") },
+            launch: .neverLaunching
         )
 
         let (frames, stderr) = try MCPSession.run([
@@ -528,7 +534,8 @@ final class ReadToolsTests: XCTestCase {
         let tools = MCPReadTools(
             catalog: { db },
             control: ControlFile.url(beside: db.path),
-            fetchLatestRelease: { throw AppError.usage("open_app checks no release") }
+            fetchLatestRelease: { throw AppError.usage("open_app checks no release") },
+            launch: .neverLaunching
         )
         let (bareFrames, bareStderr) = try MCPSession.run([
             MCPSession.initialize(),
