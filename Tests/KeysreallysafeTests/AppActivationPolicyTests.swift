@@ -53,6 +53,27 @@ final class AppActivationPolicyTests: XCTestCase {
         XCTAssertTrue(rig.siteAnswers())
     }
 
+    func testHeadlessLaunchStartsNoNotificationWorkWithoutAnInjectedNotifier() throws {
+        let rig = try HeadlessAppRig()
+        self.rig = rig
+        rig.launch()
+        XCTAssertNil(rig.service.notifications, "no notifier injected: no authorization ask and no dialog at launch")
+        XCTAssertFalse(rig.notificationsStarted)
+    }
+
+    func testHeadlessLaunchStartsTheInjectedNotifierSeam() throws {
+        let rig = try HeadlessAppRig()
+        self.rig = rig
+        rig.notifier = AppNotifier(
+            preferences: rig.service.preferences,
+            authorizer: RecordingNotificationAuthorizer(),
+            delivery: RecordingNotificationDelivery()
+        )
+        rig.launch()
+        XCTAssertTrue(rig.notificationsStarted, "the app starts the injected notifier")
+        XCTAssertNotNil(rig.service.notifications, "the gateway and pending-ask paths can reach the notifier")
+    }
+
     func testReopenShowsTheWindowBecomesRegularAndRunsTheDeferredWelcome() async throws {
         let rig = try HeadlessAppRig(freshWelcome: true)
         self.rig = rig
@@ -225,6 +246,10 @@ final class HeadlessAppRig {
     var openRouterScheduled = false
     var initialIngestQueued = false
     var welcomeShown = false
+    /// The notification notifier a launch may start; nil (the default) proves a
+    /// headless launch raises no notification work at all.
+    var notifier: AppNotifier?
+    var notificationsStarted = false
     /// Shutdown actions the Quit route dispatched, in order: the route must
     /// return its 200 before any of these run.
     let quitScheduler: QuitScheduler
@@ -279,7 +304,9 @@ final class HeadlessAppRig {
             },
             scheduleIngest: { [weak self] _ in self?.ingestScheduled = true },
             scheduleOpenRouter: { [weak self] _ in self?.openRouterScheduled = true },
-            ingestInitially: { [weak self] _ in self?.initialIngestQueued = true }
+            ingestInitially: { [weak self] _ in self?.initialIngestQueued = true },
+            notifications: notifier,
+            startNotifications: { [weak self] _, _ in self?.notificationsStarted = true }
         )
         extra.presentWelcome = { [weak self] in self?.welcomeShown = true }
     }

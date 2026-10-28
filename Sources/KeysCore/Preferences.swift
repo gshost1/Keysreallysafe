@@ -58,6 +58,19 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta(Self.menubarItemKey, on ? "on" : "off") }
     }
 
+    static let notificationsAuthorizedVersionKey = "pref_notifications_authorized_version"
+
+    /// The app version that last asked for macOS notification permission. The ask
+    /// happens once per install/update: a stored version equal to the running one
+    /// means the person already answered, so no second dialog is raised.
+    var notificationsAuthorizedVersion: String? {
+        try? catalog.metaValue(Self.notificationsAuthorizedVersionKey)
+    }
+
+    func recordNotificationsAuthorized(version: String) throws {
+        try catalog.withTransaction { try catalog.setMeta(Self.notificationsAuthorizedVersionKey, version) }
+    }
+
     static let headlessDefaultsKey = "headless_defaults_applied"
 
     /// The 0.13-to-0.14 migration: the app became headless, so the meter and the

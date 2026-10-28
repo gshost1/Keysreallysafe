@@ -246,6 +246,8 @@ extension KeysService {
         // `require` is entered (or when a fail-fast gate resolves instantly), so
         // the caller holds a real pending state, never a claim the app cannot back.
         _ = armed.wait(timeout: .now() + 2)
+        // The ask is pending and its prompt is up: the app warns immediately, once.
+        notePendingGrant(id: record.id)
         return record.id
     }
 

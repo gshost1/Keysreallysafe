@@ -216,6 +216,8 @@ final class GatewayListener: @unchecked Sendable {
         )
         if service.breaker.record(key: target.name, status: status) {
             service.recordGatewayDenial(name: target.name, reason: GatewayBreaker.code, via: via)
+            // The trip is an app-owned event: the app warns once per trip.
+            service.noteBreakerTrip()
         }
         do {
             try service.recordGatewayUsage(

@@ -34,6 +34,14 @@ final class KeysService: @unchecked Sendable {
     /// The relay this process runs when it is turned on from the menu, the dashboard or
     /// `keys relay on`. AppRuntime swaps in one that logs to menubar.log before the site serves.
     var relayHost = RelayHost()
+    /// The app-owned notification service. nil in every non-app process (CLI, MCP,
+    /// tests that do not inject one), so a gateway trip or a pending ask warns only
+    /// from the running app.
+    var notifications: AppNotifier?
+    /// The app's notification poll, retained here so its timer outlives the launch
+    /// seam that started it (a local would deallocate and its weak handler would go
+    /// quiet). nil outside the app process.
+    var notificationPoller: AppNotificationPoller?
     /// Held while the relay is turned on or off, so two toggles at once (menu and dashboard)
     /// cannot both find it off and race for the lock.
     private let relayToggleLock = NSLock()
@@ -738,6 +746,37 @@ final class KeysService: @unchecked Sendable {
 
     func listGrants(includeInactive: Bool = false) -> [Grant] {
         grants.list(includeInactive: includeInactive)
+    }
+
+    /// What the app's notification poll reads from local state: active grants,
+    /// every client token, and the ids of grant requests still awaiting approval.
+    /// Only timing and status — never a secret.
+    func notificationSnapshot(now: Date = Date()) -> AppNotificationState {
+        let pending = mcpPendingGrants.statuses().compactMap { record -> String? in
+            if case .pending = record.resolution { return record.id }
+            return nil
+        }
+        return AppNotificationState(
+            grants: grants.list(now: now),
+            clients: (try? catalog.allGatewayClients()) ?? [],
+            pendingGrantIDs: pending
+        )
+    }
+
+    /// A `GatewayBreaker` trip is an app-owned event: the app warns once per trip.
+    /// Handed to the notifier, which delivers off this thread, so a gateway answer
+    /// is never held up by a notification.
+    func noteBreakerTrip() {
+        notifications?.breakerTripped()
+    }
+
+    /// An MCP grant request whose prompt is up is time-sensitive: warn immediately
+    /// (the poller would otherwise wait for its next pass). A request already
+    /// resolved is not warned; a request refused before it became pending never
+    /// reaches this call at all.
+    func notePendingGrant(id: String) {
+        guard notifications != nil, mcpPendingGrants.isLive(id: id) else { return }
+        notifications?.pendingGrantRequested(id: id)
     }
 
     @discardableResult

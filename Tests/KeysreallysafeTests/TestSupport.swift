@@ -522,3 +522,28 @@ final class ShowSpy: @unchecked Sendable {
     func show() { lock.lock(); count += 1; lock.unlock() }
     var calls: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
+
+/// Counts the authorization asks a notifier makes and never shows a real OS
+/// permission dialog.
+final class RecordingNotificationAuthorizer: NotificationAuthorizing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var granted = true
+    func requestAuthorization() async -> Bool {
+        lock.withLock { count += 1 }
+        return granted
+    }
+    var requests: Int { lock.withLock { count } }
+}
+
+/// Records every delivered notification and never posts to the real notification
+/// center, so a test can assert on the exact payloads.
+final class RecordingNotificationDelivery: NotificationDelivering, @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [AppNotification] = []
+    func deliver(_ notification: AppNotification) async {
+        lock.withLock { stored.append(notification) }
+    }
+    var notifications: [AppNotification] { lock.withLock { stored } }
+    var count: Int { lock.withLock { stored.count } }
+}

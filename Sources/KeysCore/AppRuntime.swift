@@ -101,6 +101,9 @@ enum AppRuntime {
         let service = try AppFactory.makeService()
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.
         service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
+        // The app owns notifications: the authorization ask and the local-state poll
+        // both run from the app process, never from a CLI or MCP subprocess.
+        let notifications = AppNotifier(preferences: service.preferences)
         var startedServer: LoopbackHTTPServer?
         do {
             try LegacyAppMigration(root: root, plist: LoginItem.agentPlist, run: LoginItem.run, log: log).migrate {
@@ -118,7 +121,7 @@ enum AppRuntime {
         }
         let url = URL(string: "http://127.0.0.1:\(server.boundPort)/")!
         runOnMainActor {
-            _ = AppRuntime.assembleApp(service: service, server: server, url: url, log: log)
+            _ = AppRuntime.assembleApp(service: service, server: server, url: url, log: log, notifications: notifications)
             NSApplication.shared.run()
         }
     }
@@ -164,7 +167,9 @@ enum AppRuntime {
                 _ = try? service.ingest(.all)
                 try? service.pollOpenRouter()
             }
-        }
+        },
+        notifications: AppNotifier? = nil,
+        startNotifications: (AppNotifier, KeysService) -> Void = AppRuntime.startNotificationPoller
     ) -> MenubarExtra {
         do { try service.preferences.applyHeadlessDefaults() }
         catch { log("headless defaults pending: \(error.localizedDescription)") }
@@ -177,7 +182,24 @@ enum AppRuntime {
         scheduleIngest(service)
         scheduleOpenRouter(service)
         ingestInitially(service)
+        // The one startup prompt the headless app may raise: the OS notification
+        // permission request, behind the injected notifier. Absent (every test
+        // rig that does not inject one) it starts nothing and shows no dialog.
+        if let notifications {
+            service.notifications = notifications
+            startNotifications(notifications, service)
+        }
         return extra
+    }
+
+    /// Starts the app's notification poll: the one authorization ask and the
+    /// repeating local-state poll. The poller is retained on the service so its
+    /// timer outlives this launch seam; a local would deallocate and its weak
+    /// handler would go quiet.
+    static func startNotificationPoller(_ notifier: AppNotifier, service: KeysService) {
+        let poller = AppNotificationPoller(notifier: notifier, snapshot: { service.notificationSnapshot() })
+        service.notificationPoller = poller
+        poller.start()
     }
 }
 
