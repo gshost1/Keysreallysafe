@@ -12,7 +12,7 @@ carries the call home. The real keys never leave the Mac.
 
 It reads the usage numbers that Claude Code, Grok and Codex already write to
 your home folder, prices them from a checked-in list-price table, and shows the
-result in the Keysrs window and in the menu bar. Secrets live in the macOS
+result in the Keysrs window, and optionally in the menu bar. Secrets live in the macOS
 Keychain, and the app asks for Touch ID before it reads one out. The dashboard
 stays local. If you turn on Keep Claude Limits Fresh (off by default), Claude's
 built-in `/usage` command refreshes subscription limits through its existing login.
@@ -26,11 +26,18 @@ There is no trial, license key or account.
 macOS 14 or newer on Apple Silicon; there is no Intel build.
 
 Open `Keysrs-arm64.dmg`, drag Keysrs to Applications, and open it from
-Applications. Keysrs is an ordinary Mac app: a Dock icon, a window with the
-dashboard, and the usage meter in the menu bar. Closing the window keeps it
-running, so the menu bar meter, usage tracking and the gateway carry on;
-click the Dock icon or choose Open Keysrs from the menu bar to bring the
-window back. `⌘Q` quits all of it.
+Applications. Keysrs starts headless: no Dock icon, no window and no menu
+bar item, while usage tracking, the gateway and its other background
+services carry on. The one thing it asks at launch is macOS notification
+permission, once per installed version, so it can warn about an expiring
+grant, a grant waiting for your Touch ID, a paused key and an installed
+update; those notifications never name a key, token or path. Opening it
+again from Applications or Spotlight — or running `keys dashboard`, or an
+agent's `open_app` MCP call — shows the window, with a Dock icon while it
+is up, and closing the window hides it again and keeps everything running.
+The menu bar item and the usage meter are off until you turn them on in the
+dashboard's Settings, which also holds Quit and the relay controls. `⌘Q`
+quits all of it while the window is shown.
 
 On first launch Keysrs adds itself as a login item. Turn that off or on again
 with Start at Login in the Keysrs menu, or in System Settings > General >
@@ -41,15 +48,17 @@ Tool… in the Keysrs menu to link it as `~/.local/bin/keys`, and add
 `~/.local/bin` to your `PATH` if it is not there already. If you move the
 app, install the link again.
 
-**Updates.** Keysrs updates itself. Check for Updates… in the Keysrs menu
-asks GitHub's latest-release API what is newest; when there is a newer
-version, Update Now downloads the release's `Keysrs-arm64.dmg` from GitHub,
-checks its SHA-256 checksum and Apple code signature, replaces Keysrs where
-it is and restarts it. No Terminal, and keys, history and settings are
-untouched. Automatically Check for Updates does the same check at launch and
-once a day and is off until you turn it on; it reports the release and
-installs nothing until you click Update Now. The check sends no cookies and
-nothing from your data.
+**Updates.** Keysrs updates itself. **Install updates automatically** (in
+Settings, on by default) runs the release check once a day; when a newer
+version exists it downloads the release's `Keysrs-arm64.dmg` from GitHub,
+verifies its SHA-256 checksum and Apple code signature, waits until the app
+has been quiet for a few seconds — no Touch ID prompt pending and no
+gateway call in flight — then installs, relaunches and posts a
+notification. A failed check or a failed verification installs nothing.
+Check for Updates… in the Keysrs menu stays manual: it checks at once and
+installs only after you click Update Now. No Terminal either way, and keys,
+history and settings are untouched. The check sends no cookies and nothing
+from your data.
 
 **Upgrading from 0.9.x.** Open the new app once. It stops the old background
 agent (`com.keysreallysafe.menubar`), deletes its launchd plist and the old
@@ -92,11 +101,14 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   traffic, and neither happens without opting in.
   See [product analytics](docs/product-analytics.md) and the
   [self-hosted collector](Analytics/README.md).
-- Update checks are off by default. Check for Updates…, and Automatically
-  Check for Updates once turned on, send one cookieless request to GitHub's
-  public latest-release API and read only the release's version and download
-  address. Nothing from the catalog goes with it. A download happens only
-  after you click Update Now, and it comes from GitHub's release for Keysrs.
+- Update checks send one cookieless request to GitHub's public
+  latest-release API and read only the release's version and download
+  address. Nothing from the catalog goes with it. Install updates
+  automatically (on by default) runs that check once a day and downloads,
+  verifies and installs a newer release on its own; turn it off in Settings
+  and no scheduled check runs. A manual Check for Updates… still downloads
+  only after you click Update Now, and every download comes from GitHub's
+  release for Keysrs.
 - No scraping. It does not open provider websites, cookies or browser sessions.
 - The usage catalog stores only counters and metadata. Gateway request bodies
   never reach that catalog.
@@ -142,7 +154,8 @@ Copy the app to `/Applications` and open it as in [Install](#install). The
 binary starts the app when it is opened with no arguments and is the command
 line otherwise, so `.build/debug/keys` works directly for the commands below.
 
-The menu bar shows Claude's Fable percentage and the other tools' weekly
+With **Show menu bar item** on (Settings; it is off by default), the menu
+bar shows Claude's Fable percentage and the other tools' weekly
 percentages (`C 39%  X 46%  G 8%`). Missing Fable usage shows `C —`. All plan
 windows are in the dropdown.
 
@@ -264,6 +277,14 @@ is off by default (**Show Droid on Usage** turns it on); its usage is ingested
 and charted either way. These choices live in this browser's storage, not in
 the catalog.
 
+Three switches there are app-wide instead: **Show usage meter** (the
+plan-window meter on Usage, off by default; hiding it changes presentation
+only — usage is still collected, totalled and charted), **Show menu bar
+item** (the status item, off by default) and **Install updates
+automatically** (on by default; see Updates above). Settings and the app
+menu also carry Quit and the relay controls, so nothing needs the menu bar
+item to be on.
+
 The [analytics collector](Analytics/README.md) runs at `analytics.keysrs.com`
 and is deployed separately from the app.
 
@@ -280,7 +301,11 @@ rotate and delete, not the token.
 `keys add` stores a secret in the macOS Keychain under the service
 `keysreallysafe`, tied to your login. The catalog keeps only the name,
 provider, kind, notes and timestamps; the value never enters SQLite, a log,
-the page, or the API response for the key list.
+the page, or the API response for the key list. Run with no arguments in a
+terminal, `keys add` asks for the provider first — type-ahead over the
+catalog, arrows or Tab to choose, Enter to accept — then suggests a unique
+name and takes the value through the same hidden, confirmed prompt as the
+flagged form; without a terminal it prints usage instead.
 
 Getting a value back asks for user presence, Touch ID or your login password.
 The prompt is the app's own (LocalAuthentication before an ordinary Keychain
@@ -366,10 +391,12 @@ revives a revoked grant: revoke, screen lock, gateway off, a key edit and a
 key rotation stay deliberate kills. A grant pruned a day after it ended, or gone in a
 restart, is simply not there to renew.
 
-`keys grant` talks to the running app (or a `keys dashboard` dev copy)
-through a 0600 file under Application Support; without one it says so and
-stops. The token in that file only lets a local process *ask*; the grant
-itself still needs Touch ID in the app.
+`keys grant` talks to the app through a 0600 control file under
+Application Support. If Keysrs is not running, the command opens it and
+waits a few seconds for it to come up; if it still cannot be reached, the
+answer is `Keysrs isn't running. Open Keysrs from Applications, then try
+again.` (exit 6). The token in that file only lets a local process *ask*;
+the grant itself still needs Touch ID in the app.
 
 **A profile** is a saved bound on grants, not a credential. `keys profile add`
 stores a name plus issuance-time bounds in the catalog — key names, methods,
@@ -613,8 +640,9 @@ keys relay on                                                        # in Keysrs
 ```
 
 The relay then runs inside Keysrs, with no Terminal open: **Relay for Cloud
-Agents** in the menu bar (or Settings → Relay in the dashboard, or `keys relay
-on` / `keys relay off`) turns it on and off, its lines go to `menubar.log`,
+Agents** in the menu bar (when the item is on), Settings → Relay in the
+dashboard, or `keys relay on` / `keys relay off` turns it on and off, its
+lines go to `menubar.log`,
 and it stays on until you turn it off or quit; each launch starts with it off,
 because the secret leaves the Keychain only after Touch ID. `keys relay` alone
 still runs it in the foreground of a Terminal until Ctrl-C. Only one of the two
@@ -686,6 +714,12 @@ keys relay [run] [--url <worker url>] | on | off | setup --url <worker url> | st
 keys purge
 ```
 
+`keys dashboard` fronts the Keysrs app's window — launching the app first
+when it is not running — prints one line and returns; it no longer opens a
+browser or serves a second copy of the dashboard. `--month` and `--week`
+are still accepted for older scripts, but the window opens on its own
+current range.
+
 `keys env` puts the secret in the child's environment only; nothing touches
 the clipboard. It prints the provider and host the key belongs to before the
 prompt, so a similarly named key for a different provider is caught early.
@@ -740,9 +774,13 @@ existed show `-` for what was not kept.
 `keys models` when the provider has no read-only check endpoint, except
 `keys models --json`, which reports every failed check as `5`); `3` user
 presence or the Keychain; `4` ingest or catalog; `5` a failed provider check;
-`6` no running Keysrs site owns the gateway — start Keysrs.app or run
-`keys dashboard` and retry; `64` bad arguments. `keys env`, `keys agent` and
-`keys tunnel` exit with the child command's own code once it ends.
+`6` an app-dependent command could not reach Keysrs: the command first
+tries to open the app and wait for it, and exit 6 comes with `Keysrs isn't
+running. Open Keysrs from Applications, then try again.` only when that
+fails (`keys tunnel` and `keys relay run` keep their own gateway-down error
+when the app is up but its gateway is off); `64` bad arguments. `keys env`,
+`keys agent` and `keys tunnel` exit with the child command's own code once
+it ends.
 [docs/agents.md](docs/agents.md) states the whole table an agent reads.
 
 ## Local sources
@@ -820,7 +858,7 @@ deleting the app leaves both alone.
 ```sh
 CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home GROK_BOT_HOME=Fixtures/grok-bot-home KEYS_DROID_HOME=Fixtures/droid-home swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-KEYS_NO_OPEN=1 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
+./.build/debug/keys menubar   # dev copy: serves Web/ from the checkout and prints its loopback URL
 ```
 
 `Web/` is plain HTML, CSS and JavaScript with no build step and no external
@@ -837,9 +875,9 @@ across Claude Code and Droid), write throwaway homes dated a few minutes ago:
 
 ```sh
 python3 scripts/tests/fixture_now.py --out /tmp/keys-now
-KEYS_NO_OPEN=1 KEYS_CATALOG=/tmp/keys-now/catalog.db \
+KEYS_CATALOG=/tmp/keys-now/catalog.db \
   KEYS_DROID_HOME=/tmp/keys-now/droid-home CLAUDE_CONFIG_DIR=/tmp/keys-now/claude-home \
-  ./.build/debug/keys dashboard
+  ./.build/debug/keys menubar   # prints the dev dashboard's URL to open
 ```
 
 The helper prints the per-model and merged totals the Chart should show for the

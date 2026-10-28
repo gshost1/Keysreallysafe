@@ -171,11 +171,12 @@ The tools the server offers:
   using each one, by label. Reads the local catalog; the app does not need to
   be running. Never a key value.
 - `gateway_info` — the gateway's base URL, the app's live grants and the
-  active project client tokens by label. Requires the app; without it the
-  whole call fails with the not-running answer, so "no grants" is never
-  mistaken for "cannot see grants".
-- `open_app` — bring the running Keysrs app's window to the front. Never
-  opens a browser.
+  active project client tokens by label. Requires the app; the server
+  launches it on demand, and if it cannot be started the whole call fails
+  with the not-running answer, so "no grants" is never mistaken for
+  "cannot see grants".
+- `open_app` — bring the Keysrs app's window to the front, launching the
+  app when none is running. Never opens a browser.
 - `check_update` — whether a newer release exists. Read-only; it downloads
   and installs nothing.
 - `request_grant` — ask the user for a scoped, time-boxed grant for one key.
@@ -258,12 +259,17 @@ and [relay.md](relay.md).
 `keys env`, `keys agent` and `keys tunnel` exit with the child command's own
 code once it ends.
 
-Exit 6 is the one that says "start Keysrs.app or run `keys dashboard` and
-retry", not "fix your arguments": `keys grant`, `keys grants`, `keys gateway`,
-the grant path of `keys agent`, and the gateway-not-up paths of `keys tunnel`
-and `keys relay run` all use it when nothing is listening on the gateway.
-Commands that need no site — `keys list`, `keys status`, `keys version`,
-`keys setup` — run without one.
+Exit 6 is the one that says the app could not be reached, not "fix your
+arguments": `keys grant`, `keys grants`, `keys revoke`, `keys renew`,
+`keys gateway`, the grant path of `keys agent`, `keys wrap`, `keys relay
+on`/`off`, `keys dashboard`, and the app-bound MCP tools first try to
+launch Keysrs.app and wait for its control endpoint, and only when that
+fails do they answer exit 6 with `Keysrs isn't running. Open Keysrs from
+Applications, then try again.` `keys tunnel` and `keys relay run` use the
+same launch, but keep their own gateway-down error when the app is up and
+its gateway is not listening. Commands that need no site — `keys list`,
+`keys status`, `keys version`, `keys setup` — run without one and never
+launch the app.
 
 Exit 2 covers a missing key or grant, and one more case worth stating
 precisely: `keys test` and `keys models` also exit 2 when the provider has no
@@ -317,12 +323,14 @@ the parts that bind an agent, stated as rules:
   SDK expects the API key; never echo it, log it or paste it anywhere.
 - **Never run `keys` with no arguments.** Outside a `.app` bundle it shows a
   GUI alert; inside one it starts the whole app. It is not a status command.
-- **Never run a never-returning command in a script.** `keys dashboard`,
-  `keys menubar`, `keys relay run` (or bare `keys relay`) and `keys tunnel`
+- **Never run a never-returning command in a script.** `keys menubar`,
+  `keys relay run` (or bare `keys relay`) and `keys tunnel`
   without `--print` run until stopped. `keys mcp` also runs until its stdin
   closes — that is the protocol, its MCP client keeps it open, so only a
   client starts it. `keys tunnel --print` prints the ssh command instead;
-  `keys relay on`, `off` and `status` control the app's relay without blocking.
+  `keys relay on`, `off` and `status` control the app's relay without
+  blocking. `keys dashboard` is safe in a script: it fronts the app's
+  window (launching Keysrs when needed), prints one line and returns.
 - **`keys rm` exits 0 even when the confirm was declined.** Check the
   output for `cancelled`. An agent should never pass `--yes`, and should
   delete a key only when the user asked for that key to be deleted.
