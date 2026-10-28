@@ -932,6 +932,7 @@ final class KeysService: @unchecked Sendable {
         days: Int? = nil,
         methods: [String]? = nil,
         pathPrefix: String? = nil,
+        project: String? = nil,
         caller: String = "dashboard",
         enableGateway: Bool = false,
         now: Date = Date()
@@ -954,16 +955,18 @@ final class KeysService: @unchecked Sendable {
             _ = try setGateway(name: name, enabled: true, host: nil, caller: caller, presenceChecked: true)
         }
         return try mintGatewayClient(
-            name: name, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix, host: host,
-            caller: caller, now: now
+            name: name, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix, project: project,
+            host: host, caller: caller, now: now
         )
     }
 
     /// Mints after presence was already taken by the caller; arguments are validated and `host`
-    /// is the key's effective host the caller showed the user.
+    /// is the key's effective host the caller showed the user. `project` is a resolved
+    /// projects.id (the caller got it from `resolveProject`); nil leaves the client
+    /// unbound, as every client issued before projects existed is.
     private func mintGatewayClient(
         name: String, label: String, days ttlDays: Int, methods allowed: [String], pathPrefix prefix: String?,
-        host: String, caller: String, now: Date
+        project: String?, host: String, caller: String, now: Date
     ) throws -> (token: String, client: GatewayClient) {
         let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
         let token = GatewayClientToken.generate()
@@ -976,7 +979,8 @@ final class KeysService: @unchecked Sendable {
             pathPrefix: prefix,
             host: host,
             createdAt: UTC.iso(now),
-            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
+            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400)),
+            project: project
         )
         try recordKeyEvent(
             name: name,
@@ -1098,8 +1102,8 @@ final class KeysService: @unchecked Sendable {
             }
             _ = try setGateway(name: key, enabled: true, host: nil, caller: caller, presenceChecked: true)
             let minted = try mintGatewayClient(
-                name: key, label: clientLabel, days: ttlDays, methods: methods, pathPrefix: nil, host: host,
-                caller: caller, now: now
+                name: key, label: clientLabel, days: ttlDays, methods: methods, pathPrefix: nil, project: nil,
+                host: host, caller: caller, now: now
             )
             issued.append(WrapIssued(key: key, token: minted.token, clientID: minted.client.id, isNew: item.isNew))
         }

@@ -20,6 +20,13 @@ struct GatewayClient: Equatable {
     /// Upstream host the client was issued for. A key retargeted since then refuses it, so a
     /// host change cannot inherit capabilities approved for the old destination.
     var host: String? = nil
+    /// The project (folder) this client was issued for, as projects.id. nil for clients
+    /// issued before projects existed or outside the MCP flow. Soft reference by design:
+    /// a projects row that no longer exists decodes with nil label, never an error.
+    var project: String? = nil
+    /// The project's display label, joined in at decode time. nil when `project` is nil
+    /// or its row is gone. The label is the only project fact that ever leaves the Mac.
+    var projectLabel: String? = nil
 
     func isActive(now: Date) -> Bool {
         if revokedAt != nil { return false }
@@ -49,6 +56,9 @@ struct GatewayClient: Equatable {
             "last_used_at": lastUsedAt as Any? ?? NSNull(),
             "hint": hint,
             "active": isActive(now: now),
+            // The project as readers show it: id and label, never the path.
+            "project": project as Any? ?? NSNull(),
+            "project_label": projectLabel as Any? ?? NSNull(),
         ]
     }
 }
