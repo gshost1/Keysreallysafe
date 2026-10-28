@@ -15,10 +15,12 @@ final class MCPRegistryTests: XCTestCase {
     static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster
 
     /// Names no revision of this server has registered: the parallel missions'
-    /// tools, and the cancel tool that deliberately does not exist (denial is the
-    /// user cancelling Touch ID).
+    /// tools, the cancel tool that deliberately does not exist (denial is the
+    /// user cancelling Touch ID), and `keys unwrap` — the restore flow is
+    /// CLI-only on purpose (the MCP surface never rewrote the user's files,
+    /// and revocation stays in the app), so its absence is pinned like the rest.
     static let neverRegistered = [
-        "revoke_all", "activity", "send_feedback", "grant_cancel",
+        "revoke_all", "activity", "send_feedback", "grant_cancel", "unwrap",
     ]
 
     // MARK: - REGISTRY-001

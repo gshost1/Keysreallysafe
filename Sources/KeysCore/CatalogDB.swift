@@ -859,6 +859,13 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
+    /// Unwrap clears a file's record once its lines are restored: the row means "live
+    /// wrapped state worth unwrapping", and a revoked token is not live state. A path
+    /// that was never recorded is not an error.
+    func clearWrappedFile(path: String) throws {
+        try run("DELETE FROM wrapped_files WHERE path = ?;", path)
+    }
+
     // MARK: projects
 
     struct ProjectRow: Equatable {
@@ -949,7 +956,10 @@ final class CatalogDB: @unchecked Sendable {
         try one("SELECT \(Self.projectColumns) FROM projects WHERE id = ?;", id, row: decodeProject)
     }
 
-    private func project(path: String) throws -> ProjectRow? {
+    /// The project at a canonical path, or nil. The lookup form `keys unwrap`'s
+    /// project default needs: a folder that was never wrapped answers "nothing was
+    /// changed" without a row being created the way `upsertProject` would.
+    func project(path: String) throws -> ProjectRow? {
         try one("SELECT \(Self.projectColumns) FROM projects WHERE path = ?;", path, row: decodeProject)
     }
 

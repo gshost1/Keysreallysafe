@@ -435,6 +435,28 @@ enum EnvFileWriter {
         return Result(backup: backup)
     }
 
+    /// Unwrap's half of the swap: the same refuse-if-changed, one-rename replace as
+    /// `rewrite`, minus the backup. The wrap-time backup beside the file is the
+    /// restore's own source and stays put, and a fresh one would archive the token
+    /// unwrap exists to revoke — a dead capability parked on disk for no reason.
+    static func swap(_ url: URL, original: Data, text: String) throws {
+        let mode = try currentMode(url)
+        guard let current = FileManager.default.contents(atPath: url.path), current == original else {
+            throw AppError.usage("\(url.lastPathComponent) changed while keys unwrap ran; nothing rewritten")
+        }
+        let temp = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
+        do {
+            try writeNew(temp, data: Data(text.utf8), mode: mode)
+            guard Darwin.rename(temp.path, url.path) == 0 else {
+                throw AppError.usage("could not replace \(url.path): \(String(cString: strerror(errno)))")
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            throw error
+        }
+    }
+
     static func currentMode(_ url: URL) throws -> mode_t {
         var st = stat()
         guard stat(url.path, &st) == 0 else {

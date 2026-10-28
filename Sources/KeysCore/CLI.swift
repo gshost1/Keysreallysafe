@@ -42,6 +42,7 @@ public struct KeysCLI: ParsableCommand {
             ClientCommand.self,
             GatewayCommand.self,
             WrapCommand.self,
+            UnwrapCommand.self,
             ProvidersCommand.self,
             ProviderCommand.self,
             AgentCommand.self,
@@ -1342,6 +1343,42 @@ struct WrapCommand: ParsableCommand {
             }
         )
         _ = try runner.run(options)
+    }
+}
+
+struct UnwrapCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "unwrap",
+        abstract: "Restore the vault keys a wrap replaced with tokens, and revoke those tokens (one Touch ID).",
+        usage: "keys unwrap [<path-to-env-file>]",
+        discussion: """
+            The inverse of keys wrap and import_and_wrap. With a file, exactly that file is \
+            restored; without one, every wrapped file recorded for the working directory's \
+            project is. Values come from the vault inside the running Keysrs (they are never \
+            printed), the BASE_URL companions the wrap wrote are restored from the wrap-time \
+            backup — removed when the wrap appended them or when no backup exists — and the \
+            gateway client tokens the file held are revoked on the spot, so nothing wrapped \
+            keeps working. A wrapped line whose vault key is gone is reported and keeps its \
+            now-dead token. Needs the running Keysrs.app, which owns the vault and the tokens; \
+            when it is not running, keys unwrap exits 6 with the same message as keys wrap and \
+            never launches anything itself.
+            """
+    )
+
+    @Argument(help: "The env file to restore. Without it: every wrapped file of this folder's project.")
+    var path: String?
+
+    func run() throws {
+        // The control connection is UnwrapRunner's injectable seam — the same shape as
+        // keys wrap's ControlWrapBackend.connect — so tests point at a temp control
+        // file beside a temp catalog and never at the production one the installed app
+        // owns (owner directive 2026-10-28). This default is keys wrap's: plain
+        // connect, no auto-launch.
+        let runner = UnwrapRunner(
+            connect: { try ControlClient.connect() },
+            out: { print($0); fflush(stdout) }
+        )
+        _ = try runner.run(path: path)
     }
 }
 

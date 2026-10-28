@@ -67,7 +67,7 @@ extension KeysService {
                 report: report, wanted: wanted, decisions: [], alreadyWrapped: alreadyWrapped,
                 notFound: Self.notFoundOutcomes(requested: variables, candidates: report.candidates, wanted: wanted)
             )
-            return try Self.payload(
+            return Self.payload(
                 project: project, outcomes: outcomes, expiresAt: nil, docker: docker, preferences: preferences
             )
         }
@@ -178,7 +178,7 @@ extension KeysService {
             notFound: Self.notFoundOutcomes(requested: variables, candidates: report.candidates, wanted: wanted),
             conflicted: conflicted
         )
-        return try Self.payload(
+        return Self.payload(
             project: project, outcomes: outcomes, expiresAt: expiresAt, docker: docker, preferences: preferences
         )
     }

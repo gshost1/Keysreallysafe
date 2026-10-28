@@ -216,6 +216,13 @@ final class APIHandler: @unchecked Sendable {
                 return try wrapPlan(request)
             case (_, let p) where p.hasPrefix("/api/wrap/"):
                 return try wrapItem(request, path: p)
+            // The onboarding mission's CLI unwrap: `keys unwrap`'s restore-and-revoke
+            // call. POST like /api/wrap so it inherits the origin-token gate above —
+            // the CLI reaches it over the control channel with that token. The body
+            // carries the file path or the caller's project folder, and the answer
+            // names variables, files and counts only — never a value, never a token.
+            case ("POST", "/api/unwrap"):
+                return try unwrapRequest(request)
             case ("GET", "/api/providers"):
                 return HTTPResponse.json(200, try service.providersJSONObject())
             case ("POST", "/api/providers"):
@@ -837,6 +844,29 @@ final class APIHandler: @unchecked Sendable {
         guard let id = Int64(raw) else { throw AppError.notFound("client \(raw)") }
         let client = try service.revokeGatewayClient(name: name, id: id, caller: "dashboard")
         return HTTPResponse.json(200, ["client": client.jsonObject()])
+    }
+
+    /// POST /api/unwrap — the body carries either the file path (the file form:
+    /// exactly that file is restored and the tokens it holds revoked) or the caller's
+    /// project folder (the project form: every `wrapped_files` row of that project).
+    /// Presence is the flow's own single prompt inside `KeysService.unwrap`.
+    private func unwrapRequest(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        var file: String?
+        if let raw = obj["file"], !(raw is NSNull) {
+            guard let supplied = raw as? String, !supplied.isEmpty else {
+                throw AppError.usage("file must be a non-empty path")
+            }
+            file = supplied
+        }
+        var folder: String?
+        if let raw = obj["folder"], !(raw is NSNull) {
+            guard let supplied = raw as? String, !supplied.isEmpty else {
+                throw AppError.usage("folder must be a non-empty path")
+            }
+            folder = supplied
+        }
+        return HTTPResponse.json(200, try service.unwrap(file: file, folder: folder))
     }
 
     private func keysGrant(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
