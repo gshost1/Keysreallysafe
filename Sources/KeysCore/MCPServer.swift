@@ -40,6 +40,9 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
         self.writeBytes = write
         self.note = note
         self.registry = registry
+        // A group refused at registration is reported once, on stderr, before any
+        // frame is served; the valid roster still serves.
+        for line in registry.diagnostics { note(line) }
     }
 
     /// Serves one line source to its end; stdin EOF in production, a scripted
