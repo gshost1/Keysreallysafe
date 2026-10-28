@@ -1131,12 +1131,16 @@ struct AutostartCommand: ParsableCommand {
         abstract: "Remove a legacy login item; configure Start at Login inside Keysrs.app."
     )
 
-    @Flag(name: [.customLong("remove"), .customLong("uninstall")], help: "Unload and delete the login item and its snapshot.")
+    @Flag(name: [.customLong("remove"), .customLong("uninstall")], help: "Unload and delete the login item and its snapshot. Offers to unwrap any recorded wrapped files first.")
     var remove = false
 
     func run() throws {
         if remove {
-            try Installer.live.uninstall()
+            // The offer owns the removal call (UninstallOfferRunner.uninstall is
+            // Installer.live.uninstall live, injected in tests — the real removal
+            // must never run from a test, owner directive 2026-10-28). A yes with
+            // the app down throws the control sentence before anything is removed.
+            try UninstallOfferRunner.live().run()
             print("removed login item \(LoginItem.label)")
             return
         }
