@@ -444,6 +444,16 @@ keys wrap ~/code/agent/.env --dry-run
 keys wrap ~/code/agent/.env
 ```
 
+**Unwrapping an env file.** `keys unwrap path/to/.env` reverses a wrap:
+under one Touch ID the app restores each wrapped line's real value from the
+vault and revokes that file's client tokens — the token left in the file
+dies on the spot. An unedited file comes back byte-for-byte, with the
+wrap-time backup supplying the BASE_URL companions (restored where the wrap
+replaced one, removed where it appended one). `keys unwrap` with no
+argument restores every wrapped file recorded for the current folder's
+project. Like `keys wrap` it needs the running app and exits 6 without it,
+changing nothing; it writes no new backup and never prints a value.
+
 Either token goes where the SDK expects the API key. A client is bound to one
 key and revoked with `keys client revoke`. The dashboard's per-launch token
 is never accepted as either. Both narrow accidental or unauthorized local
@@ -673,6 +683,7 @@ keys client revoke <name> <id>
 keys gateway on|off <name>
 keys gateway cheapest on|off <name>
 keys wrap <env file> [--dry-run] [--yes] [--relay <worker url>] [--label <text>] [--days N]
+keys unwrap [<env file>]
 keys providers [--json]
 keys provider add <id> --name <name> [--host <host>] [--api openai|anthropic|gemini|other] [--auth-header <header>] [--auth-prefix <prefix>] [--path-prefix <path>] [--key-prefix <hint>] [--note <text>] [--no-gateway]
 keys provider rm <id>

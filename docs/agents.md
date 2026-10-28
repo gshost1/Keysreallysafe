@@ -184,6 +184,49 @@ The tools the server offers:
   `base_url` and `auth_header` on exactly the first approved poll (the only
   time a token is returned; later polls say `delivered`), or `denied`,
   `expired`, `not_found`.
+- `scan_project` — scan a project folder for credential-shaped environment
+  variables without reading the files yourself: each one's name, relative
+  file, likely provider, category (`provider_key`, `aws_pair`,
+  `credential_url`, `wrapped`), a last-4 hint, whether the value is already
+  in the vault and whether the gateway could proxy it, plus the env files
+  read and the Docker files at the root. The one input, `folder`, is
+  optional and defaults to the server process's working directory. Never
+  returns a key value — at most the last 4 characters. The in-vault answer
+  needs the app (a hash-only comparison); without it the scan still answers
+  and `in_vault` is null.
+- `check_exposure` — which of those env files git has ever seen: three
+  read-only booleans per file (`gitignored`, `tracked`, `in_history`), the
+  relative paths, and a rotate-the-keys recommendation for any file that
+  was ever committed. Never file contents or diffs. Same optional `folder`;
+  needs no app, no vault and no network, and answers null booleans with a
+  plain statement when git or the repository is missing.
+- `import_and_wrap` — import the found keys into the vault and rewrite each
+  line to a single 30-day project gateway token, inside the app under one
+  Touch ID prompt naming the keys and the project. Ask the user first in
+  the same call. Inputs: the optional `folder` (same default), an optional
+  `variables` list restricting the import to those names, and the `docker`
+  flag — pass true only on the user's explicit yes, because it also lets
+  Docker containers reach the gateway (the host.docker.internal section
+  below) and writes those base URLs. The request carries names and flags
+  only — never a value; the app re-reads the files itself. The result is
+  per-variable outcomes (`wrapped`, `imported_not_wrapped`, `skipped`,
+  `not_found`, each with its reason), the project label, the token's
+  expiry, the docker setting and the base-URL host — never a value, a token
+  or an absolute path. Values the gateway cannot proxy (AWS SigV4 pairs,
+  credential URLs) import but keep their lines; a value with no recognized
+  provider and no vault match is not imported. Requires the app; without it
+  the whole call fails with the not-running sentence.
+- `test_keys` — whether named vault keys still work, read-only: one GET to
+  each key's model-list endpoint, answered per key (outcome, summary, model
+  list, a confirmed flag) — never a key value. `keys` is a required list of
+  vault key names. Confirmation is the user's alone, every time: ask the
+  user in this same call and pass `confirm` true only after they say yes —
+  never remember an earlier yes, never treat one approval as covering a
+  later call. With `confirm` absent or false nothing is sent to any
+  provider, no prompt appears, and the result says so per key; with it the
+  app shows one Touch ID prompt naming the keys. A provider with no
+  read-only check endpoint reports `no_check_endpoint` with nothing sent.
+  Requires the app.
 
 The grant ask returns `{"status":"pending","id":…}` immediately, while the
 Keysrs app shows one Touch ID prompt naming the key, the host and the
@@ -240,6 +283,24 @@ relay is the other route. Both keep every check this page describes; the
 details and the per-agent snippets are in [cloud-agents.md](cloud-agents.md)
 and [relay.md](relay.md).
 
+## Unwrapping an env file
+
+`keys unwrap path/to/.env` is the inverse of `keys wrap` and
+`import_and_wrap`: under one Touch ID the app restores each wrapped line's
+real value from the vault and revokes that file's gateway client tokens, so
+the token left in the file dies immediately. An unedited file comes back
+byte-for-byte — the wrap-time `<file>.keysrs-backup-<time>` is the restore
+source for the BASE_URL companions (restored where the wrap replaced one,
+removed where it appended one or where no backup exists). With no argument,
+`keys unwrap` restores every wrapped file recorded for the working
+directory's project. It writes no new backup, prints no value, and a token
+already revoked is a no-op, not a failure.
+
+Like `keys wrap`, it needs the running app — the vault and the tokens live
+there. When no Keysrs site owns the gateway it prints the not-running
+sentence and exits 6, changing nothing; open Keysrs.app (or run
+`keys dashboard`) and retry.
+
 ## Docker containers: the host.docker.internal setting
 
 A container cannot use `http://127.0.0.1:12767` — that is the container's own
@@ -287,8 +348,9 @@ code once it ends.
 
 Exit 6 is the one that says "start Keysrs.app or run `keys dashboard` and
 retry", not "fix your arguments": `keys grant`, `keys grants`, `keys gateway`,
-the grant path of `keys agent`, and the gateway-not-up paths of `keys tunnel`
-and `keys relay run` all use it when nothing is listening on the gateway.
+`keys wrap`, `keys unwrap`, the grant path of `keys agent`, and the
+gateway-not-up paths of `keys tunnel` and `keys relay run` all use it when
+nothing is listening on the gateway.
 Commands that need no site — `keys list`, `keys status`, `keys version`,
 `keys setup` — run without one.
 

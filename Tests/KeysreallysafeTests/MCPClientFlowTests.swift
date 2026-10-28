@@ -158,7 +158,7 @@ final class MCPClientFlowTests: XCTestCase {
             return String(decoding: stderrLog, as: UTF8.self)
         }
 
-        init(binary: URL, cwd: URL, catalog: URL) {
+        init(binary: URL, cwd: URL, catalog: URL, extraEnvironment: [String: String] = [:]) {
             let stdin = Pipe()
             let stdout = Pipe()
             let stderr = Pipe()
@@ -174,9 +174,11 @@ final class MCPClientFlowTests: XCTestCase {
             // Only the catalog is redirected: the control file follows it, so
             // the subprocess finds the synthetic app exactly as the real one
             // finds the installed Keysrs.app. Everything else is inherited,
-            // and nothing in `keys mcp` reads a real home.
+            // and nothing in `keys mcp` reads a real home. extraEnvironment is
+            // for determinism pins (the onboarding flow's git config isolation).
             var environment = ProcessInfo.processInfo.environment
             environment["KEYS_CATALOG"] = catalog.path
+            for (key, value) in extraEnvironment { environment[key] = value }
             process.environment = environment
         }
 
@@ -496,6 +498,463 @@ final class MCPClientFlowTests: XCTestCase {
         XCTAssertFalse(transcript.contains(rig.dir.path), "no project path crosses the pipe")
         XCTAssertEqual(transcript.components(separatedBy: token!).count - 1, 1,
                        "the token crossed exactly once, on the one approved handover")
+        for line in client.stderrText.split(separator: "\n", omittingEmptySubsequences: true) {
+            XCTAssertFalse(line.contains("\"jsonrpc\""), "stderr is prose only, never frames: \(line)")
+        }
+    }
+
+    // MARK: - The onboarding rig
+
+    /// The synthetic app for the onboarding flow: the same in-process app shape
+    /// as `makeRig` (temp catalog, temp control file, blocking presence, memory
+    /// secrets, consent-ON recording analytics) plus a gateway listener and a
+    /// stub upstream, so the minted project token's acceptance is proven by a
+    /// real loopback HTTP round trip — never the network. The two vault keys the
+    /// flow "finds" are seeded with the env file's own fake values and their
+    /// gateway hosts point at the stub: the scan's in_vault answer exercises the
+    /// hash comparison over the pipe, the import's dedupe reuses the keys, and
+    /// the one real gateway request stays offline.
+    private struct OnboardingRig {
+        let service: KeysService
+        let db: CatalogDB
+        let dir: URL
+        let gate: BlockingPresenceGate
+        let handler: APIHandler
+        let server: LoopbackHTTPServer
+        let requests: RequestLog
+        let transport: ProductAnalyticsTests.Transport
+        let stub: LoopbackHTTPServer
+        let stubRequests: RequestLog
+        let gateway: GatewayListener
+        let project: URL
+        let env: URL
+    }
+
+    private let fakeBody = "FAKE0TEST0VALUE0NOT0A0REAL0KEY"
+    private var openAIValue: String { "sk-" + fakeBody + "02" }
+    private var anthropicValue: String { "sk-ant-" + fakeBody + "01" }
+
+    private func makeOnboardingRig() throws -> OnboardingRig {
+        let (db, dir) = try makeDB()
+        try assertNotProductionPath(db.path)
+        let gate = BlockingPresenceGate()
+        let service = KeysService(
+            catalog: db,
+            secrets: MemorySecretStore(),
+            presence: gate,
+            clipboard: FakeClipboard(),
+            grokHome: Fixtures.grokHome,
+            claudeHome: Fixtures.claudeHome,
+            codexHome: Fixtures.codexHome,
+            droidHome: Fixtures.droidHome,
+            runner: SpawnCommandRunner(restoresHandlers: true),
+            openRouter: OpenRouterHTTP(),
+            relaySecrets: MemorySecretStore()
+        )
+
+        // The stub upstream stands in for api.openai.com / api.anthropic.com:
+        // both seeded keys' gateway hosts point at it, so the gateway's one real
+        // request never leaves loopback.
+        let stubRequests = RequestLog()
+        let stub = try LoopbackHTTPServer(port: 0) { request in
+            stubRequests.record(request)
+            return HTTPResponse.json(200, ["ok": true])
+        }
+        stub.start()
+        let stubHost = "127.0.0.1:\(stub.boundPort)"
+        try service.add(name: "openai", provider: "openai", kind: "runtime", notes: "", secret: openAIValue)
+        try service.add(name: "anthropic", provider: "anthropic", kind: "runtime", notes: "", secret: anthropicValue)
+        _ = try service.setGateway(name: "openai", enabled: true, host: stubHost, presenceChecked: true)
+        _ = try service.setGateway(name: "anthropic", enabled: true, host: stubHost, presenceChecked: true)
+        let gateway = try GatewayListener(service: service, port: 0)
+        gateway.start()
+
+        // Sharing consented ON and the transport recording: any MCP path that
+        // enrolled or sent anything lands here and fails the test.
+        let transport = ProductAnalyticsTests.Transport()
+        let analytics = ProductAnalytics(catalog: db, transport: transport)
+        try analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
+        service.analytics = analytics
+        analytics.start()
+
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try fm.createDirectory(at: web, withIntermediateDirectories: true)
+        let handler = APIHandler(service: service, webRoot: web)
+        let requests = RequestLog()
+        let server = try LoopbackHTTPServer(port: 0) { request in
+            requests.record(request)
+            return handler.handle(request)
+        }
+        server.start()
+        let control = ControlFile.url(beside: db.path)
+        try assertNotProductionPath(control)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+
+        // The project the subprocess stands in: a real git repository that has
+        // committed the env file, so check_exposure answers real facts.
+        let project = dir.appendingPathComponent("e2eproj", isDirectory: true)
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        let env = project.appendingPathComponent(".env")
+        try Data((originalEnv + "\n").utf8).write(to: env)
+        try Data("FROM scratch\n".utf8).write(to: project.appendingPathComponent("Dockerfile"))
+        try fixtureGit(["init", "-q"], in: project)
+        try fixtureGit(["config", "user.email", "fixture@invalid"], in: project)
+        try fixtureGit(["config", "user.name", "fixture"], in: project)
+        try fixtureGit(["config", "commit.gpgsign", "false"], in: project)
+        try fixtureGit(["config", "core.hooksPath", ""], in: project)
+        // The exposure facts must not depend on the machine's global excludes.
+        try fixtureGit(["config", "core.excludesFile", "/dev/null"], in: project)
+        try fixtureGit(["add", ".env"], in: project)
+        try fixtureGit(["commit", "-q", "-m", "fixture commits the env file"], in: project)
+
+        addTeardownBlock {
+            // No approval thread outlives the test, and the ephemeral ports close.
+            gate.releaseAll(AppError.authCancelled)
+            gateway.stop()
+            stub.stop()
+            server.stop()
+        }
+        return OnboardingRig(
+            service: service, db: db, dir: dir, gate: gate, handler: handler,
+            server: server, requests: requests, transport: transport,
+            stub: stub, stubRequests: stubRequests, gateway: gateway,
+            project: project, env: env
+        )
+    }
+
+    /// The pre-wrap file: a comment, an exported-and-quoted line with an inline
+    /// comment, a bare line and a pre-existing BASE_URL the wrap replaces — the
+    /// shapes byte-for-byte restoration has to survive.
+    private var originalEnv: String {
+        """
+        # top comment
+        export OPENAI_API_KEY="\(openAIValue)" # inline
+        ANTHROPIC_API_KEY=\(anthropicValue)
+        OPENAI_BASE_URL=https://api.example.internal/v1
+        """
+    }
+
+    /// One fixture git command, expected to succeed, with the global and system
+    /// config pinned out so the facts depend on the fixture repository alone.
+    private func fixtureGit(
+        _ arguments: [String], in root: URL,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        let binary = try XCTUnwrap(
+            MCPOnboardingTools.gitOnPATH(), "git must be on PATH to build a fixture repo",
+            file: file, line: line
+        )
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = ["-C", root.path] + arguments
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_CONFIG_NOSYSTEM"] = "1"
+        environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        process.environment = environment
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(
+            process.terminationStatus, 0, "fixture git \(arguments.first ?? "") failed",
+            file: file, line: line
+        )
+    }
+
+    /// The decoded payload of a result envelope's one text block.
+    private func payload(
+        _ result: [String: Any], name: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws -> [String: Any] {
+        guard let content = result["content"] as? [[String: Any]], content.count == 1,
+              content[0]["type"] as? String == "text",
+              let text = content[0]["text"] as? String else {
+            XCTFail("the \(name) result is not one text block", file: file, line: line)
+            return [:]
+        }
+        XCTAssertFalse(result["isError"] as? Bool ?? false, "an unexpected \(name) error: \(text)",
+                       file: file, line: line)
+        return try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+    }
+
+    /// One POST through the real gateway listener with a client token.
+    private func postToGateway(_ url: URL, token: String) async throws -> Int {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = Data(#"{"model":"gpt-4.1"}"#.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        return (response as? HTTPURLResponse)?.statusCode ?? -1
+    }
+
+    /// The stub's headers are lowercased by the frame parser; look up
+    /// case-insensitively so the assertion does not depend on that.
+    private func header(_ request: HTTPRequest?, _ name: String) -> String? {
+        request?.headers.first { $0.key.lowercased() == name.lowercased() }?.value
+    }
+
+    /// Fails if any file under `dir` holds `needle`, except the listed URLs: the
+    /// env file and its wrap-time backup legitimately hold values (and, while
+    /// wrapped, the token); everything else — the catalog and its WAL included —
+    /// holds hashes at most.
+    private func assertSentinelOnlyIn(
+        _ needle: String, dir: URL, allowed: [URL],
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let keep = Set(allowed.map { $0.resolvingSymlinksInPath().path })
+        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        while let url = files?.nextObject() as? URL {
+            guard !keep.contains(url.resolvingSymlinksInPath().path),
+                  let data = try? Data(contentsOf: url) else { continue }
+            XCTAssertNil(data.range(of: Data(needle.utf8)),
+                         "\(url.lastPathComponent) holds a sentinel", file: file, line: line)
+        }
+    }
+
+    // MARK: - The onboarding done-criterion flow (VAL-CROSS-001, VAL-CROSS-002)
+
+    /// The mission's done criterion over real pipes: a REAL `keys mcp` subprocess
+    /// standing in the project folder runs initialize → tools/list → scan_project
+    /// → check_exposure → import_and_wrap (one scripted approval, observed before
+    /// it is released) against the synthetic app; the rewritten env file's one
+    /// project token then authorizes a real gateway request for a member key; the
+    /// app-side unwrap restores the file byte-for-byte and revokes the token,
+    /// which the gateway then refuses. The sweeps close the loop: the transcript
+    /// holds no value, no absolute project path and no token; the consent-ON
+    /// analytics transport stays empty; and on disk the token and the values
+    /// live only in the env file, its backup and the catalog's token hash.
+    func testOnboardingDoneCriterionFlow() async throws {
+        let binary = Self.repoRoot.appendingPathComponent(".build/debug/keys")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: binary.path),
+                      "\(binary.path) must exist and be executable; run swift test to build it")
+        let rig = try makeOnboardingRig()
+        XCTAssertEqual(rig.gate.recordedReasons.count, 0, "setup spent no prompts")
+        let originalData = try Data(contentsOf: rig.env)
+
+        let client = PipeClient(
+            binary: binary, cwd: rig.project, catalog: rig.db.path,
+            extraEnvironment: ["GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"]
+        )
+        try client.start()
+        addTeardownBlock { client.halt() }
+
+        // initialize: the handshake, with the frozen shape.
+        try client.send(MCPSession.initialize())
+        var responses = 1
+        let initialize = try MCPSession.assertResult(try client.frame(), id: "init", "the handshake")
+        XCTAssertEqual(initialize["protocolVersion"] as? String, "2025-06-18", "the client's version is echoed")
+        XCTAssertTrue((initialize["instructions"] as? String)?.contains("Keysrs is the local API-key vault") ?? false,
+                      "the instructions string is the frozen one")
+
+        // notifications/initialized: answered by nothing; the frame count at the
+        // end re-proves it.
+        try client.send(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+
+        // tools/list: the whole mission roster, in the registry's order.
+        try client.send(#"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#)
+        responses += 1
+        let roster = try MCPSession.toolNames(in: try client.frame(), id: "list")
+        XCTAssertEqual(roster, ["version", "list_keys", "gateway_info", "open_app", "check_update",
+                                "request_grant", "grant_status", "scan_project", "check_exposure", "import_and_wrap",
+                                "test_keys"],
+                       "the deterministic mission roster")
+
+        // scan_project: no folder argument — the default is the subprocess's own
+        // working directory, the project folder.
+        let scan = try toolCall(client, id: "scan", name: "scan_project", arguments: [:])
+        responses += 1
+        XCTAssertEqual(scan["env_files"] as? [String], [".env"])
+        XCTAssertEqual(scan["docker_files"] as? [String], ["Dockerfile"])
+        XCTAssertEqual(scan["vault_check"] as? String, "app",
+                       "the in-vault comparison reached the synthetic app by hash")
+        let scanned = try XCTUnwrap(scan["variables"] as? [[String: Any]])
+        XCTAssertEqual(scanned.count, 2)
+        let expected: [(String, String, String)] = [
+            ("OPENAI_API_KEY", "openai", String(openAIValue.suffix(4))),
+            ("ANTHROPIC_API_KEY", "anthropic", String(anthropicValue.suffix(4))),
+        ]
+        for (index, (name, provider, last4)) in expected.enumerated() {
+            let variable = scanned[index]
+            XCTAssertEqual(variable["name"] as? String, name)
+            XCTAssertEqual(variable["file"] as? String, ".env", "relative, never absolute")
+            XCTAssertEqual(variable["provider"] as? String, provider)
+            XCTAssertEqual(variable["category"] as? String, "provider_key")
+            XCTAssertEqual(variable["last4"] as? String, last4, "at most the last 4 characters")
+            XCTAssertEqual(variable["in_vault"] as? Bool, true, "the seeded value matched by hash")
+            XCTAssertEqual(variable["proxyable"] as? Bool, true)
+            XCTAssertEqual(variable["wrapped"] as? Bool, false)
+        }
+
+        // check_exposure: git facts, never contents — the committed .env is
+        // tracked and in history, so it carries the rotation recommendation.
+        let exposure = try toolCall(client, id: "exposure", name: "check_exposure", arguments: [:])
+        responses += 1
+        XCTAssertEqual(exposure["git"] as? String, "available")
+        let exposed = try XCTUnwrap(exposure["files"] as? [[String: Any]])
+        XCTAssertEqual(exposed.count, 1)
+        XCTAssertEqual(exposed[0]["file"] as? String, ".env")
+        XCTAssertEqual(exposed[0]["gitignored"] as? Bool, false)
+        XCTAssertEqual(exposed[0]["tracked"] as? Bool, true)
+        XCTAssertEqual(exposed[0]["in_history"] as? Bool, true)
+        XCTAssertEqual(exposed[0]["recommendation"] as? String, "rotate the keys that were in this file")
+
+        // import_and_wrap: the scripted approval observes the one prompt BEFORE
+        // releasing it — exactly one prompt, naming the keys and the project
+        // label, never a path, a value or a token.
+        let importArguments = String(decoding: try JSONValue.data(["folder": rig.project.path]), as: UTF8.self)
+        try client.send(
+            #"{"jsonrpc":"2.0","id":"import","method":"tools/call","params":{"name":"import_and_wrap","arguments":\#(importArguments)}}"#
+        )
+        responses += 1
+        XCTAssertTrue(rig.gate.waitPrompts(1, timeout: Self.frameBound),
+                      "the import's one presence prompt went up")
+        XCTAssertEqual(rig.gate.recordedReasons.count, 1, "exactly one recorded prompt for the whole import")
+        let ask = rig.gate.recordedReasons[0]
+        XCTAssertEqual(ask, "import and wrap 2 keys for project e2eproj: openai, anthropic",
+                       "the prompt names the keys and the project label")
+        XCTAssertFalse(ask.contains(rig.dir.path), "no absolute path in the prompt: \(ask)")
+        XCTAssertFalse(ask.contains(fakeBody), "no value in the prompt: \(ask)")
+        XCTAssertFalse(ask.contains("ksfc_"), "no token in the prompt: \(ask)")
+        rig.gate.release()
+        let importEnvelope = try MCPSession.assertResult(try client.frame(), id: "import", "the import answer")
+        let imported = try payload(importEnvelope, name: "import_and_wrap")
+        XCTAssertEqual(imported["project_label"] as? String, "e2eproj")
+        XCTAssertNotNil(imported["expires_at"] as? String, "the one token's 30-day expiry")
+        XCTAssertEqual(imported["docker_access"] as? Bool, false)
+        XCTAssertEqual(imported["base_url_host"] as? String, "127.0.0.1")
+        let outcomes = try XCTUnwrap(imported["variables"] as? [[String: Any]])
+        XCTAssertEqual(outcomes.map { $0["variable"] as? String }, ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"])
+        XCTAssertEqual(outcomes.map { $0["status"] as? String }, ["wrapped", "wrapped"])
+        XCTAssertEqual(outcomes.map { $0["new"] as? Bool }, [false, false],
+                       "the dedupe reused the seeded keys, no duplicates")
+        let keyA = try XCTUnwrap(outcomes[0]["key"] as? String)
+        let keyB = try XCTUnwrap(outcomes[1]["key"] as? String)
+        XCTAssertEqual(keyA, "openai")
+        XCTAssertEqual(keyB, "anthropic")
+
+        // The env file was rewritten by the app: one ksfc token on both lines,
+        // the per-key gateway base URLs, no raw value, the 0600 backup beside it.
+        let wrappedText = try String(contentsOf: rig.env, encoding: .utf8)
+        XCTAssertFalse(wrappedText.contains(fakeBody), "the raw values are gone from the file")
+        let wrappedFile = EnvFile.parse(wrappedText)
+        let token = try XCTUnwrap(wrappedFile.value(of: "OPENAI_API_KEY"))
+        XCTAssertTrue(token.hasPrefix("ksfc_"), "the wrapped line holds a client token")
+        XCTAssertEqual(wrappedFile.value(of: "ANTHROPIC_API_KEY"), token,
+                       "every wrapped line holds the ONE project token")
+        XCTAssertEqual(wrappedFile.value(of: "OPENAI_BASE_URL"), "http://127.0.0.1:12767/\(keyA)")
+        XCTAssertEqual(wrappedFile.value(of: "ANTHROPIC_BASE_URL"), "http://127.0.0.1:12767/\(keyB)")
+        XCTAssertTrue(wrappedText.contains("export OPENAI_API_KEY=\"\(token)\""),
+                      "export, quotes and the comment survive the rewrite")
+        let backupNames = try fm.contentsOfDirectory(atPath: rig.project.path)
+            .filter { $0.hasPrefix(".env.keysrs-backup-") }
+        XCTAssertEqual(backupNames.count, 1, "the wrap wrote exactly one backup")
+        let backup = rig.project.appendingPathComponent(backupNames[0])
+        XCTAssertEqual(try Data(contentsOf: backup), originalData, "the backup holds the pre-wrap bytes")
+        let backupMode = try fm.attributesOfItem(atPath: backup.path)[.posixPermissions] as? Int
+        XCTAssertEqual(backupMode, 0o600, "the backup is owner-only — it still holds the values")
+        XCTAssertEqual(try rig.db.listWrappedFiles().count, 1, "the import recorded the wrapped file")
+
+        // The gateway accepts the project token for a member key: a real
+        // loopback request through the gateway listener reaches the stub
+        // upstream carrying that member's own secret.
+        let memberURL = URL(string: "http://127.0.0.1:\(rig.gateway.boundPort)/\(keyA)/v1/chat/completions")!
+        let accepted = try await postToGateway(memberURL, token: token)
+        XCTAssertEqual(accepted, 200, "the gateway accepts the project token for a member key")
+        XCTAssertEqual(rig.stubRequests.count, 1)
+        XCTAssertEqual(header(rig.stubRequests.last, "authorization"), "Bearer " + openAIValue,
+                       "the member key's own secret went upstream")
+        guard case .allowed = rig.service.authorizeGatewayClient(
+            name: keyB, headers: ["authorization": "Bearer " + token], method: "POST", rest: "v1/x"
+        ) else {
+            return XCTFail("the one project token serves the other member too")
+        }
+
+        // While wrapped, the token lives only in the env file and the values
+        // only in the backup: the catalog keeps the token's hash, never it.
+        assertSentinelOnlyIn(token, dir: rig.dir, allowed: [rig.env])
+        assertSentinelOnlyIn(fakeBody, dir: rig.dir, allowed: [backup])
+
+        // The app-side unwrap: one scripted approval, the file restored
+        // byte-for-byte from the vault, the token revoked.
+        rig.gate.release()
+        let unwrapped = try rig.service.unwrap(file: rig.env.path, folder: nil)
+        XCTAssertEqual(rig.gate.recordedReasons.count, 2, "the unwrap cost exactly one more prompt")
+        let restoreAsk = rig.gate.recordedReasons[1]
+        XCTAssertTrue(restoreAsk.contains("unwrap"), "the prompt says what the call does: \(restoreAsk)")
+        XCTAssertTrue(restoreAsk.contains(".env"), "the prompt names the file: \(restoreAsk)")
+        XCTAssertFalse(restoreAsk.contains(fakeBody), "no value in the prompt: \(restoreAsk)")
+        XCTAssertFalse(restoreAsk.contains("ksfc_"), "no token in the prompt: \(restoreAsk)")
+        XCTAssertEqual(try Data(contentsOf: rig.env), originalData,
+                       "the unwrap restored the file byte-for-byte")
+        let unwrappedFiles = try XCTUnwrap(unwrapped["files"] as? [[String: Any]])
+        XCTAssertEqual(unwrappedFiles.count, 1)
+        XCTAssertEqual(unwrappedFiles[0]["restored"] as? [String], ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"])
+        XCTAssertEqual((unwrappedFiles[0]["failed"] as? [Any])?.count, 0)
+        XCTAssertEqual(try rig.db.listWrappedFiles().count, 0, "the record cleared with the unwrap")
+
+        // The token is dead: the gateway refuses it and the authorization
+        // decision says why.
+        let refused = try await postToGateway(memberURL, token: token)
+        XCTAssertEqual(refused, 401, "the revoked project token is refused")
+        XCTAssertEqual(rig.stubRequests.count, 1, "a denied request never reaches the upstream")
+        XCTAssertEqual(
+            rig.service.authorizeGatewayClient(
+                name: keyA, headers: ["authorization": "Bearer " + token], method: "POST", rest: "v1/x"
+            ),
+            .denied("revoked")
+        )
+
+        // After the unwrap the token is nowhere on disk — the file holds the
+        // restored values again and the catalog kept only the hash.
+        assertSentinelOnlyIn(token, dir: rig.dir, allowed: [])
+        assertSentinelOnlyIn(fakeBody, dir: rig.dir, allowed: [rig.env, backup])
+
+        // Nothing leaves the machine: the subprocess's whole control-channel
+        // traffic is the one hash-only vault lookup and the one import call,
+        // both origin-token gated, and no value or token ever crossed it.
+        let requests = rig.requests.all
+        XCTAssertEqual(requests.map { $0.path }, ["/api/mcp/vault_lookup", "/api/mcp/import_and_wrap"],
+                       "the whole app traffic of the flow")
+        for request in requests {
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.headers["x-ksf-token"], rig.handler.originToken, "origin-token gated")
+            let body = String(decoding: request.body, as: UTF8.self)
+            XCTAssertFalse(body.contains(fakeBody), "no value crossed the wire")
+            XCTAssertFalse(body.contains(token), "no token crossed the wire")
+        }
+        // Analytics stays silent even with sharing consented ON.
+        XCTAssertEqual(rig.transport.calls.count, 0, "no analytics report was attempted")
+        XCTAssertEqual(rig.transport.fetches.count, 0, "no benchmark fetch was attempted")
+
+        // Closing stdin is the documented shutdown: exit 0, within the bound.
+        let exited = try client.closeAndWaitForExit()
+        XCTAssertTrue(exited, "stdin EOF must exit within \(Self.shutdownBound) s")
+        XCTAssertEqual(client.process.terminationReason, .exit, "the server was never killed")
+        XCTAssertEqual(client.process.terminationStatus, 0, "stdin EOF exits 0")
+
+        // Stdout carries only frames: exactly one compact sorted-key response per
+        // request and zero for the notification — and the transcript holds no
+        // key value, no absolute project path and no token, in either spelling
+        // of the temp tree.
+        let transcript = client.rawStdoutText
+        let chunks = transcript.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        XCTAssertEqual(chunks.last, "", "the stream ends on the frame terminator")
+        let frames = chunks.dropLast()
+        XCTAssertEqual(frames.count, responses,
+                       "exactly one response per request-bearing line, none for the notification")
+        for frame in frames {
+            let object = try MCPSession.object(frame)
+            XCTAssertNil(object["method"], "only responses, never requests or notifications")
+            XCTAssertNotNil(object["id"])
+            XCTAssertEqual(Data(frame.utf8), try JSONValue.data(object),
+                           "frames must be compact sorted-key JSON: \(frame)")
+        }
+        XCTAssertFalse(transcript.contains(fakeBody), "no key value ever crosses the pipe")
+        XCTAssertFalse(transcript.contains(token), "the token never appears in a tool result")
+        XCTAssertFalse(transcript.contains("ksfc_"), "no token shape crosses the pipe at all")
+        XCTAssertFalse(transcript.contains(rig.dir.path), "no project path crosses the pipe")
+        XCTAssertFalse(transcript.contains(rig.dir.resolvingSymlinksInPath().path),
+                       "no project path crosses the pipe in the resolved spelling either")
         for line in client.stderrText.split(separator: "\n", omittingEmptySubsequences: true) {
             XCTAssertFalse(line.contains("\"jsonrpc\""), "stderr is prose only, never frames: \(line)")
         }

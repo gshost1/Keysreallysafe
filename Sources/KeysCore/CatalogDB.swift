@@ -804,7 +804,7 @@ final class CatalogDB: @unchecked Sendable {
 
     /// Idempotent by primary key, so a retried mint cannot grow a duplicate membership.
     func insertGatewayClientKey(clientID: Int64, keyName: String, host: String) throws {
-        try withLock {
+        _ = try withLock {
             try run(
                 "INSERT OR IGNORE INTO gateway_client_keys (client_id, key_name, host) VALUES (?, ?, ?);",
                 clientID, keyName, host
