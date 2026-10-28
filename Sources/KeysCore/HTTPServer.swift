@@ -193,6 +193,11 @@ final class APIHandler: @unchecked Sendable {
             // and answers with per-variable outcomes, never a value or a token.
             case ("POST", "/api/mcp/import_and_wrap"):
                 return try mcpImportAndWrap(request)
+            // The onboarding mission's confirm-gated provider check: key names and
+            // the confirm flag in, the keys-test result shape plus confirmed out —
+            // nothing is sent to any provider without the caller's confirmed ask.
+            case ("POST", "/api/mcp/test_keys"):
+                return try mcpTestKeys(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -1101,6 +1106,25 @@ final class APIHandler: @unchecked Sendable {
             docker = flag
         }
         return HTTPResponse.json(200, try service.importAndWrap(folder: folder, variables: variables, docker: docker))
+    }
+
+    /// POST /api/mcp/test_keys — the onboarding mission's confirm-gated provider
+    /// check. The body carries vault key names and the confirm flag, nothing else:
+    /// the app resolves the keys, prompts once for the whole call when confirmed
+    /// and probing, and answers with the existing keys-test result shape per key
+    /// plus the confirmed flag — never a value, never a token. An unconfirmed call
+    /// is answered without a prompt and without a single network request.
+    private func mcpTestKeys(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let names = obj["keys"] as? [Any], !names.isEmpty, names.allSatisfy({ $0 is String }) else {
+            throw AppError.usage("keys must be a non-empty list of key names")
+        }
+        var confirm = false
+        if let raw = obj["confirm"], !(raw is NSNull) {
+            guard let flag = JSONValue.bool(raw) else { throw AppError.usage("confirm must be a boolean") }
+            confirm = flag
+        }
+        return HTTPResponse.json(200, try service.testKeys(keys: names.compactMap { $0 as? String }, confirm: confirm))
     }
 
     // MARK: - Profiles (saved grant bounds)

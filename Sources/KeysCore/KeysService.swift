@@ -875,21 +875,51 @@ final class KeysService: @unchecked Sendable {
 
     // MARK: - Provider checks (read-only)
 
-    /// Authentication status and model list from the provider's read-only endpoint.
-    /// Uses the in-memory gateway secret when present, else one presence prompt.
-    func checkProvider(name: String, caller: String = "dashboard") throws -> ProviderCheck.Result {
+    /// One key's check target, resolved with no prompt and no secret read: the
+    /// row's provider, the host a probe would go to, and whether the provider has
+    /// a read-only endpoint at all. `checkProvider` and the `test_keys` flow share
+    /// it, so both refuse the same names and would probe the same hosts.
+    struct CheckTarget {
+        let provider: Providers.Record
+        let host: String?
+        let probe: ProviderCheck.Endpoint?
+    }
+
+    /// The resolution every check path starts with, with the same named refusals
+    /// `existingRow` and the provider lookup always give — before any presence
+    /// prompt, so a caller's typo never costs a Touch ID.
+    func checkTarget(name: String) throws -> CheckTarget {
         let row = try existingRow(name)
         guard let provider = Providers.provider(id: row.provider) else {
             throw AppError.usage("unknown provider \(row.provider); edit the key and pick one from the list")
         }
-        let host = row.gatewayHost ?? provider.host
+        return CheckTarget(provider: provider, host: row.gatewayHost ?? provider.host, probe: ProviderCheck.endpoint(for: provider))
+    }
+
+    /// The finish every completed probe shares: the result lands in the catalog's
+    /// last-check row and the audit log, with the caller named.
+    func recordCheck(_ result: ProviderCheck.Result, caller: String) throws {
+        try catalog.upsertProviderCheck(result)
+        try recordKeyEvent(
+            name: result.key,
+            action: "check",
+            caller: caller,
+            detail: result.summary,
+            touchLastUsed: true
+        )
+    }
+
+    /// Authentication status and model list from the provider's read-only endpoint.
+    /// Uses the in-memory gateway secret when present, else one presence prompt.
+    func checkProvider(name: String, caller: String = "dashboard") throws -> ProviderCheck.Result {
+        let target = try checkTarget(name: name)
         // Before any presence prompt: a provider with nothing to probe must not ask for Touch ID.
-        guard ProviderCheck.endpoint(for: provider) != nil else {
-            let result = ProviderCheck.noEndpoint(key: name, provider: provider, host: host ?? "")
+        guard target.probe != nil else {
+            let result = ProviderCheck.noEndpoint(key: name, provider: target.provider, host: target.host ?? "")
             try catalog.upsertProviderCheck(result)
             return result
         }
-        guard let host else {
+        guard let host = target.host else {
             throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
         }
         let secret: String
@@ -899,21 +929,14 @@ final class KeysService: @unchecked Sendable {
         // The whole record must match, not just the id: a provider override (no prompt) that
         // keeps the id and host but changes the path or auth header would otherwise point
         // the approved secret at a different request.
-        if let target = lookupGateway(name: name), target.provider == provider, target.host == host {
-            secret = target.secret
+        if let cached = lookupGateway(name: name), cached.provider == target.provider, cached.host == host {
+            secret = cached.secret
         } else {
-            try presence.require(reason: "check \(name) against \(provider.name) at \(host) (read-only)")
+            try presence.require(reason: "check \(name) against \(target.provider.name) at \(host) (read-only)")
             secret = try secrets.get(name: name)
         }
-        let result = ProviderCheck.run(key: name, provider: provider, host: host, secret: secret, fetcher: checker)
-        try catalog.upsertProviderCheck(result)
-        try recordKeyEvent(
-            name: name,
-            action: "check",
-            caller: caller,
-            detail: result.summary,
-            touchLastUsed: true
-        )
+        let result = ProviderCheck.run(key: name, provider: target.provider, host: host, secret: secret, fetcher: checker)
+        try recordCheck(result, caller: caller)
         return result
     }
 

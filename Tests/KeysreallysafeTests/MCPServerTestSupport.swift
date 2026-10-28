@@ -302,10 +302,15 @@ enum MCPSweepRig {
         // runs only its read-only repository probe against the worktree's own
         // git — no app, no vault, no network, nothing written.
         "check_exposure": [:],
-        // App-bound, and the one presence-gated tool: against the rig's unwritten
-        // control file it answers the not-running result before anything else, so
-        // the offline sweep proves the whole-call failure shape.
+        // App-bound, and presence-gated once confirmed in the app: against the
+        // rig's unwritten control file it answers the not-running result before
+        // anything else, so the offline sweep proves the whole-call failure shape.
         "import_and_wrap": [:],
+        // App-bound and confirm-gated: the row names the rig's one key with
+        // confirm absent, so against the rig's unwritten control file the call
+        // answers the pinned not-running sentence before anything else — no
+        // probe, no prompt, the offline shape every call must survive.
+        "test_keys": ["keys": ["demo"]],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {

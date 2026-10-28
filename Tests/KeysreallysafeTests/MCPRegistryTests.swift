@@ -8,19 +8,16 @@ final class MCPRegistryTests: XCTestCase {
 
     /// The full mission roster: the mcp-core mission's five read tools, its two
     /// grants tools, then the onboarding mission's tools in registration order
-    /// — scan_project, check_exposure, import_and_wrap; test_keys joins
-    /// `onboardingRoster` in its own feature.
+    /// — scan_project, check_exposure, import_and_wrap, test_keys.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
-    static let onboardingRoster = ["scan_project", "check_exposure", "import_and_wrap"]
+    static let onboardingRoster = ["scan_project", "check_exposure", "import_and_wrap", "test_keys"]
     static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster
 
-    /// Names no revision of this server has registered: the onboarding tools not
-    /// yet landed (each moves to the roster above in its own feature), the
-    /// parallel missions' tools, and the cancel tool that deliberately does not
-    /// exist (denial is the user cancelling Touch ID).
+    /// Names no revision of this server has registered: the parallel missions'
+    /// tools, and the cancel tool that deliberately does not exist (denial is the
+    /// user cancelling Touch ID).
     static let neverRegistered = [
-        "test_keys",
         "revoke_all", "activity", "send_feedback", "grant_cancel",
     ]
 
@@ -79,10 +76,9 @@ final class MCPRegistryTests: XCTestCase {
             XCTAssertFalse(blocks.isEmpty, "\(name) answers tools/call — a listed name is never an unknown tool")
         }
 
-        // Not-yet-built names are absent from the list and answer -32602: the
-        // onboarding tools whose features have not landed, the parallel missions'
-        // tools and the cancel tool that deliberately does not exist (denial is
-        // the user cancelling Touch ID).
+        // Names no revision of this server registers are absent from the list and
+        // answer -32602: the parallel missions' tools and the cancel tool that
+        // deliberately does not exist (denial is the user cancelling Touch ID).
         var probeLines = [MCPSession.initialize()]
         for (index, name) in Self.neverRegistered.enumerated() {
             probeLines.append(#"{"jsonrpc":"2.0","id":\#(index),"method":"tools/call","params":{"name":"\#(name)"}}"#)

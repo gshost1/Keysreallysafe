@@ -1,8 +1,8 @@
 import CryptoKit
 import Foundation
 
-/// The onboarding group: `scan_project`, `check_exposure` and `import_and_wrap`,
-/// with `test_keys` joining this file in its own feature. The read-only half of
+/// The onboarding group: `scan_project`, `check_exposure`, `import_and_wrap` and
+/// `test_keys`. The read-only half of
 /// onboarding answers "which credential-shaped variables
 /// live in this folder" straight from the files, so an agent can point Keysrs
 /// at a project and decide what to import without a single key value ever
@@ -15,7 +15,10 @@ import Foundation
 /// and it writes nothing itself: the request carries the folder, variable names
 /// and flags only, the app re-reads the files, prompts once and answers with
 /// per-variable outcomes — so no key value and no token ever crosses the wire
-/// in either direction.
+/// in either direction. The key test closes the group: confirm-gated and
+/// app-mediated, so the one prompt it costs and the read-only probes it sends
+/// both live in the process that holds the secrets, and an unconfirmed call
+/// sends nothing at all.
 ///
 /// **Construction is offline-safe.** Nothing here opens a catalog, touches the
 /// control channel or runs anything at init — the control file, the project
@@ -59,13 +62,14 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         self.gitExecutable = gitExecutable
     }
 
-    func tools() -> [MCPTool] { [scanProject, checkExposure, importAndWrap] }
+    func tools() -> [MCPTool] { [scanProject, checkExposure, importAndWrap, testKeys] }
 
     func call(_ name: String, arguments: [String: Any]) throws -> MCPToolResult {
         switch name {
         case "scan_project": return try serveScanProject(arguments)
         case "check_exposure": return try serveCheckExposure(arguments)
         case "import_and_wrap": return try serveImportAndWrap(arguments)
+        case "test_keys": return try serveTestKeys(arguments)
         default: throw AppError.usage("\(name) is not one of this group's tools")
         }
     }
@@ -141,6 +145,33 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
                     "variables": ["type": "array", "items": ["type": "string"]] as [String: Any],
                     "docker": ["type": "boolean"],
                 ] as [String: Any],
+                "additionalProperties": false,
+            ]
+        )
+    }
+
+    private var testKeys: MCPTool {
+        MCPTool(
+            name: "test_keys",
+            title: "Test vault keys",
+            description: "Test whether named vault keys still work, read-only: each key's provider gets one GET "
+                + "to its model-list endpoint and the answer is the keys-test shape per key (outcome, summary, "
+                + "model list) plus a confirmed flag — never a key value. Confirmation is the user's alone, "
+                + "every time: ask the user in this same call and pass confirm true only after they say yes; "
+                + "never remember an earlier yes, never treat one approval as covering a later call. With "
+                + "confirm absent or false nothing is sent to any provider, no prompt appears, and the result "
+                + "says so per key. With confirm true the Keysrs app shows one Touch ID prompt naming the "
+                + "keys, then checks each probeable key; a provider with no read-only check endpoint reports "
+                + "no_check_endpoint with nothing sent, and a call with no probeable key prompts no one. "
+                + "keys is a required list of vault key names; an unknown name is refused. Without the app "
+                + "running the whole call fails with one sentence.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "keys": ["type": "array", "items": ["type": "string"]] as [String: Any],
+                    "confirm": ["type": "boolean"],
+                ] as [String: Any],
+                "required": ["keys"],
                 "additionalProperties": false,
             ]
         )
@@ -452,6 +483,32 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         let answer = try app.call(
             method: "POST", path: "/api/mcp/import_and_wrap", body: body, expect: 200,
             timeout: AppConnection.presenceCallTimeout
+        )
+        return try MCPToolResult.json(answer)
+    }
+
+    /// The confirm-gated provider test. The whole behavior lives app-side — the
+    /// confirm gate, the one prompt per call and the read-only probes all run in
+    /// the one process that holds the secrets — so the tool relays key names and
+    /// the flag only, never a value. The call bound is the presence bound exactly
+    /// when the call is confirmed: that call legitimately stays open while its
+    /// Touch ID prompt is up, and every other shape of it — including the
+    /// not-confirmed fast path — keeps the 10 s default.
+    private func serveTestKeys(_ arguments: [String: Any]) throws -> MCPToolResult {
+        guard let names = arguments["keys"] as? [Any], !names.isEmpty, names.allSatisfy({ $0 is String }) else {
+            throw AppError.usage("keys must be a non-empty list of key names")
+        }
+        var confirm = false
+        if let raw = arguments["confirm"], !(raw is NSNull) {
+            guard let flag = JSONValue.bool(raw) else { throw AppError.usage("confirm must be a boolean") }
+            confirm = flag
+        }
+        let app = try AppConnection.connect(control: control)
+        let answer = try app.call(
+            method: "POST", path: "/api/mcp/test_keys",
+            body: ["keys": names, "confirm": confirm],
+            expect: 200,
+            timeout: confirm ? AppConnection.presenceCallTimeout : AppConnection.appCallTimeout
         )
         return try MCPToolResult.json(answer)
     }
