@@ -78,6 +78,9 @@ serialized one command at a time (this 8 GiB machine shares memory with the
 browser suites). Node is 26.7.0 locally where CI pins 22; every suite passes on
 both. No step was narrowed or subsetted.
 
+The closeout feature is idempotent: re-running it after later fixes re-runs the
+full CI list and refreshes this CI table.
+
 | # | Command | Exit | Wall | The suite's own summary |
 |---|---|---|---|---|
 | 1 | `swift test` (CI env) | 0 | 162 s | `Executed 802 tests, with 5 tests skipped and 0 failures (0 unexpected) in 157.026 (157.107) seconds` |
