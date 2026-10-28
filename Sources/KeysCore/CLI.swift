@@ -45,6 +45,7 @@ public struct KeysCLI: ParsableCommand {
             ProvidersCommand.self,
             ProviderCommand.self,
             AgentCommand.self,
+            McpCommand.self,
             SetupCommand.self,
             TunnelCommand.self,
             RelayCommand.self,
@@ -1655,6 +1656,54 @@ struct AgentCommand: ParsableCommand {
         }
         if let profile { body["profile"] = profile }
         return body
+    }
+}
+
+struct McpCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mcp",
+        abstract: "Serve the Keysrs tools to an MCP client over stdio until stdin closes."
+    )
+
+    func run() throws {
+        MCPRun.runStdio()
+    }
+}
+
+/// The stdio wiring of `keys mcp`: real stdin/stdout/stderr and the shutdown
+/// handlers. Everything testable lives in `MCPServer` behind the injected seam;
+/// this holds no logic (the `UsageImportRun.run` precedent).
+enum MCPRun {
+    static func runStdio() -> Never {
+        // Writing to a closed stdout must fail quietly, not kill the process.
+        signal(SIGPIPE, SIG_IGN)
+        // SIGINT and SIGTERM end the session the documented way: exit 0 (the
+        // RelayRunCommand precedent). The handlers fire from their own queue while
+        // the main thread is blocked reading stdin.
+        let signals: [DispatchSourceSignal] = [SIGINT, SIGTERM].map { sig in
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.global())
+            source.setEventHandler { Darwin.exit(0) }
+            source.resume()
+            return source
+        }
+        // `availableData` returns whatever has arrived (empty at EOF); `read(upToCount:)`
+        // would block on a pipe until the full count or EOF, and a live client keeps
+        // stdin open, so the server would never see its lines.
+        var lines = MCPLineSource(read: {
+            let chunk = FileHandle.standardInput.availableData
+            return chunk.isEmpty ? nil : chunk
+        })
+        var server = MCPServer(
+            write: { FileHandle.standardOutput.write($0) },
+            note: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) },
+            registry: MCPToolRegistry.default
+        )
+        withExtendedLifetime(signals) {
+            server.run(next: { lines.next() })
+        }
+        // stdin EOF is the primary graceful shutdown: flush and exit 0.
+        Darwin.exit(0)
     }
 }
 
