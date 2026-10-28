@@ -212,6 +212,14 @@ The tools the server offers:
   label — client tokens only; grants carry no project and are untouched.
   Requires the app; no Touch ID. An unknown label is a not-found error; a
   known label with nothing active answers `{revoked_clients: 0}`.
+- `activity` — recent gateway use read from the local catalog, so the app does
+  not need to be running: one row per key used in the window, carrying its
+  forwarded request count, its refused request count, the projects using the
+  key by label (empty when none), and the spend the ledger already computed
+  (priced and unpriced call counts; `usd` is null when no call could be
+  priced, never a fake zero). `window` is whole hours (default 24, 1 to 720);
+  `project` keeps one label's keys, and an unknown label answers no rows
+  rather than an error. Never a token, a key value or a request body.
 
 The grant ask returns `{"status":"pending","id":…}` immediately, while the
 Keysrs app shows one Touch ID prompt naming the key, the host and the

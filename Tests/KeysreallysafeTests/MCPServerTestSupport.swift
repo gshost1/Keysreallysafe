@@ -221,6 +221,7 @@ enum MCPRoster {
             MCPFeedbackTools(control: control),
             MCPAnalyticsTools(control: control),
             MCPRevokeTools(control: control),
+            MCPActivityTools(catalog: catalog),
         ]
     }
 
@@ -310,6 +311,10 @@ enum MCPSweepRig {
         // revoked, no prompt, no request leaves.
         "revoke_all": [:],
         "revoke_project": ["label": "unwritten"],
+        // The catalog-local read: defaults (24 h, no project filter) over the rig's
+        // temp catalog, which has no usage or refusal rows, so it answers empty rows
+        // with no request, no prompt and nothing planted.
+        "activity": [:],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {

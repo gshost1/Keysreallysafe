@@ -31,8 +31,10 @@ GitHub issue page, and never submits), `set_analytics_sharing` (records
 the user's own answer to the analytics question, and only after they give it),
 and the revoke pair `revoke_all` / `revoke_project` (the kill switches:
 every grant and client token at once, one key's, or one project's client
-tokens by label — each needs the running app and asks for no Touch ID).
-Every tool answers with names, labels
+tokens by label — each needs the running app and asks for no Touch ID),
+and `activity` (recent gateway use from the local catalog — per-key requests,
+refusals and spend for a window, with project labels — which works with the
+app closed). Every tool answers with names, labels
 and state — never a key value. When no MCP client is available, the plain
 `keys` CLI does the same work; `keys version --json` is the cheapest probe and
 needs no running app.

@@ -561,7 +561,9 @@ support mail or GitHub issue page, and never submits anything itself.
 question, and only after they give it. The revoke pair `revoke_all` /
 `revoke_project` ends access in one call — every grant and client token at
 once, one key's, or one project's client tokens by label — with honest counts
-and no Touch ID.
+and no Touch ID. `activity` reads recent gateway use from the local catalog —
+per-key requests, refusals and spend for a window, with project labels — and
+needs no running app.
 `keys setup mcp` registers the server with all five
 clients, writing the resolved `keys` binary path plus the `mcp` argument into
 `~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,

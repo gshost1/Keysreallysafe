@@ -1418,6 +1418,27 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
+    /// The `gateway_denied` audit rows in `[startISO, endISO)` — the refusals the
+    /// `activity` tool counts, oldest first. Same half-open ISO comparison the
+    /// usage query uses, so the two sides of one window agree on its edges.
+    func gatewayRefusals(from startISO: String, to endISO: String) throws -> [KeyEventRow] {
+        try query("""
+            SELECT id, ts, name, action, caller, detail
+            FROM key_events
+            WHERE action = 'gateway_denied' AND ts >= ? AND ts < ?
+            ORDER BY ts, id;
+            """, [startISO, endISO]) {
+            KeyEventRow(
+                id: sqlite3_column_int64($0, 0),
+                ts: columnText($0, 1) ?? "",
+                name: columnText($0, 2) ?? "",
+                action: columnText($0, 3) ?? "",
+                caller: columnText($0, 4),
+                detail: columnText($0, 5)
+            )
+        }
+    }
+
     // MARK: gateway request log (keys log, keys doctor)
 
     /// The newest usage row and key event, so a followed log reads only what came after.

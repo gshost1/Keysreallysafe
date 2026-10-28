@@ -16,15 +16,16 @@ final class MCPRegistryTests: XCTestCase {
     static let feedbackRoster = ["send_feedback"]
     static let analyticsRoster = ["set_analytics_sharing"]
     static let revokeRoster = ["revoke_all", "revoke_project"]
-    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + feedbackRoster + analyticsRoster + revokeRoster
+    static let activityRoster = ["activity"]
+    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + feedbackRoster + analyticsRoster + revokeRoster + activityRoster
 
     /// Names no revision of this mission registers: the parallel missions' tools
     /// and the cancel tool that deliberately does not exist (denial is the user
     /// cancelling Touch ID). `revoke_all` landed with F3 and left this list;
-    /// `activity` stays until F4 registers it.
+    /// `activity` landed with F4 and left it too.
     static let neverRegistered = [
         "scan_project", "check_exposure", "import_and_wrap", "test_keys",
-        "activity", "grant_cancel",
+        "grant_cancel",
     ]
 
     // MARK: - REGISTRY-001
