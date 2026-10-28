@@ -20,8 +20,9 @@ The official Keysrs agent skill is
 [Skills/keysrs/SKILL.md](../Skills/keysrs/SKILL.md) in this repository: one
 file in the [Agent Skills](https://agentskills.io/specification) format — a
 directory named `keysrs` holding a `SKILL.md` whose frontmatter says
-`name: keysrs` — that tells an agent what Keysrs is, the safe workflows, the
-exit codes and what never to do. The app bundle ships it unchanged, so an
+`name: keysrs` — that points an agent at the Keysrs MCP server (`keys mcp`,
+registered with `keys setup mcp`), states the safety floor, and sends the rest
+of the manual here. The app bundle ships it unchanged, so an
 installed copy carries it at:
 
 ```text
@@ -29,8 +30,8 @@ installed copy carries it at:
 ```
 
 the same file, byte for byte, as the repository's. The format keeps a skill
-short — the body stays under 500 lines — so the skill is the condensed version
-and this page the full one; both state the same rules.
+short — the body stays under 200 lines — so the skill is a pointer note and
+this page the full manual; the floor rules are the same in both.
 
 Keysrs does not install the skill, and `keys setup` never writes into an
 agent's skills directory: it writes agent configs only (below). Each agent
@@ -119,7 +120,9 @@ keys setup claude --key work-anthropic --json
 
 `keys setup` writes `~/.factory/settings.json` (Droid), `~/.codex/config.toml`
 (Codex) and `~/.grok/config.toml` (Grok); Claude Code reads two variables from
-the environment at launch and needs no file. With `--json` you get one line
+the environment at launch, so this gateway step writes it no file. Registering
+the MCP server — `keys setup mcp` — is the step that writes `~/.claude.json`
+and the other clients' MCP config files. With `--json` you get one line
 naming the `agent`, the `config_path` written (`null` for Claude Code), the
 `token_env` variable and the gateway `base_url` — verify the step from that
 line rather than parsing prose.

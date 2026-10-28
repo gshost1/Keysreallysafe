@@ -138,7 +138,11 @@ enum CodingAgent: String, CaseIterable, Sendable {
 /// deliberately surgical: everything outside the named section stays byte-identical.
 enum TOMLFile {
     /// Replaces the body of the exact `[header]` section, or appends the section at the end.
-    /// Comments inside a section we own are replaced with it; anything else is untouched.
+    /// Comments inside a section we own are replaced with it; anything else is untouched,
+    /// including the blank lines that closed the old body: they separate our table from
+    /// whatever follows — the next header, or the file's trailing newline — and dropping
+    /// them would glue the next table to ours, or eat the trailing newline so a second
+    /// identical run was not byte-identical.
     static func upsertSection(_ text: String, header: String, bodyLines: [String]) -> String {
         let lines = text.components(separatedBy: "\n")
         let headerLine = "[\(header)]"
@@ -150,6 +154,11 @@ enum TOMLFile {
             var out = Array(lines[..<start])
             out.append(headerLine)
             out.append(contentsOf: bodyLines)
+            var last = end - 1
+            while last > start, lines[last].trimmingCharacters(in: .whitespaceCharacters).isEmpty {
+                out.append("")
+                last -= 1
+            }
             if end < lines.count {
                 out.append(contentsOf: lines[end...])
             }
@@ -162,6 +171,24 @@ enum TOMLFile {
         }
         out += headerLine + "\n" + bodyLines.joined(separator: "\n") + "\n"
         return out
+    }
+
+    /// Removes the exact `[header]` section — the symmetric primitive `keys setup mcp
+    /// --remove` needs — taking out the header line and its body up to (not including)
+    /// the next section header. Everything else, comments and blank lines included,
+    /// stays byte-identical; a file without the header comes back unchanged. A section
+    /// that reaches the end of the file takes the append's separator blank line with
+    /// it, so upsertSection followed by removeSection returns the original bytes.
+    static func removeSection(_ text: String, header: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        let headerLine = "[\(header)]"
+        guard let start = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaceCharacters) == headerLine }) else {
+            return text
+        }
+        let end = lines[(start + 1)...].firstIndex(where: isSectionHeader) ?? lines.count
+        var out = Array(lines[..<start])
+        out.append(contentsOf: lines[end...])
+        return out.joined(separator: "\n")
     }
 
     /// Sets a key that must live before the first `[section]` header, replacing an

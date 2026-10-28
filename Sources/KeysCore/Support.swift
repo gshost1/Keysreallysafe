@@ -189,6 +189,27 @@ enum Paths {
         env("KEYS_DROID_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".factory")
     }
 
+    /// Claude Code's one config file, beside (not inside) `~/.claude`. `KEYS_CLAUDE_JSON`
+    /// is ours, so tests and shell checks confine `keys setup mcp` to a temp home;
+    /// `CLAUDE_CONFIG_DIR` relocates the `~/.claude` directory and is not claimed to
+    /// move this file.
+    static var claudeJSON: URL {
+        env("KEYS_CLAUDE_JSON") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
+    }
+
+    /// Cursor's config folder. Cursor has no documented override; `KEYS_CURSOR_HOME` is ours.
+    static var cursorHome: URL {
+        env("KEYS_CURSOR_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor")
+    }
+
+    /// Claude Desktop's config folder inside Application Support. `KEYS_CLAUDE_DESKTOP_HOME`
+    /// is ours, so a test or shell check confines the desktop registration to a temp home.
+    static var claudeDesktopHome: URL {
+        env("KEYS_CLAUDE_DESKTOP_HOME")
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                .first!.appendingPathComponent("Claude", isDirectory: true)
+    }
+
     /// Tests and validators start the dashboard themselves, so `KEYS_NO_OPEN` keeps
     /// `keys dashboard` from opening a tab in the user's default browser on the way up.
     static func noOpenBrowser(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {

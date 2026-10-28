@@ -1709,30 +1709,51 @@ enum MCPRun {
 }
 
 struct SetupCommand: ParsableCommand {
+    /// The one agent argument that is not a gateway agent: `mcp` registers the
+    /// `keys mcp` stdio server instead of wiring a provider key.
+    static let mcpArgument = "mcp"
+
     static let configuration = CommandConfiguration(
         commandName: "setup",
         abstract: "Write a coding agent's config so it runs on a vault key through the local gateway.",
-        usage: "keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]",
+        usage: """
+            keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]
+            keys setup mcp [--remove] [--json]
+            """,
         discussion: """
             Writes the agent's own config file, with a backup beside it: the gateway base URL \
             for the key and the name of the environment variable `keys agent` fills with a \
             fresh token at launch. No secret is ever written to a file. Droid gets a customModels \
             entry in ~/.factory/settings.json, Codex a model_providers.keysrs block in \
             ~/.codex/config.toml, Grok a model.keysrs block in ~/.grok/config.toml. Claude Code \
-            reads its base URL and token from the environment, so it needs no file.
+            reads its base URL and token from the environment at launch, so this gateway step \
+            writes it no file; `keys setup mcp` is the step that writes ~/.claude.json and the \
+            other clients' MCP config files, registering the `keys mcp` server with Claude Code, \
+            Codex, Cursor, Droid and Claude Desktop.
             """
     )
 
-    @Argument(help: "claude, codex, grok or droid.") var agent: String
+    @Argument(help: "claude, codex, grok, droid or mcp.") var agent: String
     @Option(help: "Vault key name; defaults to the only key when there is exactly one.") var key: String?
     @Option(help: "Model id the agent requests. Defaults to claude-sonnet-4-5-20250929 for Anthropic keys.") var model: String?
     @Option(name: .customLong("display-name"), help: "Name the agent's model picker shows. Default: Keysrs <key>.") var displayName: String?
     @Option(help: "Wire format override (droid: anthropic|openai|generic-chat-completion-api, codex: chat|responses).") var wire: String?
     @Flag(name: .customLong("set-default"), help: "Codex only: also make keysrs the default provider and set the model.") var setDefault = false
+    @Flag(name: .customLong("remove"), help: "mcp only: unregister the keysrs MCP server from all five clients.") var remove = false
     @Flag(help: "Print one JSON line naming the config written, the token variable and the gateway URL, for a script to read.")
     var json = false
 
     func run() throws {
+        // The MCP registration branch sits above the vault-key resolution on purpose:
+        // registering needs no key, no running site, no Keychain and no Touch ID, and
+        // `mcp` is not a CodingAgent (every gateway agent below resolves a key).
+        if agent.trimmingCharacters(in: .whitespacesAndNewlines) == Self.mcpArgument {
+            try runMCP()
+            return
+        }
+        if remove {
+            throw AppError.usage("--remove is the mcp step only; use it as: keys setup \(Self.mcpArgument) --remove")
+        }
         let agent = try CodingAgent.parse(agent)
         let service = try AppFactory.makeService()
         let rows = try service.list()
@@ -1766,12 +1787,13 @@ struct SetupCommand: ParsableCommand {
                 return
             }
             let base = "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
-            print("Claude Code needs no config file; it reads two variables at launch.")
+            print("Claude Code needs no gateway config file; it reads two variables at launch.")
             print("Either launch it through the vault (recommended, one Touch ID, no secret in the environment file):")
             print("  keys agent claude \(row.name)")
             print("Or export and run claude yourself with a token from: keys grant \(row.name)")
             print("  export ANTHROPIC_BASE_URL=\(base)")
             print("  export ANTHROPIC_AUTH_TOKEN=<grant or client token>")
+            print("to give Claude Code the Keysrs MCP tools instead: keys setup mcp")
         case .codex:
             let kind = try CodingAgent.codexWire(for: provider, override: wire)
             let home = agent.configHome!
@@ -1828,6 +1850,58 @@ struct SetupCommand: ParsableCommand {
             print(SetupCommand.backupNote(for: url))
             print("launch with: keys agent droid \(row.name) -- droid, then pick \"\(name)\" with /model")
             print("unattended (headless droid exec): keys client issue \(row.name) --label droid --days 90, then export \(CodingAgent.droid.tokenVar!)=…")
+        }
+    }
+
+    /// `keys setup mcp`: write (or, with `--remove`, undo) the `keys mcp` stdio server
+    /// registration in all five agent clients. Each file is a standalone step: a refusal
+    /// (an unparsable file, a wrong-typed entry) names the file and stops the run with
+    /// the files already written left written — re-running after the fix is idempotent.
+    /// Every write keeps a rolling 0600 `.bak` beside the file and holds no secret.
+    private func runMCP() throws {
+        let targets = MCPRegistration.Targets.production
+        let clients = MCPRegistration.Client.allCases
+        if remove {
+            var removedAny = false
+            for client in clients {
+                let url = client.configURL(in: targets)
+                let removed = try client.remove(from: targets)
+                removedAny = removedAny || removed
+                guard !json else { continue }
+                if removed {
+                    print("removed \(MCPRegistration.serverName) from \(client.displayName): \(url.path)")
+                    print(SetupCommand.backupNote(for: url))
+                } else {
+                    print("no \(MCPRegistration.serverName) MCP server in \(url.path)")
+                }
+            }
+            if json {
+                try JSONValue.printLine(MCPRegistration.reportJSON(
+                    action: "remove",
+                    clients: Dictionary(uniqueKeysWithValues: clients.map { ($0.rawValue, $0.configURL(in: targets).path) }),
+                    command: nil))
+            } else if !removedAny {
+                print("nothing to remove; register with: keys setup mcp")
+            }
+            return
+        }
+        // The resolved executable, never a symlink: a registration pointing at
+        // ~/.local/bin/keys dies when that link is removed.
+        let command = try MCPRegistration.resolvedCommand(executable: Bundle.main.executableURL)
+        for client in clients {
+            try client.register(in: targets, command: command)
+            guard !json else { continue }
+            let url = client.configURL(in: targets)
+            print("registered \(MCPRegistration.serverName) with \(client.displayName): \(url.path)")
+            print(SetupCommand.backupNote(for: url))
+        }
+        if json {
+            try JSONValue.printLine(MCPRegistration.reportJSON(
+                action: "register",
+                clients: Dictionary(uniqueKeysWithValues: clients.map { ($0.rawValue, $0.configURL(in: targets).path) }),
+                command: command))
+        } else {
+            print("restart each client to load the server; undo with: keys setup \(Self.mcpArgument) --remove")
         }
     }
 
