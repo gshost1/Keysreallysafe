@@ -7,12 +7,12 @@ import XCTest
 final class MCPRegistryTests: XCTestCase {
 
     /// The full mission roster: the mcp-core mission's five read tools, its two
-    /// grants tools, then the onboarding mission's tools in registration order —
-    /// scan_project first; check_exposure, import_and_wrap and test_keys join
+    /// grants tools, then the onboarding mission's tools in registration order
+    /// — scan_project and check_exposure; import_and_wrap and test_keys join
     /// `onboardingRoster` in their own features.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
-    static let onboardingRoster = ["scan_project"]
+    static let onboardingRoster = ["scan_project", "check_exposure"]
     static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster
 
     /// Names no revision of this server has registered: the onboarding tools not
@@ -20,7 +20,7 @@ final class MCPRegistryTests: XCTestCase {
     /// parallel missions' tools, and the cancel tool that deliberately does not
     /// exist (denial is the user cancelling Touch ID).
     static let neverRegistered = [
-        "check_exposure", "import_and_wrap", "test_keys",
+        "import_and_wrap", "test_keys",
         "revoke_all", "activity", "send_feedback", "grant_cancel",
     ]
 

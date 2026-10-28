@@ -1,21 +1,25 @@
 import CryptoKit
 import Foundation
 
-/// The onboarding group: `scan_project` first, with `check_exposure`,
-/// `import_and_wrap` and `test_keys` joining this file in their own features. The
-/// read-only half of onboarding answers "which credential-shaped variables live in
-/// this folder" straight from the files, so an agent can point Keysrs at a project
-/// and decide what to import without a single key value ever crossing the MCP
-/// surface: the scan parses env files in THIS process, emits names, relative
-/// paths, providers, categories and last-4 hints, and the only thing it ever asks
-/// another process is the SHA-256 hex of a parsed value.
+/// The onboarding group: `scan_project` and `check_exposure`, with
+/// `import_and_wrap` and `test_keys` joining this file in their own features.
+/// The read-only half of onboarding answers "which credential-shaped variables
+/// live in this folder" straight from the files, so an agent can point Keysrs
+/// at a project and decide what to import without a single key value ever
+/// crossing the MCP surface: the scan parses env files in THIS process, emits
+/// names, relative paths, providers, categories and last-4 hints, and the only
+/// thing it ever asks another process is the SHA-256 hex of a parsed value.
+/// Exposure re-uses the same discovery and answers only git facts — three
+/// read-only booleans per file and a rotation recommendation for anything ever
+/// committed — never a file's contents.
 ///
 /// **Construction is offline-safe.** Nothing here opens a catalog, touches the
-/// control channel or runs anything at init — the control file and the project
-/// folder are seams, so building the production roster (which every in-process
-/// test does) reads nothing. The app is contacted freshly per call through
-/// `AppConnection`, and only when a tool needs it: `scan_project` treats the app
-/// as an optional oracle and still answers without it.
+/// control channel or runs anything at init — the control file, the project
+/// folder and the git executable are seams, so building the production roster
+/// (which every in-process test does) reads nothing. The app is contacted
+/// freshly per call through `AppConnection`, and only when a tool needs it:
+/// `scan_project` treats the app as an optional oracle and still answers
+/// without it; `check_exposure` never needs it at all.
 ///
 /// **No secret anywhere.** The MCP process never reads a vault value; `in_vault`
 /// is decided by hash over the control channel, and the app's answer carries key
@@ -35,20 +39,28 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// default — the folder a call with no `folder` argument scans. Injectable so
     /// a test names a folder it built; production never overrides it.
     private let projectFolder: () -> String
+    /// Where `check_exposure` finds git: resolved from PATH in production, an
+    /// explicit path in tests — including a missing or a fake one, because the
+    /// degraded answers are as much the contract as the facts. Read per call,
+    /// never at init, so construction stays offline-safe.
+    private let gitExecutable: () -> String?
 
     init(
         control: URL = ControlFile.url(),
-        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
+        gitExecutable: @escaping () -> String? = { MCPOnboardingTools.gitOnPATH() }
     ) {
         self.control = control
         self.projectFolder = projectFolder
+        self.gitExecutable = gitExecutable
     }
 
-    func tools() -> [MCPTool] { [scanProject] }
+    func tools() -> [MCPTool] { [scanProject, checkExposure] }
 
     func call(_ name: String, arguments: [String: Any]) throws -> MCPToolResult {
         switch name {
         case "scan_project": return try serveScanProject(arguments)
+        case "check_exposure": return try serveCheckExposure(arguments)
         default: throw AppError.usage("\(name) is not one of this group's tools")
         }
     }
@@ -75,6 +87,29 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         )
     }
 
+    private var checkExposure: MCPTool {
+        MCPTool(
+            name: "check_exposure",
+            title: "Check git exposure",
+            description: "Check which env files in a project folder git has ever seen, without reading "
+                + "the files yourself: for each one the scan finds, reports whether it is gitignored, "
+                + "tracked in the index, or present anywhere in history. Never returns file contents or "
+                + "diffs — only those three booleans per file, the relative file paths, and a "
+                + "rotate-the-keys recommendation for any file that was ever committed. When the folder "
+                + "is not a git repository, or git is not installed, every file reports null booleans "
+                + "and the git field says so plainly. The folder is optional and defaults to this "
+                + "process's working directory; a folder that does not exist is a plain error. Needs "
+                + "no app, no vault and no network.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "folder": ["type": "string"],
+                ] as [String: Any],
+                "additionalProperties": false,
+            ]
+        )
+    }
+
     // MARK: - The tools
 
     /// One scan, parsed in this process, answered from the report alone. The env
@@ -84,14 +119,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// failure (the app down, a refused answer) is one honest disposition:
     /// `in_vault` unknown, with the scan itself still succeeding.
     private func serveScanProject(_ arguments: [String: Any]) throws -> MCPToolResult {
-        var folder: String?
-        if let raw = arguments["folder"], !(raw is NSNull) {
-            guard let supplied = raw as? String else {
-                throw AppError.usage("folder must be a string")
-            }
-            folder = supplied
-        }
-        let report = try EnvScan.scan(folder: folder ?? projectFolder())
+        let report = try EnvScan.scan(folder: try Self.folderArgument(arguments) ?? projectFolder())
 
         // In-vault comparison: one call for every candidate's digest, hashes only.
         // The scan never depends on it, so every failure — connect, status, shape —
@@ -162,6 +190,203 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
               let provider = Providers.provider(id: id)
         else { return false }
         return provider.gateway && provider.host != nil
+    }
+
+    // MARK: - The shared folder argument
+
+    /// The folder argument both folder-taking tools share: an optional string,
+    /// absent or null meaning "the seam's folder". A non-string is the one
+    /// usage error, path-free by construction.
+    private static func folderArgument(_ arguments: [String: Any]) throws -> String? {
+        guard let raw = arguments["folder"], !(raw is NSNull) else { return nil }
+        guard let supplied = raw as? String else { throw AppError.usage("folder must be a string") }
+        return supplied
+    }
+
+    // MARK: - check_exposure
+
+    /// One exposure pass over the same EnvScan discovery: which env files exist
+    /// is settled first, then three read-only git facts per file answer the one
+    /// question onboarding actually needs — were the keys in this file ever
+    /// committed? Contents never enter the result: the facts are booleans, the
+    /// paths stay relative, and the recommendation is plain text. Everything
+    /// that can go wrong with git (a missing binary, no repository, a call that
+    /// outlives its bound) collapses into one honest shape — a plain top-level
+    /// statement, null booleans, and a still-successful call — never a guess and
+    /// never a hang. No app, no vault, no network: exposure needs nothing but
+    /// the folder and, when it answers, a local read-only git.
+    private func serveCheckExposure(_ arguments: [String: Any]) throws -> MCPToolResult {
+        let report = try EnvScan.scan(folder: try Self.folderArgument(arguments) ?? projectFolder())
+
+        guard let git = gitExecutable(), Self.isRunnable(git) else {
+            return try Self.degraded(
+                "git was not found, so git exposure could not be checked", files: report.envFiles
+            )
+        }
+        switch Self.probe(git, root: report.root) {
+        case .repository:
+            break
+        case .noRepository:
+            return try Self.degraded(
+                "the folder is not a git repository, so git exposure could not be checked",
+                files: report.envFiles
+            )
+        case .unresponsive:
+            return try Self.degraded(
+                "git did not answer, so git exposure could not be checked", files: report.envFiles
+            )
+        }
+
+        var files: [[String: Any]] = []
+        for relative in report.envFiles {
+            guard let ignored = Self.gitIgnored(git, root: report.root, file: relative),
+                  let tracked = Self.gitTracked(git, root: report.root, file: relative),
+                  let history = Self.gitInHistory(git, root: report.root, file: relative)
+            else {
+                return try Self.degraded(
+                    "git did not answer, so git exposure could not be checked", files: report.envFiles
+                )
+            }
+            files.append([
+                "file": relative,
+                "gitignored": ignored,
+                "tracked": tracked,
+                "in_history": history,
+                // Exactly the committed cases — tracked now or ever — because
+                // both mean the file's keys are recoverable from the repository.
+                "recommendation": tracked || history ? Self.rotateRecommendation : NSNull(),
+            ])
+        }
+        return try MCPToolResult.json(["git": "available", "files": files])
+    }
+
+    /// The recommendation for any file git has ever seen: plain text, no
+    /// variable names, no paths — the same sentence for the tracked and the
+    /// historical case, and the one follow-up an agent should give the user.
+    private static let rotateRecommendation = "rotate the keys that were in this file"
+
+    /// The hard bound on every single git invocation. A hung call costs at most
+    /// its own bound before the tool gives up and answers the honest statement,
+    /// so no misbehaving git can hold a tool call open.
+    private static let gitCallTimeout: TimeInterval = 2
+
+    /// What the repository probe learned — three cases because the plain
+    /// statements differ: no repository is the everyday honest answer for a
+    /// folder the user just created, while an unresponsive git is a failure.
+    private enum RepositoryProbe {
+        case repository, noRepository, unresponsive
+    }
+
+    /// Whether the resolved git path is something this process could actually
+    /// run. A missing or unexecutable binary must be told apart from a failing
+    /// command, because the plain statements differ — and nothing is spawned at
+    /// all in this case.
+    private static func isRunnable(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              FileManager.default.isExecutableFile(atPath: path)
+        else { return false }
+        return true
+    }
+
+    /// The production git seam: git resolved from PATH the way a shell would,
+    /// taken per call so construction stays offline-safe and a PATH that
+    /// changes mid-session needs no restart. Empty PATH components are skipped
+    /// (a shell would read them as the working directory; a tool must not).
+    /// Tests inject explicit paths instead — a real one for fixture repos, a
+    /// missing or fake one for the degraded answers.
+    static func gitOnPATH() -> String? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for directory in path.split(separator: ":") where !directory.isEmpty {
+            let candidate = "\(directory)/git"
+            if isRunnable(candidate) { return candidate }
+        }
+        return nil
+    }
+
+    /// One metadata-only probe: is the folder inside a git working tree at all?
+    /// It prints one word and touches no file contents.
+    private static func probe(_ git: String, root: String) -> RepositoryProbe {
+        guard let run = runGit(git, working: root, ["rev-parse", "--is-inside-work-tree"]) else {
+            return .unresponsive
+        }
+        if run.exit == 0, run.output.trimmingCharacters(in: .whitespacesAndNewlines) == "true" {
+            return .repository
+        }
+        return .noRepository
+    }
+
+    /// `git check-ignore -- <rel>`: exit 0 ignored, 1 not, anything else unknown.
+    /// The rule is consultable with no commits and no working-tree file, which is
+    /// what lets an unborn repository still answer honestly.
+    private static func gitIgnored(_ git: String, root: String, file: String) -> Bool? {
+        guard let run = runGit(git, working: root, ["check-ignore", "--", file]) else { return nil }
+        if run.exit == 0 { return true }
+        if run.exit == 1 { return false }
+        return nil
+    }
+
+    /// `git ls-files -- <rel>`: tracked when the index names the file.
+    private static func gitTracked(_ git: String, root: String, file: String) -> Bool? {
+        guard let run = runGit(git, working: root, ["ls-files", "--", file]), run.exit == 0 else { return nil }
+        return !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// `git log --all --oneline -- <rel>`: any commit anywhere in the ref graph
+    /// ever touched the file — the one fact that survives `git rm --cached`, and
+    /// the whole reason this tool exists.
+    private static func gitInHistory(_ git: String, root: String, file: String) -> Bool? {
+        guard let run = runGit(git, working: root, ["log", "--all", "--oneline", "--", file]),
+              run.exit == 0
+        else { return nil }
+        return !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// One bounded git invocation, `-C` pinned to the canonical root. nil means
+    /// git could not be spawned or did not finish inside the bound — the caller
+    /// turns that into the honest statement instead of a fact. stderr is
+    /// discarded unread: a fatal's text must never reach a result, and an unread
+    /// stderr could stall git past its bound. stdout of the fact queries is a
+    /// path or a handful of `--oneline` lines, read after exit; a repository so
+    /// pathological it floods the pipe hits the bound and reads as "did not
+    /// answer", the honest sentence.
+    private static func runGit(
+        _ executable: String, working directory: String, _ arguments: [String]
+    ) -> (exit: Int32, output: String)? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["-C", directory] + arguments
+        process.standardError = FileHandle.nullDevice
+        let out = Pipe()
+        process.standardOutput = out
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        do { try process.run() } catch { return nil }
+        if exited.wait(timeout: .now() + gitCallTimeout) == .timedOut {
+            process.terminate()
+            return nil
+        }
+        let data = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    /// The one honest degradation, shared by every way git could not answer: the
+    /// plain statement says so, every file keeps its relative path, its three
+    /// booleans are null (unknown, never a guess) and so is the recommendation,
+    /// and the call itself still succeeds — the agent learns the files exist and
+    /// that their git status could not be checked.
+    private static func degraded(_ statement: String, files: [String]) throws -> MCPToolResult {
+        try MCPToolResult.json([
+            "git": statement,
+            "files": files.map { [
+                "file": $0,
+                "gitignored": NSNull(),
+                "tracked": NSNull(),
+                "in_history": NSNull(),
+                "recommendation": NSNull(),
+            ] },
+        ])
     }
 }
 

@@ -298,6 +298,10 @@ enum MCPSweepRig {
         // and the rig's unwritten control file makes the vault comparison answer
         // "unavailable" fast — the offline shape every scan must survive.
         "scan_project": [:],
+        // Local too: the same omitted folder holds no env files, so the tool
+        // runs only its read-only repository probe against the worktree's own
+        // git — no app, no vault, no network, nothing written.
+        "check_exposure": [:],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {
