@@ -73,12 +73,16 @@ final class ReadToolsTests: XCTestCase {
 
     private func makeSite(show: ShowSpy = ShowSpy()) throws -> Site {
         let (service, db, dir, _) = try makeVault()
+        // Owner directive 2026-10-28: a control-channel rig must fail closed on a
+        // production-resolving path; this site's catalog and control file are temp.
+        try assertNotProductionPath(db.path)
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try fm.createDirectory(at: web, withIntermediateDirectories: true)
         let handler = APIHandler(service: service, webRoot: web, showAppWindow: { show.show() })
         let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
         server.start()
         let control = ControlFile.url(beside: db.path)
+        try assertNotProductionPath(control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         let tools = MCPReadTools(
             catalog: { db },
@@ -389,6 +393,8 @@ final class ReadToolsTests: XCTestCase {
             XCTAssertEqual(entry["label"] as? String, project.label, "labels, not paths, identify the projects")
             XCTAssertEqual(entry["key"] as? String, "demo")
             XCTAssertNotNil(UTC.parse(try XCTUnwrap(entry["expires_at"] as? String)), "expiry is an ISO timestamp")
+            XCTAssertEqual(entry["expiring_soon"] as? Bool, false, "a fresh 30-day token is not expiring soon")
+            XCTAssertEqual(entry["keys"] as? [String], ["demo"], "a membership-less token lists its one key")
         }
         XCTAssertEqual(
             Set(tokens.compactMap { $0["hint"] as? String }),
@@ -406,6 +412,152 @@ final class ReadToolsTests: XCTestCase {
         XCTAssertFalse(text.contains(folder.path), "the project path never appears")
     }
 
+    // MARK: - VAL-EXPI-001 (014-onboarding: expiry surfacing)
+
+    /// `gateway_info`'s project-token rows carry `expiring_soon`, true exactly when
+    /// the active token's expiry is at most three days out. Driven with an injected
+    /// clock on a four-day token: 3d−ε of remaining lifetime reads true, 3d+ε reads
+    /// false. The route itself keeps passing the real clock; the tests call the
+    /// handler's `now:` seam directly.
+    func testGatewayInfoExpiringSoonBoundary() throws {
+        let site = try makeSite()
+        defer { site.server.stop() }
+        let project = try site.service.resolveProject(folder: try makeFolder(site.dir, "soon-proj").path)
+        // A fixed whole-second mint time: expires_at is whole-second ISO, so the
+        // boundary arithmetic is exact rather than at the formatter's mercy.
+        let minted = Date(timeIntervalSince1970: 1_760_000_000)
+        let fourDay = try site.service.issueGatewayClient(
+            name: "demo", label: "four days", days: 4, project: project.id, now: minted
+        )
+
+        func expiringSoon(at now: Date) throws -> Bool {
+            let response = try site.handler.mcpGatewayInfo(now: now)
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+            let tokens = try XCTUnwrap(body["project_tokens"] as? [[String: Any]])
+            let row = try XCTUnwrap(tokens.first { $0["hint"] as? String == fourDay.client.hint })
+            return try XCTUnwrap(row["expiring_soon"] as? Bool)
+        }
+
+        XCTAssertEqual(try expiringSoon(at: minted), false, "four days out is not soon")
+        XCTAssertEqual(try expiringSoon(at: minted.addingTimeInterval(86_400 - 1)), false, "3d+ε remaining is not soon")
+        XCTAssertEqual(try expiringSoon(at: minted.addingTimeInterval(86_400 + 1)), true, "3d−ε remaining is soon")
+        XCTAssertEqual(try expiringSoon(at: minted.addingTimeInterval(2 * 86_400)), true, "well inside the window")
+    }
+
+    /// A multi-key project token lists every member key in `keys` (name order)
+    /// beside the unchanged `key` field, so the token is listed completely instead
+    /// of only under its first member; a membership-less per-key token's `keys` is
+    /// its one key.
+    func testGatewayInfoProjectTokenMemberKeys() throws {
+        let site = try makeSite()
+        defer { site.server.stop() }
+        try site.service.add(name: "other", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try site.service.patch(name: "other", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
+        let project = try site.service.resolveProject(folder: try makeFolder(site.dir, "members-proj").path)
+        // Deliberately not name order: the membership read sorts by key name.
+        let multi = try site.service.issueProjectGatewayClient(
+            keys: ["other", "demo"], label: "multi", project: project.id
+        )
+        let single = try site.service.issueGatewayClient(name: "demo", label: "single", project: project.id)
+
+        let body = try payload(try site.tools.call("gateway_info", arguments: [:]))
+        let tokens = try XCTUnwrap(body["project_tokens"] as? [[String: Any]])
+        let multiRow = try XCTUnwrap(tokens.first { $0["hint"] as? String == multi.client.hint })
+        XCTAssertEqual(multiRow["key"] as? String, "other", "the row's key stays the first member — unchanged for compatibility")
+        XCTAssertEqual(multiRow["keys"] as? [String], ["demo", "other"], "every member key, in name order")
+        let singleRow = try XCTUnwrap(tokens.first { $0["hint"] as? String == single.client.hint })
+        XCTAssertEqual(singleRow["key"] as? String, "demo")
+        XCTAssertEqual(singleRow["keys"] as? [String], ["demo"], "a token without memberships lists its one key")
+    }
+
+    // MARK: - VAL-EXPI-002 / VAL-EXPI-003 (the control endpoint)
+
+    /// POST /api/expiring_tokens — the headless mission's notification poll, a
+    /// house-level route (not /api/mcp/): only active client tokens expiring within
+    /// three days, each {keys, label, project_label, expires_at, hint}. Revoked and
+    /// already-expired tokens never appear; without the origin token it is a 403;
+    /// no token value or hash ever appears.
+    func testExpiringTokensRoute() throws {
+        let site = try makeSite()
+        defer { site.server.stop() }
+
+        // The house gate: no origin token → 403; a GET never carries this state.
+        XCTAssertEqual(handle(site.handler, method: "POST", path: "/api/expiring_tokens", token: false).status, 403)
+        XCTAssertEqual(handle(site.handler, method: "GET", path: "/api/expiring_tokens").status, 405)
+
+        let project = try site.service.resolveProject(folder: try makeFolder(site.dir, "poll-proj").path)
+        let soon = try site.service.issueGatewayClient(name: "demo", label: "two days", days: 2, project: project.id)
+        _ = try site.service.issueGatewayClient(name: "demo", label: "thirty days", project: project.id)
+        _ = try site.service.issueGatewayClient(
+            name: "demo", label: "expired", days: 1, project: project.id,
+            now: Date().addingTimeInterval(-3 * 86_400)
+        )
+        let revoked = try site.service.issueGatewayClient(name: "demo", label: "revoked", days: 2, project: project.id)
+        _ = try site.service.revokeGatewayClient(name: "demo", id: revoked.client.id)
+        let unbound = try site.service.issueGatewayClient(name: "demo", label: "unbound soon", days: 2)
+
+        try site.service.add(name: "other", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try site.service.patch(name: "other", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
+        let multi = try site.service.issueProjectGatewayClient(keys: ["demo", "other"], label: "multi soon", days: 2, project: project.id)
+
+        let response = handle(site.handler, method: "POST", path: "/api/expiring_tokens")
+        XCTAssertEqual(response.status, 200)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        let tokens = try XCTUnwrap(body["tokens"] as? [[String: Any]])
+        var byLabel: [String: [String: Any]] = [:]
+        for row in tokens { byLabel[row["label"] as? String ?? ""] = row }
+        XCTAssertEqual(
+            Set(byLabel.keys), ["two days", "unbound soon", "multi soon"],
+            "exactly the soon-expiring active tokens — revoked, expired and far-out ones excluded"
+        )
+
+        let soonRow = try XCTUnwrap(byLabel["two days"])
+        XCTAssertEqual(Set(soonRow.keys), ["keys", "label", "project_label", "expires_at", "hint"], "exactly the listed shape")
+        XCTAssertEqual(soonRow["keys"] as? [String], ["demo"])
+        XCTAssertEqual(soonRow["project_label"] as? String, project.label, "the label, never the path")
+        XCTAssertEqual(soonRow["expires_at"] as? String, soon.client.expiresAt)
+        XCTAssertEqual(soonRow["hint"] as? String, soon.client.hint)
+
+        let multiRow = try XCTUnwrap(byLabel["multi soon"])
+        XCTAssertEqual(multiRow["keys"] as? [String], ["demo", "other"], "a multi-key token lists every member")
+
+        let unboundRow = try XCTUnwrap(byLabel["unbound soon"])
+        XCTAssertTrue(unboundRow["project_label"] is NSNull, "an unbound token's project label is null, not missing")
+
+        let text = String(decoding: response.body, as: UTF8.self)
+        XCTAssertFalse(text.contains("ksfc_"), "no client-token substring appears")
+        XCTAssertFalse(text.contains(project.id), "the project id stays in the catalog")
+        XCTAssertFalse(text.contains(site.dir.path), "no path appears")
+        for issued in [soon, unbound, multi, revoked] {
+            XCTAssertFalse(text.contains(issued.token), "the token value never appears")
+            XCTAssertFalse(text.contains(GatewayClientToken.hash(issued.token)), "the stored hash never appears")
+        }
+    }
+
+    /// The three-day window with an injected clock: a four-day token appears at
+    /// 3d−ε of remaining lifetime and not at 3d+ε, and once expired it never
+    /// appears again — the boundary pin of the window both surfaces share.
+    func testExpiringTokensBoundary() throws {
+        let site = try makeSite()
+        defer { site.server.stop() }
+        let project = try site.service.resolveProject(folder: try makeFolder(site.dir, "boundary-proj").path)
+        let minted = Date(timeIntervalSince1970: 1_760_000_000)
+        _ = try site.service.issueGatewayClient(
+            name: "demo", label: "four days", days: 4, project: project.id, now: minted
+        )
+
+        func labels(at now: Date) throws -> [String] {
+            let response = try site.handler.expiringTokens(now: now)
+            XCTAssertEqual(response.status, 200)
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+            return try XCTUnwrap(body["tokens"] as? [[String: Any]]).compactMap { $0["label"] as? String }
+        }
+
+        XCTAssertFalse(try labels(at: minted).contains("four days"), "four days out is not listed")
+        XCTAssertFalse(try labels(at: minted.addingTimeInterval(86_400 - 1)).contains("four days"), "3d+ε remaining is not listed")
+        XCTAssertTrue(try labels(at: minted.addingTimeInterval(86_400 + 1)).contains("four days"), "3d−ε remaining is listed")
+        XCTAssertFalse(try labels(at: minted.addingTimeInterval(5 * 86_400)).contains("four days"), "already expired is never listed")
+    }
     // MARK: - VAL-TOOLS-006
 
     /// With no live control file — even though the base URL, docker_access and the

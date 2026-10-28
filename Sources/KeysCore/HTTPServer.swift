@@ -223,6 +223,13 @@ final class APIHandler: @unchecked Sendable {
             // names variables, files and counts only — never a value, never a token.
             case ("POST", "/api/unwrap"):
                 return try unwrapRequest(request)
+            // The onboarding mission's expiry poll, house-level on purpose (NOT
+            // /api/mcp/): the headless mission's notification code polls it, not an
+            // agent. It rides the same origin-token gate as every POST under /api/,
+            // and its answer is key names, labels, hints and dates — never a token
+            // or a path.
+            case ("POST", "/api/expiring_tokens"):
+                return try expiringTokens()
             case ("GET", "/api/providers"):
                 return HTTPResponse.json(200, try service.providersJSONObject())
             case ("POST", "/api/providers"):
@@ -965,9 +972,9 @@ final class APIHandler: @unchecked Sendable {
     /// base URL and the docker preference are facts this process's catalog and
     /// constants define, and the token list is per-key rows read here so the
     /// caller needs no catalog of its own. Labels only: a project's path never
-    /// enters a response.
-    private func mcpGatewayInfo() throws -> HTTPResponse {
-        let now = Date()
+    /// enters a response. `now` is injectable so the expiring-soon boundary is
+    /// testable; the route passes the real clock.
+    func mcpGatewayInfo(now: Date = Date()) throws -> HTTPResponse {
         var projectTokens: [[String: Any]] = []
         for row in try service.list() {
             for client in try service.gatewayClients(name: row.name) where client.isActive(now: now) {
@@ -976,8 +983,15 @@ final class APIHandler: @unchecked Sendable {
                 guard client.project != nil, let label = client.projectLabel else { continue }
                 projectTokens.append([
                     "key": row.name,
+                    // Every key the token serves, additive beside "key" (the row's own
+                    // key name, unchanged): a multi-key project token is listed
+                    // completely instead of only under its first member.
+                    "keys": try clientMemberKeys(client),
                     "label": label,
                     "expires_at": client.expiresAt,
+                    // Within three days of expiry — the heads-up a person or the
+                    // headless mission's notification poll reads.
+                    "expiring_soon": client.isExpiringSoon(now: now),
                     // The last four characters of the client token, so a person can
                     // recognise which capability a row is. Never the token, never
                     // its hash.
@@ -992,6 +1006,36 @@ final class APIHandler: @unchecked Sendable {
             "grants": service.listGrants().map { $0.jsonObject() },
             "project_tokens": projectTokens,
         ])
+    }
+
+    /// Every key a client token may serve, in name order: its membership rows, or
+    /// its own key name when it carries none — a per-key token predates the
+    /// membership table and has no rows.
+    private func clientMemberKeys(_ client: GatewayClient) throws -> [String] {
+        let members = try service.catalog.gatewayClientKeys(clientID: client.id)
+        return members.isEmpty ? [client.keyName] : members.map(\.keyName)
+    }
+
+    /// POST /api/expiring_tokens — the soon-expiring active client tokens, polled
+    /// by the headless mission's notification code. Only tokens inside
+    /// `GatewayClient.expiringSoonWindow`; revoked and already-expired rows never
+    /// appear. Each entry is {keys, label, project_label, expires_at, hint} —
+    /// project_label is null for a token never bound to a project — never a
+    /// token, a hash or a path.
+    func expiringTokens(now: Date = Date()) throws -> HTTPResponse {
+        var tokens: [[String: Any]] = []
+        for row in try service.list() {
+            for client in try service.gatewayClients(name: row.name) where client.isExpiringSoon(now: now) {
+                tokens.append([
+                    "keys": try clientMemberKeys(client),
+                    "label": client.label,
+                    "project_label": client.projectLabel as Any? ?? NSNull(),
+                    "expires_at": client.expiresAt,
+                    "hint": client.hint,
+                ])
+            }
+        }
+        return HTTPResponse.json(200, ["tokens": tokens])
     }
 
     /// POST /api/mcp/app/show — the dedicated show path the `open_app` tool drives.

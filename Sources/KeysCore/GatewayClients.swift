@@ -34,6 +34,17 @@ struct GatewayClient: Equatable {
         return exp > now
     }
 
+    /// How close to expiry an active client token reads as "expiring soon" — the
+    /// three-day heads-up `gateway_info`'s flag and `/api/expiring_tokens` share.
+    static let expiringSoonWindow: TimeInterval = 3 * 86_400
+
+    /// Active with no more than the soon window left. Exactly at the window's edge
+    /// still counts; already-expired never does.
+    func isExpiringSoon(now: Date) -> Bool {
+        guard isActive(now: now), let exp = UTC.parse(expiresAt) else { return false }
+        return exp.timeIntervalSince(now) <= Self.expiringSoonWindow
+    }
+
     func allows(method: String, rest: String) -> Bool {
         guard methods.contains(method.uppercased()) else { return false }
         // A `..` segment would pass a prefix check here and be collapsed upstream into a
