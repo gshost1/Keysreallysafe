@@ -6,19 +6,21 @@ import XCTest
 /// one-file-plus-one-line seam, and containment of an invalid registration.
 final class MCPRegistryTests: XCTestCase {
 
-    /// The full mission roster: milestone 1's five, then the two the milestone-2
-    /// grants feature adds. `testMissionRosterExact` pins the LITERAL milestone-1
-    /// list today, so the milestone-2 feature grows the pin to `missionRoster`'s
-    /// seven when it registers its group.
+    /// The full mission roster: the mcp-core mission's five read tools, its two
+    /// grants tools, then the onboarding mission's tools in registration order —
+    /// scan_project first; check_exposure, import_and_wrap and test_keys join
+    /// `onboardingRoster` in their own features.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
-    static let missionRoster = milestoneOneRoster + milestoneTwoRoster
+    static let onboardingRoster = ["scan_project"]
+    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster
 
-    /// Names no revision of this mission registers: the parallel missions' tools and
-    /// the cancel tool that deliberately does not exist (denial is the user
-    /// cancelling Touch ID).
+    /// Names no revision of this server has registered: the onboarding tools not
+    /// yet landed (each moves to the roster above in its own feature), the
+    /// parallel missions' tools, and the cancel tool that deliberately does not
+    /// exist (denial is the user cancelling Touch ID).
     static let neverRegistered = [
-        "scan_project", "check_exposure", "import_and_wrap", "test_keys",
+        "check_exposure", "import_and_wrap", "test_keys",
         "revoke_all", "activity", "send_feedback", "grant_cancel",
     ]
 
@@ -26,7 +28,7 @@ final class MCPRegistryTests: XCTestCase {
 
     /// The roster is the LITERAL mission set, pinned by name — not by comparing
     /// `tools/list` to the registry's own declared groups, which is self-referential
-    /// and would let a wrongly-named tool pass. The mission's seven tools, in
+    /// and would let a wrongly-named tool pass. The mission's eight tools, in
     /// registration order, each once; every listed name answers `tools/call`, and
     /// the not-yet-built names still answer -32602 and are absent — future tools
     /// appear by registration, never by accident.
@@ -78,8 +80,9 @@ final class MCPRegistryTests: XCTestCase {
         }
 
         // Not-yet-built names are absent from the list and answer -32602: the
-        // parallel missions' tools and the cancel tool that deliberately does not
-        // exist (denial is the user cancelling Touch ID).
+        // onboarding tools whose features have not landed, the parallel missions'
+        // tools and the cancel tool that deliberately does not exist (denial is
+        // the user cancelling Touch ID).
         var probeLines = [MCPSession.initialize()]
         for (index, name) in Self.neverRegistered.enumerated() {
             probeLines.append(#"{"jsonrpc":"2.0","id":\#(index),"method":"tools/call","params":{"name":"\#(name)"}}"#)

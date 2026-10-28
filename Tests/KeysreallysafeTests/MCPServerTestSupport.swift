@@ -204,9 +204,9 @@ struct TestToolGroup: MCPToolGroup, @unchecked Sendable {
 /// appear here: the sweep's production-roster comparison fails naming any gap, so
 /// this list cannot drift from `MCPToolRegistry.groups`. App-bound groups connect
 /// through `control`, the catalog group opens `catalog`, the release check
-/// fetches through `fetchLatestRelease` and the grants group names `projectFolder`
-/// as its own project — so the real tool code runs against the caller's temp
-/// state, never the machine's real catalog or installed app.
+/// fetches through `fetchLatestRelease`, and the grants and onboarding groups
+/// name `projectFolder` as their own project — so the real tool code runs against
+/// the caller's temp state, never the machine's real catalog or installed app.
 enum MCPRoster {
     static func groups(
         catalog: @escaping () throws -> CatalogDB,
@@ -218,6 +218,7 @@ enum MCPRoster {
             MCPVersionTool(),
             MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease),
             MCPGrantTools(control: control, projectFolder: projectFolder),
+            MCPOnboardingTools(control: control, projectFolder: projectFolder),
         ]
     }
 
@@ -293,6 +294,10 @@ enum MCPSweepRig {
         // exact not-running error, no prompt, no request leaves the machine.
         "request_grant": ["key": "demo"],
         "grant_status": [:],
+        // A local tool: the omitted folder scans the process working directory,
+        // and the rig's unwritten control file makes the vault comparison answer
+        // "unavailable" fast — the offline shape every scan must survive.
+        "scan_project": [:],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {

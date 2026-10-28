@@ -168,8 +168,8 @@ final class APIHandler: @unchecked Sendable {
             case ("POST", let p) where p.hasPrefix("/api/grants/") && p.hasSuffix("/renew"):
                 return try grantRenew(request, path: p)
             // The agent-facing MCP surface: exact-path POSTs under /api/, so they
-            // inherit the origin-token gate above. The milestone-2 grant routes
-            // join this block; they are POSTs on purpose — a GET status route
+            // inherit the origin-token gate above. The grants and onboarding
+            // routes join this block; they are POSTs on purpose — a GET status route
             // would leak a pending state or a token to any local process, and the
             // house gate only covers mutating methods.
             case ("POST", "/api/mcp/gateway_info"):
@@ -184,6 +184,10 @@ final class APIHandler: @unchecked Sendable {
                 return try mcpGrantStatusList()
             case ("POST", let p) where p.hasPrefix("/api/mcp/grants/") && p.hasSuffix("/status"):
                 return try mcpGrantStatus(path: p)
+            // The onboarding mission's scan comparison: hashes in, key names out.
+            // A POST like the rest — no GET under /api/ ever carries state.
+            case ("POST", "/api/mcp/vault_lookup"):
+                return try mcpVaultLookup(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -1043,6 +1047,24 @@ final class APIHandler: @unchecked Sendable {
     /// state, never a token in any state.
     private func mcpGrantStatusList() throws -> HTTPResponse {
         HTTPResponse.json(200, ["requests": service.mcpGrantStatuses()])
+    }
+
+    /// POST /api/mcp/vault_lookup — the scan tool's in-vault comparison. The
+    /// caller already holds the values it hashed (they came from the folder it
+    /// scanned), key names are public through list_keys, and the answer carries
+    /// matching key names only — never a value — so this follows the gateway's
+    /// sanctioned no-prompt store read, gated by the origin token like every
+    /// other mutating /api/ route. One entry per requested hash, in request
+    /// order, with the matching key's name or null.
+    private func mcpVaultLookup(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let raw = obj["hashes"], !(raw is NSNull),
+              let hashes = raw as? [Any], hashes.allSatisfy({ $0 is String })
+        else { throw AppError.usage("hashes must be a list of SHA-256 hex strings") }
+        let matches = try service.vaultLookup(hashes: hashes.compactMap { $0 as? String })
+        return HTTPResponse.json(200, [
+            "matches": matches.map { ["hash": $0.hash, "key": $0.key ?? NSNull()] as [String: Any] },
+        ])
     }
 
     // MARK: - Profiles (saved grant bounds)

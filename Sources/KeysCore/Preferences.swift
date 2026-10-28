@@ -43,10 +43,12 @@ final class AppPreferences: @unchecked Sendable {
     static let dockerAccessKey = "pref_docker_access"
 
     /// Whether Docker Desktop may route through the gateway. Off until the person
-    /// turns it on; the MCP surface only READS it (the `gateway_info` tool reports
-    /// it), while the setter and the enforcement belong to the headless-app
-    /// mission. The "on"/"off" values follow the `pref_*` convention so that
-    /// setter lands beside the other toggles without a migration.
+    /// turns it on. The onboarding mission owns this setting's enforcement (the
+    /// gateway's call-site Host acceptance) and its import-driven setter
+    /// (`import_and_wrap` with `docker: true` writes "on"); the MCP surface only
+    /// reads it (`gateway_info` reports it), and a dashboard toggle UI remains the
+    /// headless-app mission's area. The "on"/"off" values follow the `pref_*`
+    /// convention so those setters land beside the other toggles without a migration.
     var dockerAccess: Bool { (try? catalog.metaValue(Self.dockerAccessKey)) == "on" }
 
     static let hiddenUsageKey = "pref_hidden_usage"
