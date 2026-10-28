@@ -119,17 +119,27 @@ final class APIHandler: @unchecked Sendable {
     /// agent's open_app must never open a browser. Injectable so a test can watch
     /// the one invocation.
     private let showAppWindow: () -> Void
+    /// The app's one "open this feedback URL" action, as the MCP `send_feedback`
+    /// route drives it. This seam is the deliberate, documented exception to the
+    /// no-opening rule `open_app` carries: opening the user's mail client or the
+    /// GitHub issue page IS send_feedback's purpose — the app scrubs the draft
+    /// first, and the user, not Keysrs, reviews and sends what opens. Keysrs
+    /// itself never submits and opens nothing else anywhere on this path.
+    /// Injectable so a test can watch the one invocation without opening anything.
+    private let openFeedbackURL: (URL) -> Void
 
     init(
         service: KeysService,
         webRoot: URL,
         originToken: String = OriginToken.generate(),
-        showAppWindow: @escaping () -> Void = APIHandler.frontKeysrsWindow
+        showAppWindow: @escaping () -> Void = APIHandler.frontKeysrsWindow,
+        openFeedbackURL: @escaping (URL) -> Void = FeedbackDelivery.openExternally
     ) {
         self.service = service
         self.webRoot = webRoot
         self.originToken = originToken
         self.showAppWindow = showAppWindow
+        self.openFeedbackURL = openFeedbackURL
         service.analytics?.start()
     }
 
@@ -184,6 +194,10 @@ final class APIHandler: @unchecked Sendable {
                 return try mcpGrantStatusList()
             case ("POST", let p) where p.hasPrefix("/api/mcp/grants/") && p.hasSuffix("/status"):
                 return try mcpGrantStatus(path: p)
+            // The feedback route: the scrub runs app-side, by the app, so the
+            // MCP process never holds a vault value (the mcp-core rule).
+            case ("POST", "/api/mcp/feedback"):
+                return try mcpFeedback(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -1043,6 +1057,84 @@ final class APIHandler: @unchecked Sendable {
     /// state, never a token in any state.
     private func mcpGrantStatusList() throws -> HTTPResponse {
         HTTPResponse.json(200, ["requests": service.mcpGrantStatuses()])
+    }
+
+    // MARK: - MCP feedback (the scrubbed send_feedback flow)
+
+    /// POST /api/mcp/feedback — the app side of `send_feedback`. The scrub runs
+    /// here, by the app, because only this process can enumerate the vault's
+    /// values: it reads each catalog row's secret in memory (the `wrapPlan`
+    /// precedent — a row whose Keychain item is gone is skipped, never an
+    /// error), hands the values to the pure scrubber as exact-match needles, and
+    /// discards them. No presence prompt: a value that is compared and
+    /// discarded is removal, not a reveal, and nothing here is logged or
+    /// persisted — the raw draft exists only inside this call's stack and
+    /// the loopback socket that carried it.
+    private func mcpFeedback(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let raw = obj["draft"], !(raw is NSNull) else {
+            throw AppError.usage("draft is required")
+        }
+        guard let draft = raw as? String, !draft.isEmpty else {
+            throw AppError.usage("draft must be a non-empty string")
+        }
+        var destination = "email"
+        if let raw = obj["destination"], !(raw is NSNull) {
+            guard let value = raw as? String, value == "email" || value == "github" else {
+                throw AppError.usage("destination must be email or github")
+            }
+            destination = value
+        }
+        var prompt: String?
+        if let raw = obj["prompt"], !(raw is NSNull) {
+            guard let value = raw as? String else {
+                throw AppError.usage("prompt must be a string")
+            }
+            prompt = value
+        }
+
+        // The exact-match needles, enumerated in memory and never stored: one
+        // pass over the catalog, `try?` per row (the wrapPlan precedent). The
+        // dedupe compares secret to secret, constant-time, the same comparison
+        // wrapPlan makes between a candidate and the vault.
+        let rows = try service.list()
+        var vaultValues: [String] = []
+        var seen: [Data] = []
+        for row in rows {
+            guard let secret = try? service.secrets.get(name: row.name) else { continue }
+            let value = Data(secret.utf8)
+            guard !seen.contains(where: { ConstantTime.equal($0, value) }) else { continue }
+            seen.append(value)
+            vaultValues.append(secret)
+        }
+        // Key names and project labels are the only other forbidden facts; a
+        // provider's key-prefix list comes from the merged provider catalog.
+        let names = rows.map(\.name) + (try service.catalog.projects()).map(\.label)
+        let records = Providers.builtinList() + ((try? service.catalog.listCustomProviders()) ?? [])
+
+        let scrubbed = FeedbackScrubber.scrub(.init(
+            draft: draft,
+            prompt: prompt,
+            vaultValues: vaultValues,
+            names: names,
+            records: records
+        ))
+        let text = scrubbed.scrubbed + FeedbackDelivery.versionFooter()
+        let url = destination == "github"
+            ? FeedbackDelivery.githubIssueURL(body: text)
+            : FeedbackDelivery.mailtoURL(body: text)
+        guard let url else {
+            // Unreachable in practice: the query is fully percent-encoded above;
+            // a URL that cannot be built must fail closed, never half-open.
+            throw AppError.usage("the feedback URL could not be built")
+        }
+        openFeedbackURL(url)
+        return HTTPResponse.json(200, [
+            "scrubbed": text,
+            "removed": scrubbed.removed,
+            "destination": destination,
+            "opened": true,
+        ])
     }
 
     // MARK: - Profiles (saved grant bounds)

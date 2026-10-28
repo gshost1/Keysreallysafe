@@ -218,6 +218,7 @@ enum MCPRoster {
             MCPVersionTool(),
             MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease),
             MCPGrantTools(control: control, projectFolder: projectFolder),
+            MCPFeedbackTools(control: control),
         ]
     }
 
@@ -293,6 +294,11 @@ enum MCPSweepRig {
         // exact not-running error, no prompt, no request leaves the machine.
         "request_grant": ["key": "demo"],
         "grant_status": [:],
+        // A short harmless draft is the offline-safe row: against the rig's
+        // unwritten control file the tool answers the not-running sentence, so
+        // no prompt, no request, nothing opened, and the draft carries nothing
+        // planted.
+        "send_feedback": ["draft": "the menu bar chart is nice", "destination": "email"],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {

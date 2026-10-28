@@ -152,7 +152,7 @@ struct MCPToolRegistry {
     /// else changes.** Computed so no shared non-Sendable state exists; the roster
     /// it builds is deterministic. Every group's construction is offline-safe —
     /// nothing opens a catalog or contacts the app until a tool is actually called.
-    static var groups: [any MCPToolGroup] { [MCPVersionTool(), MCPReadTools(), MCPGrantTools()] }
+    static var groups: [any MCPToolGroup] { [MCPVersionTool(), MCPReadTools(), MCPGrantTools(), MCPFeedbackTools()] }
 
     /// The server's roster. Production builds this from `groups`, so the
     /// registration line above is the only place a group is added.

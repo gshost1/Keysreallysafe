@@ -554,7 +554,10 @@ Its tools list the key names (never values), read the gateway's state, check
 for a newer release, and ask for a grant: `request_grant` returns pending
 right away while Keysrs shows one Touch ID prompt naming the key, host and
 project, and `grant_status` hands the scoped token and base URL over on the
-one approved poll. `keys setup mcp` registers the server with all five
+one approved poll. `send_feedback` scrubs a feedback draft in the app (key
+values, token shapes, paths, names, emails removed first), opens the prefilled
+support mail or GitHub issue page, and never submits anything itself.
+`keys setup mcp` registers the server with all five
 clients, writing the resolved `keys` binary path plus the `mcp` argument into
 `~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,
 `~/.factory/mcp.json` and Claude Desktop's

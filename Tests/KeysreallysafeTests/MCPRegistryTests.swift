@@ -6,20 +6,21 @@ import XCTest
 /// one-file-plus-one-line seam, and containment of an invalid registration.
 final class MCPRegistryTests: XCTestCase {
 
-    /// The full mission roster: milestone 1's five, then the two the milestone-2
-    /// grants feature adds. `testMissionRosterExact` pins the LITERAL milestone-1
-    /// list today, so the milestone-2 feature grows the pin to `missionRoster`'s
-    /// seven when it registers its group.
+    /// The full mission roster: milestone 1's five, the two the milestone-2
+    /// grants feature adds, then the tools this feedback mission appends (in
+    /// feature order: `send_feedback` is F1's). A later feature grows the pin
+    /// knowingly; the roster tests below enforce the literal list.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
-    static let missionRoster = milestoneOneRoster + milestoneTwoRoster
+    static let feedbackRoster = ["send_feedback"]
+    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + feedbackRoster
 
     /// Names no revision of this mission registers: the parallel missions' tools and
     /// the cancel tool that deliberately does not exist (denial is the user
     /// cancelling Touch ID).
     static let neverRegistered = [
         "scan_project", "check_exposure", "import_and_wrap", "test_keys",
-        "revoke_all", "activity", "send_feedback", "grant_cancel",
+        "revoke_all", "activity", "grant_cancel",
     ]
 
     // MARK: - REGISTRY-001

@@ -184,6 +184,17 @@ The tools the server offers:
   `base_url` and `auth_header` on exactly the first approved poll (the only
   time a token is returned; later polls say `delivered`), or `denied`,
   `expired`, `not_found`.
+- `send_feedback` — hand feedback about Keysrs to the maintainer: the running
+  app scrubs the draft first (key values by exact match, Keysrs token shapes
+  and prefixes, provider-key-shaped strings, absolute and `~` paths, key
+  names, project labels, emails except support@keysrs.com, whatever the
+  optional `prompt` argument marks, and over-length text capped at 10,000
+  characters), adds the Keysrs and macOS version, and opens the user's mail
+  client (`destination` `"email"`, the default) or the GitHub issue page
+  (`destination` `"github"`) prefilled with the scrubbed text. Requires the
+  app; no Touch ID — scrubbing removes secrets, it never reads one out.
+  Returns the scrubbed text and per-category removal counts. Keysrs never
+  submits the feedback: the user reviews and sends what opens.
 
 The grant ask returns `{"status":"pending","id":…}` immediately, while the
 Keysrs app shows one Touch ID prompt naming the key, the host and the
