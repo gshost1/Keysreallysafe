@@ -8,15 +8,19 @@ import XCTest
 enum MCPSession {
 
     /// One scripted session: feed `lines`, capture the stdout frames and stderr prose.
+    /// The output guard defaults to the production one — a session is what ships —
+    /// and a test that wants a planted value, a throwing provider or no guard at all
+    /// passes `outputGuard` explicitly.
     @discardableResult
     static func run(
         _ lines: [String],
         registry: MCPToolRegistry = .default,
+        outputGuard: MCPOutputGuard? = MCPOutputGuard.production,
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> (frames: [String], stderr: [String]) {
         var iterator = lines.makeIterator()
-        return try run(next: { iterator.next() }, registry: registry, file: file, line: line)
+        return try run(next: { iterator.next() }, registry: registry, outputGuard: outputGuard, file: file, line: line)
     }
 
     /// The byte-level variant, exactly as stdin delivers it: CRLF, blank lines, an
@@ -25,16 +29,18 @@ enum MCPSession {
     static func run(
         bytes: Data,
         registry: MCPToolRegistry = .default,
+        outputGuard: MCPOutputGuard? = MCPOutputGuard.production,
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> (frames: [String], stderr: [String]) {
         var source = MCPLineSource(data: bytes)
-        return try run(next: { source.next() }, registry: registry, file: file, line: line)
+        return try run(next: { source.next() }, registry: registry, outputGuard: outputGuard, file: file, line: line)
     }
 
     private static func run(
         next: () -> String?,
         registry: MCPToolRegistry,
+        outputGuard: MCPOutputGuard?,
         file: StaticString,
         line: UInt
     ) throws -> (frames: [String], stderr: [String]) {
@@ -43,7 +49,8 @@ enum MCPSession {
         var server = MCPServer(
             write: { stdout.append($0) },
             note: { stderr.append($0) },
-            registry: registry
+            registry: registry,
+            outputGuard: outputGuard
         )
         server.run(next: next)
         let text = String(decoding: stdout, as: UTF8.self)
@@ -56,6 +63,13 @@ enum MCPSession {
     /// The initialize line a scripted session opens with.
     static func initialize(id: String = "init", version: String = "2025-06-18") -> String {
         #"{"jsonrpc":"2.0","id":"\#(id)","method":"initialize","params":{"protocolVersion":"\#(version)"}}"#
+    }
+
+    /// The `tools/list` tool names in one frame, in order — the roster-derived sweep
+    /// enumerates these, never a typed list.
+    static func toolNames(in frame: String, id: Any, file: StaticString = #filePath, line: UInt = #line) throws -> [String] {
+        let result = try assertResult(frame, id: id, file: file, line: line)
+        return (result["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
     }
 
     /// One captured frame as a JSON object; fails the test when it is not one.
@@ -182,5 +196,59 @@ struct TestToolGroup: MCPToolGroup, @unchecked Sendable {
 
     func call(_ name: String, arguments: [String: Any]) throws -> MCPToolResult {
         try answer(name, arguments)
+    }
+}
+
+/// The planted-value rig the guard's sweep drives (VAL-CROSS-002's "full fake rig"):
+/// a temp catalog with a gated service, one key whose secret is the planted value,
+/// one live grant and one client token — the three values no tool result may ever
+/// carry. Resolved projects join the rig when the project-identity feature lands.
+/// The rig's own setup spends presence prompts (issuing the grant and the client
+/// token); every tool call after it must spend none (VAL-MCP-GUARD-009).
+enum MCPSweepRig {
+    struct Built {
+        let dir: URL
+        let db: CatalogDB
+        let service: KeysService
+        let gate: RecordingPresenceGate
+        let grantToken: String
+        let clientToken: String
+        /// The presence prompts the rig's SETUP consumed. A tool call that adds one
+        /// means a tool tried a presence-gated read.
+        let setupPrompts: Int
+
+        /// The rig-wired roster the sweep drives: every production group, wired over
+        /// the rig so its tools answer from THIS catalog and service, never the real
+        /// ones. Today only the `version` group needs no external wiring; when a
+        /// group lands that answers from the catalog or the app, construct it over
+        /// `db`/`service` here — the sweep's production-roster comparison fails
+        /// naming any tool registered in production but not swept.
+        var registry: MCPToolRegistry { MCPToolRegistry(groups: [MCPVersionTool()]) }
+    }
+
+    /// The per-tool argument rows the sweep calls every registered tool with — safe
+    /// offline arguments only. A registered tool with no row fails the sweep by
+    /// name, so any tool a later mission registers is swept by default: add its row
+    /// here (or exempt it with a written reason).
+    static var argumentRows: [String: [String: Any]] { [
+        "version": [:],
+    ] }
+
+    static func make(planted: String = fixtureSecret) throws -> Built {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: planted)
+        _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
+        let grantToken = try grantFor(service, "demo", task: "sweep")
+        let client = try service.issueGatewayClient(name: "demo", label: "router")
+        return Built(
+            dir: dir,
+            db: db,
+            service: service,
+            gate: gate,
+            grantToken: grantToken,
+            clientToken: client.token,
+            setupPrompts: gate.reasons.count
+        )
     }
 }

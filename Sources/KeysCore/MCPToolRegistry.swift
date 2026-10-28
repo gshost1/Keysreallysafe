@@ -24,6 +24,18 @@ struct MCPTool {
 struct MCPToolResult {
     let content: [[String: Any]]
     let isError: Bool
+    /// The ONE value this result is permitted to carry even though the output
+    /// guard's rules would otherwise reject it: the token a `grant_status` approval
+    /// is handing over. Only the grants flow ever sets it; it is nil for every other
+    /// result, and the guard exempts exactly this value — never a tool, never a
+    /// second value in the same result. It is never serialized into the result.
+    let handover: String?
+
+    init(content: [[String: Any]], isError: Bool, handover: String? = nil) {
+        self.content = content
+        self.isError = isError
+        self.handover = handover
+    }
 
     /// One text block.
     static func text(_ text: String) -> MCPToolResult {

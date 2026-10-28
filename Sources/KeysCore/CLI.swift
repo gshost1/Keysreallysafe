@@ -1697,7 +1697,8 @@ enum MCPRun {
         var server = MCPServer(
             write: { FileHandle.standardOutput.write($0) },
             note: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) },
-            registry: MCPToolRegistry.default
+            registry: MCPToolRegistry.default,
+            outputGuard: .production
         )
         withExtendedLifetime(signals) {
             server.run(next: { lines.next() })

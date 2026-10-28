@@ -34,12 +34,27 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
     private let writeBytes: (Data) -> Void
     private let note: (String) -> Void
     private let registry: MCPToolRegistry
+    private let outputGuard: MCPOutputGuard?
     private var handshook = false
 
-    init(write: @escaping (Data) -> Void, note: @escaping (String) -> Void, registry: MCPToolRegistry) {
+    /// - Parameters:
+    ///   - write: the single stdout write path — one complete frame per call.
+    ///   - note: the stderr sink; prose only, never a protocol frame.
+    ///   - registry: the tool roster this server serves.
+    ///   - outputGuard: the guard every `tools/call` result passes through before it
+    ///     is written. Production passes `.production`; `nil` exists so a test can
+    ///     compare a guard-less run byte for byte, which works because the guard
+    ///     covers tools/call results only — the static answers never pass through it.
+    init(
+        write: @escaping (Data) -> Void,
+        note: @escaping (String) -> Void,
+        registry: MCPToolRegistry,
+        outputGuard: MCPOutputGuard? = MCPOutputGuard.production
+    ) {
         self.writeBytes = write
         self.note = note
         self.registry = registry
+        self.outputGuard = outputGuard
         // A group refused at registration is reported once, on stderr, before any
         // frame is served; the valid roster still serves.
         for line in registry.diagnostics { note(line) }
@@ -191,13 +206,24 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
         }
         do {
             let result = try group.call(name, arguments: arguments)
-            emit(success: id, result: result.jsonObject())
+            emit(success: id, result: screened(result).jsonObject())
         } catch {
             // Every tool failure is a result the model must see and self-correct on,
-            // never a JSON-RPC error; the formatter scrubs it before it is text.
+            // never a JSON-RPC error; the formatter scrubs it before it is text —
+            // and the guard screens it after, because error text is content, not an
+            // exemption.
             let message = MCPToolErrorFormatter.message(for: error)
-            emit(success: id, result: MCPToolResult.failure(message).jsonObject())
+            emit(success: id, result: screened(MCPToolResult.failure(message)).jsonObject())
         }
+    }
+
+    /// The one place a tools/call result becomes the result the write path sees: the
+    /// output guard replaces it wholesale when it matches a rule — before any byte is
+    /// written, never as a post-write corrector. A rejected result is answered with
+    /// the guard's plain replacement; nothing about it is logged or echoed.
+    private func screened(_ result: MCPToolResult) -> MCPToolResult {
+        guard let outputGuard else { return result }
+        return outputGuard.screened(result)
     }
 
     private func emit(success id: Any?, result: Any) {
