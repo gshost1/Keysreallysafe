@@ -51,6 +51,13 @@ final class AppPreferences: @unchecked Sendable {
     /// convention so those setters land beside the other toggles without a migration.
     var dockerAccess: Bool { (try? catalog.metaValue(Self.dockerAccessKey)) == "on" }
 
+    /// The import-driven setter the doc comment above names: `import_and_wrap` with
+    /// `docker: true` writes "on" here; the import never writes "off" (absent/false
+    /// leaves whatever the person chose alone).
+    func setDockerAccess(_ on: Bool) throws {
+        try catalog.withTransaction { try catalog.setMeta(Self.dockerAccessKey, on ? "on" : "off") }
+    }
+
     static let hiddenUsageKey = "pref_hidden_usage"
     static let hiddenUsageMax = 64
 

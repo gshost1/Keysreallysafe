@@ -1,9 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// The onboarding group: `scan_project` and `check_exposure`, with
-/// `import_and_wrap` and `test_keys` joining this file in their own features.
-/// The read-only half of onboarding answers "which credential-shaped variables
+/// The onboarding group: `scan_project`, `check_exposure` and `import_and_wrap`,
+/// with `test_keys` joining this file in its own feature. The read-only half of
+/// onboarding answers "which credential-shaped variables
 /// live in this folder" straight from the files, so an agent can point Keysrs
 /// at a project and decide what to import without a single key value ever
 /// crossing the MCP surface: the scan parses env files in THIS process, emits
@@ -11,7 +11,11 @@ import Foundation
 /// thing it ever asks another process is the SHA-256 hex of a parsed value.
 /// Exposure re-uses the same discovery and answers only git facts — three
 /// read-only booleans per file and a rotation recommendation for anything ever
-/// committed — never a file's contents.
+/// committed — never a file's contents. The import is the group's one write tool,
+/// and it writes nothing itself: the request carries the folder, variable names
+/// and flags only, the app re-reads the files, prompts once and answers with
+/// per-variable outcomes — so no key value and no token ever crosses the wire
+/// in either direction.
 ///
 /// **Construction is offline-safe.** Nothing here opens a catalog, touches the
 /// control channel or runs anything at init — the control file, the project
@@ -55,12 +59,13 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         self.gitExecutable = gitExecutable
     }
 
-    func tools() -> [MCPTool] { [scanProject, checkExposure] }
+    func tools() -> [MCPTool] { [scanProject, checkExposure, importAndWrap] }
 
     func call(_ name: String, arguments: [String: Any]) throws -> MCPToolResult {
         switch name {
         case "scan_project": return try serveScanProject(arguments)
         case "check_exposure": return try serveCheckExposure(arguments)
+        case "import_and_wrap": return try serveImportAndWrap(arguments)
         default: throw AppError.usage("\(name) is not one of this group's tools")
         }
     }
@@ -104,6 +109,37 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
                 "type": "object",
                 "properties": [
                     "folder": ["type": "string"],
+                ] as [String: Any],
+                "additionalProperties": false,
+            ]
+        )
+    }
+
+    private var importAndWrap: MCPTool {
+        MCPTool(
+            name: "import_and_wrap",
+            title: "Import and wrap a project",
+            description: "Import the credential-shaped variables in a project folder into the Keysrs "
+                + "vault and rewrite each one to a single 30-day project gateway token, all inside "
+                + "the app under one Touch ID prompt that names the keys and the project. Ask the "
+                + "user first in the same call. Only names and flags cross the wire: the app re-reads "
+                + "the files itself, so never put a value in the request; the result carries "
+                + "per-variable outcomes (wrapped, imported_not_wrapped, skipped, not_found with "
+                + "reasons), the project label, the token's expiry, whether docker containers may "
+                + "reach the gateway, and the base-URL host — never a key value, a token or an "
+                + "absolute path. Values the gateway cannot proxy (AWS SigV4 pairs, credential URLs) "
+                + "import but keep their lines; values with no recognized provider and no vault match "
+                + "are not imported. docker true only with the user's explicit yes: it also lets "
+                + "Docker containers reach the gateway through host.docker.internal base URLs. The "
+                + "folder is optional and defaults to this process's working directory; variables "
+                + "restricts the import to those names. Without the app running the whole call fails "
+                + "with one sentence.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "folder": ["type": "string"],
+                    "variables": ["type": "array", "items": ["type": "string"]] as [String: Any],
+                    "docker": ["type": "boolean"],
                 ] as [String: Any],
                 "additionalProperties": false,
             ]
@@ -387,6 +423,37 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
                 "recommendation": NSNull(),
             ] },
         ])
+    }
+
+    // MARK: - import_and_wrap
+
+    /// The one write tool of onboarding, and the whole reason the request carries
+    /// names and flags only: the app re-scans the folder and reads the values
+    /// itself, over the same control channel every app-bound tool uses, through
+    /// `AppConnection` — the only seam — with the presence call's longer bound,
+    /// because the call legitimately stays open while the import's one Touch ID
+    /// prompt is up. The app's answer is relayed verbatim; it carries outcomes,
+    /// names and dates, so the output guard's token-shape rule passes over it by
+    /// construction (the one token lives in the rewritten file, never on the wire).
+    private func serveImportAndWrap(_ arguments: [String: Any]) throws -> MCPToolResult {
+        var body: [String: Any] = [:]
+        if let folder = try Self.folderArgument(arguments) { body["folder"] = folder }
+        if let raw = arguments["variables"], !(raw is NSNull) {
+            guard let names = raw as? [Any], names.allSatisfy({ $0 is String }) else {
+                throw AppError.usage("variables must be a list of variable names")
+            }
+            body["variables"] = names
+        }
+        if let raw = arguments["docker"], !(raw is NSNull) {
+            guard let docker = JSONValue.bool(raw) else { throw AppError.usage("docker must be a boolean") }
+            body["docker"] = docker
+        }
+        let app = try AppConnection.connect(control: control)
+        let answer = try app.call(
+            method: "POST", path: "/api/mcp/import_and_wrap", body: body, expect: 200,
+            timeout: AppConnection.presenceCallTimeout
+        )
+        return try MCPToolResult.json(answer)
     }
 }
 

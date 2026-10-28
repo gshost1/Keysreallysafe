@@ -188,6 +188,11 @@ final class APIHandler: @unchecked Sendable {
             // A POST like the rest — no GET under /api/ ever carries state.
             case ("POST", "/api/mcp/vault_lookup"):
                 return try mcpVaultLookup(request)
+            // The onboarding mission's import: the MCP request carries names and flags
+            // only (folder, variable names, docker) — the app re-reads the files itself
+            // and answers with per-variable outcomes, never a value or a token.
+            case ("POST", "/api/mcp/import_and_wrap"):
+                return try mcpImportAndWrap(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -791,7 +796,10 @@ final class APIHandler: @unchecked Sendable {
                 nameHint: JSONValue.string(o["name_hint"])
             )
         }
-        let plan = try service.wrapPlan(file: JSONValue.string(obj["file"]) ?? "env file", candidates: candidates)
+        let plan = try service.wrapPlan(
+            file: JSONValue.string(obj["file"]) ?? "env file", candidates: candidates,
+            path: JSONValue.string(obj["path"])
+        )
         return HTTPResponse.json(200, plan.jsonObject())
     }
 
@@ -1065,6 +1073,34 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, [
             "matches": matches.map { ["hash": $0.hash, "key": $0.key ?? NSNull()] as [String: Any] },
         ])
+    }
+
+    /// POST /api/mcp/import_and_wrap — the onboarding import. The body carries the
+    /// project folder, optional variable names and the docker flag, and nothing else:
+    /// the app re-reads the env files itself, so no key value ever crosses the wire.
+    /// The answer is the import's result payload (per-variable outcomes, project label,
+    /// expiry, docker_access, base_url_host) — never a value, a token or an absolute
+    /// path. Presence is the flow's own single prompt inside `importAndWrap`.
+    private func mcpImportAndWrap(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        var folder: String?
+        if let raw = obj["folder"], !(raw is NSNull) {
+            guard let supplied = raw as? String else { throw AppError.usage("folder must be a string") }
+            folder = supplied
+        }
+        var variables: [String]?
+        if let raw = obj["variables"], !(raw is NSNull) {
+            guard let names = raw as? [Any], names.allSatisfy({ $0 is String }) else {
+                throw AppError.usage("variables must be a list of variable names")
+            }
+            variables = names.compactMap { $0 as? String }
+        }
+        var docker = false
+        if let raw = obj["docker"], !(raw is NSNull) {
+            guard let flag = JSONValue.bool(raw) else { throw AppError.usage("docker must be a boolean") }
+            docker = flag
+        }
+        return HTTPResponse.json(200, try service.importAndWrap(folder: folder, variables: variables, docker: docker))
     }
 
     // MARK: - Profiles (saved grant bounds)

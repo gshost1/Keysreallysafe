@@ -305,6 +305,20 @@ final class CatalogDB: @unchecked Sendable {
               updated_at TEXT NOT NULL
             );
             """)
+        // Every env file a wrap ever rewrote, by canonical path and the project it was
+        // wrapped for, so `keys unwrap` and the uninstall offer can find them without
+        // guessing from backups alone. Local catalog only: the path is the file's real
+        // location, which never leaves this Mac (tool results carry relative paths, and
+        // nothing on the wire names this table). `project` is a soft projects.id like
+        // gateway_clients', so a dangling reference must never break a reader. Recorded
+        // at apply time by BOTH the import path and the existing keys wrap apply path.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS wrapped_files (
+              path TEXT PRIMARY KEY,
+              project TEXT NOT NULL,
+              wrapped_at TEXT NOT NULL
+            );
+            """)
         // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
         // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
         // the main file nor the WAL keeps the old page images. The vacuum is best effort.
@@ -822,6 +836,27 @@ final class CatalogDB: @unchecked Sendable {
             "UPDATE gateway_clients SET revoked_at = ? WHERE project = ? AND revoked_at IS NULL;",
             iso, project
         )
+    }
+
+    // MARK: wrapped files
+
+    /// Records one file a wrap rewrote, by canonical path. A rewrap refreshes the row
+    /// (INSERT OR REPLACE on the path primary key), so the record always reflects the
+    /// latest wrap, and unwrapping clears it per file.
+    func recordWrappedFile(path: String, project: String, at iso: String) throws {
+        try run(
+            "INSERT OR REPLACE INTO wrapped_files (path, project, wrapped_at) VALUES (?, ?, ?);",
+            path, project, iso
+        )
+    }
+
+    /// Every recorded wrapped file, in path order — the base `keys unwrap` and the
+    /// uninstall offer read (both filter it further; a dangling project id must never
+    /// break the listing).
+    func listWrappedFiles() throws -> [(path: String, project: String, wrappedAt: String)] {
+        try query("SELECT path, project, wrapped_at FROM wrapped_files ORDER BY path;") {
+            (columnText($0, 0) ?? "", columnText($0, 1) ?? "", columnText($0, 2) ?? "")
+        }
     }
 
     // MARK: projects

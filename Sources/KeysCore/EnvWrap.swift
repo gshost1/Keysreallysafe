@@ -474,17 +474,19 @@ enum EnvFileWriter {
 // MARK: - The command's steps
 
 /// Where the plan and the tokens come from: the running app over its control API, or a
-/// service in this process (tests).
+/// service in this process (tests). `path` in `plan` is the file's absolute path, kept
+/// for the apply point's `wrapped_files` record — `file` stays the display name prompts
+/// and labels show.
 protocol WrapBackend {
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan
     func apply(id: String, label: String, days: Int?) throws -> [WrapIssued]
     func cancel(id: String)
 }
 
 struct ServiceWrapBackend: WrapBackend {
     let service: KeysService
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan {
-        try service.wrapPlan(file: file, candidates: candidates)
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan {
+        try service.wrapPlan(file: file, candidates: candidates, path: path)
     }
     func apply(id: String, label: String, days: Int?) throws -> [WrapIssued] {
         try service.wrapApply(id: id, label: label, days: days, caller: "wrap")
@@ -496,8 +498,8 @@ struct ControlWrapBackend: WrapBackend {
     /// Connects on first use, so a file with nothing to wrap needs no running app.
     let connect: () throws -> ControlClient
 
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan {
-        let body: [String: Any] = [
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan {
+        var body: [String: Any] = [
             "file": file,
             "candidates": candidates.map { c -> [String: Any] in
                 var o: [String: Any] = ["variable": c.variable, "value": c.value]
@@ -506,6 +508,9 @@ struct ControlWrapBackend: WrapBackend {
                 return o
             },
         ]
+        // The control channel is the wrap flow's own wire (it carries the values), so
+        // the file's absolute path rides it to the apply point's wrapped_files record.
+        if let path { body["path"] = path }
         return try WrapPlan(json: try Self.call { try connect().call(method: "POST", path: "/api/wrap", body: body, expect: 200) })
     }
 
@@ -588,7 +593,7 @@ struct WrapRunner {
         out("\(found.count) value\(found.count == 1 ? "" : "s") in \(display) look\(found.count == 1 ? "s" : "") like provider keys: "
             + found.map(\.candidate.variable).joined(separator: ", "))
         out("Touch ID in Keysrs to compare them with the vault…")
-        let plan = try backend.plan(file: display, candidates: found.map(\.candidate))
+        let plan = try backend.plan(file: display, path: url.path, candidates: found.map(\.candidate))
         var applied = false
         defer { if !applied { backend.cancel(id: plan.id) } }
         guard plan.items.count == found.count else {

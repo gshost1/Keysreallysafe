@@ -49,6 +49,30 @@ func makeDB() throws -> (CatalogDB, URL) {
     return (try CatalogDB(path: path), dir)
 }
 
+/// Owner directive 2026-10-28, binding: a sibling mission's test once reached the real
+/// installed app and wrote to the REAL vault. No test in this mission may ever reach
+/// `/Applications/Keysrs.app`, its `control.json`, the real Keychain or
+/// `~/Library/Application Support/Keysreallysafe` — and the real app is running on this
+/// machine, so a request that slips through would import keys into the real vault or
+/// rewrite real files. Every test that touches a control-channel path (a control file, a
+/// catalog, an app-bound seam built from any URL) calls this with the path under test and
+/// FAILS CLOSED: a path that resolves inside the production location aborts the test
+/// loudly instead of proceeding. Never construct a rig from the production-default seams
+/// (`ControlFile.url()`, `Paths.catalogDB`) without passing the resulting URL through
+/// this guard.
+func assertNotProductionPath(_ path: URL, file: StaticString = #filePath, line: UInt = #line) throws {
+    let resolved = path.resolvingSymlinksInPath().path
+    let production = Paths.appSupport.resolvingSymlinksInPath().path
+    guard resolved != production, !resolved.hasPrefix(production + "/") else {
+        // Thrown, not XCTAssertFalse: the test aborts before whatever it was about to do
+        // against the real app, and the guard's own test can catch this to prove it fires.
+        throw AppError.usage(
+            "test rig points at the real Keysrs location; refusing to run against the installed app — "
+                + "use a temp catalog and a temp control file (owner directive 2026-10-28)"
+        )
+    }
+}
+
 func makeService(db: CatalogDB) -> (KeysService, MemorySecretStore, FakeClipboard) {
     let secrets = MemorySecretStore()
     let clipboard = FakeClipboard()

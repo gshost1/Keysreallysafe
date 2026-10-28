@@ -34,6 +34,13 @@ struct AppConnection {
     /// this bound.
     static let appCallTimeout: TimeInterval = 10
 
+    /// The longer bound for the presence-gated calls (`import_and_wrap`; `test_keys`
+    /// with confirm): the whole call legitimately stays open while a Touch ID prompt
+    /// is up, and 10 s would kill a slow approval mid-import. Opt-in per call through
+    /// `call`'s `timeout:` — the 10 s default above stays the bound for everything
+    /// else, exactly as its pins describe it.
+    static let presenceCallTimeout: TimeInterval = 120
+
     private let client: ControlClient
 
     private init(client: ControlClient) { self.client = client }
@@ -52,9 +59,16 @@ struct AppConnection {
     }
 
     /// One app call: loopback HTTP with the per-launch `X-KSF-Token` from the
-    /// control file on every request, bounded by `appCallTimeout`. The site's answer
-    /// for `expect` is returned; anything else becomes the AppError it carries.
-    func call(method: String, path: String, body: [String: Any]? = nil, expect: Int) throws -> [String: Any] {
-        try client.call(method: method, path: path, body: body, expect: expect, timeout: Self.appCallTimeout)
+    /// control file on every request, bounded by `timeout` (the 10 s default; a
+    /// presence-gated caller passes `presenceCallTimeout`). The site's answer for
+    /// `expect` is returned; anything else becomes the AppError it carries.
+    func call(
+        method: String,
+        path: String,
+        body: [String: Any]? = nil,
+        expect: Int,
+        timeout: TimeInterval = Self.appCallTimeout
+    ) throws -> [String: Any] {
+        try client.call(method: method, path: path, body: body, expect: expect, timeout: timeout)
     }
 }

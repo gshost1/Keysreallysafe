@@ -1025,14 +1025,16 @@ final class KeysService: @unchecked Sendable {
     // MARK: keys wrap
 
     /// Wrap plans waiting for the user's yes. Each holds the secrets of keys it will add, in
-    /// memory only, and dies after `WrapPlan.lifetime`.
+    /// memory only, and dies after `WrapPlan.lifetime`. `path` is the caller's absolute file
+    /// path when it has one (the CLI's), kept for `wrapApply`'s `wrapped_files` record —
+    /// the display `file` label stays what prompts and labels show.
     private let wrapLock = NSLock()
-    private var wrapPending: [String: (plan: WrapPlan, secrets: [String: String], file: String, expires: Date)] = [:]
+    private var wrapPending: [String: (plan: WrapPlan, secrets: [String: String], file: String, path: String?, expires: Date)] = [:]
 
     /// One presence prompt covers the whole batch: reading every vault secret to compare with
     /// the file's values here, and later adding keys, turning the gateway on and minting tokens
     /// in `wrapApply`. Values never leave this process; the plan carries names only.
-    func wrapPlan(file: String, candidates: [WrapCandidate], now: Date = Date()) throws -> WrapPlan {
+    func wrapPlan(file: String, candidates: [WrapCandidate], path: String? = nil, now: Date = Date()) throws -> WrapPlan {
         try requireGatewayOwner()
         guard !candidates.isEmpty else { throw AppError.usage("nothing to wrap") }
         guard candidates.count <= WrapPlan.maxCandidates else {
@@ -1096,7 +1098,7 @@ final class KeysService: @unchecked Sendable {
         let plan = WrapPlan(id: Hex.encode(SecureRandom.bytes(16)), items: items)
         wrapLock.withLock {
             wrapPending = wrapPending.filter { $0.value.expires > now }
-            wrapPending[plan.id] = (plan, newSecrets, label, now.addingTimeInterval(WrapPlan.lifetime))
+            wrapPending[plan.id] = (plan, newSecrets, label, path, now.addingTimeInterval(WrapPlan.lifetime))
         }
         return plan
     }
@@ -1138,11 +1140,39 @@ final class KeysService: @unchecked Sendable {
             )
             issued.append(WrapIssued(key: key, token: minted.token, clientID: minted.client.id, isNew: item.isNew))
         }
+        // The shared apply point's wrapped-files record: a plan whose caller named the
+        // file's absolute path (the CLI's wrap does) records it, so `keys unwrap` and the
+        // uninstall offer find every file this build ever wrapped. The project is the
+        // file's own folder — the folder whose slug named the keys — resolved the same
+        // way the import path resolves its scan root.
+        if let path = pending.path, !issued.isEmpty {
+            let canonical = Self.canonicalPath(path) ?? path
+            let folder = try resolveProject(
+                folder: URL(fileURLWithPath: canonical).deletingLastPathComponent().path, now: now
+            )
+            try recordWrappedFile(path: canonical, project: folder.id, now: now)
+        }
         return issued
     }
 
     func wrapCancel(id: String) {
         _ = wrapLock.withLock { wrapPending.removeValue(forKey: id) }
+    }
+
+    /// Records one file a wrap rewrote, by canonical path, in the `wrapped_files` table.
+    /// Both wrap paths land here — `wrapApply` for `keys wrap`, the import flow for its
+    /// own files — so every rewritten file is findable later with no guessing from
+    /// backups. The path stays in this Mac's catalog; no tool result ever carries it.
+    func recordWrappedFile(path: String, project: String, now: Date = Date()) throws {
+        try catalog.recordWrappedFile(path: Self.canonicalPath(path) ?? path, project: project, at: UTC.iso(now))
+    }
+
+    /// POSIX `realpath`, the `Project.canonicalFolder` discipline, for a file. The same
+    /// spelling rule everywhere a path becomes an identity.
+    static func canonicalPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     func gatewayClients(name: String) throws -> [GatewayClient] {
@@ -1191,7 +1221,8 @@ final class KeysService: @unchecked Sendable {
 
     /// Resolves each key to its effective host, in first-seen order, refusing a key with
     /// no host exactly as per-key issuance does. A repeated name collapses to one member.
-    private func projectMembers(_ keys: [String]) throws -> [(name: String, host: String)] {
+    /// Internal so the onboarding import flow resolves its wrapped keys' hosts here too.
+    func projectMembers(_ keys: [String]) throws -> [(name: String, host: String)] {
         var seen: Set<String> = []
         var members: [(name: String, host: String)] = []
         for name in keys where seen.insert(name).inserted {
@@ -1208,7 +1239,8 @@ final class KeysService: @unchecked Sendable {
     /// Mints after presence was already taken by the caller. The project row's `key_name`
     /// is its first member (the column is NOT NULL); every member — the first included —
     /// also gets a membership row, so the authorize path resolves each one's own host.
-    private func mintProjectGatewayClient(
+    /// Internal so the onboarding import flow reuses it under its own single prompt.
+    func mintProjectGatewayClient(
         members: [(name: String, host: String)],
         label: String, days ttlDays: Int, methods allowed: [String], pathPrefix prefix: String?,
         project: String, caller: String, now: Date

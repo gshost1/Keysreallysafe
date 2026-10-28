@@ -335,7 +335,9 @@ private final class RecordingBackend: WrapBackend {
     let inner: ServiceWrapBackend
     var cancelled: [String] = []
     init(service: KeysService) { inner = ServiceWrapBackend(service: service) }
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan { try inner.plan(file: file, candidates: candidates) }
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan {
+        try inner.plan(file: file, path: path, candidates: candidates)
+    }
     func apply(id: String, label: String, days: Int?) throws -> [WrapIssued] { try inner.apply(id: id, label: label, days: days) }
     func cancel(id: String) {
         cancelled.append(id)
