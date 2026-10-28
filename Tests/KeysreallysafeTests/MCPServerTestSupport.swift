@@ -199,12 +199,41 @@ struct TestToolGroup: MCPToolGroup, @unchecked Sendable {
     }
 }
 
+/// The production roster wired over a test world — the one place that maps
+/// production groups to injected seams. Every group registered in production must
+/// appear here: the sweep's production-roster comparison fails naming any gap, so
+/// this list cannot drift from `MCPToolRegistry.groups`. App-bound groups connect
+/// through `control`, the catalog group opens `catalog`, and the release check
+/// fetches through `fetchLatestRelease` — so the real tool code runs against the
+/// caller's temp state, never the machine's real catalog or installed app.
+enum MCPRoster {
+    static func groups(
+        catalog: @escaping () throws -> CatalogDB,
+        control: URL,
+        fetchLatestRelease: @escaping () throws -> ReleaseInfo
+    ) -> [any MCPToolGroup] {
+        [
+            MCPVersionTool(),
+            MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease),
+        ]
+    }
+
+    static func registry(
+        catalog: @escaping () throws -> CatalogDB,
+        control: URL,
+        fetchLatestRelease: @escaping () throws -> ReleaseInfo
+    ) -> MCPToolRegistry {
+        MCPToolRegistry(groups: groups(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease))
+    }
+}
+
 /// The planted-value rig the guard's sweep drives (VAL-CROSS-002's "full fake rig"):
 /// a temp catalog with a gated service, one key whose secret is the planted value,
-/// one live grant and one client token — the three values no tool result may ever
-/// carry. Resolved projects join the rig when the project-identity feature lands.
-/// The rig's own setup spends presence prompts (issuing the grant and the client
-/// token); every tool call after it must spend none (VAL-MCP-GUARD-009).
+/// one live grant, one project-bound client token and the project it names — the
+/// values no tool result may ever carry, plus the label that is the only project
+/// fact allowed to leave. The rig's own setup spends presence prompts (issuing the
+/// grant and the client token); every tool call after it must spend none
+/// (VAL-MCP-GUARD-009).
 enum MCPSweepRig {
     struct Built {
         let dir: URL
@@ -213,17 +242,37 @@ enum MCPSweepRig {
         let gate: RecordingPresenceGate
         let grantToken: String
         let clientToken: String
+        /// The control file the app-bound tools would connect through. Never
+        /// written: `gateway_info` and `open_app` answer their not-running result
+        /// against the rig, which is exactly what an offline sweep needs.
+        let control: URL
         /// The presence prompts the rig's SETUP consumed. A tool call that adds one
         /// means a tool tried a presence-gated read.
         let setupPrompts: Int
 
         /// The rig-wired roster the sweep drives: every production group, wired over
         /// the rig so its tools answer from THIS catalog and service, never the real
-        /// ones. Today only the `version` group needs no external wiring; when a
-        /// group lands that answers from the catalog or the app, construct it over
-        /// `db`/`service` here — the sweep's production-roster comparison fails
-        /// naming any tool registered in production but not swept.
-        var registry: MCPToolRegistry { MCPToolRegistry(groups: [MCPVersionTool()]) }
+        /// ones. The sweep's production-roster comparison fails naming any tool
+        /// registered in production but not wired here.
+        var registry: MCPToolRegistry {
+            MCPRoster.registry(
+                catalog: { db },
+                control: control,
+                fetchLatestRelease: { MCPSweepRig.fetchedRelease }
+            )
+        }
+    }
+
+    /// The offline release the rig's `check_update` answers from: a newer one, so
+    /// the result carries its three fields and never touches the network.
+    static var fetchedRelease: ReleaseInfo {
+        ReleaseInfo(
+            version: "999.0.0",
+            dmg: URL(string: "https://release.invalid/Keysrs-arm64.dmg")!,
+            checksum: nil,
+            expectedBytes: nil,
+            notes: nil
+        )
     }
 
     /// The per-tool argument rows the sweep calls every registered tool with — safe
@@ -232,6 +281,10 @@ enum MCPSweepRig {
     /// here (or exempt it with a written reason).
     static var argumentRows: [String: [String: Any]] { [
         "version": [:],
+        "list_keys": [:],
+        "gateway_info": [:],
+        "open_app": [:],
+        "check_update": [:],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {
@@ -240,7 +293,12 @@ enum MCPSweepRig {
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: planted)
         _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
         let grantToken = try grantFor(service, "demo", task: "sweep")
-        let client = try service.issueGatewayClient(name: "demo", label: "router")
+        // A resolved project bound to the one client token, so list_keys has a
+        // label to return and the sweep's byte scan proves the path never leaves.
+        let folder = dir.appendingPathComponent("sweep-proj", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let project = try service.resolveProject(folder: folder.path)
+        let client = try service.issueGatewayClient(name: "demo", label: "router", project: project.id)
         return Built(
             dir: dir,
             db: db,
@@ -248,6 +306,7 @@ enum MCPSweepRig {
             gate: gate,
             grantToken: grantToken,
             clientToken: client.token,
+            control: ControlFile.url(beside: db.path),
             setupPrompts: gate.reasons.count
         )
     }

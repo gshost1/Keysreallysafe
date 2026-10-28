@@ -7,9 +7,9 @@ import XCTest
 final class MCPRegistryTests: XCTestCase {
 
     /// The full mission roster: milestone 1's five, then the two the milestone-2
-    /// grants feature adds. The roster test pins the registry to this set, so a tool
-    /// outside it can never appear by accident, while `tools/list == declared` keeps
-    /// every tool a group registers covered as the later groups land.
+    /// grants feature adds. `testMissionRosterExact` pins the LITERAL milestone-1
+    /// list today, so the milestone-2 feature grows the pin to `missionRoster`'s
+    /// seven when it registers its group.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
     static let missionRoster = milestoneOneRoster + milestoneTwoRoster
@@ -24,9 +24,13 @@ final class MCPRegistryTests: XCTestCase {
 
     // MARK: - REGISTRY-001
 
-    /// The roster is exactly what the registry declares: each name once, the same
-    /// list on every call and every instance, nothing outside the mission roster,
-    /// and every not-yet-built name absent from the list and -32602.
+    /// The roster is the LITERAL mission set, pinned by name — not by comparing
+    /// `tools/list` to the registry's own declared groups, which is self-referential
+    /// and would let a wrongly-named tool pass. Milestone 1 registers exactly these
+    /// five, in registration order, each once; the milestone-2 grants feature grows
+    /// this pin to seven when `request_grant`/`grant_status` land. Every listed name
+    /// answers `tools/call`, and the eight not-yet-built names still answer -32602
+    /// and are absent — future tools appear by registration, never by accident.
     func testMissionRosterExact() throws {
         let (frames, _) = try MCPSession.run([
             MCPSession.initialize(),
@@ -38,34 +42,50 @@ final class MCPRegistryTests: XCTestCase {
         let listed = try Self.names(in: responses[1], id: 1)
         let again = try Self.names(in: responses[2], id: 2)
 
-        // Each name exactly once, and deterministic across calls.
-        XCTAssertEqual(Set(listed).count, listed.count, "no tool name appears twice: \(listed)")
+        // Each name exactly once, and deterministic across calls and instances.
         XCTAssertEqual(listed, again, "tools/list is deterministic")
+        XCTAssertEqual(Set(listed).count, listed.count, "no tool name appears twice: \(listed)")
 
-        // tools/list is exactly the registered roster: nothing hidden, nothing
-        // missing. The registry's declared groups are the single source of truth, so
-        // this stays exact as later groups register through the seam.
-        let declared = MCPToolRegistry.default.groups.flatMap { $0.tools().map(\.name) }
-        XCTAssertEqual(listed, declared, "tools/list must equal the registered roster")
+        // The literal milestone-1 roster. A wrongly-named tool, a missing one or a
+        // duplicate fails here, whatever the registry declares.
+        XCTAssertEqual(listed, Self.milestoneOneRoster, "tools/list is exactly the mission's milestone-1 roster")
 
-        // No tool outside the mission roster can appear by accident.
-        let foreign = Set(listed).subtracting(Self.missionRoster)
-        XCTAssertTrue(foreign.isEmpty, "tools/list names a tool outside the mission roster: \(foreign.sorted())")
-
-        // The tool this feature pins: `version`, registered as its own group.
-        XCTAssertTrue(listed.contains("version"), "version is registered as its own group")
-
-        // List and call share one registry: every listed name resolves.
-        for name in listed {
-            XCTAssertNotNil(MCPToolRegistry.default.group(for: name), "tools/call must resolve \(name)")
-        }
-
-        // Not-yet-built names are absent from the list and answer -32602.
+        // List and call share one registry: every listed name answers tools/call.
+        // The calls run over the sweep rig's wiring so the catalog-bound tools read
+        // temp state, never the machine's real catalog or installed app; an
+        // app-bound tool answers with its not-running result there, and what is
+        // pinned is that a LISTED name is never the unknown-tool -32602.
+        let rig = try MCPSweepRig.make()
         var lines = [MCPSession.initialize()]
-        for (index, name) in Self.neverRegistered.enumerated() {
-            lines.append(#"{"jsonrpc":"2.0","id":\#(index),"method":"tools/call","params":{"name":"\#(name)"}}"#)
+        for name in listed {
+            guard let row = MCPSweepRig.argumentRows[name] else {
+                XCTFail("no argument row for the listed tool \"\(name)\"; add one to MCPSweepRig.argumentRows")
+                continue
+            }
+            let arguments = String(decoding: try JSONValue.data(row), as: UTF8.self)
+            lines.append(#"{"jsonrpc":"2.0","id":"call:\#(name)","method":"tools/call","params":{"name":"\#(name)","arguments":\#(arguments)}}"#)
         }
-        let (probeFrames, _) = try MCPSession.run(lines)
+        let (callFrames, callStderr) = try MCPSession.run(lines, registry: rig.registry)
+        XCTAssertEqual(callFrames.last, "")
+        XCTAssertTrue(callStderr.isEmpty, "the rig-wired roster registers cleanly")
+        let callResponses = Array(callFrames.dropLast())
+        XCTAssertEqual(callResponses.count, 1 + listed.count, "every listed name is called")
+        for (index, name) in listed.enumerated() {
+            // assertResult already pins the response is a tools result, never a
+            // -32602 error frame; content proves a listed name always answers.
+            let answered = try MCPSession.assertResult(callResponses[1 + index], id: "call:\(name)")
+            let blocks = (answered["content"] as? [[String: Any]]) ?? []
+            XCTAssertFalse(blocks.isEmpty, "\(name) answers tools/call — a listed name is never an unknown tool")
+        }
+
+        // Not-yet-built names are absent from the list and answer -32602: the
+        // parallel missions' tools and the cancel tool that deliberately does not
+        // exist (denial is the user cancelling Touch ID).
+        var probeLines = [MCPSession.initialize()]
+        for (index, name) in Self.neverRegistered.enumerated() {
+            probeLines.append(#"{"jsonrpc":"2.0","id":\#(index),"method":"tools/call","params":{"name":"\#(name)"}}"#)
+        }
+        let (probeFrames, _) = try MCPSession.run(probeLines)
         for (index, name) in Self.neverRegistered.enumerated() {
             XCTAssertFalse(listed.contains(name), "\(name) must not be listed")
             try MCPSession.assertError(probeFrames[index + 1], code: -32602, id: index)

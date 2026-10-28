@@ -84,6 +84,22 @@ enum Project {
         return out
     }
 
+    /// The distinct labels of the projects a key's *active* client tokens are bound
+    /// to, deduped, in first-issue order. The one derivation every reader shares —
+    /// the in-process `list_keys` tool and the app's own service — so "in use"
+    /// means the same thing on both sides of the process boundary: revoked and
+    /// expired tokens are not in use, a null project contributes nothing, and a
+    /// dangling reference (nil joined label) is skipped without error.
+    static func inUseLabels(clients: [GatewayClient], now: Date) -> [String] {
+        var seen: Set<String> = []
+        var out: [String] = []
+        for client in clients where client.isActive(now: now) {
+            guard let label = client.projectLabel, seen.insert(label).inserted else { continue }
+            out.append(label)
+        }
+        return out
+    }
+
     private static func folderName(_ path: String) -> String {
         let components = path.split(separator: "/").map(String.init)
         return components.last ?? "/"
@@ -104,12 +120,6 @@ extension KeysService {
     /// tokens are not in use; a null project or a dangling reference contributes
     /// nothing (its joined label is nil), so this never throws for a deleted project.
     func projectLabelsInUse(name: String, now: Date = Date()) throws -> [String] {
-        var seen: Set<String> = []
-        var out: [String] = []
-        for client in try gatewayClients(name: name) where client.isActive(now: now) {
-            guard let label = client.projectLabel, seen.insert(label).inserted else { continue }
-            out.append(label)
-        }
-        return out
+        Project.inUseLabels(clients: try gatewayClients(name: name), now: now)
     }
 }

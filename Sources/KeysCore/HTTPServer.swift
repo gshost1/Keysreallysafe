@@ -112,12 +112,33 @@ final class APIHandler: @unchecked Sendable {
     let service: KeysService
     let webRoot: URL
     let originToken: String
+    /// The app's one "show my window" action, as the MCP `open_app` route drives
+    /// it. The default fronts the running app's own window through its controller
+    /// and does NOTHING when there is no window — it is deliberately not the
+    /// menubar's dashboard opener, which falls back to opening a browser, and an
+    /// agent's open_app must never open a browser. Injectable so a test can watch
+    /// the one invocation.
+    private let showAppWindow: () -> Void
 
-    init(service: KeysService, webRoot: URL, originToken: String = OriginToken.generate()) {
+    init(
+        service: KeysService,
+        webRoot: URL,
+        originToken: String = OriginToken.generate(),
+        showAppWindow: @escaping () -> Void = APIHandler.frontKeysrsWindow
+    ) {
         self.service = service
         self.webRoot = webRoot
         self.originToken = originToken
+        self.showAppWindow = showAppWindow
         service.analytics?.start()
+    }
+
+    /// The real show path: the running app's window controller on the main actor,
+    /// where AppKit lives. No controller (a dashboard-only process, or the app
+    /// before its window exists) means nothing happens — there is no fallback to
+    /// any browser and no LaunchServices call on this path.
+    static func frontKeysrsWindow() {
+        runOnMainActor { MenubarRuntime.extra?.appWindow?.show() }
     }
 
     func handle(_ request: HTTPRequest) -> HTTPResponse {
@@ -146,6 +167,13 @@ final class APIHandler: @unchecked Sendable {
                 return try grantRevoke(p)
             case ("POST", let p) where p.hasPrefix("/api/grants/") && p.hasSuffix("/renew"):
                 return try grantRenew(request, path: p)
+            // The agent-facing MCP surface: exact-path POSTs under /api/, so they
+            // inherit the origin-token gate above. The milestone-2 grant routes
+            // join this block.
+            case ("POST", "/api/mcp/gateway_info"):
+                return try mcpGatewayInfo()
+            case ("POST", "/api/mcp/app/show"):
+                return mcpAppShow()
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -871,6 +899,51 @@ final class APIHandler: @unchecked Sendable {
         let key = request.query["key"].flatMap { $0.isEmpty ? nil : $0 }
         let touched = service.revokeGrants(key: key, reason: "revoked", caller: "dashboard")
         return HTTPResponse.json(200, ["revoked": touched.map { $0.jsonObject() }])
+    }
+
+    // MARK: - MCP (the agent-facing reads)
+
+    /// POST /api/mcp/gateway_info — the one payload the MCP `gateway_info` tool
+    /// relays. Grants are the live in-memory truth only this process holds, the
+    /// base URL and the docker preference are facts this process's catalog and
+    /// constants define, and the token list is per-key rows read here so the
+    /// caller needs no catalog of its own. Labels only: a project's path never
+    /// enters a response.
+    private func mcpGatewayInfo() throws -> HTTPResponse {
+        let now = Date()
+        var projectTokens: [[String: Any]] = []
+        for row in try service.list() {
+            for client in try service.gatewayClients(name: row.name) where client.isActive(now: now) {
+                // Project-bound tokens only; a dangling reference (nil joined
+                // label) is skipped, never an error.
+                guard client.project != nil, let label = client.projectLabel else { continue }
+                projectTokens.append([
+                    "key": row.name,
+                    "label": label,
+                    "expires_at": client.expiresAt,
+                    // The last four characters of the client token, so a person can
+                    // recognise which capability a row is. Never the token, never
+                    // its hash.
+                    "hint": client.hint,
+                ])
+            }
+        }
+        return HTTPResponse.json(200, [
+            "base_url": "http://127.0.0.1:\(GatewayListener.port)",
+            "docker_access": service.preferences.dockerAccess,
+            // No token: the grant's token exists only in its issue response.
+            "grants": service.listGrants().map { $0.jsonObject() },
+            "project_tokens": projectTokens,
+        ])
+    }
+
+    /// POST /api/mcp/app/show — the dedicated show path the `open_app` tool drives.
+    /// Exactly one thing can happen here: the window seam. No window means nothing
+    /// happened, and the answer is still ok — a browser fallback must never sit on
+    /// this path, because an agent must not be able to open one.
+    private func mcpAppShow() -> HTTPResponse {
+        showAppWindow()
+        return HTTPResponse.json(200, ["ok": true])
     }
 
     // MARK: - Profiles (saved grant bounds)

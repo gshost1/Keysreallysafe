@@ -155,6 +155,25 @@ final class MCPAppConnectionTests: XCTestCase {
         "open_app": [:],
     ] }
 
+    /// The production roster with its app-bound tools wired over `control`: the
+    /// loops drive the REAL tool groups against THIS test's site shape, never the
+    /// machine's installed app (which the groups' default control URL would find,
+    /// since the real app is running on this machine). The unwired seams fail
+    /// loudly if a loop ever strays off the app-bound names.
+    private static func appBoundRoster(control: URL) -> MCPToolRegistry {
+        let unwiredCatalog: () throws -> CatalogDB = {
+            throw AppError.usage("the app-bound loop reads no catalog")
+        }
+        let unwiredFetch: () throws -> ReleaseInfo = {
+            throw AppError.usage("the app-bound loop fetches no release")
+        }
+        return MCPToolRegistry(groups: MCPRoster.groups(
+            catalog: unwiredCatalog,
+            control: control,
+            fetchLatestRelease: unwiredFetch
+        ))
+    }
+
     /// The app-bound tools registered in the production roster, each with its
     /// argument row serialized for a tools/call line. Empty until those tools land.
     private static func registeredAppBoundRows() throws -> [(name: String, arguments: String)] {
@@ -281,10 +300,12 @@ final class MCPAppConnectionTests: XCTestCase {
         let appBound = try Self.registeredAppBoundRows()
 
         for (label, control) in try Self.notRunningControls() {
-            // The probe rides beside the production roster, so the session drives
-            // the same sentence through both the seam itself and every registered
-            // app-bound tool.
-            let registry = MCPToolRegistry(groups: MCPToolRegistry.groups + [AppConnectionProbeGroup(control: control)])
+            // The probe rides beside the control-wired production roster, so the
+            // session drives the same sentence through both the seam itself and
+            // every registered app-bound tool.
+            let registry = MCPToolRegistry(
+                groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+            )
             var lines = [MCPSession.initialize(id: "open")]
             lines.append(#"{"jsonrpc":"2.0","id":"probe","method":"tools/call","params":{"name":"needs_app"}}"#)
             for (index, tool) in appBound.enumerated() {
@@ -340,7 +361,12 @@ final class MCPAppConnectionTests: XCTestCase {
             sitter.waitUntilExit()
         }
         try ControlFile.write(port: server.boundPort, token: handler.originToken, pid: sitter.processIdentifier, to: control)
-        let registry = MCPToolRegistry(groups: MCPToolRegistry.groups + [AppConnectionProbeGroup(control: control)])
+        // The probe beside the control-wired production roster: this loop drives
+        // the seam, and the roster stays pointed at THIS site should a later edit
+        // add a registered-tool call.
+        let registry = MCPToolRegistry(
+            groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+        )
 
         func probe(_ id: String) throws -> (isError: Bool, text: String) {
             let (frames, _) = try MCPSession.run([
@@ -428,7 +454,12 @@ final class MCPAppConnectionTests: XCTestCase {
         defer { stub.stop() }
         let control = try TempDir.make().appendingPathComponent("control.json")
         try ControlFile.write(port: stub.port, token: "hung-site", pid: ProcessInfo.processInfo.processIdentifier, to: control)
-        let registry = MCPToolRegistry(groups: MCPToolRegistry.groups + [AppConnectionProbeGroup(control: control)])
+        // The app-bound production tools wired over the HUNG site's control file,
+        // so the bound below drives the real groups against the stub, never the
+        // machine's installed app.
+        let registry = MCPToolRegistry(
+            groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+        )
 
         // The probe call sits out the whole 10 s app-call timeout and comes back.
         let started = Date()
@@ -483,7 +514,11 @@ final class MCPAppConnectionTests: XCTestCase {
         // An empty directory is the whole world: no catalog, no control file.
         let empty = try TempDir.make()
         let control = empty.appendingPathComponent("control.json")
-        let registry = MCPToolRegistry(groups: MCPToolRegistry.groups + [AppConnectionProbeGroup(control: control)])
+        // The control-wired production roster, so even this test's roster can only
+        // ever see the app-less world.
+        let registry = MCPToolRegistry(
+            groups: Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+        )
 
         // Construction and the handshake never touch the app: had anything tried
         // to connect here, the throw would have ended this run before a frame.

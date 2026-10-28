@@ -138,8 +138,9 @@ struct MCPToolRegistry {
     /// The shipped groups, in registration order. **The one list to edit: a new tool
     /// group is one new file in `Sources/KeysCore/` plus one line here, and nothing
     /// else changes.** Computed so no shared non-Sendable state exists; the roster
-    /// it builds is deterministic.
-    static var groups: [any MCPToolGroup] { [MCPVersionTool()] }
+    /// it builds is deterministic. Every group's construction is offline-safe —
+    /// nothing opens a catalog or contacts the app until a tool is actually called.
+    static var groups: [any MCPToolGroup] { [MCPVersionTool(), MCPReadTools()] }
 
     /// The server's roster. Production builds this from `groups`, so the
     /// registration line above is the only place a group is added.

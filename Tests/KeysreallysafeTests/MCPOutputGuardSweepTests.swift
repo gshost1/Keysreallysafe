@@ -97,4 +97,58 @@ final class MCPOutputGuardSweepTests: XCTestCase {
             }
         }
     }
+
+    /// VAL-CROSS-003: offline and silent. A full session — handshake plus every
+    /// registered tool over the rig — leaves the recording analytics transport
+    /// EMPTY (an MCP session must never silently enroll the user in
+    /// share-to-compare), sends nothing beyond loopback (the release fetch is the
+    /// rig's fake; the app-bound tools answer their not-running result without a
+    /// request ever leaving), and every registered tool answers well inside the
+    /// 2 s bound, so nothing was wired to block on a network call.
+    func testOfflineAndSilent() throws {
+        let rig = try MCPSweepRig.make()
+        // The app's own analytics, consent explicitly ON, its transport recording,
+        // started exactly the way the site's handler starts it: if any MCP path
+        // recorded or sent anything, it lands here. The first timer tick is a
+        // minute out, so anything the transport sees in this test is this session's.
+        let transport = ProductAnalyticsTests.Transport()
+        let analytics = ProductAnalytics(
+            catalog: rig.db,
+            endpoint: URL(string: "https://analytics.example/v1/reports")!,
+            transport: transport
+        )
+        try analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
+        rig.service.analytics = analytics
+        analytics.start()
+
+        // The rig-wired roster: every production tool, one call each.
+        let (listing, _) = try MCPSession.run([
+            MCPSession.initialize(),
+            #"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#,
+        ], registry: rig.registry)
+        let roster = try MCPSession.toolNames(in: listing[1], id: "list")
+        XCTAssertFalse(roster.isEmpty)
+
+        let bound: TimeInterval = 2
+        for name in roster {
+            let row = MCPSweepRig.argumentRows[name] ?? [:]
+            let arguments = String(decoding: try JSONValue.data(row), as: UTF8.self)
+            let started = Date()
+            let (frames, _) = try MCPSession.run([
+                MCPSession.initialize(),
+                #"{"jsonrpc":"2.0","id":"one","method":"tools/call","params":{"name":"\#(name)","arguments":\#(arguments)}}"#,
+            ], registry: rig.registry)
+            let elapsed = Date().timeIntervalSince(started)
+            XCTAssertEqual(frames.last, "")
+            let responses = Array(frames.dropLast())
+            XCTAssertEqual(responses.count, 2, "\(name): handshake plus one call")
+            _ = try MCPSession.assertResult(responses[1], id: "one")
+            XCTAssertLessThanOrEqual(elapsed, bound,
+                                     "\(name) completes within \(bound) s — no blocking or network wiring")
+        }
+
+        // Silent: nothing was sent or fetched through the analytics transport.
+        XCTAssertEqual(transport.calls.count, 0, "an MCP session never sends an analytics report")
+        XCTAssertEqual(transport.fetches.count, 0, "an MCP session never fetches benchmarks")
+    }
 }

@@ -40,6 +40,15 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta(Self.relayStayAwakeKey, on ? "on" : "off") }
     }
 
+    static let dockerAccessKey = "pref_docker_access"
+
+    /// Whether Docker Desktop may route through the gateway. Off until the person
+    /// turns it on; the MCP surface only READS it (the `gateway_info` tool reports
+    /// it), while the setter and the enforcement belong to the headless-app
+    /// mission. The "on"/"off" values follow the `pref_*` convention so that
+    /// setter lands beside the other toggles without a migration.
+    var dockerAccess: Bool { (try? catalog.metaValue(Self.dockerAccessKey)) == "on" }
+
     static let hiddenUsageKey = "pref_hidden_usage"
     static let hiddenUsageMax = 64
 

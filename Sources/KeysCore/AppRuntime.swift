@@ -201,6 +201,38 @@ final class UpdateCheck: NSObject, URLSessionTaskDelegate, Sendable {
     }
 }
 
+extension UpdateCheck {
+    /// The synchronous face of `latestRelease()` for callers on a plain thread —
+    /// the `keys mcp` server serves its whole loop on one thread, so `check_update`
+    /// needs the answer inline. The bridge only waits: the ephemeral session, its
+    /// policies (no cookies, no cache, redirects refused, the 20 s bound) and every
+    /// failure sentence stay in `latestRelease()`, so this can add no wording of
+    /// its own. A read-only check — the installer is never on this path.
+    static func latestReleaseSync() throws -> ReleaseInfo {
+        final class Outcome: @unchecked Sendable {
+            private let lock = NSLock()
+            private var result: Result<ReleaseInfo, any Error>?
+            func store(_ value: Result<ReleaseInfo, any Error>) {
+                lock.lock(); result = value; lock.unlock()
+            }
+            func load() throws -> ReleaseInfo {
+                lock.lock(); defer { lock.unlock() }
+                guard let result else { throw AppError.http("GitHub did not return a release.") }
+                return try result.get()
+            }
+        }
+        let outcome = Outcome()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            do { outcome.store(.success(try await UpdateCheck.latestRelease())) }
+            catch { outcome.store(.failure(error)) }
+            done.signal()
+        }
+        done.wait()
+        return try outcome.load()
+    }
+}
+
 /// menubar.log, 0600: the app's own lines and its relay's, which arrive from the relay's
 /// threads, so each line is written whole under a lock.
 final class AppLogFile: @unchecked Sendable {
