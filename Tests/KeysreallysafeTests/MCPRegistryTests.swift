@@ -8,12 +8,14 @@ final class MCPRegistryTests: XCTestCase {
 
     /// The full mission roster: milestone 1's five, the two the milestone-2
     /// grants feature adds, then the tools this feedback mission appends (in
-    /// feature order: `send_feedback` is F1's). A later feature grows the pin
-    /// knowingly; the roster tests below enforce the literal list.
+    /// feature order: `send_feedback` is F1's, `set_analytics_sharing` F2's). A
+    /// later feature grows the pin knowingly; the roster tests below enforce the
+    /// literal list.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
     static let feedbackRoster = ["send_feedback"]
-    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + feedbackRoster
+    static let analyticsRoster = ["set_analytics_sharing"]
+    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + feedbackRoster + analyticsRoster
 
     /// Names no revision of this mission registers: the parallel missions' tools and
     /// the cancel tool that deliberately does not exist (denial is the user

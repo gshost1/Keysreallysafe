@@ -143,7 +143,7 @@ final class MCPAppConnectionTests: XCTestCase {
     /// list. The loops below drive whichever are registered in the production
     /// roster, so the pinned sentence is enforced roster-wide: a tool that lands
     /// later is swept by default.
-    private static let appBoundToolNames = ["gateway_info", "open_app", "request_grant", "grant_status", "send_feedback"]
+    private static let appBoundToolNames = ["gateway_info", "open_app", "request_grant", "grant_status", "send_feedback", "set_analytics_sharing"]
 
     /// The safe offline argument row each app-bound tool is driven with. A
     /// registered app-bound tool with no row fails the loops by name — add its row
@@ -158,6 +158,7 @@ final class MCPAppConnectionTests: XCTestCase {
         "request_grant": ["key": "demo"],
         "grant_status": [:],
         "send_feedback": ["draft": "the menu bar chart is nice", "destination": "email"],
+        "set_analytics_sharing": ["enabled": false],
     ] }
 
     /// The production roster with its app-bound tools wired over `control`: the

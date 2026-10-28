@@ -557,6 +557,8 @@ project, and `grant_status` hands the scoped token and base URL over on the
 one approved poll. `send_feedback` scrubs a feedback draft in the app (key
 values, token shapes, paths, names, emails removed first), opens the prefilled
 support mail or GitHub issue page, and never submits anything itself.
+`set_analytics_sharing` records the user's own answer to the analytics
+question, and only after they give it.
 `keys setup mcp` registers the server with all five
 clients, writing the resolved `keys` binary path plus the `mcp` argument into
 `~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,

@@ -97,6 +97,8 @@ enum AppRuntime {
         let service = try AppFactory.makeService()
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.
         service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
+        // The MCP set_analytics_sharing route's one confirmation line, beside the relay's.
+        service.analyticsLog = { logFile.write($0) }
         var startedServer: LoopbackHTTPServer?
         do {
             try LegacyAppMigration(root: root, plist: LoginItem.agentPlist, run: LoginItem.run, log: log).migrate {

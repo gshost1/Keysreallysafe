@@ -39,6 +39,11 @@ final class KeysService: @unchecked Sendable {
     private let relayToggleLock = NSLock()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     var analytics: ProductAnalytics?
+    /// The app's one analytics confirmation line, as the MCP `set_analytics_sharing`
+    /// route drives it. The running app wires it to menubar.log in `AppRuntime.run()`
+    /// beside `relayHost`; every other process leaves it a no-op, so only the app
+    /// records the onboarding answer. The line names the new state and nothing else.
+    var analyticsLog: (String) -> Void = { _ in }
     /// First-launch answers: background Claude limit refresh, analytics question asked.
     let preferences: AppPreferences
     private var screenLockObserver: NSObjectProtocol?

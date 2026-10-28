@@ -219,6 +219,7 @@ enum MCPRoster {
             MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease),
             MCPGrantTools(control: control, projectFolder: projectFolder),
             MCPFeedbackTools(control: control),
+            MCPAnalyticsTools(control: control),
         ]
     }
 
@@ -299,6 +300,10 @@ enum MCPSweepRig {
         // no prompt, no request, nothing opened, and the draft carries nothing
         // planted.
         "send_feedback": ["draft": "the menu bar chart is nice", "destination": "email"],
+        // The state-only row: an explicit boolean, nothing planted. Against the
+        // rig's unwritten control file the tool answers the not-running sentence,
+        // so no request leaves and the analytics transport stays silent.
+        "set_analytics_sharing": ["enabled": false],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {

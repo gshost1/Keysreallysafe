@@ -25,9 +25,11 @@ keys setup mcp          # writes the resolved keys binary into Claude Code,
 Then call its tools: `list_keys`, `gateway_info`, `version`, `open_app`,
 `check_update`, the grant pair `request_grant` / `grant_status` (a request
 returns pending; the user approves it with Touch ID in the Keysrs app; the poll
-returns the scoped token once), and `send_feedback` (the app scrubs the draft
+returns the scoped token once), `send_feedback` (the app scrubs the draft
 — key values, tokens, paths, names, emails — opens the prefilled mail or
-GitHub issue page, and never submits). Every tool answers with names, labels
+GitHub issue page, and never submits), and `set_analytics_sharing` (records
+the user's own answer to the analytics question, and only after they give it).
+Every tool answers with names, labels
 and state — never a key value. When no MCP client is available, the plain
 `keys` CLI does the same work; `keys version --json` is the cheapest probe and
 needs no running app.

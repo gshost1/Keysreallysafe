@@ -198,6 +198,11 @@ final class APIHandler: @unchecked Sendable {
             // MCP process never holds a vault value (the mcp-core rule).
             case ("POST", "/api/mcp/feedback"):
                 return try mcpFeedback(request)
+            // The analytics-sharing route: the `set_analytics_sharing` tool records
+            // the onboarding answer here, through `setEnabled`, and the app writes
+            // the one confirmation line. The answer is bounded on purpose.
+            case ("POST", "/api/mcp/analytics/sharing"):
+                return try mcpAnalyticsSharing(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -1135,6 +1140,33 @@ final class APIHandler: @unchecked Sendable {
             "destination": destination,
             "opened": true,
         ])
+    }
+
+    // MARK: - MCP analytics sharing (the set_analytics_sharing flow)
+
+    /// POST /api/mcp/analytics/sharing — the app side of `set_analytics_sharing`,
+    /// the tool that records the person's answer to the onboarding analytics
+    /// question. The body is exactly `{"enabled": <bool>}`: an explicit JSON
+    /// boolean is required (the `/api/analytics` validation is the reference), so a
+    /// number, a string or a missing field is refused with no state change and no
+    /// log line. Consent goes through `setEnabled` (consent version 2, unchanged),
+    /// never a direct catalog-meta write, and the answer is the bounded
+    /// `{"enabled": <bool>}` — never the status preview, whose unsent-report payload
+    /// must not reach a tool result. Enabling sends nothing: only the dashboard's own
+    /// timer flushes. The one confirmation line goes to the app's log seam, which is
+    /// a no-op in every process but the running app.
+    private func mcpAnalyticsSharing(_ request: HTTPRequest) throws -> HTTPResponse {
+        guard let analytics = service.analytics else {
+            return HTTPResponse.json(503, ["error": "analytics_unavailable"])
+        }
+        let object = try jsonBody(request)
+        guard Set(object.keys) == ["enabled"],
+              let enabled = object["enabled"] as? NSNumber, CFGetTypeID(enabled) == CFBooleanGetTypeID() else {
+            return HTTPResponse.json(400, ["error": "invalid_analytics_sharing"])
+        }
+        try analytics.setEnabled(enabled.boolValue, consentVersion: ProductAnalytics.consentVersion)
+        service.analyticsLog(enabled.boolValue ? "analytics sharing turned on" : "analytics sharing turned off")
+        return HTTPResponse.json(200, ["enabled": enabled.boolValue])
     }
 
     // MARK: - Profiles (saved grant bounds)

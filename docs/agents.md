@@ -195,6 +195,13 @@ The tools the server offers:
   app; no Touch ID — scrubbing removes secrets, it never reads one out.
   Returns the scrubbed text and per-category removal counts. Keysrs never
   submits the feedback: the user reviews and sends what opens.
+- `set_analytics_sharing` — record the user's answer to the analytics
+  question: pass `enabled` true to share the daily aggregate report and
+  compare, false to keep it local. Requires the app, and it changes nothing
+  else — no report is sent (only the dashboard's own timer uploads), the
+  pending report preview is never returned, and no Touch ID is asked. Off
+  unless set. Call it only after the user has explicitly answered the
+  analytics question; never enable sharing on your own.
 
 The grant ask returns `{"status":"pending","id":…}` immediately, while the
 Keysrs app shows one Touch ID prompt naming the key, the host and the
@@ -204,8 +211,10 @@ prompt. Treat the handed-over token exactly like a `keys grant` token: it is
 printed for this one task and never belongs in a log, a file or a message.
 
 Everything the server does stays on this Mac: it reads the catalog locally,
-reaches the app over the same loopback control channel the CLI uses, sends
-no product analytics, and adds no outbound endpoint.
+reaches the app over the same loopback control channel the CLI uses, and adds
+no outbound endpoint. It sends no product analytics itself —
+`set_analytics_sharing` only records the user's own answer in the app, and only
+the dashboard's timer ever uploads a report.
 
 ## Scoped access for one task
 

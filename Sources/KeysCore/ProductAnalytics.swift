@@ -11,7 +11,10 @@ enum ProductAnalyticsConfiguration {
 
 // The view_optimizer, optimizer_* and context_* cases have no producer since the
 // optimizer was removed. They stay so reports, consent and the collector's
-// vocabulary from 0.9.0 and 0.9.1 keep decoding.
+// vocabulary from 0.9.0 and 0.9.1 keep decoding. The four onboarding counters
+// (scan_run, key_import, grant_issue, onboarding_finished) are vocabulary-only in
+// this branch too: the onboarding mission's tools record them when they land, and
+// naming them here keeps both sides' vocabularies pinned in the meantime.
 enum ProductAnalyticsEvent: String, Codable, CaseIterable, Sendable {
     case viewUsage = "view_usage", viewChart = "view_chart", viewKeys = "view_keys", viewOptimizer = "view_optimizer"
     case keyAdd = "key_add", keyCopy = "key_copy", keyDelete = "key_delete"
@@ -23,6 +26,7 @@ enum ProductAnalyticsEvent: String, Codable, CaseIterable, Sendable {
     case contextPrepared = "context_prepared", contextUnchanged = "context_unchanged", contextEmpty = "context_empty", contextFailure = "context_failure"
     case gatewayLT100 = "gateway_lt_100ms", gatewayLT1000 = "gateway_lt_1s", gatewayLT10000 = "gateway_lt_10s", gatewayGTE10000 = "gateway_gte_10s"
     case optimizerLT100 = "optimizer_lt_100ms", optimizerLT1000 = "optimizer_lt_1s", optimizerLT10000 = "optimizer_lt_10s", optimizerGTE10000 = "optimizer_gte_10s"
+    case scanRun = "scan_run", keyImport = "key_import", grantIssue = "grant_issue", onboardingFinished = "onboarding_finished"
 }
 
 protocol AnalyticsUpload: Sendable { func cancel() }
