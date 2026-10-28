@@ -8,21 +8,23 @@ final class MCPRegistryTests: XCTestCase {
 
     /// The full mission roster: milestone 1's five, the two the milestone-2
     /// grants feature adds, then the tools this feedback mission appends (in
-    /// feature order: `send_feedback` is F1's, `set_analytics_sharing` F2's). A
-    /// later feature grows the pin knowingly; the roster tests below enforce the
-    /// literal list.
+    /// feature order: `send_feedback` is F1's, `set_analytics_sharing` F2's,
+    /// `revoke_all` and `revoke_project` F3's). A later feature grows the pin
+    /// knowingly; the roster tests below enforce the literal list.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
     static let feedbackRoster = ["send_feedback"]
     static let analyticsRoster = ["set_analytics_sharing"]
-    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + feedbackRoster + analyticsRoster
+    static let revokeRoster = ["revoke_all", "revoke_project"]
+    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + feedbackRoster + analyticsRoster + revokeRoster
 
-    /// Names no revision of this mission registers: the parallel missions' tools and
-    /// the cancel tool that deliberately does not exist (denial is the user
-    /// cancelling Touch ID).
+    /// Names no revision of this mission registers: the parallel missions' tools
+    /// and the cancel tool that deliberately does not exist (denial is the user
+    /// cancelling Touch ID). `revoke_all` landed with F3 and left this list;
+    /// `activity` stays until F4 registers it.
     static let neverRegistered = [
         "scan_project", "check_exposure", "import_and_wrap", "test_keys",
-        "revoke_all", "activity", "grant_cancel",
+        "activity", "grant_cancel",
     ]
 
     // MARK: - REGISTRY-001

@@ -220,6 +220,7 @@ enum MCPRoster {
             MCPGrantTools(control: control, projectFolder: projectFolder),
             MCPFeedbackTools(control: control),
             MCPAnalyticsTools(control: control),
+            MCPRevokeTools(control: control),
         ]
     }
 
@@ -304,6 +305,11 @@ enum MCPSweepRig {
         // rig's unwritten control file the tool answers the not-running sentence,
         // so no request leaves and the analytics transport stays silent.
         "set_analytics_sharing": ["enabled": false],
+        // The kill switches stay off the machine: against the rig's unwritten
+        // control file both answer the not-running sentence, so nothing is
+        // revoked, no prompt, no request leaves.
+        "revoke_all": [:],
+        "revoke_project": ["label": "unwritten"],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {

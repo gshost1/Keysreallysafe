@@ -203,6 +203,15 @@ final class APIHandler: @unchecked Sendable {
             // the one confirmation line. The answer is bounded on purpose.
             case ("POST", "/api/mcp/analytics/sharing"):
                 return try mcpAnalyticsSharing(request)
+            // The revocation routes: the kill switches the revoke tools and the
+            // CLI's `keys revoke --all` share. One route revokes grants AND
+            // client tokens so the switch is never half-pulled; the dashboard's
+            // own Revoke-all button stays on the grants-only DELETE /api/grants
+            // route on purpose, so its semantics are unchanged.
+            case ("POST", "/api/mcp/revoke_all"):
+                return try mcpRevokeAll(request)
+            case ("POST", "/api/mcp/revoke_project"):
+                return try mcpRevokeProject(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -1167,6 +1176,52 @@ final class APIHandler: @unchecked Sendable {
         try analytics.setEnabled(enabled.boolValue, consentVersion: ProductAnalytics.consentVersion)
         service.analyticsLog(enabled.boolValue ? "analytics sharing turned on" : "analytics sharing turned off")
         return HTTPResponse.json(200, ["enabled": enabled.boolValue])
+    }
+
+    // MARK: - MCP revocation (the kill switches)
+
+    /// POST /api/mcp/revoke_all — the app side of the `revoke_all` tool and of
+    /// the CLI's `keys revoke --all`. One route revokes grants (this process's
+    /// in-memory table, the only place they live) AND client tokens (catalog
+    /// rows the gateway re-reads per request, so the revoke is honored
+    /// immediately), so a kill switch never needs a second call to be complete.
+    /// The optional `key` scopes both kinds to one vault key. No presence
+    /// prompt: revocation only removes access, exactly like the revoke paths
+    /// that already existed. The body may name a `caller` for the audit rows the
+    /// way the grant-issuing route does (the CLI sends "cli"); without one the
+    /// rows say "mcp", the surface this route exists for. Unknown fields are
+    /// ignored. The dashboard's grants-only DELETE /api/grants is untouched.
+    private func mcpRevokeAll(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        var key: String?
+        if let raw = obj["key"], !(raw is NSNull) {
+            guard let name = raw as? String else {
+                throw AppError.usage("key must be a string")
+            }
+            try KeyName.validate(name)
+            key = name
+        }
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "mcp"
+        let grants = service.revokeGrants(key: key, reason: "revoked", caller: caller)
+        let clients = try service.revokeGatewayClients(key: key, caller: caller)
+        return HTTPResponse.json(200, ["revoked_grants": grants.count, "revoked_clients": clients])
+    }
+
+    /// POST /api/mcp/revoke_project — the app side of the `revoke_project`
+    /// tool: one project's ACTIVE client tokens, resolved by exact label over
+    /// the projects table. Client tokens only — grants carry no project — and
+    /// the unknown-label refusal is the not-found shape revokeGrant gives an
+    /// unknown id, so the CLI and the tool read it back as a plain answer. A
+    /// known label with nothing active answers zero, never an error. No
+    /// presence prompt.
+    private func mcpRevokeProject(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let label = JSONValue.string(obj["label"]), !label.isEmpty else {
+            throw AppError.usage("label is required")
+        }
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "mcp"
+        let clients = try service.revokeProjectClients(label: label, caller: caller)
+        return HTTPResponse.json(200, ["revoked_clients": clients])
     }
 
     // MARK: - Profiles (saved grant bounds)

@@ -359,7 +359,8 @@ final class MCPClientFlowTests: XCTestCase {
         responses += 1
         let roster = try MCPSession.toolNames(in: try client.frame(), id: "list")
         XCTAssertEqual(roster, ["version", "list_keys", "gateway_info", "open_app", "check_update",
-                                "request_grant", "grant_status", "send_feedback", "set_analytics_sharing"],
+                                "request_grant", "grant_status", "send_feedback", "set_analytics_sharing",
+                                "revoke_all", "revoke_project"],
                        "the deterministic mission roster")
 
         // tools/call list_keys: the catalog the subprocess opened itself, no app

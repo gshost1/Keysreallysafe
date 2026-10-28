@@ -346,6 +346,70 @@ final class ProjectIdentityTests: XCTestCase {
         XCTAssertEqual(try service.projectLabelsInUse(name: "demo"), [project.label])
     }
 
+    // MARK: F3 — revoke_project: the label resolves, the project's tokens die
+
+    /// `revokeProjectClients(label:)` resolves the EXACT label over the projects
+    /// table (a label that is another's prefix is not a match), refuses an
+    /// unknown label with the not-found shape revokeGrant gives an unknown id,
+    /// answers zero for a known label with nothing active, writes one
+    /// client_revoke row per affected key, and never touches grants, other
+    /// projects' tokens or unbound ones. No presence prompt: revocation only
+    /// removes access.
+    func testProjectScopedRevokeResolvesTheExactLabel() throws {
+        let dir = try TempDir.make()
+        let db = try CatalogDB(path: dir.appendingPathComponent("catalog.db"))
+        let (service, gate) = makeGatedService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        try service.add(name: "other", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        let alpha = try service.resolveProject(folder: try makeFolder(dir, "alpha").path)
+        let alphabet = try service.resolveProject(folder: try makeFolder(dir, "alphabet").path)
+        let beta = try service.resolveProject(folder: try makeFolder(dir, "beta").path)
+        let gamma = try service.resolveProject(folder: try makeFolder(dir, "gamma").path)
+
+        let a1 = try service.issueGatewayClient(name: "demo", label: "alpha one", methods: ["GET"], project: alpha.id)
+        let a2 = try service.issueGatewayClient(name: "other", label: "alpha two", methods: ["GET"], project: alpha.id)
+        let cousin = try service.issueGatewayClient(name: "demo", label: "alphabet one", methods: ["GET"], project: alphabet.id)
+        let free = try service.issueGatewayClient(name: "demo", label: "unbound one", methods: ["GET"])
+        let granted = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(task: "untouched").validated()
+        )
+
+        func decide(_ token: String, key: String) -> GatewayClientDecision {
+            service.authorizeGatewayClient(
+                name: key, headers: ["authorization": "Bearer " + token], method: "GET", rest: "v1/x"
+            )
+        }
+
+        let prompts = gate.reasons.count
+        XCTAssertEqual(try service.revokeProjectClients(label: alpha.label), 2)
+        XCTAssertEqual(gate.reasons.count, prompts, "the project revoke consumed no prompt")
+
+        guard case .denied("revoked") = decide(a1.token, key: "demo") else { return XCTFail("alpha's token is dead") }
+        guard case .denied("revoked") = decide(a2.token, key: "other") else { return XCTFail("the other key's alpha token is dead too") }
+        guard case .allowed = decide(cousin.token, key: "demo") else {
+            return XCTFail("the exact label match is not a prefix match: alphabet survives")
+        }
+        guard case .allowed = decide(free.token, key: "demo") else { return XCTFail("the unbound token survives") }
+        XCTAssertNoThrow(try service.grants.authorize(
+            token: granted.token, key: "demo", host: "api.openai.com", method: "GET",
+            rest: "v1/x", providerPrefix: ""
+        ).get(), "grants carry no project; the project revoke never touches them")
+
+        // One client_revoke row per affected key, naming the revoked id.
+        XCTAssertEqual(try service.keyEvents(name: "demo").filter { $0.action == "client_revoke" }.count, 1)
+        XCTAssertEqual(try service.keyEvents(name: "other").filter { $0.action == "client_revoke" }.count, 1)
+
+        // The counts mean was-live: alpha is spent; beta and gamma had nothing
+        // active; an unknown label throws the not-found shape instead.
+        XCTAssertEqual(try service.revokeProjectClients(label: alpha.label), 0)
+        XCTAssertEqual(try service.revokeProjectClients(label: beta.label), 0)
+        XCTAssertEqual(try service.revokeProjectClients(label: gamma.label), 0)
+        XCTAssertThrowsError(try service.revokeProjectClients(label: "no-such-project")) { error in
+            XCTAssertEqual((error as? AppError)?.exitCode, 2, "the not-found shape, like revokeGrant's unknown id")
+        }
+    }
+
     // MARK: VAL-PROJ-008 — dangling references tolerated; no delete surface
 
     func testDanglingTolerated() throws {

@@ -753,6 +753,55 @@ final class CatalogDB: @unchecked Sendable {
         ) > 0
     }
 
+    /// The active (unrevoked) client tokens one bulk revoke is about to touch —
+    /// the same WHERE shape as the matching `revokeGatewayClients` update. Read
+    /// BEFORE the update: once revoked_at is set, this revoke's rows are
+    /// indistinguishable from an older revoke's, so the audit walk needs them
+    /// while they still read active. `key` nil means every key's.
+    func activeGatewayClients(key: String?) throws -> [GatewayClient] {
+        if let key {
+            return try query(
+                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL AND gc.key_name = ? ORDER BY gc.id;",
+                key, row: decodeGatewayClient
+            )
+        }
+        return try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL ORDER BY gc.id;",
+            row: decodeGatewayClient
+        )
+    }
+
+    /// The active client tokens bound to one project, for the project-scoped
+    /// bulk revoke's audit walk.
+    func activeGatewayClients(project: String) throws -> [GatewayClient] {
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL AND gc.project = ? ORDER BY gc.id;",
+            project, row: decodeGatewayClient
+        )
+    }
+
+    /// Bulk revoke: every active client token, or one key's. The changed-row
+    /// count is what was still unrevoked, the count semantics GrantStore.revokeAll
+    /// gave grants — counts mean "was live, now dead", never "rows seen".
+    func revokeGatewayClients(key: String?, at iso: String) throws -> Int {
+        if let key {
+            return try run(
+                "UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL AND key_name = ?;",
+                iso, key
+            )
+        }
+        return try run("UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL;", iso)
+    }
+
+    /// Bulk revoke by projects.id (the gateway_clients.project column): one
+    /// project's active client tokens, same count semantics as the key-scoped one.
+    func revokeGatewayClients(project: String, at iso: String) throws -> Int {
+        try run(
+            "UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL AND project = ?;",
+            iso, project
+        )
+    }
+
     func touchGatewayClient(id: Int64, at iso: String) throws {
         try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
     }

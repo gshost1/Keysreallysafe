@@ -202,6 +202,16 @@ The tools the server offers:
   pending report preview is never returned, and no Touch ID is asked. Off
   unless set. Call it only after the user has explicitly answered the
   analytics question; never enable sharing on your own.
+- `revoke_all` — the kill switch: revoke every active grant and client token
+  at once, or only one vault key's with `key`. Requires the app; no Touch ID,
+  because revocation only removes access. Answers `{revoked_grants,
+  revoked_clients}` — counts of what was still live and is now dead, so a
+  second call answers zeros. Afterwards the grants stop authorizing and the
+  client tokens are refused. The vault's keys themselves are untouched.
+- `revoke_project` — revoke one project's active client tokens by their
+  label — client tokens only; grants carry no project and are untouched.
+  Requires the app; no Touch ID. An unknown label is a not-found error; a
+  known label with nothing active answers `{revoked_clients: 0}`.
 
 The grant ask returns `{"status":"pending","id":…}` immediately, while the
 Keysrs app shows one Touch ID prompt naming the key, the host and the
@@ -235,14 +245,19 @@ is for a task the user is around for. Treat the token as a secret: it is
 printed for this one task, and never belongs in a log, a file or a message.
 
 List what is live with `keys grants --json`; end one with `keys revoke <id>`,
-or everything for a key with `keys revoke --all --key <name>`.
+one key's everything with `keys revoke --all --key <name>`, or every grant
+AND client token at once with `keys revoke --all` — it prints both counts
+(`revoked 2 grants and 1 client token`) and needs no Touch ID. The dashboard's
+own Revoke-all button stays grants-only.
 
 ## Unattended and remote: a client token
 
 A grant needs the user present. A program that must outlive a screen lock — a
 nightly job, an agent on another machine — gets a client token instead: a
 capability stored in the catalog as a hash, expiring in days, scoped to HTTP
-methods and a path prefix, revocable with `keys client revoke`.
+methods and a path prefix, revocable with `keys client revoke`, or in bulk
+with `keys revoke --all` (one key's with `--key`) and one project's with the
+`revoke_project` tool.
 
 ```sh
 keys client issue router --label "nightly job" --days 30   # one Touch ID
