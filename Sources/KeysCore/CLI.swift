@@ -90,19 +90,46 @@ public enum KeysMain {
 }
 
 struct AddCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "add", abstract: "Store a secret in Keychain.")
+    static let configuration = CommandConfiguration(
+        commandName: "add",
+        abstract: "Store a secret in Keychain.",
+        discussion: "With no name and no --provider, an interactive terminal gets the guided flow: "
+            + "pick a provider, accept or edit the suggested name, then type the secret twice, hidden."
+    )
 
-    @Argument var name: String
-    @Option var provider: String
+    @Argument var name: String?
+    @Option var provider: String?
     @Option var kind: String = "runtime"
     @Option var notes: String = ""
     @Flag var clipboard = false
 
     func run() throws {
-        let secret = try SecretPrompt.read(fromClipboard: clipboard, confirm: true)
+        if let name {
+            // The flagged form is unchanged, including the missing-argument diagnostics.
+            guard let provider else {
+                throw ValidationError("Missing expected argument '--provider <provider>'")
+            }
+            let service = try AppFactory.makeService()
+            try GuidedAdd.validateExplicitProvider(provider)
+            let secret = try SecretPrompt.read(fromClipboard: clipboard, confirm: true)
+            try service.add(name: name, provider: provider, kind: kind, notes: notes, secret: secret, caller: "add")
+            print("added \(name)")
+            return
+        }
+        guard provider == nil else {
+            throw ValidationError("Missing expected argument '<name>'")
+        }
+        // Fail before touching the catalog: a script that forgot the flags gets the
+        // usage error, not a hidden prompt on /dev/tty.
+        guard isatty(STDIN_FILENO) != 0 else { throw AppError.usage(GuidedAdd.nonTTYUsage) }
         let service = try AppFactory.makeService()
-        try service.add(name: name, provider: provider, kind: kind, notes: notes, secret: secret, caller: "add")
-        print("added \(name)")
+        try GuidedAdd.run(
+            service: service,
+            isTTY: true,
+            kind: kind,
+            notes: notes,
+            clipboard: clipboard
+        )
     }
 }
 
