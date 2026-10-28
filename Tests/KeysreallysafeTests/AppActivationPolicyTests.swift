@@ -250,6 +250,14 @@ final class HeadlessAppRig {
     /// headless launch raises no notification work at all.
     var notifier: AppNotifier?
     var notificationsStarted = false
+    /// The scheduled check's release lookup, injected so a launch test never
+    /// reaches the network; nil keeps the production seam.
+    var latestRelease: (() async throws -> ReleaseInfo)?
+    /// The scheduled check's background install path, injected so a launch test
+    /// never downloads, verifies or installs anything; nil keeps the production
+    /// seam (which no rig drives, because no rig launches a real check without an
+    /// injected `latestRelease`).
+    var background: BackgroundUpdater?
     /// Shutdown actions the Quit route dispatched, in order: the route must
     /// return its 200 before any of these run.
     let quitScheduler: QuitScheduler
@@ -268,6 +276,10 @@ final class HeadlessAppRig {
             // nothing to ask, so only a fresh store can prove the deferral.
             try service.preferences.recordWelcome(service.preferences.welcomePlan(analyticsEnabled: true), claudeRefresh: false)
         }
+        // The launch path's login-item registration is not under test here, and
+        // the rig injects no registerLoginItem seam: the recorded marker keeps
+        // didLaunch from ever reaching the real SMAppService.
+        try service.preferences.recordLoginRegistration()
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
         try "<html><head></head><title>Keysrs</title></html>".write(to: web.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
@@ -306,9 +318,22 @@ final class HeadlessAppRig {
             scheduleOpenRouter: { [weak self] _ in self?.openRouterScheduled = true },
             ingestInitially: { [weak self] _ in self?.initialIngestQueued = true },
             notifications: notifier,
-            startNotifications: { [weak self] _, _ in self?.notificationsStarted = true }
+            startNotifications: { [weak self] _, _ in self?.notificationsStarted = true },
+            latestRelease: latestRelease,
+            background: background
         )
         extra.presentWelcome = { [weak self] in self?.welcomeShown = true }
+    }
+
+    /// The relaunch the update helper performs: the same service, catalog and
+    /// preferences, assembled fresh exactly as a new process finds them. The
+    /// activation record starts over, so what follows proves the relaunched
+    /// app is headless again.
+    func relaunch() {
+        guard launched else { return }
+        launched = false
+        appliedPolicies = []
+        launch()
     }
 
     func postItemTransition(_ name: Notification.Name) {

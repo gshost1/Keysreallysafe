@@ -32,6 +32,19 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     private let registerLoginItem: () throws -> Void
     /// The release lookup, injected so a launch test never reaches the network.
     private let latestRelease: () async throws -> ReleaseInfo
+    /// The manual offer's answer, injected so a test can choose without a real
+    /// dialog; production shows the same three-button alert.
+    private let offerChoice: (ReleaseInfo) -> UpdateChoice
+    /// The manual Update Now execution, injected so a test observes the choice's
+    /// effect without a progress window; production runs the real installer. A
+    /// var with a no-op default because the production closure captures self,
+    /// which only exists once initialization is done.
+    private var runManualInstall: (ReleaseInfo) -> Void = { _ in }
+    /// The scheduled check's install half: the quiet wait, the installer, the
+    /// notification and the relaunch. Absent only where a rig injects its own;
+    /// the manual Check for Updates never touches it.
+    private let background: BackgroundUpdater?
+    private let log: (String) -> Void
 
     init(
         url: URL,
@@ -40,7 +53,11 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         window: (any DashboardWindow)? = nil,
         presentAlert: ((String, String) -> Void)? = nil,
         registerLoginItem: (() throws -> Void)? = nil,
-        latestRelease: (() async throws -> ReleaseInfo)? = nil
+        latestRelease: (() async throws -> ReleaseInfo)? = nil,
+        offerChoice: ((ReleaseInfo) -> UpdateChoice)? = nil,
+        startManualUpdate: ((ReleaseInfo) -> Void)? = nil,
+        background: BackgroundUpdater? = nil,
+        log: ((String) -> Void)? = nil
     ) {
         self.url = url
         self.preferences = preferences
@@ -51,7 +68,13 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         }
         self.registerLoginItem = registerLoginItem ?? { try SMAppService.mainApp.register() }
         self.latestRelease = latestRelease ?? { try await UpdateCheck.latestRelease() }
+        self.offerChoice = offerChoice ?? AppWindowController.askUpdateChoice
+        self.background = background
+        self.log = log ?? { _ in }
         super.init()
+        // The production manual install is a weak-self closure so the stored
+        // closure does not retain the controller it lives on.
+        self.runManualInstall = startManualUpdate ?? { [weak self] release in self?.startUpdate(release) }
         if let real = self.window as? AppKitDashboardWindow {
             real.configure = { [weak self] web in
                 web.navigationDelegate = self
@@ -230,7 +253,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         }
     }
 
-    @objc private func checkForUpdates() { checkUpdates(manual: true) }
+    @objc func checkForUpdates() { checkUpdates(manual: true) }
 
     private func checkUpdates(manual: Bool) {
         guard !checking else { return }
@@ -241,40 +264,58 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
                 let release = try await latestRelease()
                 if UpdateCheck.isNewer(release.version, than: ProductAnalyticsConfiguration.appVersion) {
                     // Only the person's Check for Updates offers the modal. The
-                    // scheduled check runs at headless launch, so it never raises
-                    // an app-owned dialog over a Dock-less app; its install path
-                    // is the background updater.
+                    // scheduled check runs over a Dock-less app, so it installs
+                    // through the background path and raises no dialog; a failed
+                    // check on that path is logged, never shown.
                     if manual { offerUpdate(release) }
+                    else { background?.install(release) }
                 } else if manual {
                     alert("Keysrs Is Up to Date", "Keysrs \(ProductAnalyticsConfiguration.appVersion) is the newest release.")
                 }
-            } catch { if manual { alert("Could Not Check for Updates", error.localizedDescription) } }
+            } catch {
+                if manual { alert("Could Not Check for Updates", error.localizedDescription) }
+                else { log("scheduled update check failed: \(error.localizedDescription)") }
+            }
         }
     }
 
-    /// The one-click update. Update Now does the whole install from GitHub inside the app.
+    /// The one-click update. Update Now does the whole install from GitHub inside
+    /// the app; Release Notes re-offers, Later leaves the app as it is. The
+    /// person's answer comes through the injected seam, so the choice is
+    /// testable without a real dialog.
     private func offerUpdate(_ release: ReleaseInfo) {
+        while true {
+            switch offerChoice(release) {
+            case .updateNow:
+                runManualInstall(release)
+                return
+            case .releaseNotes:
+                if let notes = release.notes { NSWorkspace.shared.open(notes) }
+            case .later:
+                return
+            }
+        }
+    }
+
+    /// Production's manual offer: the same three buttons the menu always had.
+    private static func askUpdateChoice(_ release: ReleaseInfo) -> UpdateChoice {
         let prompt = NSAlert()
         prompt.messageText = "Keysrs \(release.version) is available"
         prompt.informativeText = "You have \(ProductAnalyticsConfiguration.appVersion). Update Now downloads the new version from GitHub, checks its checksum and Apple signature, replaces this copy and restarts. Keys and history are untouched."
         prompt.addButton(withTitle: "Update Now")
         prompt.addButton(withTitle: "Release Notes")
         prompt.addButton(withTitle: "Later")
-        while true {
-            switch prompt.runModal() {
-            case .alertFirstButtonReturn:
-                startUpdate(release)
-                return
-            case .alertSecondButtonReturn:
-                if let notes = release.notes { NSWorkspace.shared.open(notes) }
-            default:
-                return
-            }
+        switch prompt.runModal() {
+        case .alertFirstButtonReturn: return .updateNow
+        case .alertSecondButtonReturn: return .releaseNotes
+        default: return .later
         }
     }
 
     private func startUpdate(_ release: ReleaseInfo) {
-        guard !updating else { return }
+        // One install at a time across both paths: the scheduled install and
+        // Update Now stage beside the same bundle names.
+        guard !updating, background?.inFlight != true else { return }
         updating = true
         let pending = UpdateInstaller(release: release, app: Bundle.main.bundleURL)
         pending.report = { [weak self] phase in self?.updateWindow?.update(phase) }
@@ -341,6 +382,14 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         alert("Download Failed", error.localizedDescription)
     }
 
+}
+
+/// The person's answer to the manual update offer. The scheduled path never
+/// asks: it installs in the background.
+enum UpdateChoice: Sendable {
+    case updateNow
+    case releaseNotes
+    case later
 }
 
 

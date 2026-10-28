@@ -42,6 +42,15 @@ final class KeysService: @unchecked Sendable {
     /// seam that started it (a local would deallocate and its weak handler would go
     /// quiet). nil outside the app process.
     var notificationPoller: AppNotificationPoller?
+    /// The app's user-presence prompts in progress (Touch ID asks), observed by
+    /// the background updater's quiet gate. The production app wraps its gate
+    /// in `CountingPresenceGate` around this counter; a service built with an
+    /// unwrapped test gate honestly reports none.
+    let presencePrompts: InFlightWork
+    /// The gateway's requests in flight, observed by the background updater's
+    /// quiet gate. On the service, not the listener, so requests that outlive a
+    /// listener stop are still seen.
+    let gatewayActivity = InFlightWork()
     /// Held while the relay is turned on or off, so two toggles at once (menu and dashboard)
     /// cannot both find it off and race for the lock.
     private let relayToggleLock = NSLock()
@@ -63,12 +72,14 @@ final class KeysService: @unchecked Sendable {
         droidHome: URL = Paths.droidHome,
         runner: any CommandRunner = SpawnCommandRunner(),
         openRouter: any OpenRouterFetching = OpenRouterHTTP(),
-        relaySecrets: (any SecretStore)? = nil
+        relaySecrets: (any SecretStore)? = nil,
+        presencePrompts: InFlightWork = InFlightWork()
     ) {
         self.catalog = catalog
         self.secrets = secrets
         self.relaySecrets = relaySecrets
         self.presence = presence
+        self.presencePrompts = presencePrompts
         self.clipboard = clipboard
         self.grokHome = grokHome
         self.claudeHome = claudeHome
@@ -965,7 +976,7 @@ final class KeysService: @unchecked Sendable {
         if let running = gatewayLock.withLock({ gatewayListener }) {
             return running
         }
-        let listener = try GatewayListener(service: self, port: port)
+        let listener = try GatewayListener(service: self, port: port, activity: gatewayActivity)
         // Another thread may have started one meanwhile; keep the first and drop ours.
         let winner: GatewayListener = gatewayLock.withLock {
             if let existing = gatewayListener { return existing }
@@ -2042,12 +2053,17 @@ final class KeysService: @unchecked Sendable {
 enum AppFactory {
     static func makeService() throws -> KeysService {
         let db = try CatalogDB(path: Paths.catalogDB)
+        // The production gate is wrapped so the app can see when a Touch ID
+        // ask is up: the background updater waits prompts out before it
+        // installs. The wrapped gate changes no answer a gate gives.
+        let prompts = InFlightWork()
         let service = KeysService(
             catalog: db,
             secrets: KeychainStore(),
-            presence: LocalPresenceGate(),
+            presence: CountingPresenceGate(inner: LocalPresenceGate(), activity: prompts),
             clipboard: AppKitClipboard(),
-            relaySecrets: KeychainStore(service: KeysService.relayKeychainService)
+            relaySecrets: KeychainStore(service: KeysService.relayKeychainService),
+            presencePrompts: prompts
         )
         service.observeScreenLock()
         service.analytics = ProductAnalytics(catalog: db)

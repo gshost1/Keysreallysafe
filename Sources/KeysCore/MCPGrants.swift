@@ -121,6 +121,22 @@ final class MCPPendingGrants: @unchecked Sendable {
         return record.expiresAt > clock()
     }
 
+    /// Whether any ask is still unsettled: pending (its Touch ID prompt is up) or
+    /// approved with its token not yet claimed. The store is memory, so a restart
+    /// drops it and any undelivered token with it — the background updater must
+    /// wait these out before it quits the app. A delivered, denied or expired ask
+    /// is settled.
+    func anyUnsettled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        refreshLocked()
+        return records.values.contains { record in
+            if case .pending = record.resolution { return true }
+            if case .approved = record.resolution { return true }
+            return false
+        }
+    }
+
     /// One poll, with the consume-once flip inside the same lock the read holds:
     /// exactly one racing poller can see `approved` carrying the token.
     func claim(id: String) -> Claim? {

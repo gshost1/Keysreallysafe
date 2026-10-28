@@ -156,7 +156,7 @@ enum AppRuntime {
         service: KeysService,
         server: LoopbackHTTPServer,
         url: URL,
-        log: (String) -> Void = { _ in },
+        log: @escaping (String) -> Void = { _ in },
         activationApplier: @escaping (AppActivation.Policy) -> Void = AppActivation.applyPolicy,
         window: (any DashboardWindow)? = nil,
         makeItemController: @escaping () -> MenubarItemController = { MenubarItemController() },
@@ -169,13 +169,39 @@ enum AppRuntime {
             }
         },
         notifications: AppNotifier? = nil,
-        startNotifications: (AppNotifier, KeysService) -> Void = AppRuntime.startNotificationPoller
+        startNotifications: (AppNotifier, KeysService) -> Void = AppRuntime.startNotificationPoller,
+        latestRelease: (() async throws -> ReleaseInfo)? = nil,
+        background: BackgroundUpdater? = nil
     ) -> MenubarExtra {
         do { try service.preferences.applyHeadlessDefaults() }
         catch { log("headless defaults pending: \(error.localizedDescription)") }
         let activation = AppActivation(apply: activationApplier)
         let extra = MenubarExtra(service: service, server: server, url: url, makeItemController: makeItemController)
-        extra.appWindow = AppWindowController(url: url, preferences: service.preferences, activation: activation, window: window)
+        // The scheduled check's install half: the app's own prompt and gateway
+        // counters, the same installer path Update Now runs, and the app's own
+        // quit. Absent only where a rig injects one — the seam is what keeps
+        // every launch test offline.
+        let updater = background ?? BackgroundUpdater(
+            activity: AppUpdateActivity(
+                prompts: service.presencePrompts,
+                pendingGrants: service.mcpPendingGrants,
+                gateway: service.gatewayActivity
+            ),
+            notifier: notifications,
+            quit: { [weak extra] in
+                if let extra { extra.quit() } else { NSApp.terminate(nil) }
+            },
+            log: log
+        )
+        extra.appWindow = AppWindowController(
+            url: url,
+            preferences: service.preferences,
+            activation: activation,
+            window: window,
+            latestRelease: latestRelease,
+            background: updater,
+            log: log
+        )
         extra.appWindow?.installMenu(extra: extra)
         MenubarRuntime.extra = extra
         NSApplication.shared.delegate = extra
