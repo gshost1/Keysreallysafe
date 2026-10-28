@@ -79,7 +79,17 @@ final class GatewayListener: @unchecked Sendable {
     }
 
     private func handle(_ request: Incoming, client: Int32) {
-        if !HTTPFrame.LoopbackOrigin.hostAllowed(request.headers["host"], port: boundPort)
+        // Docker Desktop for Mac dials the Mac's own loopback for host.docker.internal,
+        // so a containerized SDK reaches this listener while its Host header keeps the
+        // URL authority it dialed. That name must never widen HTTPFrame.LoopbackOrigin
+        // or BindPolicy (the dashboard site, relay URL validation and the egress guards
+        // share them), so the gateway's call site alone accepts the exact spelling —
+        // setting on, port included — read per request like the other per-call catalog
+        // reads. Compatibility, not a security boundary: the token is still the gate.
+        let host = (request.headers["host"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hostOK = HTTPFrame.LoopbackOrigin.hostAllowed(request.headers["host"], port: boundPort)
+            || (service.preferences.dockerAccess && host == "host.docker.internal:\(boundPort)")
+        if !hostOK
             || !HTTPFrame.LoopbackOrigin.originAllowed(request.headers["origin"], port: boundPort)
             || !HTTPFrame.LoopbackOrigin.fetchSiteAllowed(request.headers["sec-fetch-site"])
         {

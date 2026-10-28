@@ -240,6 +240,33 @@ relay is the other route. Both keep every check this page describes; the
 details and the per-agent snippets are in [cloud-agents.md](cloud-agents.md)
 and [relay.md](relay.md).
 
+## Docker containers: the host.docker.internal setting
+
+A container cannot use `http://127.0.0.1:12767` — that is the container's own
+loopback, not the Mac's. On Docker Desktop for Mac, `host.docker.internal`
+works instead: the Desktop VM intercepts the connection and its backend dials
+the Mac itself over the host's loopback, so the gateway keeps its
+127.0.0.1-only bind and needs no published port. That forward is also why the
+path is Docker-Desktop-only: native Linux resolves the name to the bridge
+gateway — a non-loopback address — when it works at all, and a loopback-only
+bind is not reachable there.
+
+The forward is TCP-level, so the SDK's URL authority arrives verbatim in the
+`Host` header, which the gateway's loopback Host check normally refuses. The
+Docker setting (`pref_docker_access`, off until the person turns it on — an
+import that passes `docker: true` writes "on", and `gateway_info` reports it)
+lets the gateway accept exactly `host.docker.internal:<gateway port>` — the
+port included, one spelling, no other Host. It is read per request, so
+toggling it takes effect on the next call with no restart. Nothing else
+widens: the dashboard site refuses that Host in every state of the setting,
+and the shared loopback checks the relay and the egress guards use never
+learn the name.
+
+The acceptance is compatibility, not a security boundary: the token is still
+the gate. A container that can reach the Mac at all can also send a loopback
+Host; what the setting buys is well-behaved containerized SDKs working with
+the URL they already have.
+
 ## Exit codes
 
 `keys` exits with a stable code so a script can branch without reading prose:
