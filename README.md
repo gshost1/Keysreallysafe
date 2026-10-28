@@ -548,14 +548,30 @@ Mac. Claude Code needs an Anthropic-wire provider key; Codex and Grok need an
 OpenAI-compatible one; Droid takes either. The dashboard's **Agents** button (in Settings)
 shows the same recipes personalized to your key names, with copy buttons.
 
+**The Keysrs MCP server.** `keys mcp` serves the vault to an MCP client over
+stdio — Claude Code, Codex, Cursor, Droid and Claude Desktop can all load it.
+Its tools list the key names (never values), read the gateway's state, check
+for a newer release, and ask for a grant: `request_grant` returns pending
+right away while Keysrs shows one Touch ID prompt naming the key, host and
+project, and `grant_status` hands the scoped token and base URL over on the
+one approved poll. `keys setup mcp` registers the server with all five
+clients, writing the resolved `keys` binary path plus the `mcp` argument into
+`~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,
+`~/.factory/mcp.json` and Claude Desktop's
+`claude_desktop_config.json` — no secret in any of them, a `.bak` beside each,
+idempotent, and `keys setup mcp --remove` to undo. The server stays on
+loopback: it reads the catalog locally, reaches the app through the same
+control channel as the CLI, and sends no product analytics. See
+[docs/agents.md](docs/agents.md) for the tool list and the grant flow.
+
 Keysrs also ships an **agent skill** — `Skills/keysrs/SKILL.md` in the
 repository and `Contents/Resources/Skills/keysrs/SKILL.md` inside the
-installed Keysrs.app — that teaches an agent the workflows above, the exit
-codes and the privacy rules in the Agent Skills format its framework loads.
-It does not install itself; [docs/agents.md](docs/agents.md) explains where
-Claude Code, Droid, Codex and Grok each load skills from, with a one-line
-copy command per agent, and is the full agent guide: the supported workflows,
-the exit-code table, the `--json` flags and the privacy contract.
+installed Keysrs.app — a short note in the Agent Skills format that points an
+agent at the Keysrs MCP server and states the safety floor. It does not
+install itself; [docs/agents.md](docs/agents.md) explains where Claude Code,
+Droid, Codex and Grok each load skills from, with a one-line copy command per
+agent, and is the full agent guide: the supported workflows, the exit-code
+table, the `--json` flags and the privacy contract.
 
 ## Cloud agents
 
@@ -649,6 +665,7 @@ keys doctor
 keys log [--key <name>] [--failed] [--tail] [--limit N] [--json]
 keys dashboard [--month|--week]
 keys menubar
+keys mcp
 keys autostart --remove
 keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path-prefix <prefix>]
 keys client list <name>
@@ -662,6 +679,7 @@ keys provider rm <id>
 keys provider hide <id>
 keys provider unhide <id>
 keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]
+keys setup mcp [--remove] [--json]
 keys agent <agent> <key> [--minutes N] [--profile <name>] [--client] [--label <text>] [--] [args...]
 keys tunnel <user@host> [--remote-port N] [--key <name>] [--print]
 keys relay [run] [--url <worker url>] | on | off | setup --url <worker url> | status | reset

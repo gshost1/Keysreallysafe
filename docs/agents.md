@@ -5,8 +5,9 @@ a version probe, reports the plan windows as one JSON line, and exits with a
 code a script can branch on instead of parsing prose. This page is the manual
 for that surface — the supported workflows, the exit codes, the
 machine-readable flags, and the privacy rules that are part of the product
-rather than a preference. The same rules exist in short form as an agent skill
-that ships with the source and with the app.
+rather than a preference. The agent skill that ships with the source and with
+the app is a short pointer note: it names the Keysrs MCP server, states the
+safety floor, and sends everything else here.
 
 The agents here are the four Keysrs supports — Claude Code, Codex, Grok and
 Droid — running on the Mac that holds the vault. For an agent on another
@@ -74,10 +75,11 @@ directories it does not own.
 
 ## The supported workflows
 
-The safe paths are: probe, read, wire, launch, and grant — and a client token
-for a program that must run unattended or from another machine. A workflow
-that needs the key's value in a file, a saved environment or your own output
-is not one of these paths; it is what these paths replace.
+The safe paths are: probe, read, wire, launch, and grant — the Keysrs MCP
+server (below) is the preferred surface for an agent whose client loads one —
+and a client token for a program that must run unattended or from another
+machine. A workflow that needs the key's value in a file, a saved environment
+or your own output is not one of these paths; it is what these paths replace.
 
 ## Probe and read
 
@@ -135,6 +137,64 @@ keys agent claude work-anthropic
 
 Pass the agent's own arguments after `--`. `keys agent` asks for one Touch ID,
 exits with the agent's own code, and revokes the grant when the agent ends.
+
+## The Keysrs MCP server
+
+An agent whose client loads MCP servers (Claude Code, Codex, Cursor, Droid,
+Claude Desktop) should use the Keysrs server instead of parsing CLI prose.
+`keys mcp` serves it over stdio — newline-delimited JSON-RPC 2.0, responses
+on stdout, diagnostics on stderr, and it exits 0 when the client closes its
+stdin. The client owns the process; a script never starts it by hand.
+
+Register it once:
+
+```sh
+keys setup mcp            # writes the keysrs server into the five clients
+keys setup mcp --json     # one line: action, per-client config_path, server, command
+keys setup mcp --remove   # undoes all five, leaving every other entry alone
+```
+
+Registration needs no vault key, no running site, no Keychain and no Touch ID,
+and never writes a secret: each entry holds the resolved absolute path of the
+installed `keys` binary plus the `mcp` argument. It writes `~/.claude.json`
+(mcpServers), `~/.codex/config.toml` (`[mcp_servers.keysrs]`),
+`~/.cursor/mcp.json`, `~/.factory/mcp.json` and
+`~/Library/Application Support/Claude/claude_desktop_config.json`, merging
+without dropping the file's other entries and keeping a one-step `.bak` beside
+each (0600). It is idempotent; running it again after moving the app updates
+the path.
+
+The tools the server offers:
+
+- `version` — the Keysrs version.
+- `list_keys` — the vault's key names, providers, kinds and the projects
+  using each one, by label. Reads the local catalog; the app does not need to
+  be running. Never a key value.
+- `gateway_info` — the gateway's base URL, the app's live grants and the
+  active project client tokens by label. Requires the app; without it the
+  whole call fails with the not-running answer, so "no grants" is never
+  mistaken for "cannot see grants".
+- `open_app` — bring the running Keysrs app's window to the front. Never
+  opens a browser.
+- `check_update` — whether a newer release exists. Read-only; it downloads
+  and installs nothing.
+- `request_grant` — ask the user for a scoped, time-boxed grant for one key.
+  No host input: the host is the key's own, so a caller cannot retarget it.
+- `grant_status` — poll the ask: `pending`, then `approved` with the token,
+  `base_url` and `auth_header` on exactly the first approved poll (the only
+  time a token is returned; later polls say `delivered`), or `denied`,
+  `expired`, `not_found`.
+
+The grant ask returns `{"status":"pending","id":…}` immediately, while the
+Keysrs app shows one Touch ID prompt naming the key, the host and the
+project's label — never a path, never a token. Poll `grant_status` with the
+id; the user's answer decides it, and a denial is the user cancelling the
+prompt. Treat the handed-over token exactly like a `keys grant` token: it is
+printed for this one task and never belongs in a log, a file or a message.
+
+Everything the server does stays on this Mac: it reads the catalog locally,
+reaches the app over the same loopback control channel the CLI uses, sends
+no product analytics, and adds no outbound endpoint.
 
 ## Scoped access for one task
 
@@ -259,9 +319,10 @@ the parts that bind an agent, stated as rules:
   GUI alert; inside one it starts the whole app. It is not a status command.
 - **Never run a never-returning command in a script.** `keys dashboard`,
   `keys menubar`, `keys relay run` (or bare `keys relay`) and `keys tunnel`
-  without `--print` run until stopped. `keys tunnel --print` prints the ssh
-  command instead; `keys relay on`, `off` and `status` control the app's relay
-  without blocking.
+  without `--print` run until stopped. `keys mcp` also runs until its stdin
+  closes — that is the protocol, its MCP client keeps it open, so only a
+  client starts it. `keys tunnel --print` prints the ssh command instead;
+  `keys relay on`, `off` and `status` control the app's relay without blocking.
 - **`keys rm` exits 0 even when the confirm was declined.** Check the
   output for `cancelled`. An agent should never pass `--yes`, and should
   delete a key only when the user asked for that key to be deleted.
