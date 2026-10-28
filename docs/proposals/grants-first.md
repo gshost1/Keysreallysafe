@@ -88,9 +88,10 @@ or token, report a pending grant as waiting.
 
 ## Security
 
-The threat model is the agent: prompt injection telling it to import a key or
-widen a grant. Import, wrap, grants and tokens are minted only by the app,
-behind Touch ID prompts naming what they approve
+The threat model is the agent: prompt injection telling it to import a key,
+request a grant or widen one.
+Import, wrap, grants and tokens are minted only by the app, behind Touch ID
+prompts naming what they approve
 (`Sources/KeysCore/KeysService.swift:1008`). Hard rules: no tool returns a key
 value; no `rm`, `rotate`, `reveal`, `copy`, `env`, long-lived-token or relay-on
 tools; nothing widens a grant or skips user presence. Reads return names, paths,
@@ -100,8 +101,8 @@ without a fresh explicit yes every time, never remembered.
 `send_feedback` scrubs before sending: no key values, no token-prefixed strings,
 no paths, no key or project names, no prompt text. The user sends it — by default
 a pre-filled email to support@keysrs.com, or a GitHub issue on
-gshost1/Keysreallysafe if picked; Keysrs never submits and adds no outbound
-endpoint (`Site/terms.html:41`).
+gshost1/Keysreallysafe if picked (`Site/terms.html:41`); Keysrs never submits
+and adds no outbound endpoint.
 
 A relay client token is a bearer credential: while the relay is up it works
 from anywhere, bounded only by scope, caps, expiry, revocation and optional
