@@ -203,27 +203,31 @@ struct TestToolGroup: MCPToolGroup, @unchecked Sendable {
 /// production groups to injected seams. Every group registered in production must
 /// appear here: the sweep's production-roster comparison fails naming any gap, so
 /// this list cannot drift from `MCPToolRegistry.groups`. App-bound groups connect
-/// through `control`, the catalog group opens `catalog`, and the release check
-/// fetches through `fetchLatestRelease` — so the real tool code runs against the
-/// caller's temp state, never the machine's real catalog or installed app.
+/// through `control`, the catalog group opens `catalog`, the release check
+/// fetches through `fetchLatestRelease` and the grants group names `projectFolder`
+/// as its own project — so the real tool code runs against the caller's temp
+/// state, never the machine's real catalog or installed app.
 enum MCPRoster {
     static func groups(
         catalog: @escaping () throws -> CatalogDB,
         control: URL,
-        fetchLatestRelease: @escaping () throws -> ReleaseInfo
+        fetchLatestRelease: @escaping () throws -> ReleaseInfo,
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
     ) -> [any MCPToolGroup] {
         [
             MCPVersionTool(),
             MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease),
+            MCPGrantTools(control: control, projectFolder: projectFolder),
         ]
     }
 
     static func registry(
         catalog: @escaping () throws -> CatalogDB,
         control: URL,
-        fetchLatestRelease: @escaping () throws -> ReleaseInfo
+        fetchLatestRelease: @escaping () throws -> ReleaseInfo,
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
     ) -> MCPToolRegistry {
-        MCPToolRegistry(groups: groups(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease))
+        MCPToolRegistry(groups: groups(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease, projectFolder: projectFolder))
     }
 }
 
@@ -285,6 +289,10 @@ enum MCPSweepRig {
         "gateway_info": [:],
         "open_app": [:],
         "check_update": [:],
+        // The grants pair over the rig's unwritten control file: both answer the
+        // exact not-running error, no prompt, no request leaves the machine.
+        "request_grant": ["key": "demo"],
+        "grant_status": [:],
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {

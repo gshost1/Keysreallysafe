@@ -169,11 +169,21 @@ final class APIHandler: @unchecked Sendable {
                 return try grantRenew(request, path: p)
             // The agent-facing MCP surface: exact-path POSTs under /api/, so they
             // inherit the origin-token gate above. The milestone-2 grant routes
-            // join this block.
+            // join this block; they are POSTs on purpose — a GET status route
+            // would leak a pending state or a token to any local process, and the
+            // house gate only covers mutating methods.
             case ("POST", "/api/mcp/gateway_info"):
                 return try mcpGatewayInfo()
             case ("POST", "/api/mcp/app/show"):
                 return mcpAppShow()
+            case ("POST", "/api/mcp/grants"):
+                return try mcpGrantCreate(request)
+            // The poll route's no-id spelling: the status-only listing, never a token.
+            // It must sit above the <id>/status pattern so it is never read as an id.
+            case ("POST", "/api/mcp/grants/status"):
+                return try mcpGrantStatusList()
+            case ("POST", let p) where p.hasPrefix("/api/mcp/grants/") && p.hasSuffix("/status"):
+                return try mcpGrantStatus(path: p)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -944,6 +954,95 @@ final class APIHandler: @unchecked Sendable {
     private func mcpAppShow() -> HTTPResponse {
         showAppWindow()
         return HTTPResponse.json(200, ["ok": true])
+    }
+
+    // MARK: - MCP grants (the pending-request flow)
+
+    /// The fields a create body may carry — the keysGrant body's scope fields plus
+    /// the key and the project folder, minus everything a caller must not pick:
+    /// there is no host input (the key's row decides it, and the prompt shows it),
+    /// no label, no caller, no token. Unknown keys in the body are ignored, so a
+    /// decoy a caller plants can never reach a prompt or a row.
+    private func mcpGrantAsk(_ obj: [String: Any]) throws -> (name: String, request: GrantRequest, profile: String?, specified: GrantSpecified, folder: String) {
+        guard let key = JSONValue.string(obj["key"]) else {
+            throw AppError.usage("key is required")
+        }
+        guard let folder = JSONValue.string(obj["folder"]) else {
+            throw AppError.usage("the project folder is required")
+        }
+        var ask = GrantRequest(task: "")
+        if let raw = obj["task"], !(raw is NSNull) {
+            guard raw is String else { throw AppError.usage("task must be a string") }
+            ask.task = raw as! String
+        }
+        var specified = GrantSpecified()
+        if obj.keys.contains("minutes"), !(obj["minutes"] is NSNull) {
+            guard let minutes = JSONValue.int(obj["minutes"]) else {
+                throw AppError.usage("minutes must be between 1 and \(Grant.maxMinutes)")
+            }
+            ask.minutes = minutes
+            specified.minutes = true
+        }
+        if obj.keys.contains("methods"), !(obj["methods"] is NSNull) {
+            guard let raw = obj["methods"] as? [Any], raw.allSatisfy({ $0 is String }) else {
+                throw AppError.usage("methods must be a list of method names")
+            }
+            ask.methods = Set(raw.compactMap { $0 as? String })
+            specified.methods = true
+        }
+        if obj.keys.contains("paths"), !(obj["paths"] is NSNull) {
+            guard let raw = obj["paths"] as? [Any], raw.allSatisfy({ $0 is String }) else {
+                throw AppError.usage("paths must be a list of path scopes")
+            }
+            ask.paths = raw.compactMap { $0 as? String }
+            specified.paths = true
+        }
+        if obj.keys.contains("max_requests"), !(obj["max_requests"] is NSNull) {
+            guard let n = JSONValue.int(obj["max_requests"]) else {
+                throw AppError.usage("max_requests must be an integer")
+            }
+            ask.maxRequests = n
+            specified.maxRequests = true
+        }
+        if obj.keys.contains("max_usd"), !(obj["max_usd"] is NSNull) {
+            guard let d = JSONValue.double(obj["max_usd"]) else {
+                throw AppError.usage("max_usd must be a number")
+            }
+            ask.maxUsd = d
+            specified.maxUsd = true
+        }
+        let profile = JSONValue.string(obj["profile"]).flatMap { $0.isEmpty ? nil : $0 }
+        return (key, ask, profile, specified, folder)
+    }
+
+    /// POST /api/mcp/grants — create a pending grant request. Everything the ask can
+    /// get wrong is refused here, synchronously, before any prompt; the body carries
+    /// the project FOLDER, which the app canonicalizes, derives the label for and
+    /// get-or-creates the row of. The answer is `{status:"pending", id}` and no
+    /// token: if the user approves the one prompt, the token is delivered on exactly
+    /// one later poll.
+    private func mcpGrantCreate(_ request: HTTPRequest) throws -> HTTPResponse {
+        let ask = try mcpGrantAsk(try jsonBody(request))
+        let id = try service.requestMCPGrant(
+            name: ask.name, request: ask.request, profile: ask.profile,
+            specified: ask.specified, folder: ask.folder
+        )
+        return HTTPResponse.json(200, ["status": "pending", "id": id])
+    }
+
+    /// POST /api/mcp/grants/<id>/status — poll one request: pending (tokenless),
+    /// approved (the token and the connection fields, once), approved with
+    /// `delivered: true` (never a token again), denied with its reason, expired
+    /// after the pending TTL, or the house not-found.
+    private func mcpGrantStatus(path: String) throws -> HTTPResponse {
+        let id = String(path.dropFirst("/api/mcp/grants/".count).dropLast("/status".count))
+        return HTTPResponse.json(200, try service.mcpGrantStatus(id: id))
+    }
+
+    /// POST /api/mcp/grants/status — the no-id form: every request's id, key and
+    /// state, never a token in any state.
+    private func mcpGrantStatusList() throws -> HTTPResponse {
+        HTTPResponse.json(200, ["requests": service.mcpGrantStatuses()])
     }
 
     // MARK: - Profiles (saved grant bounds)

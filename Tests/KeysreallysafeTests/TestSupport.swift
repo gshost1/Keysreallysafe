@@ -303,6 +303,69 @@ final class RecordingPresenceGate: PresenceGate, @unchecked Sendable {
     }
 }
 
+/// A presence gate whose `require` records the reason, announces entry, then blocks
+/// until the test releases it — the double that proves a call answered while the
+/// prompt was provably up (VAL-GRANT-001) without any sleeping. Each release hands
+/// the next prompt its outcome: `nil` approves, an `AppError` denies, and a release
+/// that lands before the prompt fires is taken by the next `require` immediately,
+/// so pre-releasing turns the gate into an instant scripted one.
+final class BlockingPresenceGate: PresenceGate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var reasons: [String] = []
+    private var outcomes: [AppError?] = []
+    /// Prompts currently parked inside `require` — what `releaseAll` must unblock.
+    private var parked = 0
+    private let entered = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+
+    /// Every reason a prompt showed, in order.
+    var recordedReasons: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return reasons
+    }
+
+    func require(reason: String) throws {
+        lock.lock()
+        reasons.append(reason)
+        parked += 1
+        lock.unlock()
+        entered.signal()
+        release.wait()
+        lock.lock()
+        parked -= 1
+        let outcome = outcomes.isEmpty ? nil : outcomes.removeFirst()
+        lock.unlock()
+        if let outcome { throw outcome }
+    }
+
+    /// Releases the next prompt (or arms the next one) with `outcome`.
+    func release(_ outcome: AppError? = nil) {
+        lock.lock()
+        outcomes.append(outcome)
+        lock.unlock()
+        release.signal()
+    }
+
+    /// Unblocks every prompt parked right now, so no approval thread outlives the
+    /// test. (`waitPrompts` observations are not spent here — only parked prompts
+    /// count, so an earlier `waitPrompts` cannot swallow a `releaseAll`.)
+    func releaseAll(_ outcome: AppError? = nil) {
+        lock.lock()
+        let count = parked
+        outcomes.append(contentsOf: Array(repeating: outcome, count: count))
+        lock.unlock()
+        for _ in 0..<count { release.signal() }
+    }
+
+    /// Bounded wait until at least `count` prompts have fired.
+    func waitPrompts(_ count: Int, timeout: TimeInterval = 5) -> Bool {
+        for _ in 0..<count where entered.wait(timeout: .now() + timeout) != .success {
+            return false
+        }
+        return true
+    }
+}
+
 extension UsageEvent {
     /// One local usage row; the provider follows from the source.
     static func fixture(

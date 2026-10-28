@@ -22,6 +22,10 @@ final class KeysService: @unchecked Sendable {
     private var gatewayListener: GatewayListener?
     var openRouter: any OpenRouterFetching
     let grants = GrantStore()
+    /// The pending `request_grant` asks (the MCP grants surface), the wrapPending
+    /// pattern: lock-guarded, memory-only, nothing token-shaped persisted. The
+    /// approval threads settle its records; `MCPGrants.swift` owns its behavior.
+    let mcpPendingGrants = MCPPendingGrants()
     /// Pauses a key after consecutive upstream 401/403 answers (GatewayBreaker).
     let breaker = GatewayBreaker()
     /// The relay secret's own store (Keychain service `keysreallysafe.relay` in the app, memory
@@ -490,13 +494,18 @@ final class KeysService: @unchecked Sendable {
     }
 
     /// Enable requires one Touch ID (the same presence check as copy). Secret is held in memory only.
+    /// `gate` and `stillValid` are the MCP grants flow's seams (see `issueGrant`): the
+    /// former fronts the presence check, the latter is re-checked after the prompt and
+    /// before anything changes, so a prompt that outlives its ask changes nothing at all.
     func setGateway(
         name: String,
         enabled: Bool,
         host: String?,
         caller: String = "dashboard",
         reason: String? = nil,
-        presenceChecked: Bool = false
+        presenceChecked: Bool = false,
+        gate: (any PresenceGate)? = nil,
+        stillValid: (() -> Bool)? = nil
     ) throws -> CatalogRow {
         try requireGatewayOwner()
         let row = try existingRow(name)
@@ -515,7 +524,10 @@ final class KeysService: @unchecked Sendable {
             // A batch (keys wrap, client issue with the gateway) asked once for all of its keys,
             // and its own prompt or confirmed plan named each host.
             if !presenceChecked {
-                try presence.require(reason: reason ?? Self.gatewayReason(key: name, provider: provider, host: resolved))
+                try (gate ?? presence).require(reason: reason ?? Self.gatewayReason(key: name, provider: provider, host: resolved))
+            }
+            if let stillValid, !stillValid() {
+                throw AppError.usage("the request expired before it was approved")
             }
             let target = GatewayTarget(
                 name: name, secret: try secrets.get(name: name), provider: provider, host: resolved, version: row.version
@@ -548,12 +560,22 @@ final class KeysService: @unchecked Sendable {
     /// Touch ID, the profile's values default whatever the ask left unnamed, and a named bound
     /// must sit inside it. The grant itself is self-contained — the request path never
     /// consults profiles, and the profile is not read again after this returns.
+    ///
+    /// The three optional seams serve the MCP grants flow (milestone 2) and default to the
+    /// behavior every existing caller already has: `projectLabel` appends the project's
+    /// LABEL — never its path — to the one prompt's reason; `gate` fronts the presence
+    /// check so the create route can learn the prompt went up; `stillValid` is re-checked
+    /// after the prompt returns (and inside the gateway-on fold, before that fold changes
+    /// anything), so an approval that lands after the ask expired never mints a grant.
     func issueGrant(
         name: String,
         request raw: GrantRequest,
         profile profileName: String? = nil,
         specified: GrantSpecified = GrantSpecified(),
-        caller: String = "dashboard"
+        caller: String = "dashboard",
+        projectLabel: String? = nil,
+        gate: (any PresenceGate)? = nil,
+        stillValid: (() -> Bool)? = nil
     ) throws -> (grant: Grant, token: String) {
         try requireGatewayOwner()
         let row = try existingRow(name)
@@ -573,7 +595,7 @@ final class KeysService: @unchecked Sendable {
             )
             under = profile
         }
-        let reason = under.map {
+        var reason = under.map {
             Self.profileGrantReason(
                 task: effective.task, key: name, provider: provider, host: host,
                 minutes: effective.minutes, profile: $0, request: effective
@@ -581,10 +603,19 @@ final class KeysService: @unchecked Sendable {
         } ?? Self.grantReason(
             task: effective.task, key: name, provider: provider, host: host, minutes: effective.minutes
         )
+        if let projectLabel {
+            reason += ", project \(projectLabel)"
+        }
         if let cached = lookupGateway(name: name), cached.host == host {
-            try presence.require(reason: reason)
+            try (gate ?? presence).require(reason: reason)
         } else {
-            _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
+            _ = try setGateway(
+                name: name, enabled: true, host: host, caller: caller, reason: reason,
+                gate: gate, stillValid: stillValid
+            )
+        }
+        if let stillValid, !stillValid() {
+            throw AppError.usage("the request expired before it was approved")
         }
         grants.prune()
         let issued = grants.issue(
@@ -1828,8 +1859,9 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
-    /// Validates the name and returns its catalog row, or throws notFound.
-    private func existingRow(_ name: String) throws -> CatalogRow {
+    /// Validates the name and returns its catalog row, or throws notFound. Internal
+    /// so `MCPGrants.swift`'s extension runs the same check issuance does.
+    func existingRow(_ name: String) throws -> CatalogRow {
         try KeyName.validate(name)
         guard let row = try catalog.catalogRow(name: name) else { throw AppError.notFound(name) }
         return row

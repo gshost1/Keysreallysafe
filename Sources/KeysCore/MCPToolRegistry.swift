@@ -50,6 +50,18 @@ struct MCPToolResult {
         )
     }
 
+    /// One text block whose JSON carries the one value the output guard exempts for
+    /// this result: the token a `grant_status` approval is handing over. The only
+    /// caller is the grants flow's approved poll, and the exemption is this value
+    /// for this result — never a tool, never a second value.
+    static func json(_ value: Any, handover: String) throws -> MCPToolResult {
+        MCPToolResult(
+            content: [["type": "text", "text": String(decoding: try JSONValue.data(value), as: UTF8.self)]],
+            isError: false,
+            handover: handover
+        )
+    }
+
     /// One text block carrying a plain failure sentence (already formatter-scrubbed).
     static func failure(_ message: String) -> MCPToolResult {
         MCPToolResult(content: [["type": "text", "text": message]], isError: true)
@@ -140,7 +152,7 @@ struct MCPToolRegistry {
     /// else changes.** Computed so no shared non-Sendable state exists; the roster
     /// it builds is deterministic. Every group's construction is offline-safe —
     /// nothing opens a catalog or contacts the app until a tool is actually called.
-    static var groups: [any MCPToolGroup] { [MCPVersionTool(), MCPReadTools()] }
+    static var groups: [any MCPToolGroup] { [MCPVersionTool(), MCPReadTools(), MCPGrantTools()] }
 
     /// The server's roster. Production builds this from `groups`, so the
     /// registration line above is the only place a group is added.

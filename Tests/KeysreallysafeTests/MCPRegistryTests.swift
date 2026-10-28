@@ -26,11 +26,10 @@ final class MCPRegistryTests: XCTestCase {
 
     /// The roster is the LITERAL mission set, pinned by name — not by comparing
     /// `tools/list` to the registry's own declared groups, which is self-referential
-    /// and would let a wrongly-named tool pass. Milestone 1 registers exactly these
-    /// five, in registration order, each once; the milestone-2 grants feature grows
-    /// this pin to seven when `request_grant`/`grant_status` land. Every listed name
-    /// answers `tools/call`, and the eight not-yet-built names still answer -32602
-    /// and are absent — future tools appear by registration, never by accident.
+    /// and would let a wrongly-named tool pass. The mission's seven tools, in
+    /// registration order, each once; every listed name answers `tools/call`, and
+    /// the not-yet-built names still answer -32602 and are absent — future tools
+    /// appear by registration, never by accident.
     func testMissionRosterExact() throws {
         let (frames, _) = try MCPSession.run([
             MCPSession.initialize(),
@@ -46,9 +45,9 @@ final class MCPRegistryTests: XCTestCase {
         XCTAssertEqual(listed, again, "tools/list is deterministic")
         XCTAssertEqual(Set(listed).count, listed.count, "no tool name appears twice: \(listed)")
 
-        // The literal milestone-1 roster. A wrongly-named tool, a missing one or a
+        // The literal mission roster. A wrongly-named tool, a missing one or a
         // duplicate fails here, whatever the registry declares.
-        XCTAssertEqual(listed, Self.milestoneOneRoster, "tools/list is exactly the mission's milestone-1 roster")
+        XCTAssertEqual(listed, Self.missionRoster, "tools/list is exactly the mission's roster")
 
         // List and call share one registry: every listed name answers tools/call.
         // The calls run over the sweep rig's wiring so the catalog-bound tools read

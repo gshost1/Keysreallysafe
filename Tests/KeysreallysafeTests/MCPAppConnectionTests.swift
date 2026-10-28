@@ -147,12 +147,14 @@ final class MCPAppConnectionTests: XCTestCase {
 
     /// The safe offline argument row each app-bound tool is driven with. A
     /// registered app-bound tool with no row fails the loops by name — add its row
-    /// when it lands.
+    /// when it lands. The grant tools name only a key: against every shape these
+    /// loops drive, the connect fails or the call hangs before the app ever
+    /// validates the ask, so no catalog row is needed.
     private static var appBoundArgumentRows: [String: [String: Any]] { [
-        // The read tools take no inputs; the grant tools' rows land with their
-        // feature, whose inputs need a catalog row to pass validation first.
         "gateway_info": [:],
         "open_app": [:],
+        "request_grant": ["key": "demo"],
+        "grant_status": [:],
     ] }
 
     /// The production roster with its app-bound tools wired over `control`: the

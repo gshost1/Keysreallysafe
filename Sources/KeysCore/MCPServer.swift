@@ -283,12 +283,20 @@ enum MCPToolErrorFormatter {
             of: #"0x[0-9a-fA-F]{8,}"#,
             with: mask, options: .regularExpression
         )
-        // POSIX paths of two components or more, absolute or relative, "~" allowed:
-        // "/tmp/krs-…/catalog.db", ".build/debug/keys", "~/Library/…". Slashy URL
-        // paths are masked with them; a tool error quoting the caller's own path
-        // loses it too, which is the fail-safe direction for a scrubber.
+        // POSIX paths, the narrowed form. This used to mask every slashy token,
+        // which also swallowed the caller's own request path that a grant refusal
+        // must quote back ("invalid path /v1/../x", "path /v1/models is outside
+        // profile evals"). A token is masked only when it carries a filesystem
+        // tell: a `~` home prefix; a leading segment on the known filesystem roots
+        // (/Users, /tmp, /var, /private, /Library, … — the case-sensitive spelling
+        // each of those actually has on this platform, so an API path like
+        // "/users/octocat" still passes); or a component holding a dot that is not
+        // a "."/".." navigation segment — an extension, a hidden folder, a dotted
+        // host (catalog.db, .build/debug/keys, 127.0.0.1). A clean web-shaped path
+        // is the caller's own words and passes through; the tells keep the
+        // fail-safe direction for everything the app itself might quote.
         out = out.replacingOccurrences(
-            of: #"(?:~)?(?:[A-Za-z0-9._\-]*/)+[A-Za-z0-9._\-]*"#,
+            of: #"~[A-Za-z0-9_\- ./]*|/(?:Users|Library|Applications|System|Volumes|Developer|cores|tmp|var|private|usr|etc|opt|home|dev|proc|srv|mnt)(?:/[A-Za-z0-9_\- ./]*)?|(?=[A-Za-z0-9_\-./ ]*\.[A-Za-z0-9_\-])(?:[A-Za-z0-9_\-./]*/)+[A-Za-z0-9_\-./]*"#,
             with: mask, options: .regularExpression
         )
         return out
