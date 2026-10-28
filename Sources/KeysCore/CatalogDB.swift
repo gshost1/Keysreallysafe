@@ -202,6 +202,18 @@ final class CatalogDB: @unchecked Sendable {
             try exec("ALTER TABLE gateway_clients ADD COLUMN project TEXT;")
         }
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
+        // A project client token serves several keys; this table is its membership list:
+        // one row per key the token may reach, each carrying the host the user approved
+        // for that key (the same target_changed discipline as gateway_clients.host). The
+        // guarded create lets a catalog from before projects upgrade in place.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS gateway_client_keys (
+              client_id INTEGER NOT NULL,
+              key_name TEXT NOT NULL,
+              host TEXT NOT NULL,
+              PRIMARY KEY (client_id, key_name)
+            );
+            """)
         // Pairings hold hashes, not credentials, so like gateway_clients they belong in the
         // catalog and not the Keychain. `keys` is a comma-separated scope; empty means all keys.
         try exec("""
@@ -647,6 +659,10 @@ final class CatalogDB: @unchecked Sendable {
             }
             // A capability for a key that no longer exists must not outlive it.
             try run("DELETE FROM gateway_clients WHERE key_name = ?;", name)
+            // A membership in the deleted key goes too, and so does any membership whose
+            // project row the line above removed (a project token keyed on the first member).
+            try run("DELETE FROM gateway_client_keys WHERE key_name = ?;", name)
+            try run("DELETE FROM gateway_client_keys WHERE client_id NOT IN (SELECT id FROM gateway_clients);")
         }
     }
 
@@ -755,6 +771,57 @@ final class CatalogDB: @unchecked Sendable {
 
     func touchGatewayClient(id: Int64, at iso: String) throws {
         try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
+    }
+
+    /// One key a project client token may serve, with the host the user approved for it.
+    struct GatewayClientKey: Equatable {
+        var clientID: Int64
+        var keyName: String
+        var host: String
+    }
+
+    private func decodeGatewayClientKey(_ stmt: OpaquePointer) -> GatewayClientKey {
+        GatewayClientKey(
+            clientID: sqlite3_column_int64(stmt, 0),
+            keyName: columnText(stmt, 1) ?? "",
+            host: columnText(stmt, 2) ?? ""
+        )
+    }
+
+    /// Idempotent by primary key, so a retried mint cannot grow a duplicate membership.
+    func insertGatewayClientKey(clientID: Int64, keyName: String, host: String) throws {
+        try withLock {
+            try run(
+                "INSERT OR IGNORE INTO gateway_client_keys (client_id, key_name, host) VALUES (?, ?, ?);",
+                clientID, keyName, host
+            )
+        }
+    }
+
+    /// The one membership row the authorize path consults, or nil when the key is not a
+    /// member of the token.
+    func gatewayClientKey(clientID: Int64, keyName: String) throws -> GatewayClientKey? {
+        try one(
+            "SELECT client_id, key_name, host FROM gateway_client_keys WHERE client_id = ? AND key_name = ? LIMIT 1;",
+            clientID, keyName, row: decodeGatewayClientKey
+        )
+    }
+
+    /// Every key a token may serve, in name order — the readers' member list.
+    func gatewayClientKeys(clientID: Int64) throws -> [GatewayClientKey] {
+        try query(
+            "SELECT client_id, key_name, host FROM gateway_client_keys WHERE client_id = ? ORDER BY key_name;",
+            clientID, row: decodeGatewayClientKey
+        )
+    }
+
+    /// Revokes every active client token bound to a project in one statement. Membership
+    /// rows stay, so a revoked token's key list is still readable.
+    func revokeGatewayClients(project: String, at iso: String) throws -> Int {
+        try run(
+            "UPDATE gateway_clients SET revoked_at = ? WHERE project = ? AND revoked_at IS NULL;",
+            iso, project
+        )
     }
 
     // MARK: projects

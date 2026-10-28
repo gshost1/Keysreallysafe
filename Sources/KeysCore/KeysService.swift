@@ -1162,6 +1162,92 @@ final class KeysService: @unchecked Sendable {
         return client
     }
 
+    /// Mints ONE client token that serves several keys at once — the project token the
+    /// onboarding import needs. The token is a single `gateway_clients` row (one hash, one
+    /// 30-day expiry, one hint, one label, one revoke) plus one membership row per key it
+    /// may reach, each recording that key's approved host. Presence is taken here, naming
+    /// every key; `mintProjectGatewayClient` is the presence-free half the import flow
+    /// reuses under its own single prompt.
+    func issueProjectGatewayClient(
+        keys: [String],
+        label: String,
+        days: Int? = nil,
+        methods: [String]? = nil,
+        pathPrefix: String? = nil,
+        project: String,
+        caller: String = "dashboard",
+        now: Date = Date()
+    ) throws -> (token: String, client: GatewayClient) {
+        let ttlDays = try GatewayClientToken.validateDays(days)
+        let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
+        let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
+        let members = try projectMembers(keys)
+        try presence.require(reason: "issue one gateway client for \(members.map(\.name).joined(separator: ", "))")
+        return try mintProjectGatewayClient(
+            members: members, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix,
+            project: project, caller: caller, now: now
+        )
+    }
+
+    /// Resolves each key to its effective host, in first-seen order, refusing a key with
+    /// no host exactly as per-key issuance does. A repeated name collapses to one member.
+    private func projectMembers(_ keys: [String]) throws -> [(name: String, host: String)] {
+        var seen: Set<String> = []
+        var members: [(name: String, host: String)] = []
+        for name in keys where seen.insert(name).inserted {
+            let row = try existingRow(name)
+            guard let host = Self.effectiveHost(row) else {
+                throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
+            }
+            members.append((name, host))
+        }
+        guard !members.isEmpty else { throw AppError.usage("at least one key is required") }
+        return members
+    }
+
+    /// Mints after presence was already taken by the caller. The project row's `key_name`
+    /// is its first member (the column is NOT NULL); every member — the first included —
+    /// also gets a membership row, so the authorize path resolves each one's own host.
+    private func mintProjectGatewayClient(
+        members: [(name: String, host: String)],
+        label: String, days ttlDays: Int, methods allowed: [String], pathPrefix prefix: String?,
+        project: String, caller: String, now: Date
+    ) throws -> (token: String, client: GatewayClient) {
+        let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        let token = GatewayClientToken.generate()
+        let first = members[0]
+        let client = try catalog.insertGatewayClient(
+            keyName: first.name,
+            label: trimmedLabel,
+            tokenHash: GatewayClientToken.hash(token),
+            hint: GatewayClientToken.hint(token),
+            methods: allowed,
+            pathPrefix: prefix,
+            host: first.host,
+            createdAt: UTC.iso(now),
+            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400)),
+            project: project
+        )
+        for member in members {
+            try catalog.insertGatewayClientKey(clientID: client.id, keyName: member.name, host: member.host)
+        }
+        try recordKeyEvent(
+            name: first.name,
+            action: "client_issue",
+            caller: caller,
+            detail: "#\(client.id) \(trimmedLabel) \(ttlDays)d project \(members.count) key\(members.count == 1 ? "" : "s")"
+        )
+        return (token, client)
+    }
+
+    /// Revokes every active client token bound to a project in one statement. Each
+    /// member's authorization dies with the token, since the authorize path checks the
+    /// row's revocation before a membership is trusted.
+    @discardableResult
+    func revokeGatewayClients(project: String) throws -> Int {
+        try catalog.revokeGatewayClients(project: project, at: UTC.iso(Date()))
+    }
+
     /// Decides whether one request may use `name` through the gateway. Never consults the
     /// dashboard token. Denial reasons are for the audit log; the caller sends a uniform 401.
     func authorizeGatewayClient(
@@ -1177,7 +1263,24 @@ final class KeysService: @unchecked Sendable {
         guard let client = try? catalog.gatewayClient(tokenHash: GatewayClientToken.hash(token)) else {
             return .denied("unknown_client")
         }
-        guard client.keyName == name else { return .denied("wrong_key") }
+        if client.keyName != name {
+            // A project token serves several keys. Its own `key_name` (the first member)
+            // matched through the per-key path below; every other member is authorized
+            // through the membership row it carries — the same revoked/active/scope checks,
+            // and the membership's own approved host, so a retargeted member refuses exactly
+            // like a per-key one. A key with no membership stays denied as today.
+            guard client.project != nil,
+                  let membership = try? catalog.gatewayClientKey(clientID: client.id, keyName: name) else {
+                return .denied("wrong_key")
+            }
+            guard client.revokedAt == nil else { return .denied("revoked") }
+            guard client.isActive(now: now) else { return .denied("expired") }
+            guard let row = try? catalog.catalogRow(name: name), membership.host == Self.effectiveHost(row) else {
+                return .denied("target_changed")
+            }
+            guard client.allows(method: method, rest: rest) else { return .denied("out_of_scope") }
+            return .allowed(client)
+        }
         guard client.revokedAt == nil else { return .denied("revoked") }
         guard client.isActive(now: now) else { return .denied("expired") }
         // lookupGateway then holds the unlocked target to this same catalog host.
