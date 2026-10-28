@@ -127,6 +127,7 @@ final class RequestLog: @unchecked Sendable {
     private var requests: [HTTPRequest] = []
     var count: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
     var last: HTTPRequest? { lock.lock(); defer { lock.unlock() }; return requests.last }
+    var all: [HTTPRequest] { lock.lock(); defer { lock.unlock() }; return requests }
     func record(_ request: HTTPRequest) { lock.lock(); requests.append(request); lock.unlock() }
 }
 
