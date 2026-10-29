@@ -1405,10 +1405,21 @@ final class APIHandler: @unchecked Sendable {
             names: names,
             records: records
         ))
-        let text = scrubbed.scrubbed + FeedbackDelivery.versionFooter()
-        let url = destination == "github"
-            ? FeedbackDelivery.githubIssueURL(body: text)
-            : FeedbackDelivery.mailtoURL(body: text)
+        let footer = FeedbackDelivery.versionFooter()
+        var text = scrubbed.scrubbed + footer
+        var truncated = false
+        let url: URL?
+        if destination == "github" {
+            url = FeedbackDelivery.githubIssueURL(body: text)
+        } else {
+            // The mailto URL is capped near 2,000 characters with the footer
+            // always kept; the answer reports the cut instead of opening a
+            // silently short draft (VAL-F-005).
+            let built = FeedbackDelivery.mailtoURL(body: scrubbed.scrubbed, footer: footer)
+            text = built.body
+            truncated = built.truncated
+            url = built.url
+        }
         guard let url else {
             // Unreachable in practice: the query is fully percent-encoded above;
             // a URL that cannot be built must fail closed, never half-open.
@@ -1420,6 +1431,7 @@ final class APIHandler: @unchecked Sendable {
             "removed": scrubbed.removed,
             "destination": destination,
             "opened": true,
+            "truncated": truncated,
         ])
     }
 

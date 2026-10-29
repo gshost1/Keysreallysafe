@@ -33,11 +33,44 @@ enum FeedbackDelivery {
         return value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""
     }
 
-    /// The prefilled support mail for a scrubbed draft.
-    static func mailtoURL(body: String) -> URL? {
-        URL(string: "mailto:\(supportAddress)"
+    /// The encoded-URL ceiling, characters. Mail clients and browsers accept a
+    /// few thousand characters of mailto URL and truncate silently past that;
+    /// ~2,000 leaves headroom (VAL-F-005).
+    static let maxURLLength = 2_000
+
+    /// The prefilled support mail for a scrubbed draft, capped so the whole
+    /// encoded URL stays within `cap` characters with the version footer always
+    /// kept: the draft is cut from its end (never the footer) when the encoded
+    /// URL would overflow. Returns the URL, the body it actually encodes (the
+    /// capped draft plus the footer) and whether the draft had to be cut, so the
+    /// caller can report the truncation instead of opening a silently short
+    /// draft (VAL-F-005).
+    static func mailtoURL(body: String, footer: String, cap: Int = maxURLLength)
+        -> (url: URL?, body: String, truncated: Bool) {
+        let prefix = "mailto:\(supportAddress)"
             + "?subject=\(queryValue(feedbackSubject))"
-            + "&body=\(queryValue(body))")
+            + "&body="
+        let encodedFooter = queryValue(footer)
+        let budget = max(0, cap - prefix.count - encodedFooter.count)
+        let (encodedBody, kept) = capped(body, encodedLimit: budget)
+        let string = prefix + encodedBody + encodedFooter
+        return (URL(string: string), kept + footer, kept.count < body.count)
+    }
+
+    /// The longest prefix of `value` whose percent-encoding fits `limit`
+    /// characters, cut on a whole-character boundary so a percent-escape is
+    /// never split. Returns the encoded prefix and the decoded prefix it stands
+    /// for (the body the answer reports).
+    private static func capped(_ value: String, encodedLimit limit: Int) -> (encoded: String, decoded: String) {
+        var encoded = ""
+        var decoded = ""
+        for character in value {
+            let piece = queryValue(String(character))
+            if encoded.count + piece.count > limit { break }
+            encoded += piece
+            decoded.append(character)
+        }
+        return (encoded, decoded)
     }
 
     /// The prefilled GitHub issue page for a scrubbed draft.

@@ -137,7 +137,7 @@ final class FeedbackToolsTests: XCTestCase {
                               body: try body(["draft": raw, "destination": "email", "prompt": marker]))
         XCTAssertEqual(response.status, 200)
         let answer = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
-        XCTAssertEqual(Set(answer.keys), ["scrubbed", "removed", "destination", "opened"],
+        XCTAssertEqual(Set(answer.keys), ["scrubbed", "removed", "destination", "opened", "truncated"],
                        "the bounded answer shape")
         XCTAssertEqual(answer["destination"] as? String, "email")
         XCTAssertEqual(answer["opened"] as? Bool, true)
@@ -227,6 +227,43 @@ final class FeedbackToolsTests: XCTestCase {
         XCTAssertEqual(site.open.count, before, "nothing opened for a bad destination")
     }
 
+    /// VAL-F-005. A draft long enough that the encoded mailto URL would run far
+    /// past what a mail client accepts is capped near 2,000 characters with the
+    /// version footer always kept, and the answer says the draft was truncated
+    /// instead of answering `"opened": true` over a silently cut draft. A short
+    /// draft is not truncated.
+    func testLongDraftCapsEncodedURLAndReportsTruncation() throws {
+        let site = try makeSite()
+        defer { site.server.stop() }
+        let filler = String(repeating: "word ", count: 1_500)
+        let raw = site.plantedSecret + " " + filler + filler
+
+        let response = handle(site.handler, method: "POST", path: "/api/mcp/feedback",
+                              body: try body(["draft": raw, "destination": "email"]))
+        XCTAssertEqual(response.status, 200)
+        let answer = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
+        XCTAssertEqual(answer["truncated"] as? Bool, true, "the cut is reported, not silent")
+        XCTAssertEqual(answer["opened"] as? Bool, true, "the (truncated) draft still opened")
+
+        let url = site.open.recorded.first
+        XCTAssertEqual(url?.scheme, "mailto")
+        XCTAssertLessThanOrEqual(url!.absoluteString.count, 2_000, "the encoded URL is capped near 2,000")
+        let bodyValue = (try queryItems(of: url!) ?? []).first { $0.name == "body" }?.value ?? ""
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let footer = "\n\nKeysrs \(ProductAnalyticsConfiguration.appVersion) "
+            + "on macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        XCTAssertTrue(bodyValue.hasSuffix(footer), "the version footer is always kept")
+        XCTAssertFalse(bodyValue.contains(site.plantedSecret), "no planted value is in the opened body")
+        XCTAssertEqual(bodyValue, answer["scrubbed"] as? String, "the answer names the opened body")
+
+        // A short draft is not truncated and its body is untouched.
+        let short = handle(site.handler, method: "POST", path: "/api/mcp/feedback",
+                           body: try body(["draft": "the chart is nice"]))
+        let shortAnswer = try JSONSerialization.jsonObject(with: short.body) as! [String: Any]
+        XCTAssertEqual(shortAnswer["truncated"] as? Bool, false, "a short draft is not truncated")
+        XCTAssertTrue((shortAnswer["scrubbed"] as? String)?.contains("the chart is nice") ?? false)
+    }
+
     /// The route re-validates every argument type: no draft, an empty draft, a
     /// non-string draft, a non-string destination and a non-string prompt are
     /// all 400s, and none of them opens anything.
@@ -293,7 +330,7 @@ final class FeedbackToolsTests: XCTestCase {
         XCTAssertEqual(site.log.count, 1, "one round trip, exactly one open beside it")
         XCTAssertEqual(site.open.count, 1)
         let answer = try payload(result)
-        XCTAssertEqual(Set(answer.keys), ["scrubbed", "removed", "destination", "opened"])
+        XCTAssertEqual(Set(answer.keys), ["scrubbed", "removed", "destination", "opened", "truncated"])
         XCTAssertEqual(answer["destination"] as? String, "github")
         let scrubbed = answer["scrubbed"] as? String ?? ""
         XCTAssertFalse(scrubbed.contains(site.plantedSecret))
@@ -437,7 +474,7 @@ final class FeedbackToolsTests: XCTestCase {
         let answer = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
 
         // The answer: scrubbed, counted, opened.
-        XCTAssertEqual(Set(answer.keys), ["scrubbed", "removed", "destination", "opened"])
+        XCTAssertEqual(Set(answer.keys), ["scrubbed", "removed", "destination", "opened", "truncated"])
         XCTAssertEqual(answer["destination"] as? String, "email")
         XCTAssertEqual(answer["opened"] as? Bool, true)
         let removed = answer["removed"] as! [String: Any]
