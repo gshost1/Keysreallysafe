@@ -159,8 +159,10 @@ extension KeysService {
         // Restore each wrapped line from the vault. Resolution order per line: the
         // gateway base URL companion beside it (the only per-line signal when one
         // project token covers several keys), then the token's own row (a per-key
-        // token names its key; a project token with one member names it). A line whose
-        // key cannot be resolved, or whose key is gone from the vault, is a stated
+        // token names its key; a project token with one member names it) — but the
+        // token is what proves the line, so a companion's key is accepted only when
+        // that token's client serves it (keyNameForWrappedLine). A line whose key
+        // cannot be resolved, or whose key is gone from the vault, is a stated
         // per-line failure; its token still dies in the revocation below.
         for (index, entry) in wrapped {
             guard let key = try keyNameForWrappedLine(entry, file: parsed) else {
@@ -228,18 +230,26 @@ extension KeysService {
         return outcome
     }
 
-    /// Which vault key one wrapped line holds. See `restoreFile` for the order and its
-    /// reasons.
+    /// Which vault key one wrapped line holds. The line's own token identifies the
+    /// client — and so the exact keys it may serve; the gateway base URL companion
+    /// beside it only names one of them. A companion-derived key is accepted only when
+    /// that token's client actually serves it (a membership row, or the client's own
+    /// keyName), or when the named key is absent from the catalog entirely — a key
+    /// deleted since wrap, which cannot write anything and whose "gone" failure below
+    /// is the actionable report. A companion edited to point at a key that EXISTS in
+    /// the vault but was never served by this token resolves to nil: the line fails
+    /// per-line and nothing is written for it.
     private func keyNameForWrappedLine(_ entry: EnvFile.Entry, file: EnvFile) throws -> String? {
-        if let baseVar = WrapDetect.baseURLVariables[entry.name],
-           let url = file.value(of: baseVar),
-           let key = Self.gatewayKeySegment(of: url) {
-            return key
-        }
         guard let client = try catalog.gatewayClient(tokenHash: GatewayClientToken.hash(entry.value)) else {
             return nil
         }
         let members = try catalog.gatewayClientKeys(clientID: client.id)
+        if let baseVar = WrapDetect.baseURLVariables[entry.name],
+           let url = file.value(of: baseVar),
+           let key = Self.gatewayKeySegment(of: url) {
+            let served = members.contains { $0.keyName == key } || key == client.keyName
+            return served || (try? catalog.catalogRow(name: key)) == nil ? key : nil
+        }
         if members.count == 1 { return members[0].keyName }
         if members.isEmpty { return client.keyName }
         return nil

@@ -339,6 +339,59 @@ final class UnwrapTests: XCTestCase {
         XCTAssertEqual((files[0]["backup"] as? String) ?? "", "", "no backup was found")
     }
 
+    // MARK: - VAL-O-001 (an edited companion never writes another key's value)
+
+    /// A `*_BASE_URL` companion is only a hint for which vault key its line held; the
+    /// line's own token is the proof. A companion edited to point at a key the token
+    /// has never served must not make unwrap write that key's secret: the line fails
+    /// per-line, nothing is written for it, and its token still dies. Failed pre-fix:
+    /// the stranger key's value was written into the file.
+    func testEditedCompanionNeverWritesAnotherKeysValue() throws {
+        let site = try makeSite()
+        let project = try makeProject("edited", in: site.dir)
+        let env = try write(
+            "OPENAI_API_KEY=\(openaiValue)\nANTHROPIC_API_KEY=\(anthropicValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\n",
+            to: ".env", under: project
+        )
+        let imported = try wrapByImport(site, folder: project)
+        let openaiKey = try importedKey(imported, "OPENAI_API_KEY")
+        // A third vault key the project token has never served, and an edit of the
+        // wrapped file that points the OpenAI companion at it — the review's shape.
+        let strangerValue = "fake-vault-" + String(repeating: "c3", count: 8)
+        try site.service.add(name: "stranger", provider: "openai", kind: "runtime",
+                             notes: "a key the project token never served", secret: strangerValue)
+        let wrappedText = try String(contentsOf: env, encoding: .utf8)
+        try Data(
+            wrappedText.replacingOccurrences(
+                of: "http://127.0.0.1:12767/\(openaiKey)", with: "http://127.0.0.1:12767/stranger"
+            ).utf8
+        ).write(to: env)
+        let token = try XCTUnwrap(try value("OPENAI_API_KEY", in: env))
+        let promptsBefore = site.gate.reasons.count
+
+        let result = try site.service.unwrap(file: env.path, folder: nil)
+
+        XCTAssertEqual(site.gate.reasons.count - promptsBefore, 1, "still one Touch ID for the whole call")
+        let reason = try XCTUnwrap(site.gate.reasons.last)
+        XCTAssertFalse(reason.contains(strangerValue), "no value in the reason")
+        let restored = try String(contentsOf: env, encoding: .utf8)
+        XCTAssertFalse(restored.contains(strangerValue),
+                       "the stranger key's value never appears in the file")
+        XCTAssertFalse(restored.contains("/stranger"), "the edited companion came back from the backup")
+        XCTAssertTrue(restored.contains(anthropicValue), "the intact line is restored from the vault")
+        XCTAssertTrue(restored.contains("ksfc_"), "the failed line keeps its token")
+
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files[0]["restored"] as? [String], ["ANTHROPIC_API_KEY"],
+                       "only the line whose companion its token backs is restored")
+        let failed = try XCTUnwrap(files[0]["failed"] as? [[String: Any]])
+        XCTAssertEqual(failed.map { $0["variable"] as? String }, ["OPENAI_API_KEY"])
+        XCTAssertTrue((failed[0]["reason"] as? String)?.contains("cannot tell which vault key") == true,
+                      "the failure says the line could not be attributed")
+        assertDecision("revoked", name: openaiKey, token: token, service: site.service)
+        XCTAssertEqual(try site.db.listWrappedFiles().count, 0, "the record is cleared")
+    }
+
     // MARK: - VAL-UNWRAP-004 (project default and unknown project)
 
     /// A cwd with no recorded wrapped files answers an honest error stating nothing
