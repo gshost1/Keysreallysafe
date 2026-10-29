@@ -308,6 +308,15 @@ final class UpdateInstaller: @unchecked Sendable {
     var report: ((Phase) -> Void)?
     /// How to quit the app once the swap is done; AppWindow passes the menu's own quit path.
     var quit: (() -> Void)?
+    /// The background path's pre-swap idleness gate (H2): the same activity the
+    /// quiet wait sampled, re-read immediately before the first bundle move. The
+    /// download and verification took minutes, and a Touch ID prompt or gateway
+    /// call that came up in that window must not die to the swap — past this
+    /// point the running bundle starts moving and a relaunch helper is about to
+    /// be pending, so this is the last refusal that costs nothing. The manual
+    /// flow leaves it nil: its modal progress window keeps the person in charge
+    /// of the timing.
+    var idleGate: (any UpdateActivitySource)?
     private var download: ReleaseAssetDownload?
     private var cancelled = false
 
@@ -381,6 +390,14 @@ final class UpdateInstaller: @unchecked Sendable {
         // The signature gate comes after staging and before the swap: a different team or
         // requirement would silently cut the app off from every Keychain item it owns.
         try StableSigning.validate(plan.incoming, replacing: plan.app)
+        // The background path's last idleness check, immediately before the first
+        // bundle move (H2): the quiet window that opened before the download says
+        // nothing about the minutes that have since passed, and a prompt or gateway
+        // call that came up in that window must not die to the swap. Nothing has
+        // moved yet, so refusing here is the one point where the install can defer
+        // with no relauncher pending; the background updater answers the thrown
+        // deferral with its deferred line and the next daily check tries again.
+        if let idleGate, idleGate.busy { throw BackgroundInstallBusy() }
         do { try fm.moveItem(at: plan.app, to: plan.previous) }
         catch {
             try? fm.removeItem(at: plan.incoming)

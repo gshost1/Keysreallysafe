@@ -37,6 +37,14 @@ protocol BackgroundInstallRunning {
 
 extension UpdateInstaller: BackgroundInstallRunning {}
 
+/// The pre-swap gate's refusal (H2): the Mac turned busy while the installer's
+/// download ran, so the swap — which moves the running bundle out from under
+/// the process and leaves a relaunch helper pending — must not begin. Nothing
+/// has moved and nothing is pending when this is thrown; the background
+/// updater recognizes it and answers with its deferred line, never the
+/// did-not-install one, because the next daily check can simply try again.
+struct BackgroundInstallBusy: Error {}
+
 /// One kind of work the automatic install must wait out (a Touch ID prompt, a
 /// gateway request). Counts the units in progress and remembers when a unit
 /// last began or ended: the quiet gate samples the count, and the stamp is what
@@ -133,9 +141,7 @@ final class BackgroundUpdater {
 
     init(
         activity: any UpdateActivitySource,
-        makeInstaller: @escaping @MainActor (ReleaseInfo, URL) -> any BackgroundInstallRunning = { release, app in
-            UpdateInstaller(release: release, app: app)
-        },
+        makeInstaller: (@MainActor (ReleaseInfo, URL) -> any BackgroundInstallRunning)? = nil,
         appURL: @escaping () -> URL = { Bundle.main.bundleURL },
         notifier: AppNotifier? = nil,
         quit: @escaping @MainActor () -> Void = { NSApp.terminate(nil) },
@@ -149,7 +155,17 @@ final class BackgroundUpdater {
         waitLimit: TimeInterval = BackgroundUpdatePolicy.waitLimit
     ) {
         self.activity = activity
-        self.makeInstaller = makeInstaller
+        // The background factory: the manual flow's own installer with the
+        // quiet gate's activity attached, so the swap itself is refused when the
+        // Mac turned busy during the download (H2). Built in the body because
+        // a default argument cannot see the sibling parameter it would capture.
+        // The manual flow constructs its own installer and passes no gate: its
+        // modal progress window keeps the person in charge of the timing.
+        self.makeInstaller = makeInstaller ?? { release, app in
+            let installer = UpdateInstaller(release: release, app: app)
+            installer.idleGate = activity
+            return installer
+        }
         self.appURL = appURL
         self.notifier = notifier
         self.quit = quit
@@ -164,14 +180,20 @@ final class BackgroundUpdater {
     /// The scheduled path found a newer release: wait for the quiet window, then
     /// install through the same gates the manual flow uses, notify, and quit for
     /// the relaunch. Its own task, so the check that found the release is not
-    /// held open; one install at a time.
+    /// held open; one install at a time. Idleness is re-checked THROUGH the
+    /// install (H2), because the download and the swap take minutes and the
+    /// window that opened before them says nothing about the moment they end:
+    /// once right before the swap (inside the installer — that gate is the one
+    /// that guarantees no relaunch helper was spawned, because it fires before
+    /// the first bundle move) and once immediately before the quit. Busy at
+    /// either point defers to the next daily check and the app keeps running.
     func install(_ release: ReleaseInfo) {
         guard !installing else { return }
         installing = true
         Task { @MainActor in
             defer { installing = false }
             guard await self.waitForQuiet() else {
-                self.log("background update deferred: the Mac stayed busy for \(Int(self.waitLimit)) seconds")
+                self.logDeferred()
                 return
             }
             let installer = self.makeInstaller(release, self.appURL())
@@ -182,13 +204,33 @@ final class BackgroundUpdater {
             if let manual = installer as? UpdateInstaller { manual.quit = nil }
             do {
                 try await installer.run()
+            } catch is BackgroundInstallBusy {
+                // The pre-swap gate fired: nothing moved and nothing is
+                // pending, so the deferral is the whole story.
+                self.logDeferred()
+                return
             } catch {
                 self.log("background update did not install: \(error.localizedDescription)")
                 return
             }
             await self.notifier?.noteUpdateInstalled()
+            // The quit's own re-check: a prompt or gateway call that came up
+            // while the installer ran must not die to the relaunch. Busy here
+            // defers too — the update is installed and its relaunch helper is
+            // pending, so the new version takes over at the app's next quit —
+            // and the app keeps serving until then.
+            if self.activity.busy {
+                self.logDeferred()
+                return
+            }
             self.quit()
         }
+    }
+
+    /// The deferral the next daily check picks up, in the one wording the log
+    /// already carries.
+    private func logDeferred() {
+        log("background update deferred: the Mac stayed busy for \(Int(self.waitLimit)) seconds")
     }
 
     /// Waits for the quiet window: nothing the app must stay alive for — a

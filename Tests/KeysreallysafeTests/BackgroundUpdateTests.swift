@@ -3,14 +3,24 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
-/// The scheduled check's background install half — VAL-UPDATE-001..005 and
-/// VAL-CROSS-003. An extension of `AppUpdaterTests` so the whole updater surface
-/// stays under the one validation filter (`swift test --filter AppUpdaterTests`).
-/// Every test drives the injected seams: the release check, the quiet gate's
-/// activity timeline and clock, the installer, the notification delivery, the
-/// manual offer's answer and the quit. No network, disk image, signing identity,
-/// real dialog, Keychain or installed app is ever touched.
+/// The scheduled check's background install half — VAL-UPDATE-001..005,
+/// VAL-CROSS-003 and VAL-H-002/H-004. An extension of `AppUpdaterTests` so the
+/// whole updater surface stays under the one validation filter
+/// (`swift test --filter AppUpdaterTests`). Every test drives the injected
+/// seams: the release check, the quiet gate's activity timeline and clock, the
+/// installer, the notification delivery, the manual offer's answer and the
+/// quit. No network, disk image, signing identity, real dialog, Keychain or
+/// installed app is ever touched.
 extension AppUpdaterTests {
+
+    /// The repo checkout root, for the source-level pins.
+    private static var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
 
     // MARK: - VAL-UPDATE-001
 
@@ -179,11 +189,14 @@ extension AppUpdaterTests {
 
     /// The automatic path runs the manual flow's own installer, and its quit hook
     /// stays unset: the background path delivers its notification first and quits
-    /// after, so the installer never races the delivery.
+    /// after, so the installer never races the delivery. The installer it hands
+    /// the background path also carries the quiet gate's activity (H2's pre-swap
+    /// re-check), while the manual flow's own construction passes none.
     @MainActor
     func testTheAutomaticPathRunsTheManualsInstallerWithNoQuitHookOfItsOwn() throws {
         let clock = FakeClock()
-        let updater = BackgroundUpdater(activity: ScriptedUpdateActivity(clock: clock))
+        let activity = ScriptedUpdateActivity(clock: clock)
+        let updater = BackgroundUpdater(activity: activity)
         let app = URL(fileURLWithPath: "/Applications/Keysrs.app")
         let release = newerRelease()
 
@@ -193,6 +206,11 @@ extension AppUpdaterTests {
         XCTAssertEqual(installer.release.version, release.version)
         XCTAssertEqual(installer.app, app)
         XCTAssertNil(installer.quit, "the installer never quits by itself on the background path")
+        XCTAssertTrue(installer.idleGate as? ScriptedUpdateActivity === activity,
+                      "the background factory hands the installer the quiet gate's activity: the pre-swap re-check (H2)")
+
+        let manual = UpdateInstaller(release: release, app: app)
+        XCTAssertNil(manual.idleGate, "the manual Update Now keeps its modal window in charge of the timing")
     }
 
     /// A rejected checksum or signature never installs, quits, relaunches or
@@ -398,6 +416,74 @@ extension AppUpdaterTests {
         try await until(service.gatewayActivity.count == 0)
         XCTAssertEqual(service.gatewayActivity.count, 0, "the request ends with the call")
         XCTAssertNotNil(service.gatewayActivity.lastTouched, "the moment it ended is remembered, so the quiet window restarts")
+    }
+
+    // MARK: - VAL-H-002: idleness re-checked through the install
+
+    /// The quiet gate opened, the download ran for minutes — and the Mac turned
+    /// busy DURING the install: a Touch ID ask or a gateway call came up while
+    /// the installer worked. The relaunch must not kill it: busy at quit time
+    /// defers to the next daily check with the existing deferred line, and the
+    /// app keeps running. The fake installer marks the scripted activity busy at
+    /// the top of its run — the exact moment the real path's own re-check reads
+    /// it (the fake gains the hook the onSleep/failWith pattern set).
+    @MainActor
+    func testBusyDiscoveredDuringTheInstallDefersTheRelaunchWithoutQuitting() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        rig.installer.onRun = {
+            rig.activity.busy(from: rig.clock.offset, through: 10_000)
+        }
+
+        rig.controller.didLaunch()
+        await drain(until: rig.logs.all.contains { $0.contains("deferred") })
+
+        XCTAssertEqual(rig.installer.installCalls, 1, "the install began after the quiet window")
+        XCTAssertEqual(rig.installer.runCount, 1, "the installer ran")
+        XCTAssertEqual(rig.quits.calls, 0, "busy at quit time defers the relaunch: the app keeps running")
+        XCTAssertTrue(
+            rig.logs.all.contains { $0.contains("background update deferred") },
+            "the deferral is the existing deferred line, logged for the next daily check"
+        )
+        XCTAssertEqual(
+            rig.delivery.notifications, [AppNotification.updateInstalled],
+            "the update did install, so its notification was already delivered; only the relaunch waits"
+        )
+    }
+
+    /// The pre-swap half of VAL-H-002, pinned on the source: the real
+    /// `UpdateInstaller.run()` cannot run offline (download, disk image,
+    /// signing identity), so what is pinned is the gate's PLACEMENT — the
+    /// idleness re-check fires inside the installer's run, before the first
+    /// bundle move, and throws the deferral the background updater recognizes.
+    /// A gate after the first move would leave a half-swapped app behind, and a
+    /// relauncher is about to be pending the moment the moves start.
+    func testTheRealInstallerRechecksIdlenessBeforeTheFirstMove() throws {
+        let source = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("Sources/KeysCore/AppUpdater.swift"), encoding: .utf8
+        )
+        let gate = try XCTUnwrap(
+            source.range(of: "if let idleGate, idleGate.busy"),
+            "the pre-swap gate: the background path re-checks idleness inside the installer's run"
+        )
+        let firstMove = try XCTUnwrap(
+            source.range(of: "fm.moveItem(at: plan.app, to: plan.previous)"),
+            "the swap's first bundle move"
+        )
+        XCTAssertLessThan(
+            gate.lowerBound, firstMove.lowerBound,
+            "the gate fires before the running bundle starts moving"
+        )
+        XCTAssertTrue(
+            source.contains("BackgroundInstallBusy"),
+            "the gate throws the background path's own deferral, not a generic failure"
+        )
+        let background = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("Sources/KeysCore/BackgroundUpdates.swift"), encoding: .utf8
+        )
+        XCTAssertTrue(
+            background.contains("is BackgroundInstallBusy"),
+            "the background path answers the gate's deferral with its deferred line, not the did-not-install one"
+        )
     }
 
     // MARK: - fixtures
@@ -635,9 +721,15 @@ private final class RecordingUpdateInstaller: BackgroundInstallRunning, @uncheck
 
     func failWith(_ error: Error) { failure = error }
 
+    /// Set before the drive; called at the top of run(), so a test can make
+    /// the Mac busy at the exact moment the real path's own re-check reads it
+    /// (H2: busy discovered DURING the install must defer, not quit).
+    var onRun: (() -> Void)?
+
     func run() async throws {
         runs += 1
         order.record("install")
+        onRun?()
         if let failure { throw failure }
     }
 
