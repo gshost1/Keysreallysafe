@@ -1119,28 +1119,85 @@ struct ModelsCommand: ParsableCommand {
 struct DashboardCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dashboard",
-        abstract: "Bring the Keysrs app's window to the front, launching the app when none is running."
+        abstract: "The checkout's dev dashboard on 127.0.0.1; the installed app's window when keys is the app's binary."
     )
 
-    // Accepted for compatibility with scripts that passed them; the window opens
-    // with its own current range, and the two still refuse to be combined.
+    // Accepted for compatibility with scripts that passed them; the dev copy serves
+    // the requested range and the window opens on its own, and the two still
+    // refuse to be combined.
     @Flag var month = false
     @Flag var week = false
 
-    func run() throws { try run(launch: .production) }
+    /// Which dashboard owner this binary is: the installed app's bundle serves the
+    /// dashboard in its own window, anything else is a checkout build and serves
+    /// the checkout's Web/ as the dev copy (the build/test recipe documents it).
+    enum Build {
+        case checkout
+        case installedBundle
 
-    /// The show with the app-discovery seam and control file injectable
-    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
-    /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        static func current(bundle: Bundle = .main) -> Build {
+            AppResources.applicationBundle(in: bundle) == nil ? .checkout : .installedBundle
+        }
+    }
+
+    func run() throws { try run(launch: .production, control: nil, build: Build.current()) }
+
+    /// The command with the app-discovery seam, the control file and the
+    /// checkout/bundle branch injectable (`AppConnection.connect()` owns the
+    /// launch policy; tests pin both halves of the branch — the bundled show path
+    /// over recording launch fakes and a synthetic app site, the checkout dev copy
+    /// over a fake service bind and browser open — always on temp state).
+    func run(
+        launch: AppLaunchSeam,
+        control: URL?,
+        build: Build,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        makeService: () throws -> KeysService = AppFactory.makeService,
+        bind: (KeysService, UInt16) throws -> LoopbackHTTPServer = { service, port in
+            try LoopbackSite.bind(service: service, preferredPort: port)
+        },
+        openBrowser: (URL) -> Void = { NSWorkspace.shared.open($0) },
+        serveLoop: (KeysService) -> Void = { service in
+            DispatchQueue.global(qos: .utility).async {
+                _ = try? service.ingest(.all)
+                try? service.pollOpenRouter()
+            }
+            IngestScheduler.scheduleRepeating(service: service)
+            OpenRouterScheduler.schedule(service: service)
+            RunLoop.main.run()
+        }
+    ) throws {
         if month && week { throw AppError.usage("choose --month or --week") }
-        // The app owns the dashboard now: this command's whole job is its window.
-        // The shared connection launches the app when nothing is up and waits for
-        // a healthy control endpoint, then the same token-gated show route the MCP
-        // `open_app` tool and a second app launch use fronts the window. There is
-        // deliberately no checkout-site fallback and no browser here: a second
-        // dashboard server would fight the app's own, and a failed launch is the
-        // plain not-running sentence (exit 6), exactly like every eligible caller.
+        switch build {
+        case .checkout:
+            // The dev copy: this checkout's Web/ on the documented dev port, the
+            // browser open skipped whenever KEYS_NO_OPEN asks for it, then the
+            // ingest pass, the schedulers and the server loop.
+            let service = try makeService()
+            let server = try bind(service, LoginItem.dashboardPort)
+            let range = week ? "week" : "month"
+            let url = URL(string: "http://127.0.0.1:\(server.boundPort)/?range=\(range)")!
+            let line = "Keysrs  \(url.absoluteString)\n"
+            FileHandle.standardOutput.write(Data(line.utf8))
+            fflush(stdout)
+            if !Paths.noOpenBrowser(environment: environment) {
+                openBrowser(url)
+            }
+            serveLoop(service)
+        case .installedBundle:
+            try showAppWindow(launch: launch, control: control)
+        }
+    }
+
+    /// The bundled half: the app owns the dashboard when this binary is its
+    /// bundle's, so the command's whole job here is its window. The shared
+    /// connection launches the app when nothing is up and waits for a healthy
+    /// control endpoint, then the same token-gated show route the MCP `open_app`
+    /// tool and a second app launch use fronts the window. No browser and no
+    /// second site: a second dashboard server would fight the app's own, and a
+    /// failed launch is the plain not-running sentence (exit 6), exactly like
+    /// every eligible caller.
+    private func showAppWindow(launch: AppLaunchSeam, control: URL?) throws {
         let app = try AppConnection.connect(control: control, launch: launch)
         _ = try app.call(method: "POST", path: "/api/mcp/app/show", body: [:], expect: 200)
         print("Keysrs  showing the Keysrs window")

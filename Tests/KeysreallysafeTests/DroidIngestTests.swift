@@ -228,4 +228,15 @@ final class DroidIngestTests: XCTestCase {
         XCTAssertEqual(droid["files"] as? Int, 2)
         XCTAssertEqual(droid["inserted"] as? Int, 7)
     }
+
+    // VAL-H-008: the KEYS_NO_OPEN switch the checkout dev copy of `keys dashboard`
+    // honors — absent, empty and "0" leave the browser open on, anything else
+    // keeps the tab off.
+    func testDashboardNoOpenSwitch() {
+        XCTAssertFalse(Paths.noOpenBrowser(environment: [:]))
+        XCTAssertFalse(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": ""]))
+        XCTAssertFalse(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": "0"]))
+        XCTAssertTrue(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": "1"]))
+        XCTAssertTrue(Paths.noOpenBrowser(environment: ["KEYS_NO_OPEN": "true"]))
+    }
 }
