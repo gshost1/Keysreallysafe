@@ -19,7 +19,7 @@ struct MCPServer {
     /// The server name MCP clients see, the same constant the registration writes.
     static let serverName = "keysrs"
     /// The frozen `instructions` string (VAL-MCP-INSTRUCTIONS-002 pins it byte for
-    /// byte): the preamble line plus the six rules, LF-joined, no trailing newline.
+    /// byte): the preamble line plus the seven rules, LF-joined, no trailing newline.
     /// It names tools later missions add; that is deliberate.
     static let instructions = """
 Keysrs is the local API-key vault on this Mac. When using its tools, follow these rules:
@@ -29,6 +29,7 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
 4. If no key exists, ask the user to run `keys add` in their own terminal; the agent never types a key.
 5. After a failure, offer send_feedback but never send it.
 6. Never print tokens back to the user unless they ask.
+7. Only call set_analytics_sharing after the user has explicitly answered the analytics question; never enable sharing on your own.
 """
 
     private let writeBytes: (Data) -> Void

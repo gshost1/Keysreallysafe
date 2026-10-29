@@ -104,6 +104,8 @@ enum AppRuntime {
         // The app owns notifications: the authorization ask and the local-state poll
         // both run from the app process, never from a CLI or MCP subprocess.
         let notifications = AppNotifier(preferences: service.preferences)
+        // The MCP set_analytics_sharing route's one confirmation line, beside the relay's.
+        service.analyticsLog = { logFile.write($0) }
         var startedServer: LoopbackHTTPServer?
         do {
             try LegacyAppMigration(root: root, plist: LoginItem.agentPlist, run: LoginItem.run, log: log).migrate {

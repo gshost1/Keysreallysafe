@@ -818,10 +818,10 @@ struct RevokeCommand: ParsableCommand {
     @Argument(help: "Grant id from keys grant, or omit with --all.")
     var id: String?
 
-    @Flag(help: "Revoke every active grant.")
+    @Flag(help: "Revoke every active grant and client token (or one key's with --key).")
     var all = false
 
-    @Option(help: "With --all, only grants for this key.")
+    @Option(help: "With --all, only this key's grants and client tokens.")
     var key: String?
 
     func run() throws { try run(launch: .production) }
@@ -832,14 +832,18 @@ struct RevokeCommand: ParsableCommand {
     func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
         let client = try AppConnection.connect(control: control, launch: launch).controlClient
         if all {
-            var path = "/api/grants"
+            var body: [String: Any] = ["caller": "cli"]
             if let key {
                 try KeyName.validate(key)
-                path += "?key=\(key)"
+                body["key"] = key
             }
-            let obj = try client.call(method: "DELETE", path: path, expect: 200)
-            let n = (obj["revoked"] as? [Any])?.count ?? 0
-            print("revoked \(n) grant\(n == 1 ? "" : "s")")
+            // The combined route: grants live only in the app's memory and client
+            // tokens are catalog rows, so one call ends both kinds at once — the
+            // dashboard's grants-only DELETE /api/grants button stays grants-only.
+            let obj = try client.call(method: "POST", path: "/api/mcp/revoke_all", body: body, expect: 200)
+            let grants = JSONValue.int(obj["revoked_grants"]) ?? 0
+            let clients = JSONValue.int(obj["revoked_clients"]) ?? 0
+            print("revoked \(grants) grant\(grants == 1 ? "" : "s") and \(clients) client token\(clients == 1 ? "" : "s")")
             return
         }
         guard let id, !id.isEmpty else { throw AppError.usage("give a grant id, or --all") }

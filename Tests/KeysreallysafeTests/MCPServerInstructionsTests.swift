@@ -2,13 +2,13 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
-/// VAL-MCP-INSTRUCTIONS-001..002: the initialize result carries the frozen six-rule
+/// VAL-MCP-INSTRUCTIONS-001..002: the initialize result carries the frozen seven-rule
 /// instructions string — present, sane, never anywhere else, byte-for-byte as the
 /// contract freezes it.
 final class MCPServerInstructionsTests: XCTestCase {
 
     /// The contract's literal, copied verbatim from the validation contract's fenced
-    /// block: seven lines, LF-joined, no trailing newline.
+    /// block: eight lines, LF-joined, no trailing newline.
     static let frozen = """
 Keysrs is the local API-key vault on this Mac. When using its tools, follow these rules:
 1. Never open or read .env files yourself; use the scan_project tool instead.
@@ -17,6 +17,7 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
 4. If no key exists, ask the user to run `keys add` in their own terminal; the agent never types a key.
 5. After a failure, offer send_feedback but never send it.
 6. Never print tokens back to the user unless they ask.
+7. Only call set_analytics_sharing after the user has explicitly answered the analytics question; never enable sharing on your own.
 """
 
     /// INSTRUCTIONS-001: every initialize carries instructions, no other method's
@@ -55,7 +56,7 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
     }
 
     /// INSTRUCTIONS-002: the byte-for-byte pin — LF-joined, no trailing newline,
-    /// exactly the seven contract lines.
+    /// exactly the eight contract lines.
     func testInstructionsBytePinned() throws {
         let (frames, _) = try MCPSession.run([MCPSession.initialize()])
         XCTAssertEqual(frames.last, "")
@@ -67,10 +68,10 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
         XCTAssertEqual(instructions, Self.frozen)
         XCTAssertFalse(instructions.hasSuffix("\n"), "no trailing newline")
         XCTAssertFalse(instructions.contains("\r"), "LF-joined, never CRLF")
-        XCTAssertEqual(instructions.split(separator: "\n", omittingEmptySubsequences: false).count, 7,
-                       "the preamble line plus the six rules")
-        // The six rules, each present once.
-        for rule in ["scan_project", "keys add", "send_feedback"] {
+        XCTAssertEqual(instructions.split(separator: "\n", omittingEmptySubsequences: false).count, 8,
+                       "the preamble line plus the seven rules")
+        // The rules that name a tool, each present once.
+        for rule in ["scan_project", "keys add", "send_feedback", "set_analytics_sharing"] {
             XCTAssertEqual(instructions.components(separatedBy: rule).count - 1, 1)
         }
         XCTAssertEqual(MCPServer.instructions, Self.frozen, "the server constant matches the contract literal")

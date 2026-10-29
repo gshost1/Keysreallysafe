@@ -83,6 +83,22 @@ final class ProductAnalyticsTests: XCTestCase {
         XCTAssertTrue(transport.calls.isEmpty, "Current UTC day must stay local and mutable")
     }
 
+    /// The four onboarding counters join the closed vocabulary on both sides. The
+    /// producers land with the onboarding mission's tools, but the names are
+    /// recorded here (and pinned by the golden) so the app and the collector agree
+    /// in the meantime; the payload shape, schema and consent version do not move.
+    func testOnboardingCountersJoinTheCountsDictionary() throws {
+        let (_, _, _, analytics) = try harness()
+        XCTAssertEqual(ProductAnalytics.consentVersion, 2)
+        XCTAssertEqual(ProductAnalytics.schemaVersion, 2)
+        try analytics.setEnabled(true, consentVersion: 2)
+        for event in [ProductAnalyticsEvent.scanRun, .keyImport, .grantIssue, .onboardingFinished] {
+            analytics.record(event)
+        }
+        XCTAssertEqual(try reports(analytics).first?["counts"] as? [String: Int],
+                       ["scan_run": 1, "key_import": 1, "grant_issue": 1, "onboarding_finished": 1])
+    }
+
     func testCompletedDayRetryIsImmutableAndAcknowledgmentPreservesNewDay() throws {
         let (_, clock, transport, analytics) = try harness()
         try analytics.setEnabled(true, consentVersion: 2)
@@ -246,6 +262,9 @@ final class ProductAnalyticsTests: XCTestCase {
         let golden = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let decoded = try JSONDecoder().decode(ProductAnalytics.Report.self, from: data)
         XCTAssertEqual(Set(decoded.counts.keys), Set(ProductAnalyticsEvent.allCases.map(\.rawValue)))
+        for counter in ["scan_run", "key_import", "grant_issue", "onboarding_finished"] {
+            XCTAssertTrue(decoded.counts.keys.contains(counter), "the golden carries the onboarding counter \(counter)")
+        }
         XCTAssertEqual(decoded.schema_version, ProductAnalytics.schemaVersion)
         XCTAssertFalse(decoded.usage.isEmpty || decoded.windows.isEmpty || decoded.gateway.isEmpty)
         XCTAssertEqual(decoded.consent_version, ProductAnalytics.consentVersion)

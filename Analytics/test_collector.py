@@ -117,6 +117,13 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(self.server.store.insert(value), "accepted")
         self.assertEqual(self.server.store.insert(value), "duplicate")
 
+    def test_accepts_the_onboarding_counters_and_still_rejects_unknown_ones(self):
+        # The four onboarding counters joined COUNT_KEYS; a near-miss name is still refused.
+        names = ["scan_run", "key_import", "grant_issue", "onboarding_finished"]
+        self.assertTrue(set(names) <= set(collector.COUNT_KEYS))
+        self.assertEqual(self.post(json.dumps(report(counts={name: 1 for name in names})).encode()), 204)
+        self.assertEqual(self.post(json.dumps(report(counts={"onboarding_scan": 1})).encode()), 400)
+
     def test_rejects_unknowns_bool_bad_days_and_free_text(self):
         tomorrow = (dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=1)).isoformat()
         old = (dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=8)).isoformat()

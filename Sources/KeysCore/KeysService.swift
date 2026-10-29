@@ -56,6 +56,11 @@ final class KeysService: @unchecked Sendable {
     private let relayToggleLock = NSLock()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     var analytics: ProductAnalytics?
+    /// The app's one analytics confirmation line, as the MCP `set_analytics_sharing`
+    /// route drives it. The running app wires it to menubar.log in `AppRuntime.run()`
+    /// beside `relayHost`; every other process leaves it a no-op, so only the app
+    /// records the onboarding answer. The line names the new state and nothing else.
+    var analyticsLog: (String) -> Void = { _ in }
     /// First-launch answers: background Claude limit refresh, analytics question asked.
     let preferences: AppPreferences
     private var screenLockObserver: NSObjectProtocol?
@@ -1351,6 +1356,48 @@ final class KeysService: @unchecked Sendable {
     @discardableResult
     func revokeGatewayClients(project: String) throws -> Int {
         try catalog.revokeGatewayClients(project: project, at: UTC.iso(Date()))
+    }
+
+    // MARK: - Bulk client revoke (the kill switches)
+
+    /// One `client_revoke` audit row per affected key, naming the revoked ids —
+    /// the per-client row's detail, grouped, so `keys log` reads the same shape.
+    /// Keys and ids in sorted order, so the same catalog always writes the same
+    /// rows. The walk reads the affected clients BEFORE the update, while they
+    /// still read active: afterwards this revoke's rows are indistinguishable
+    /// from an older one's.
+    private func auditClientRevokes(_ clients: [GatewayClient], caller: String) {
+        let byKey = Dictionary(grouping: clients, by: \.keyName)
+        for name in byKey.keys.sorted() {
+            try? recordKeyEvent(
+                name: name,
+                action: "client_revoke",
+                caller: caller,
+                detail: byKey[name]!.sorted { $0.id < $1.id }.map { "#\($0.id)" }.joined(separator: " ")
+            )
+        }
+    }
+
+    /// Revokes every active client token, or one key's — the client half of the
+    /// combined revoke_all route. No presence prompt: revocation only removes
+    /// access. The count is the update's changed rows, so it means "was live,
+    /// now dead" and a second call answers zero.
+    @discardableResult
+    func revokeGatewayClients(key: String? = nil, caller: String = "dashboard", now: Date = Date()) throws -> Int {
+        let affected = try catalog.activeGatewayClients(key: key)
+        let count = try catalog.revokeGatewayClients(key: key, at: UTC.iso(now))
+        auditClientRevokes(affected, caller: caller)
+        return count
+    }
+
+    /// Revokes one project's active client tokens, by projects.id — the same
+    /// audit and count semantics as the key-scoped bulk revoke.
+    @discardableResult
+    func revokeGatewayClients(project: String, caller: String = "dashboard", now: Date = Date()) throws -> Int {
+        let affected = try catalog.activeGatewayClients(project: project)
+        let count = try catalog.revokeGatewayClients(project: project, at: UTC.iso(now))
+        auditClientRevokes(affected, caller: caller)
+        return count
     }
 
     /// Decides whether one request may use `name` through the gateway. Never consults the

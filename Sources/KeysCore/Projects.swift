@@ -122,4 +122,19 @@ extension KeysService {
     func projectLabelsInUse(name: String, now: Date = Date()) throws -> [String] {
         Project.inUseLabels(clients: try gatewayClients(name: name), now: now)
     }
+
+    /// Revokes every active client token bound to the project named `label` —
+    /// client tokens only, because grants carry no project. Labels are recomputed
+    /// unique on insert, so an exact match over the projects table is
+    /// unambiguous (no lookup by label exists; the table is small and this scan
+    /// is the few lines); a label that is another label's prefix is not a match.
+    /// No row is the not-found refusal, the same shape revokeGrant gives an
+    /// unknown grant id. No presence prompt: revocation only removes access.
+    @discardableResult
+    func revokeProjectClients(label: String, caller: String = "mcp", now: Date = Date()) throws -> Int {
+        guard let row = try catalog.projects().first(where: { $0.label == label }) else {
+            throw AppError.notFound(label)
+        }
+        return try revokeGatewayClients(project: row.id, caller: caller, now: now)
+    }
 }

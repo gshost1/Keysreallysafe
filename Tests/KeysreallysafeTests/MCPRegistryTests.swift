@@ -6,28 +6,34 @@ import XCTest
 /// one-file-plus-one-line seam, and containment of an invalid registration.
 final class MCPRegistryTests: XCTestCase {
 
-    /// The full mission roster: the mcp-core mission's five read tools, its two
-    /// grants tools, then the onboarding mission's tools in registration order
-    /// — scan_project, check_exposure, import_and_wrap, test_keys.
+    /// The full merged mission roster: the mcp-core mission's five read tools,
+    /// its two grants tools, the onboarding mission's four tools, then the
+    /// feedback mission's five (send_feedback, set_analytics_sharing,
+    /// revoke_all, revoke_project, activity) — in registration order, which is
+    /// the order of the groups in `MCPToolRegistry.groups`.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
     static let onboardingRoster = ["scan_project", "check_exposure", "import_and_wrap", "test_keys"]
-    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster
+    static let feedbackRoster = ["send_feedback"]
+    static let analyticsRoster = ["set_analytics_sharing"]
+    static let revokeRoster = ["revoke_all", "revoke_project"]
+    static let activityRoster = ["activity"]
+    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster + feedbackRoster + analyticsRoster + revokeRoster + activityRoster
 
-    /// Names no revision of this server has registered: the parallel missions'
-    /// tools, the cancel tool that deliberately does not exist (denial is the
-    /// user cancelling Touch ID), and `keys unwrap` — the restore flow is
-    /// CLI-only on purpose (the MCP surface never rewrote the user's files,
-    /// and revocation stays in the app), so its absence is pinned like the rest.
+    /// Names no revision of this server has registered: the cancel tool that
+    /// deliberately does not exist (denial is the user cancelling Touch ID), and
+    /// `keys unwrap` — the restore flow is CLI-only on purpose (the MCP surface
+    /// never rewrote the user's files, and revocation stays in the app), so its
+    /// absence is pinned like the rest.
     static let neverRegistered = [
-        "revoke_all", "activity", "send_feedback", "grant_cancel", "unwrap",
+        "grant_cancel", "unwrap",
     ]
 
     // MARK: - REGISTRY-001
 
     /// The roster is the LITERAL mission set, pinned by name — not by comparing
     /// `tools/list` to the registry's own declared groups, which is self-referential
-    /// and would let a wrongly-named tool pass. The mission's eight tools, in
+    /// and would let a wrongly-named tool pass. The mission's sixteen tools, in
     /// registration order, each once; every listed name answers `tools/call`, and
     /// the not-yet-built names still answer -32602 and are absent — future tools
     /// appear by registration, never by accident.

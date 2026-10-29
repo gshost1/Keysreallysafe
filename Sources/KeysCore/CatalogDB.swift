@@ -792,6 +792,55 @@ final class CatalogDB: @unchecked Sendable {
         ) > 0
     }
 
+    /// The active (unrevoked) client tokens one bulk revoke is about to touch —
+    /// the same WHERE shape as the matching `revokeGatewayClients` update. Read
+    /// BEFORE the update: once revoked_at is set, this revoke's rows are
+    /// indistinguishable from an older revoke's, so the audit walk needs them
+    /// while they still read active. `key` nil means every key's.
+    func activeGatewayClients(key: String?) throws -> [GatewayClient] {
+        if let key {
+            return try query(
+                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL AND gc.key_name = ? ORDER BY gc.id;",
+                key, row: decodeGatewayClient
+            )
+        }
+        return try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL ORDER BY gc.id;",
+            row: decodeGatewayClient
+        )
+    }
+
+    /// The active client tokens bound to one project, for the project-scoped
+    /// bulk revoke's audit walk.
+    func activeGatewayClients(project: String) throws -> [GatewayClient] {
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL AND gc.project = ? ORDER BY gc.id;",
+            project, row: decodeGatewayClient
+        )
+    }
+
+    /// Bulk revoke: every active client token, or one key's. The changed-row
+    /// count is what was still unrevoked, the count semantics GrantStore.revokeAll
+    /// gave grants — counts mean "was live, now dead", never "rows seen".
+    func revokeGatewayClients(key: String?, at iso: String) throws -> Int {
+        if let key {
+            return try run(
+                "UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL AND key_name = ?;",
+                iso, key
+            )
+        }
+        return try run("UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL;", iso)
+    }
+
+    /// Bulk revoke by projects.id (the gateway_clients.project column): one
+    /// project's active client tokens, same count semantics as the key-scoped one.
+    func revokeGatewayClients(project: String, at iso: String) throws -> Int {
+        try run(
+            "UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL AND project = ?;",
+            iso, project
+        )
+    }
+
     func touchGatewayClient(id: Int64, at iso: String) throws {
         try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
     }
@@ -835,15 +884,6 @@ final class CatalogDB: @unchecked Sendable {
         try query(
             "SELECT client_id, key_name, host FROM gateway_client_keys WHERE client_id = ? ORDER BY key_name;",
             clientID, row: decodeGatewayClientKey
-        )
-    }
-
-    /// Revokes every active client token bound to a project in one statement. Membership
-    /// rows stay, so a revoked token's key list is still readable.
-    func revokeGatewayClients(project: String, at iso: String) throws -> Int {
-        try run(
-            "UPDATE gateway_clients SET revoked_at = ? WHERE project = ? AND revoked_at IS NULL;",
-            iso, project
         )
     }
 
@@ -1479,6 +1519,27 @@ final class CatalogDB: @unchecked Sendable {
             ORDER BY ts DESC, id DESC
             LIMIT ?;
             """, name, limit) {
+            KeyEventRow(
+                id: sqlite3_column_int64($0, 0),
+                ts: columnText($0, 1) ?? "",
+                name: columnText($0, 2) ?? "",
+                action: columnText($0, 3) ?? "",
+                caller: columnText($0, 4),
+                detail: columnText($0, 5)
+            )
+        }
+    }
+
+    /// The `gateway_denied` audit rows in `[startISO, endISO)` — the refusals the
+    /// `activity` tool counts, oldest first. Same half-open ISO comparison the
+    /// usage query uses, so the two sides of one window agree on its edges.
+    func gatewayRefusals(from startISO: String, to endISO: String) throws -> [KeyEventRow] {
+        try query("""
+            SELECT id, ts, name, action, caller, detail
+            FROM key_events
+            WHERE action = 'gateway_denied' AND ts >= ? AND ts < ?
+            ORDER BY ts, id;
+            """, [startISO, endISO]) {
             KeyEventRow(
                 id: sqlite3_column_int64($0, 0),
                 ts: columnText($0, 1) ?? "",

@@ -228,6 +228,42 @@ The tools the server offers:
   app shows one Touch ID prompt naming the keys. A provider with no
   read-only check endpoint reports `no_check_endpoint` with nothing sent.
   Requires the app.
+- `send_feedback` — hand feedback about Keysrs to the maintainer: the running
+  app scrubs the draft first (key values by exact match, Keysrs token shapes
+  and prefixes, provider-key-shaped strings, absolute and `~` paths, key
+  names, project labels, emails except support@keysrs.com, whatever the
+  optional `prompt` argument marks, and over-length text capped at 10,000
+  characters), adds the Keysrs and macOS version, and opens the user's mail
+  client (`destination` `"email"`, the default) or the GitHub issue page
+  (`destination` `"github"`) prefilled with the scrubbed text. Requires the
+  app; no Touch ID — scrubbing removes secrets, it never reads one out.
+  Returns the scrubbed text and per-category removal counts. Keysrs never
+  submits the feedback: the user reviews and sends what opens.
+- `set_analytics_sharing` — record the user's answer to the analytics
+  question: pass `enabled` true to share the daily aggregate report and
+  compare, false to keep it local. Requires the app, and it changes nothing
+  else — no report is sent (only the dashboard's own timer uploads), the
+  pending report preview is never returned, and no Touch ID is asked. Off
+  unless set. Call it only after the user has explicitly answered the
+  analytics question; never enable sharing on your own.
+- `revoke_all` — the kill switch: revoke every active grant and client token
+  at once, or only one vault key's with `key`. Requires the app; no Touch ID,
+  because revocation only removes access. Answers `{revoked_grants,
+  revoked_clients}` — counts of what was still live and is now dead, so a
+  second call answers zeros. Afterwards the grants stop authorizing and the
+  client tokens are refused. The vault's keys themselves are untouched.
+- `revoke_project` — revoke one project's active client tokens by their
+  label — client tokens only; grants carry no project and are untouched.
+  Requires the app; no Touch ID. An unknown label is a not-found error; a
+  known label with nothing active answers `{revoked_clients: 0}`.
+- `activity` — recent gateway use read from the local catalog, so the app does
+  not need to be running: one row per key used in the window, carrying its
+  forwarded request count, its refused request count, the projects using the
+  key by label (empty when none), and the spend the ledger already computed
+  (priced and unpriced call counts; `usd` is null when no call could be
+  priced, never a fake zero). `window` is whole hours (default 24, 1 to 720);
+  `project` keeps one label's keys, and an unknown label answers no rows
+  rather than an error. Never a token, a key value or a request body.
 
 The grant ask returns `{"status":"pending","id":…}` immediately, while the
 Keysrs app shows one Touch ID prompt naming the key, the host and the
@@ -237,8 +273,10 @@ prompt. Treat the handed-over token exactly like a `keys grant` token: it is
 printed for this one task and never belongs in a log, a file or a message.
 
 Everything the server does stays on this Mac: it reads the catalog locally,
-reaches the app over the same loopback control channel the CLI uses, sends
-no product analytics, and adds no outbound endpoint.
+reaches the app over the same loopback control channel the CLI uses, and adds
+no outbound endpoint. It sends no product analytics itself —
+`set_analytics_sharing` only records the user's own answer in the app, and only
+the dashboard's timer ever uploads a report.
 
 ## Scoped access for one task
 
@@ -259,14 +297,19 @@ is for a task the user is around for. Treat the token as a secret: it is
 printed for this one task, and never belongs in a log, a file or a message.
 
 List what is live with `keys grants --json`; end one with `keys revoke <id>`,
-or everything for a key with `keys revoke --all --key <name>`.
+one key's everything with `keys revoke --all --key <name>`, or every grant
+AND client token at once with `keys revoke --all` — it prints both counts
+(`revoked 2 grants and 1 client token`) and needs no Touch ID. The dashboard's
+own Revoke-all button stays grants-only.
 
 ## Unattended and remote: a client token
 
 A grant needs the user present. A program that must outlive a screen lock — a
 nightly job, an agent on another machine — gets a client token instead: a
 capability stored in the catalog as a hash, expiring in days, scoped to HTTP
-methods and a path prefix, revocable with `keys client revoke`.
+methods and a path prefix, revocable with `keys client revoke`, or in bulk
+with `keys revoke --all` (one key's with `--key`) and one project's with the
+`revoke_project` tool.
 
 ```sh
 keys client issue router --label "nightly job" --days 30   # one Touch ID
