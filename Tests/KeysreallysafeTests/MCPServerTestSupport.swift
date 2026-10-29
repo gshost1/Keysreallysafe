@@ -262,6 +262,10 @@ enum MCPSweepRig {
         let gate: RecordingPresenceGate
         let grantToken: String
         let clientToken: String
+        /// The runtime-built fake vault value planted on the rig's second key: the
+        /// sweep's byte scan proves no tool returns it. Built here, never a committed
+        /// secret-shaped literal.
+        let plantedFakeSecret: String
         /// The control file the app-bound tools would connect through. Never
         /// written: `gateway_info` and `open_app` answer their not-running result
         /// against the rig, which is exactly what an offline sweep needs.
@@ -357,6 +361,12 @@ enum MCPSweepRig {
         let (service, gate) = makeGatedService(db: db, secrets: secrets)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: planted)
         _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
+        // A second key whose value is built at runtime, so the sweep's byte scan
+        // covers a value that is never a committed literal.
+        try service.add(
+            name: "sweep", provider: "anthropic", kind: "runtime", notes: "",
+            secret: Self.plantedFakeSecret
+        )
         let grantToken = try grantFor(service, "demo", task: "sweep")
         // A resolved project bound to the one client token, so list_keys has a
         // label to return and the sweep's byte scan proves the path never leaves.
@@ -371,8 +381,13 @@ enum MCPSweepRig {
             gate: gate,
             grantToken: grantToken,
             clientToken: client.token,
+            plantedFakeSecret: Self.plantedFakeSecret,
             control: control,
             setupPrompts: gate.reasons.count
         )
     }
+
+    /// A runtime-built fake vault value — `"fake-vault-"` plus repeated hex, never a
+    /// committed secret-shaped literal (the repo's fake-value convention).
+    static var plantedFakeSecret: String { "fake-vault-" + String(repeating: "b2", count: 8) }
 }

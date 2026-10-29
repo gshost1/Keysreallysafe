@@ -98,6 +98,39 @@ final class MCPRegistryTests: XCTestCase {
         }
     }
 
+    /// VAL-INT-002: the roster holds no forbidden tool KIND. The mission floor
+    /// (AGENTS.md) names the shapes that must never exist — a tool that removes or
+    /// rotates a key, reveals or copies a value, prints one into the environment,
+    /// mints a long-lived token, or turns the relay on — so the listing is scanned
+    /// for them by name, independently of the exact-set pin above: a future group
+    /// that adds one of these fails here by name even if the roster literal is
+    /// edited alongside it.
+    func testNoForbiddenToolKindIsRegistered() throws {
+        let (frames, _) = try MCPSession.run([
+            MCPSession.initialize(),
+            #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+        ])
+        let listed = try Self.names(in: frames[1], id: 1)
+        XCTAssertEqual(listed, Self.missionRoster, "the roster is the sixteen-tool union")
+
+        // Tool names are snake_case, so the forbidden kinds are checked as whole
+        // segments (never as substrings: `revoke_all` must not read as `rotate`).
+        let forbiddenSegments: Set<String> = [
+            "rm", "delete", "rotate", "reveal", "copy", "env", "export", "relay", "token", "long_lived",
+        ]
+        let forbiddenNames: Set<String> = [
+            "env", "relay_on", "relay-on", "long_lived_token", "long-lived-token",
+        ]
+        for name in listed {
+            let segments = Set(name.split(whereSeparator: { $0 == "_" || $0 == "-" }).map(String.init))
+            XCTAssertTrue(
+                segments.isDisjoint(with: forbiddenSegments),
+                "\(name) is a forbidden tool kind: none of rm/rotate/reveal/copy/env/long-lived-token/relay-on may be registered"
+            )
+            XCTAssertFalse(forbiddenNames.contains(name), "\(name) is a forbidden tool kind")
+        }
+    }
+
     // MARK: - REGISTRY-002
 
     /// A tool group defined in the TEST target — its own file, registered by one

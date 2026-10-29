@@ -2,13 +2,14 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
-/// VAL-CROSS-002: the planted-secret sweep — with the full fake rig (a key planted
-/// with the fake secret, a live grant, a client token), every registered tool is
-/// called with its per-tool argument row and the union of captured response bytes
-/// contains zero occurrences of the planted values. The sweep is roster-derived: it
-/// enumerates `tools/list`, never a typed list, so any tool a later mission
-/// registers is swept by default and must add safe offline arguments (or exempt
-/// itself with a written reason) or the sweep fails naming the tool.
+/// VAL-CROSS-002: the planted-secret sweep — with the full fake rig (one key planted
+/// with the shared fake secret and a second with a runtime-built `fake-vault-…` value,
+/// a live grant, a client token), every registered tool is called with its per-tool
+/// argument row and the union of captured response bytes contains zero occurrences of
+/// the planted values. The sweep is roster-derived: it enumerates `tools/list`, never a
+/// typed list, so any tool a later mission registers is swept by default and must add
+/// safe offline arguments (or exempt itself with a written reason) or the sweep fails
+/// naming the tool.
 final class MCPOutputGuardSweepTests: XCTestCase {
 
     /// The one allowed exception: the `grant_status` approved handover carrying its
@@ -69,7 +70,7 @@ final class MCPOutputGuardSweepTests: XCTestCase {
         let responses = Array(frames.dropLast())
         XCTAssertEqual(responses.count, 2 + rows.count, "one response per request, nothing else")
 
-        let forbidden = [fixtureSecret, rig.grantToken, rig.clientToken]
+        let forbidden = [fixtureSecret, rig.plantedFakeSecret, rig.grantToken, rig.clientToken]
         // The listing and handshake frames carry none of the planted values.
         for frame in [responses[0], responses[1]] {
             for value in forbidden {
