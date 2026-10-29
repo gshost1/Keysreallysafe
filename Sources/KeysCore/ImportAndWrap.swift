@@ -80,6 +80,9 @@ extension KeysService {
         // dedupe, storing new keys, turning the gateway on and issuing the project token.
         // Identities are known before the vault is read (the read happens under this
         // prompt), so a new key names its provider and everything else names its variable.
+        // docker:true also opens the global Docker gateway access (set only after a
+        // successful rewrite), so the one reason must say that too — the flag never
+        // flips a global preference unannounced (VAL-O-003).
         var identities: [String] = []
         for candidate in imports {
             let identity = candidate.provider ?? WrapNames.slug(candidate.name)
@@ -88,6 +91,7 @@ extension KeysService {
         try presence.require(
             reason: "import and wrap \(imports.count) key\(imports.count == 1 ? "" : "s") "
                 + "for project \(project.label): \(identities.joined(separator: ", "))"
+                + (docker ? " and allow Docker containers to reach the gateway" : "")
         )
 
         // The batch vault read wrapPlan performs under its own one prompt, with the same

@@ -187,6 +187,33 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(result["project_label"] as? String, "acme")
     }
 
+    // MARK: - VAL-O-003 (the docker flag is named in the one prompt)
+
+    /// docker:true also turns on the global Docker gateway access, so the single
+    /// Touch ID reason must say so: the one prompt names the keys, the project AND
+    /// the Docker access it opens. The docker:false wording keeps its pin above
+    /// (testOnePromptNamesKeysAndProjectLabel). Failed pre-fix: the docker:true
+    /// reason named only the keys and the project, and the preference flipped
+    /// unannounced.
+    func testTheDockerFlagIsNamedInTheSinglePrompt() throws {
+        let vault = try makeVault()
+        let project = try makeProject("dockreason", in: vault.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+
+        _ = try vault.service.importAndWrap(folder: project.path, variables: nil, docker: true)
+
+        XCTAssertEqual(vault.gate.reasons.count, 1, "still exactly one presence call for the whole import")
+        XCTAssertEqual(
+            vault.gate.reasons[0],
+            "import and wrap 1 key for project dockreason: openai"
+                + " and allow Docker containers to reach the gateway",
+            "the one reason names the keys, the project and the Docker access it turns on"
+        )
+        XCTAssertFalse(vault.gate.reasons[0].contains(project.path), "still no path in the reason")
+        XCTAssertEqual(try vault.db.metaValue(AppPreferences.dockerAccessKey), "on",
+                       "the preference is set once the rewrite succeeded")
+    }
+
     // MARK: - VAL-IMW-002 (the app reads the values; nothing crosses the MCP surface)
 
     /// The MCP request carries the folder, names and flags only; the request log proves
