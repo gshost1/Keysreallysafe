@@ -1113,6 +1113,96 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertTrue(try site.service.list().isEmpty, "nothing was imported from it")
     }
 
+    // MARK: - S1 (the folder is always the session's, in canonical form)
+
+    /// The canonical spelling of a temp path, the form the tool now sends.
+    private func canonical(_ url: URL) throws -> String {
+        try Project.canonicalFolder(url.path)
+    }
+
+    /// The folder field the tool put on the wire, or nil when it sent none.
+    private func sentFolder(_ site: Site) throws -> String? {
+        guard let request = site.log.all.last(where: { $0.path == "/api/mcp/import_and_wrap" }) else { return nil }
+        let sent = try JSONSerialization.jsonObject(with: Data(request.body)) as! [String: Any]
+        return sent["folder"] as? String
+    }
+
+    /// With no `folder` argument the tool used to send none, and the app fell back to
+    /// its own working directory (usually `/`), scanning and rewriting env files far
+    /// outside the session. The rig moves this process's working directory — the
+    /// in-process app's — to a separate folder holding its own env file: the call must
+    /// send the session's canonical folder and leave that other file byte-for-byte.
+    func testNoFolderArgumentSendsTheSessionFolderNotTheAppWorkingDirectory() throws {
+        let site = try makeSite()
+        let project = try makeProject(in: site.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        let elsewhere = try TempDir.make()
+        let elsewhereEnv = try write("GROQ_API_KEY=\(groqValue)\n", to: ".env", under: elsewhere)
+        let before = try Data(contentsOf: elsewhereEnv)
+
+        let previous = fm.currentDirectoryPath
+        XCTAssertTrue(fm.changeCurrentDirectoryPath(elsewhere.path))
+        defer { fm.changeCurrentDirectoryPath(previous) }
+
+        let (isError, text) = try callTool(
+            roster(control: site.control, projectFolder: { project.path }), arguments: [:]
+        )
+        XCTAssertFalse(isError, text)
+        XCTAssertEqual(try sentFolder(site), try canonical(project), "the session's canonical folder crossed")
+        XCTAssertEqual(try Data(contentsOf: elsewhereEnv), before, "the app's working directory was not touched")
+        XCTAssertEqual(try site.service.list().map(\.name), ["openai"], "only the session's key was imported")
+    }
+
+    /// A relative folder is resolved against the session folder and sent canonical,
+    /// and a symlink inside the session is resolved once, at the check.
+    func testRelativeAndSymlinkedFoldersAreSentCanonical() throws {
+        let site = try makeSite()
+        let project = try makeProject(in: site.dir)
+        let sub = try makeProject("sub", in: project)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: sub)
+        try fm.createSymbolicLink(at: project.appendingPathComponent("link"), withDestinationURL: sub)
+        let registry = roster(control: site.control, projectFolder: { project.path })
+
+        for spelling in ["sub", "./sub/", "link"] {
+            let (isError, text) = try callTool(registry, arguments: ["folder": spelling])
+            XCTAssertFalse(isError, "\(spelling): \(text)")
+            XCTAssertEqual(try sentFolder(site), try canonical(sub), "\(spelling) crossed canonical")
+        }
+    }
+
+    /// A session started in `/` or the home folder is not a project: the import is
+    /// refused before anything reaches the app, with a path-free message.
+    func testASessionInTheRootOrHomeFolderIsRefused() throws {
+        let site = try makeSite()
+        for session in ["/", NSHomeDirectory()] {
+            let (isError, text) = try callTool(
+                roster(control: site.control, projectFolder: { session }), arguments: [:]
+            )
+            XCTAssertTrue(isError, "\(session) is refused: \(text)")
+            XCTAssertFalse(text.contains(NSHomeDirectory()), "the refusal is path-free")
+        }
+        XCTAssertTrue(
+            try site.log.all.filter { $0.path == "/api/mcp/import_and_wrap" }.isEmpty,
+            "nothing reached the app"
+        )
+        XCTAssertTrue(try site.service.list().isEmpty)
+    }
+
+    /// The route no longer has a default: a body without a folder, or with a relative
+    /// one, is a 400 and imports nothing — the app never falls back to its own cwd.
+    func testRouteRefusesAMissingOrRelativeFolder() throws {
+        let site = try makeSite()
+        let project = try makeProject(in: site.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        for body in [[:], ["folder": NSNull()], ["folder": "acme"], ["docker": false]] as [[String: Any]] {
+            let response = handle(site.handler, method: "POST", path: "/api/mcp/import_and_wrap",
+                                  body: try JSONValue.data(body))
+            XCTAssertEqual(response.status, 400, "refused: \(body)")
+        }
+        XCTAssertTrue(try site.service.list().isEmpty, "nothing was imported")
+        XCTAssertEqual(site.gate.reasons.count, 0, "no prompt was raised")
+    }
+
     // MARK: - the fail-closed isolation guard (owner directive 2026-10-28)
 
     /// The guard's own proof: the production locations — the default catalog seam, the

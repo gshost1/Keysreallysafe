@@ -1320,11 +1320,13 @@ final class APIHandler: @unchecked Sendable {
     /// path. Presence is the flow's own single prompt inside `importAndWrap`.
     private func mcpImportAndWrap(_ request: HTTPRequest) throws -> HTTPResponse {
         let obj = try jsonBody(request)
-        var folder: String?
-        if let raw = obj["folder"], !(raw is NSNull) {
-            guard let supplied = raw as? String else { throw AppError.usage("folder must be a string") }
-            folder = supplied
-        }
+        // The folder is required and absolute: without it the import used to fall
+        // back to the app's own working directory (usually `/`), and a relative
+        // spelling would resolve against that same directory. The MCP tool always
+        // sends the session's canonical folder.
+        guard let raw = obj["folder"], !(raw is NSNull) else { throw AppError.usage("folder is required") }
+        guard let folder = raw as? String else { throw AppError.usage("folder must be a string") }
+        guard folder.hasPrefix("/") else { throw AppError.usage("folder must be an absolute path") }
         var variables: [String]?
         if let raw = obj["variables"], !(raw is NSNull) {
             guard let names = raw as? [Any], names.allSatisfy({ $0 is String }) else {

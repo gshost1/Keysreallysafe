@@ -219,6 +219,32 @@ final class ScanProjectToolTests: XCTestCase {
         }
     }
 
+    /// S1: a session whose own working directory is `/` or the home folder (some MCP
+    /// hosts start servers there) is refused for both read tools, with or without a
+    /// folder argument, before a single file is read. Failed pre-fix: `{}` walked the
+    /// session folder, whatever it was.
+    func testASessionInTheRootOrHomeFolderIsRefused() throws {
+        for session in ["/", NSHomeDirectory()] {
+            let registry = MCPToolRegistry(groups: [MCPOnboardingTools(
+                control: try deadControl(), projectFolder: { session },
+                gitExecutable: { nil }, launch: .neverLaunching
+            )])
+            for tool in ["scan_project", "check_exposure"] {
+                for arguments in [[:], ["folder": session]] as [[String: Any]] {
+                    let argumentsJSON = String(decoding: try JSONValue.data(arguments), as: UTF8.self)
+                    let (frames, _) = try MCPSession.run([
+                        MCPSession.initialize(),
+                        #"{"jsonrpc":"2.0","id":"t","method":"tools/call","params":{"name":"\#(tool)","arguments":\#(argumentsJSON)}}"#,
+                    ], registry: registry)
+                    let result = try MCPSession.assertResult(frames[1], id: "t")
+                    let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+                    XCTAssertEqual(result["isError"] as? Bool, true, "\(tool) in \(session) is refused: \(text)")
+                    XCTAssertFalse(text.contains("/"), "\(tool): the message carries no filesystem tell")
+                }
+            }
+        }
+    }
+
     /// A nonexistent folder, a plain file and a non-string are plain tool errors,
     /// and the messages carry no path.
     func testUnusableFoldersArePathFreeToolErrors() throws {
