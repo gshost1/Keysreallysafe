@@ -35,7 +35,17 @@ extension KeysService {
     private func unwrapFile(path: String, caller: String, now: Date) throws -> [String: Any] {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else {
-            throw AppError.notFound(path)
+            // A recorded file the user deleted since wrap is a stale record, not an
+            // error: the record must not outlive its file, and the uninstall offer —
+            // which unwraps the recorded files before anything is removed — must not
+            // abort on the first missing one. A path Keysrs never recorded keeps
+            // today's honest notFound.
+            let canonical = Self.canonicalSpelling(evenIfMissing: path)
+            guard Set(try catalog.listWrappedFiles().map(\.path)).contains(canonical) else {
+                throw AppError.notFound(path)
+            }
+            try catalog.clearWrappedFile(path: canonical)
+            return ["files": [Self.goneRow(path: canonical)], "revoked": 0]
         }
         guard !isDirectory.boolValue else {
             throw AppError.usage("\(URL(fileURLWithPath: path).lastPathComponent) is a folder, not an env file")
@@ -256,6 +266,18 @@ extension KeysService {
     }
 
     // MARK: - File reading helpers (values stay in this process)
+
+    /// The canonical spelling of a path whose file may be gone: `realpath` cannot
+    /// resolve a deleted final component, so the parent is resolved and the name
+    /// appended — the same spelling `recordWrappedFile` stored while the file existed
+    /// (the `/var` → `/private/var` spelling difference is exactly why the parent
+    /// must be resolved and not the path passed through).
+    static func canonicalSpelling(evenIfMissing path: String) -> String {
+        if let resolved = canonicalPath(path) { return resolved }
+        let components = path as NSString
+        let parent = canonicalPath(components.deletingLastPathComponent) ?? components.deletingLastPathComponent
+        return (parent as NSString).appendingPathComponent(components.lastPathComponent)
+    }
 
     /// True when the file holds a wrapped line or a companion pointing at this
     /// gateway — the pre-prompt test for "is there anything to unwrap".

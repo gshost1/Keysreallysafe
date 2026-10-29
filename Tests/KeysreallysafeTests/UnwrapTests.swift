@@ -535,6 +535,49 @@ final class UnwrapTests: XCTestCase {
         assertDecision("revoked", name: openaiKey, token: token, service: site.service)
     }
 
+    // MARK: - VAL-O-004 (a deleted recorded file is stale, not an abort)
+
+    /// The file form on a path whose file the user deleted since wrap is a stale
+    /// record, not an error: the record must not outlive its file, and the uninstall
+    /// offer — which unwraps the recorded files before removing the app — must not
+    /// die on the first missing one. The row is cleared, a stated gone row answers,
+    /// and no Touch ID is spent. Failed pre-fix: unwrap threw notFound.
+    func testARecordedFileThatIsGoneIsStaleNotAnError() throws {
+        let site = try makeSite()
+        let project = try makeProject("gonefile", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(openaiValue)\n", to: ".env", under: project)
+        _ = try wrapByImport(site, folder: project)
+        // The canonical spelling must be captured while the file still exists: the
+        // record holds the canonical form, and realpath cannot resolve a deleted path.
+        let canonical = KeysService.canonicalPath(env.path) ?? env.path
+        try fm.removeItem(at: env)
+        let promptsBefore = site.gate.reasons.count
+
+        let result = try site.service.unwrap(file: env.path, folder: nil)
+
+        XCTAssertEqual(site.gate.reasons.count, promptsBefore, "no Touch ID for a file that is not there")
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(files[0]["file"] as? String, canonical, "the row answers for the recorded path")
+        XCTAssertTrue((files[0]["message"] as? String ?? "").contains("no longer exists"),
+                      "the gone file is stated: \(files[0])")
+        XCTAssertEqual(try site.db.listWrappedFiles().count, 0, "the stale record was cleared")
+    }
+
+    /// A missing path Keysrs never recorded keeps today's honest notFound — the stale
+    /// tolerance is for records, never for arbitrary paths.
+    func testAnUnrecordedMissingPathStillAnswersNotFound() throws {
+        let site = try makeSite()
+        let nowhere = site.dir.appendingPathComponent("nowhere/.env").path
+
+        XCTAssertThrowsError(try site.service.unwrap(file: nowhere, folder: nil)) { error in
+            guard case AppError.notFound = error else {
+                return XCTFail("expected a not-found refusal, got \(error)")
+            }
+        }
+        XCTAssertEqual(try site.db.listWrappedFiles().count, 0, "nothing was recorded")
+    }
+
     // MARK: - The route and the CLI runner (both forms, the token gate, no leaks)
 
     /// The route is origin-token gated like /api/wrap (403 without the token), and the

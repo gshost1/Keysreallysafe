@@ -17,9 +17,9 @@ final class UninstallOfferTests: XCTestCase {
     private var openaiValue: String { "sk-" + fakeBody + "02" }
     private var anthropicValue: String { "sk-ant-" + fakeBody + "01" }
 
-    /// What one scripted run did, in order: "unwrap:<path>" per accepted unwrap and
-    /// "uninstall" for the removal — the event log is how a test proves the removal
-    /// came last, or never came.
+    /// What one scripted run did, in order: "unwrap:<project>" per accepted per-project
+    /// unwrap and "uninstall" for the removal — the event log is how a test proves the
+    /// removal came last, or never came.
     private final class Recorder {
         var events: [String] = []
         var reports: [String] = []
@@ -27,22 +27,22 @@ final class UninstallOfferTests: XCTestCase {
     }
 
     private func makeRunner(
-        files: [String],
+        rows: [(path: String, project: String)],
         interactive: Bool = true,
         answer: Bool = false,
         recorder: Recorder,
         unwrapError: @escaping (String) -> Error? = { _ in nil }
     ) -> UninstallOfferRunner {
         UninstallOfferRunner(
-            wrappedFiles: { files },
+            wrappedFiles: { rows },
             isInteractive: { interactive },
             confirm: {
                 recorder.confirmCalls += 1
                 return answer
             },
-            unwrap: { path in
-                recorder.events.append("unwrap:\(path)")
-                if let error = unwrapError(path) { throw error }
+            unwrap: { project in
+                recorder.events.append("unwrap:\(project)")
+                if let error = unwrapError(project) { throw error }
             },
             uninstall: { recorder.events.append("uninstall") },
             report: { recorder.reports.append($0) }
@@ -55,7 +55,7 @@ final class UninstallOfferTests: XCTestCase {
     /// runs exactly as it did before the offer existed.
     func testNoRecordsRemovesWithoutAnyOffer() throws {
         let rec = Recorder()
-        let runner = makeRunner(files: [], recorder: rec)
+        let runner = makeRunner(rows: [], recorder: rec)
 
         try runner.run()
 
@@ -69,14 +69,16 @@ final class UninstallOfferTests: XCTestCase {
     /// With records: every path is printed BEFORE the explicit question, and nothing
     /// is removed before the answer.
     func testOfferListsEveryPathBeforeAsking() throws {
-        let files = ["/tmp/proj/.env", "/tmp/proj/sub/.env.local"]
+        let rows: [(path: String, project: String)] = [
+            ("/tmp/proj/.env", "proj"), ("/tmp/proj/sub/.env.local", "proj"),
+        ]
         let rec = Recorder()
-        var runner = makeRunner(files: files, answer: false, recorder: rec)
+        var runner = makeRunner(rows: rows, answer: false, recorder: rec)
         let ask = runner.confirm
         runner.confirm = {
-            for file in files {
-                XCTAssertTrue(rec.reports.contains { $0.contains(file) },
-                              "the path is listed before the question: \(file)")
+            for row in rows {
+                XCTAssertTrue(rec.reports.contains { $0.contains(row.path) },
+                              "the path is listed before the question: \(row.path)")
             }
             XCTAssertFalse(rec.events.contains("uninstall"), "nothing is removed before the answer")
             XCTAssertTrue(rec.events.isEmpty, "nothing is unwrapped before the answer")
@@ -97,24 +99,26 @@ final class UninstallOfferTests: XCTestCase {
 
     // MARK: - VAL-UNIN-002 (accept unwraps first; decline states what is left)
 
-    /// Yes: every listed file is unwrapped through the app first, in listed order,
-    /// and only then does the removal proceed.
-    func testAcceptUnwrapsEveryFileBeforeTheRemoval() throws {
-        let files = ["/tmp/a/.env", "/tmp/b/.env"]
+    /// Yes: every recorded project is unwrapped through the app first, one call per
+    /// distinct project, and only then does the removal proceed.
+    func testAcceptUnwrapsEveryProjectBeforeTheRemoval() throws {
+        let rows: [(path: String, project: String)] = [
+            ("/tmp/a/.env", "a"), ("/tmp/b/.env", "b"),
+        ]
         let rec = Recorder()
-        let runner = makeRunner(files: files, answer: true, recorder: rec)
+        let runner = makeRunner(rows: rows, answer: true, recorder: rec)
 
         try runner.run()
 
-        XCTAssertEqual(rec.events, ["unwrap:/tmp/a/.env", "unwrap:/tmp/b/.env", "uninstall"],
-                       "both unwraps happen before the removal")
+        XCTAssertEqual(rec.events, ["unwrap:a", "unwrap:b", "uninstall"],
+                       "both projects unwrap before the removal")
     }
 
     /// No: the removal still proceeds, with a plain statement that the wrapped files
     /// were left holding tokens that no longer work.
     func testDeclineProceedsWithTheDeadTokenStatement() throws {
         let rec = Recorder()
-        let runner = makeRunner(files: ["/tmp/a/.env"], answer: false, recorder: rec)
+        let runner = makeRunner(rows: [("/tmp/a/.env", "a")], answer: false, recorder: rec)
 
         try runner.run()
 
@@ -130,9 +134,9 @@ final class UninstallOfferTests: XCTestCase {
     /// nothing is unwrapped blindly; the removal proceeds with the explicit statement
     /// only (the keys wrap guard precedent).
     func testNonInteractiveNeverUnwrapsBlindly() throws {
-        let files = ["/tmp/a/.env"]
+        let rows: [(path: String, project: String)] = [("/tmp/a/.env", "a")]
         let rec = Recorder()
-        let runner = makeRunner(files: files, interactive: false, answer: true, recorder: rec)
+        let runner = makeRunner(rows: rows, interactive: false, answer: true, recorder: rec)
 
         try runner.run()
 
@@ -152,7 +156,7 @@ final class UninstallOfferTests: XCTestCase {
         let rec = Recorder()
         let sentence = "no running Keysrs site owns the gateway; open Keysrs.app or run keys dashboard, then retry"
         let runner = makeRunner(
-            files: ["/tmp/a/.env"], answer: true, recorder: rec,
+            rows: [("/tmp/a/.env", "a")], answer: true, recorder: rec,
             unwrapError: { _ in AppError.siteUnavailable(sentence) }
         )
 
@@ -166,19 +170,19 @@ final class UninstallOfferTests: XCTestCase {
         XCTAssertFalse(rec.events.contains("uninstall"), "the removal was aborted — nothing bricked")
     }
 
-    /// A failure partway through the list aborts the removal too: a half-unwrapped
+    /// A failure partway through the projects aborts the removal too: a half-unwrapped
     /// set with the install already gone is exactly the silent bricking this offer
     /// exists to prevent.
     func testAFailedUnwrapMidListAlsoAborts() throws {
         let rec = Recorder()
         let runner = makeRunner(
-            files: ["/tmp/a/.env", "/tmp/b/.env"], answer: true, recorder: rec,
-            unwrapError: { $0 == "/tmp/b/.env" ? AppError.http("connection dropped") : nil }
+            rows: [("/tmp/a/.env", "a"), ("/tmp/b/.env", "b")], answer: true, recorder: rec,
+            unwrapError: { $0 == "b" ? AppError.http("connection dropped") : nil }
         )
 
         XCTAssertThrowsError(try runner.run())
-        XCTAssertEqual(rec.events, ["unwrap:/tmp/a/.env", "unwrap:/tmp/b/.env"],
-                       "the second unwrap was attempted and failed…")
+        XCTAssertEqual(rec.events, ["unwrap:a", "unwrap:b"],
+                       "the second project's unwrap was attempted and failed…")
         XCTAssertFalse(rec.events.contains("uninstall"), "…so the removal never ran")
     }
 
@@ -191,14 +195,15 @@ final class UninstallOfferTests: XCTestCase {
         let catalog = dir.appendingPathComponent("catalog.db")
         try assertNotProductionPath(catalog)
 
-        let files = try UninstallOfferRunner.recordedWrappedFiles(catalog: catalog)
+        let rows = try UninstallOfferRunner.recordedWrappedFiles(catalog: catalog)
 
-        XCTAssertEqual(files, [])
+        XCTAssertTrue(rows.isEmpty, "no records means no rows")
         XCTAssertFalse(fm.fileExists(atPath: catalog.path), "no catalog file was created")
     }
 
-    /// With a catalog, the read returns every recorded path (and the fail-closed
-    /// guard runs on the rig's temp location like every control-channel test).
+    /// With a catalog, the read returns every recorded row — path AND project, the
+    /// fields the offer groups by (and the fail-closed guard runs on the rig's temp
+    /// location like every control-channel test).
     func testRecordedWrappedFilesListsTheCatalogsRows() throws {
         let (db, dir) = try makeDB()
         try assertNotProductionPath(db.path)
@@ -207,20 +212,30 @@ final class UninstallOfferTests: XCTestCase {
         try db.recordWrappedFile(path: dir.appendingPathComponent("q/.env.local").path,
                                  project: "q", at: "2026-10-28T00:00:00Z")
 
-        let files = try UninstallOfferRunner.recordedWrappedFiles(catalog: db.path)
+        let rows = try UninstallOfferRunner.recordedWrappedFiles(catalog: db.path)
 
-        XCTAssertEqual(files.count, 2)
-        XCTAssertTrue(files.allSatisfy { $0.hasSuffix(".env") || $0.hasSuffix(".env.local") })
+        XCTAssertEqual(rows.map(\.project), ["p", "q"], "the rows carry the project to group by")
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows.allSatisfy { $0.path.hasSuffix(".env") || $0.path.hasSuffix(".env.local") })
     }
 
     // MARK: - The accept path drives the real unwrap flow (temp control channel only)
 
-    /// End to end through the seams the command actually uses: the records come from
-    /// a temp catalog, the unwrap goes through UnwrapRunner over a temp control file
-    /// to an in-process app with fake presence and a fake secret store, and the
-    /// removal is the injected recorder — the real Installer.uninstall never runs in
-    /// a test (owner directive 2026-10-28).
-    func testAcceptUnwrapsThroughTheAppBeforeTheInjectedRemoval() throws {
+    /// The in-process app for the end-to-end tests: a real APIHandler over a temp
+    /// catalog behind a recording loopback server, `control.json` beside that same
+    /// catalog — the UnwrapTests rig shape, guarded by the fail-closed check on every
+    /// control-channel path.
+    private struct OfferSite {
+        let db: CatalogDB
+        let dir: URL
+        let service: KeysService
+        let gate: RecordingPresenceGate
+        let handler: APIHandler
+        let server: LoopbackHTTPServer
+        let control: URL
+    }
+
+    private func makeOfferSite() throws -> OfferSite {
         let (db, dir) = try makeDB()
         try assertNotProductionPath(db.path)
         let (service, gate) = makeGatedService(db: db)
@@ -233,33 +248,44 @@ final class UninstallOfferTests: XCTestCase {
         let control = ControlFile.url(beside: db.path)
         try assertNotProductionPath(control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        return OfferSite(db: db, dir: dir, service: service, gate: gate, handler: handler,
+                         server: server, control: control)
+    }
 
-        // A wrapped project, recorded the way import_and_wrap records it.
-        let project = dir.appendingPathComponent("acme", isDirectory: true)
+    /// End to end through the seams the command actually uses: the records come from
+    /// a temp catalog, the unwrap goes through UnwrapRunner over a temp control file
+    /// to an in-process app with fake presence and a fake secret store, and the
+    /// removal is the injected recorder — the real Installer.uninstall never runs in
+    /// a test (owner directive 2026-10-28).
+    func testAcceptUnwrapsThroughTheAppBeforeTheInjectedRemoval() throws {
+        let site = try makeOfferSite()
+        let project = site.dir.appendingPathComponent("acme", isDirectory: true)
         try fm.createDirectory(at: project, withIntermediateDirectories: true)
         let original = "OPENAI_API_KEY=\(openaiValue)\nANTHROPIC_API_KEY=\(anthropicValue)\n"
         let env = project.appendingPathComponent(".env")
         try Data(original.utf8).write(to: env)
-        let imported = try service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let imported = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
         let rows = (imported["variables"] as? [Any])?.compactMap(JSONValue.object) ?? []
         let openaiKey = try XCTUnwrap(rows.first { JSONValue.string($0["variable"]) == "OPENAI_API_KEY" }
             .flatMap { JSONValue.string($0["key"]) })
         let token = try XCTUnwrap(EnvFile.parse(try String(contentsOf: env, encoding: .utf8)).value(of: "OPENAI_API_KEY"))
         XCTAssertTrue(token.hasPrefix("ksfc_"), "the file was wrapped")
-        let promptsBefore = gate.reasons.count
+        let promptsBefore = site.gate.reasons.count
 
         let rec = Recorder()
         let runner = UninstallOfferRunner(
-            wrappedFiles: { try UninstallOfferRunner.recordedWrappedFiles(catalog: db.path) },
+            wrappedFiles: { try UninstallOfferRunner.recordedWrappedFiles(catalog: site.db.path) },
             isInteractive: { true },
             confirm: { rec.confirmCalls += 1; return true },
-            unwrap: { path in
-                rec.events.append("unwrap:\(path)")
+            unwrap: { projectID in
+                rec.events.append("unwrap:\(projectID)")
+                let folder = try XCTUnwrap(try site.db.project(id: projectID)?.path)
                 let unwrap = UnwrapRunner(
-                    connect: { try ControlClient.connect(control: control) },
-                    out: { _ in }
+                    connect: { try ControlClient.connect(control: site.control) },
+                    out: { _ in },
+                    projectFolder: { folder }
                 )
-                _ = try unwrap.run(path: path)
+                _ = try unwrap.run(path: nil)
             },
             uninstall: { rec.events.append("uninstall") },
             report: { rec.reports.append($0) }
@@ -267,14 +293,15 @@ final class UninstallOfferTests: XCTestCase {
 
         try runner.run()
 
-        XCTAssertEqual(rec.events.count, 2, "one unwrap, then the removal")
+        XCTAssertEqual(rec.events.count, 2, "one per-project unwrap, then the removal")
         XCTAssertTrue(rec.events[0].hasPrefix("unwrap:"), "the unwrap came first")
         XCTAssertEqual(rec.events[1], "uninstall", "the removal came last")
         XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8),
                        "the file was restored byte-for-byte before the removal")
-        XCTAssertEqual(gate.reasons.count - promptsBefore, 1, "the unwrap's one Touch ID")
-        XCTAssertEqual(try db.listWrappedFiles().count, 0, "the record was cleared by the unwrap")
-        if case .allowed = service.authorizeGatewayClient(
+        XCTAssertEqual(site.gate.reasons.count - promptsBefore, 1,
+                       "the unwrap's one Touch ID — the per-project form prompts once")
+        XCTAssertEqual(try site.db.listWrappedFiles().count, 0, "the record was cleared by the unwrap")
+        if case .allowed = site.service.authorizeGatewayClient(
             name: openaiKey, headers: ["authorization": "Bearer \(token)"], method: "POST", rest: ""
         ) {
             XCTFail("the file's token must be dead after the unwrap")
@@ -283,6 +310,61 @@ final class UninstallOfferTests: XCTestCase {
         XCTAssertTrue(printed.contains(env.path), "the offer listed the file")
         XCTAssertFalse(printed.contains(fakeBody), "no value in any report")
         XCTAssertFalse(printed.contains("ksfc_"), "no token in any report")
+    }
+
+    // MARK: - VAL-O-004 (a deleted recorded file does not abort the uninstall)
+
+    /// A recorded wrapped file the user deleted since wrap must not abort the removal:
+    /// answered yes, the offer unwraps the project in ONE per-project call, the
+    /// per-project unwrap clears the deleted file's stale record and restores the
+    /// survivor, and the uninstall completes. Failed pre-fix: the per-file unwrap of
+    /// the deleted path threw notFound ("not found: …/acme/.env") and the removal
+    /// never ran.
+    func testDeletedRecordedFileDoesNotAbortTheUninstall() throws {
+        let site = try makeOfferSite()
+        let project = site.dir.appendingPathComponent("acme", isDirectory: true)
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        let original = "OPENAI_API_KEY=\(openaiValue)\n"
+        let envA = project.appendingPathComponent(".env")
+        try Data(original.utf8).write(to: envA)
+        let originalB = "ANTHROPIC_API_KEY=\(anthropicValue)\n"
+        let envB = project.appendingPathComponent(".env.local")
+        try Data(originalB.utf8).write(to: envB)
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        XCTAssertEqual(try site.db.listWrappedFiles().count, 2, "both files are recorded")
+        let projectID = try site.db.listWrappedFiles()[0].project
+        try fm.removeItem(at: envA)
+        let promptsBefore = site.gate.reasons.count
+
+        let rec = Recorder()
+        let runner = UninstallOfferRunner(
+            wrappedFiles: { try UninstallOfferRunner.recordedWrappedFiles(catalog: site.db.path) },
+            isInteractive: { true },
+            confirm: { rec.confirmCalls += 1; return true },
+            unwrap: { projectID in
+                rec.events.append("unwrap:\(projectID)")
+                let folder = try XCTUnwrap(try site.db.project(id: projectID)?.path)
+                let unwrap = UnwrapRunner(
+                    connect: { try ControlClient.connect(control: site.control) },
+                    out: { _ in },
+                    projectFolder: { folder }
+                )
+                _ = try unwrap.run(path: nil)
+            },
+            uninstall: { rec.events.append("uninstall") },
+            report: { rec.reports.append($0) }
+        )
+
+        try runner.run()
+
+        XCTAssertEqual(rec.events, ["unwrap:\(projectID)", "uninstall"],
+                       "one per-project unwrap, then the removal — the deleted file did not abort it")
+        XCTAssertEqual(try Data(contentsOf: envB), Data(originalB.utf8),
+                       "the surviving file was restored byte-for-byte")
+        XCTAssertEqual(try site.db.listWrappedFiles().count, 0,
+                       "every record was cleared, the deleted file's included")
+        XCTAssertEqual(site.gate.reasons.count - promptsBefore, 1,
+                        "one Touch ID — the surviving file's, under the one per-project prompt")
     }
 
     /// The command surface: `autostart --remove`'s help names the offer, so the

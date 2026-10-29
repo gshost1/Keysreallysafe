@@ -5,9 +5,10 @@ import Foundation
 /// the only uninstall-performing code path (`Installer.uninstall`), and a wrapped
 /// env file whose tokens die with the install is the silent bricking this offer
 /// exists to prevent — so before anything is removed the recorded `wrapped_files`
-/// are listed and the user is asked an explicit question. Yes unwraps each file
-/// through the running app (the `/api/unwrap` flow) BEFORE the removal; when the app
-/// is not running the unwrap's control sentence propagates and the removal never
+/// are listed and the user is asked an explicit question. Yes unwraps every recorded
+/// project through the running app (the per-project `/api/unwrap` flow, one Touch ID
+/// per project, gone files tolerated as stale records) BEFORE the removal; when the
+/// app is not running the unwrap's control sentence propagates and the removal never
 /// happens — the user starts Keysrs.app and retries. No proceeds with a plain
 /// statement that the files were left holding tokens that no longer work. No records
 /// means no offer at all: the command behaves byte-for-byte as it did before.
@@ -26,16 +27,21 @@ struct UninstallOfferRunner {
         "leaving the wrapped files as they are: they hold gateway tokens that no longer work "
             + "without Keysrs — run keys unwrap <file> with Keysrs.app open if you still need the real values"
 
-    /// The recorded wrapped files, straight from the catalog beside the install.
-    var wrappedFiles: () throws -> [String]
+    /// The recorded wrapped files as (path, project) rows, straight from the catalog
+    /// beside the install. The offer lists the paths and groups the rows by project,
+    /// so the unwrap is ONE call per project; `project` is a projects.id the unwrap
+    /// seam resolves.
+    var wrappedFiles: () throws -> [(path: String, project: String)]
     /// Whether stdin is a terminal. The offer never defaults to yes: without a tty it
     /// cannot ask, so it proceeds with the explicit statement only (the keys wrap
     /// guard precedent).
     var isInteractive: () -> Bool
     /// The explicit question; tests script the yes/no (the WrapRunner precedent).
     var confirm: () -> Bool
-    /// Unwraps one file through the running app. A throw — the not-running control
-    /// sentence above all — aborts the whole removal.
+    /// Unwraps one project (its projects.id) through the running app — the per-project
+    /// form, one Touch ID for every file the project wraps, a record whose file was
+    /// deleted since wrap cleared as stale. A throw — the not-running control sentence
+    /// above all — aborts the whole removal.
     var unwrap: (String) throws -> Void
     /// The removal itself, injected in tests (`Installer.live.uninstall()` live).
     var uninstall: () throws -> Void
@@ -44,18 +50,24 @@ struct UninstallOfferRunner {
     var report: (String) -> Void
 
     func run() throws {
-        let files = try wrappedFiles()
-        guard !files.isEmpty else {
+        let rows = try wrappedFiles()
+        guard !rows.isEmpty else {
             try uninstall()
             return
         }
         report("wrapped env files recorded for this installation:")
-        for file in files { report("  \(file)") }
+        for row in rows { report("  \(row.path)") }
         if isInteractive(), confirm() {
-            // Unwrap everything BEFORE anything is removed. A failure partway — or
-            // the app not running at all — propagates and the removal never runs, so
-            // no file is left holding a token whose app was just deleted.
-            for file in files { try unwrap(file) }
+            // Unwrap everything BEFORE anything is removed, one call per project: the
+            // per-project form tolerates a record whose file is gone (it clears the
+            // stale row and moves on) where a per-file call would abort the removal on
+            // the first missing file. A failure partway — or the app not running at
+            // all — still propagates and the removal never runs, so nothing is left
+            // holding a token whose app was just deleted.
+            var seen: Set<String> = []
+            for row in rows where seen.insert(row.project).inserted {
+                try unwrap(row.project)
+            }
         } else {
             report(Self.leftBehindStatement)
         }
@@ -64,9 +76,11 @@ struct UninstallOfferRunner {
 
     /// The catalog's recorded wrapped files, read-only: a missing catalog (an
     /// install that predates the records) answers "none" without creating the file.
-    static func recordedWrappedFiles(catalog: URL) throws -> [String] {
+    /// Rows, not paths — the offer groups them by project for the one-prompt-per-
+    /// project unwrap.
+    static func recordedWrappedFiles(catalog: URL) throws -> [(path: String, project: String)] {
         guard FileManager.default.fileExists(atPath: catalog.path) else { return [] }
-        return try CatalogDB(path: catalog).listWrappedFiles().map(\.path)
+        return try CatalogDB(path: catalog).listWrappedFiles().map { ($0.path, $0.project) }
     }
 
     /// The live seams for `keys autostart --remove`. The unwrap connection is the
@@ -83,9 +97,20 @@ struct UninstallOfferRunner {
                     .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 return answer == "y" || answer == "yes"
             },
-            unwrap: { path in
-                let runner = UnwrapRunner(connect: { try ControlClient.connect() }, out: out)
-                _ = try runner.run(path: path)
+            unwrap: { project in
+                // The per-project form: the projects row holds the project's canonical
+                // folder, and the runner's projectFolder seam carries it — one prompt
+                // unwraps every file the project wraps, gone files included. A project
+                // id with no row (possible only through raw SQL) cannot be unwrapped,
+                // and refusing is the safe direction: the removal must not leave files
+                // behind that nothing can restore.
+                guard let row = try CatalogDB(path: Paths.catalogDB).project(id: project) else {
+                    throw AppError.notFound("project \(project)")
+                }
+                let runner = UnwrapRunner(
+                    connect: { try ControlClient.connect() }, out: out, projectFolder: { row.path }
+                )
+                _ = try runner.run(path: nil)
             },
             uninstall: { try Installer.live.uninstall() },
             report: { fputs($0 + "\n", stderr) }
