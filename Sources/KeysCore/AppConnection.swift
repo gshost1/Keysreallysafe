@@ -115,6 +115,19 @@ struct AppConnection {
     /// itself is the injected launcher's, and nothing else in the product opens
     /// the app on a caller's behalf.
     private static func openInstalledApp(launch: AppLaunchSeam) {
+        // The bundle id is only a spelling of the ONE app this seam may open —
+        // the install at the fixed location. LaunchServices registers a mounted
+        // disk image's copy or a build output under the same id as readily as
+        // the real install, so the resolution is checked first and anything
+        // other than the installed location is refused here; the installed-path
+        // form is used instead. A nil resolution is not a refusal: the open by
+        // id is still attempted (it answers false on its own), so the
+        // not-registered case and the pinned bundle-first trace keep their shape.
+        if let registered = launch.launcher.resolve(bundleID: appBundleID),
+           registered != installedAppURL {
+            _ = launch.launcher.open(installedAt: installedAppURL)
+            return
+        }
         if launch.launcher.open(bundleID: appBundleID) { return }
         _ = launch.launcher.open(installedAt: installedAppURL)
     }

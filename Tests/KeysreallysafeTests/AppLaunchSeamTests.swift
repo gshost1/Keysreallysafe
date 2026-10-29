@@ -151,6 +151,68 @@ final class AppLaunchSeamTests: XCTestCase {
         )
     }
 
+    /// The seam's launch POLICY, pinned on the source (VAL-H-003): only the
+    /// install at the fixed location may be opened. LaunchServices registers a
+    /// mounted disk image's copy or a build output under the same bundle id as
+    /// readily as the real install, so `openInstalledApp` must check the
+    /// resolution — through the launcher's `resolve` seam — before the open by
+    /// id, and refuse anything that is not the installed path. The pin is
+    /// source-level because the refusal needs a launcher that resolves to a
+    /// foreign URL, which the pre-fix seam cannot even express.
+    func testTheSeamRefusesABundleIDResolutionThatIsNotTheInstall() throws {
+        let seam = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("Sources/KeysCore/AppConnection.swift"), encoding: .utf8
+        )
+        let check = try XCTUnwrap(
+            seam.range(of: "resolve(bundleID: appBundleID)"),
+            "the seam inspects where LaunchServices resolved the bundle id before opening by it"
+        )
+        let byID = try XCTUnwrap(
+            seam.range(of: "open(bundleID: appBundleID)"),
+            "the open by bundle id"
+        )
+        XCTAssertLessThan(
+            check.lowerBound, byID.lowerBound,
+            "the resolution is checked before the bundle-id open, so a foreign resolution is never opened"
+        )
+        XCTAssertTrue(
+            seam.contains("registered != installedAppURL"),
+            "a resolution that is not the installed location is refused and the installed-path form is used"
+        )
+    }
+
+    /// VAL-H-003's behavior: a launcher whose bundle-id resolution is a mounted
+    /// disk image's copy (/Volumes/Keysrs/Keysrs.app — what LaunchServices
+    /// answers while the DMG is mounted) is REFUSED: no open by the bundle id
+    /// happens at all, and the installed-path form is used on both attempts.
+    /// The launcher fake would accept the bundle-id open (`openBundleID` true),
+    /// so the trace proves the policy never asked.
+    func testALaunchServicesResolutionElsewhereIsRefusedForTheInstalledPath() throws {
+        let launch = RecordingAppLaunch()
+        launch.registeredBundleURL = URL(fileURLWithPath: "/Volumes/Keysrs/Keysrs.app")
+        launch.openBundleID = true
+        launch.openInstalledPath = false
+        let control = try nowhereControl()
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch.seam)
+
+        XCTAssertThrowsError(try AppConnection.connect(control: control, launch: launch.seam)) { error in
+            guard case AppError.siteUnavailable(let message) = error else {
+                return XCTFail("expected the seam's plain not-running sentence, got \(error)")
+            }
+            XCTAssertEqual(message, AppConnection.notRunningMessage, "the plain sentence, byte for byte")
+        }
+
+        XCTAssertFalse(
+            launch.launchTargets.contains { $0.hasPrefix("bundle:") },
+            "the mounted-disk-image resolution is never opened by its bundle id"
+        )
+        XCTAssertEqual(
+            launch.launchTargets,
+            ["path:\(AppConnection.installedAppURL.path)", "path:\(AppConnection.installedAppURL.path)"],
+            "the installed-path form on both attempts, with no bundle-id open between them"
+        )
+    }
+
     // MARK: - tunnel and relay run keep gatewayDown (VAL-CONNECT-003)
 
     /// A healthy app whose gateway is still not listening keeps `keys tunnel`'s own

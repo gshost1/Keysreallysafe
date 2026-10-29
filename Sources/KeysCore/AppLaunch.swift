@@ -13,6 +13,13 @@ import Foundation
 /// the fallback when that open is refused. Each answers whether the open was
 /// accepted, so the one seam can tell "nothing is installed" from "starting".
 protocol AppLauncher: Sendable {
+    /// Where LaunchServices has the bundle id registered; nil when nothing
+    /// resolves under it. Separate from the open, so the seam's POLICY can
+    /// inspect the resolution before anything is opened: LaunchServices
+    /// registers a mounted disk image's copy or a build output under the same
+    /// id as readily as the real install, and only the installed location is
+    /// the app this product promises to open.
+    func resolve(bundleID: String) -> URL?
     /// Opens the app LaunchServices has registered under the bundle id; false
     /// when nothing resolves (or nothing opens) under it.
     func open(bundleID: String) -> Bool
@@ -60,8 +67,12 @@ struct AppLaunchSeam: Sendable {
 /// the open was accepted, and the app takes it from there — the launcher never
 /// waits for it; the waiting belongs to the one seam's bounded poll.
 struct LaunchServicesAppLauncher: AppLauncher {
+    func resolve(bundleID: String) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+    }
+
     func open(bundleID: String) -> Bool {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return false }
+        guard let url = resolve(bundleID: bundleID) else { return false }
         return open(installedAt: url)
     }
 
@@ -85,6 +96,7 @@ struct ThreadAppLaunchClock: AppLaunchClock {
 /// wants: a down site then fails closed to the plain sentence instead of
 /// ever touching the user's real app.
 struct NoLaunchAppLauncher: AppLauncher {
+    func resolve(bundleID: String) -> URL? { nil }
     func open(bundleID: String) -> Bool { false }
     func open(installedAt url: URL) -> Bool { false }
 }

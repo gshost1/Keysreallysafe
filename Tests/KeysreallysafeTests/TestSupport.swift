@@ -479,11 +479,22 @@ final class RecordingAppLaunch: AppLauncher, AppLaunchClock, @unchecked Sendable
     /// Whether an open by bundle id is accepted; false simulates a bundle id
     /// LaunchServices cannot resolve (forcing the installed-path fallback).
     var openBundleID = true
+    /// What `resolve` answers for the bundle id; nil — LaunchServices has
+    /// nothing registered — is the default. A test that scripts a FOREIGN
+    /// resolution (a mounted disk image's copy, a build output) sets it here,
+    /// and the seam's policy must refuse it before anything opens.
+    var registeredBundleURL: URL?
     /// Whether an open of the installed path is accepted; false simulates nothing
     /// being installed.
     var openInstalledPath = true
     /// When true, an open is a test failure — for the zero-launch contracts.
     var failOnOpen = false
+
+    func resolve(bundleID: String) -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return registeredBundleURL
+    }
 
     func open(bundleID: String) -> Bool {
         lock.lock()
