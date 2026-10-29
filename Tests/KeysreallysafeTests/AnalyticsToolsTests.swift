@@ -97,24 +97,36 @@ final class AnalyticsToolsTests: XCTestCase {
         XCTAssertEqual(site.analytics.isEnabled, false)
         XCTAssertNil(try site.db.metaValue(ProductAnalytics.stateKey))
 
+        // S5: an agent's "on" is not consent. It changes nothing, writes no line,
+        // and answers pending until the person turns it on in the app. Failed
+        // pre-fix: consent flipped on with no user involvement.
         let on = try post(site, ["enabled": true])
         XCTAssertEqual(on.status, 200)
         let onBody = try JSONSerialization.jsonObject(with: on.body) as? [String: Any]
-        XCTAssertEqual(onBody?["enabled"] as? Bool, true)
-        XCTAssertEqual(Set(onBody?.keys.map { $0 } ?? []), ["enabled"], "the bounded answer, never the status preview")
-        XCTAssertEqual(site.analytics.isEnabled, true)
-        XCTAssertEqual(site.log.recorded, ["analytics sharing turned on"])
+        XCTAssertEqual(onBody?["enabled"] as? Bool, false)
+        XCTAssertEqual(onBody?["status"] as? String, "pending_user_confirmation")
+        XCTAssertEqual(Set(onBody?.keys.map { $0 } ?? []), ["enabled", "status"], "the bounded answer, never the status preview")
+        XCTAssertEqual(site.analytics.isEnabled, false, "consent stays off")
+        XCTAssertNil(try site.db.metaValue(ProductAnalytics.stateKey), "no consent written")
+        XCTAssertEqual(site.log.recorded, [], "nothing changed, so no confirmation line")
         XCTAssertTrue(site.transport.calls.isEmpty, "enabling sends nothing")
         XCTAssertTrue(site.transport.fetches.isEmpty, "enabling fetches nothing")
         XCTAssertEqual(site.gate.reasons, [], "no Touch ID on the sharing path")
+
+        // The person turns it on in the app (the dashboard's own switch); a later
+        // agent "on" then reports the true state without touching it.
+        try site.analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
+        let already = try JSONSerialization.jsonObject(with: try post(site, ["enabled": true]).body) as? [String: Any]
+        XCTAssertEqual(already?["enabled"] as? Bool, true)
+        XCTAssertEqual(Set(already?.keys.map { $0 } ?? []), ["enabled"])
 
         let off = try post(site, ["enabled": false])
         XCTAssertEqual(off.status, 200)
         let offBody = try JSONSerialization.jsonObject(with: off.body) as? [String: Any]
         XCTAssertEqual(offBody?["enabled"] as? Bool, false)
         XCTAssertEqual(Set(offBody?.keys.map { $0 } ?? []), ["enabled"])
-        XCTAssertEqual(site.analytics.isEnabled, false)
-        XCTAssertEqual(site.log.recorded, ["analytics sharing turned on", "analytics sharing turned off"])
+        XCTAssertEqual(site.analytics.isEnabled, false, "turning it off is immediate")
+        XCTAssertEqual(site.log.recorded, ["analytics sharing turned off"])
         XCTAssertTrue(site.transport.calls.isEmpty)
     }
 
@@ -150,20 +162,20 @@ final class AnalyticsToolsTests: XCTestCase {
         let file = AppLogFile(url: logURL)
         site.service.analyticsLog = { file.write($0) }
 
-        XCTAssertEqual(try post(site, ["enabled": true]).status, 200)
+        XCTAssertEqual(try post(site, ["enabled": true]).status, 200, "pending: no line")
+        try site.analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
+        XCTAssertEqual(try post(site, ["enabled": false]).status, 200)
         XCTAssertEqual(try post(site, ["enabled": false]).status, 200)
 
         let written = try String(contentsOf: logURL, encoding: .utf8)
         let lines = written.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         XCTAssertEqual(lines.last, "", "the log ends with a newline")
         let entries = lines.dropLast()
-        XCTAssertEqual(entries.count, 2, "exactly one line per successful set")
-        let pattern = #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z analytics sharing turned (on|off)$"#
+        XCTAssertEqual(entries.count, 2, "exactly one line per successful off, none for a pending on")
+        let pattern = #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z analytics sharing turned off$"#
         for entry in entries {
             XCTAssertNotNil(entry.range(of: pattern, options: .regularExpression), "the line format: \(entry)")
         }
-        XCTAssertTrue(entries[0].hasSuffix("analytics sharing turned on"))
-        XCTAssertTrue(entries[1].hasSuffix("analytics sharing turned off"))
     }
 
     // MARK: - The tool (VAL-AN-006, 010, 011)
@@ -190,16 +202,17 @@ final class AnalyticsToolsTests: XCTestCase {
             return try JSONSerialization.jsonObject(with: Data(answer.utf8)) as? [String: Any] ?? [:]
         }
         let on = try call(["enabled": true])
-        XCTAssertEqual(Set(on.keys), ["enabled"], "the tool relays the bounded answer")
-        XCTAssertEqual(on["enabled"] as? Bool, true)
-        XCTAssertEqual(site.analytics.isEnabled, true)
-        XCTAssertEqual(site.log.recorded, ["analytics sharing turned on"])
+        XCTAssertEqual(on as NSDictionary, ["enabled": false, "status": "pending_user_confirmation"] as NSDictionary,
+                       "S5: the tool cannot opt the person in")
+        XCTAssertEqual(site.analytics.isEnabled, false)
+        XCTAssertEqual(site.log.recorded, [])
         XCTAssertTrue(site.transport.calls.isEmpty, "the tool sends nothing")
 
+        try site.analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
         let off = try call(["enabled": false])
         XCTAssertEqual(off["enabled"] as? Bool, false)
-        XCTAssertEqual(site.analytics.isEnabled, false)
-        XCTAssertEqual(site.log.recorded.count, 2)
+        XCTAssertEqual(site.analytics.isEnabled, false, "the tool turns it off at once")
+        XCTAssertEqual(site.log.recorded, ["analytics sharing turned off"])
     }
 
     /// A non-boolean (or missing) `enabled` is a local refusal: no round trip, no

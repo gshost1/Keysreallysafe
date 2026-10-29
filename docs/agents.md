@@ -249,8 +249,11 @@ The tools the server offers:
   Returns the scrubbed text and per-category removal counts. Keysrs never
   submits the feedback: the user reviews and sends what opens.
 - `set_analytics_sharing` — record the user's answer to the analytics
-  question: pass `enabled` true to share the daily aggregate report and
-  compare, false to keep it local. Requires the app, and it changes nothing
+  question: `enabled` false keeps it local and turns sharing off at once.
+  `enabled` true does not turn it on: the answer is
+  `{"enabled": false, "status": "pending_user_confirmation"}`, and the agent
+  asks the user to switch sharing on in the Keysrs app, where that switch is
+  the confirmation. Requires the app, and it changes nothing
   else — no report is sent (only the dashboard's own timer uploads), the
   pending report preview is never returned, and no Touch ID is asked. Off
   unless set. Call it only after the user has explicitly answered the

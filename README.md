@@ -595,7 +595,8 @@ one approved poll. `send_feedback` scrubs a feedback draft in the app (key
 values, token shapes, paths, names, emails removed first), opens the prefilled
 support mail or GitHub issue page, and never submits anything itself.
 `set_analytics_sharing` records the user's own answer to the analytics
-question, and only after they give it. The revoke pair `revoke_all` /
+question, and only after they give it; it can turn sharing off, but turning it
+on is left to the user's own switch in the app. The revoke pair `revoke_all` /
 `revoke_project` ends access in one call — every grant and client token at
 once, one key's, or one project's client tokens by label — with honest counts
 and no Touch ID. `activity` reads recent gateway use from the local catalog —

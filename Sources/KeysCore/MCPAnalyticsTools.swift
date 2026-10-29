@@ -6,6 +6,8 @@ import Foundation
 /// and compare"). It is app-bound by design — consent lives in the app's catalog
 /// meta, and the app owns the confirmation line — so this is a thin delegate that
 /// posts the answer to the app's route and relays the bounded `{"enabled": <bool>}`.
+/// Only "off" takes effect from here; "on" comes back as
+/// `pending_user_confirmation` until the person turns it on in the app (S5).
 ///
 /// The rule the tool name cannot enforce is pinned in the frozen server
 /// instructions: the agent may call it only after the user has explicitly answered
@@ -51,8 +53,11 @@ struct MCPAnalyticsTools: MCPToolGroup, @unchecked Sendable {
             name: "set_analytics_sharing",
             title: "Set analytics sharing",
             description: "Record the user's answer to the Keysrs analytics question: share daily aggregate "
-                + "usage totals and compare, or keep them local. Pass enabled true to turn sharing on or false "
-                + "to turn it off; the answer is the new state. Requires the app and changes nothing else: it "
+                + "usage totals and compare, or keep them local. enabled false turns sharing off at once and "
+                + "answers {\"enabled\": false}. enabled true does not turn it on: it answers "
+                + "{\"enabled\": false, \"status\": \"pending_user_confirmation\"} (or {\"enabled\": true} "
+                + "when it is already on), and you then ask the user to turn on sharing themselves in the Keysrs "
+                + "app, whose own switch is the confirmation. Requires the app and changes nothing else: it "
                 + "never sends a report (only the dashboard's own timer uploads), never reveals the pending "
                 + "report preview, and asks for no Touch ID. Only call this after the user has explicitly "
                 + "answered the analytics question; never enable sharing on your own.",

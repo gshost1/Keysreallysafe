@@ -1476,9 +1476,18 @@ final class APIHandler: @unchecked Sendable {
               let enabled = object["enabled"] as? NSNumber, CFGetTypeID(enabled) == CFBooleanGetTypeID() else {
             return HTTPResponse.json(400, ["error": "invalid_analytics_sharing"])
         }
-        try analytics.setEnabled(enabled.boolValue, consentVersion: ProductAnalytics.consentVersion)
-        service.analyticsLog(enabled.boolValue ? "analytics sharing turned on" : "analytics sharing turned off")
-        return HTTPResponse.json(200, ["enabled": enabled.boolValue])
+        // Turning sharing on is consent, and consent is the person's: an agent's
+        // "on" (prompt-injected or careless) changes nothing and is answered as
+        // pending, and the agent asks the person to switch it on in the app — the
+        // dashboard toggle is the confirmation. Turning it off only removes
+        // sharing, so it takes effect at once.
+        if enabled.boolValue {
+            if analytics.isEnabled { return HTTPResponse.json(200, ["enabled": true]) }
+            return HTTPResponse.json(200, ["enabled": false, "status": "pending_user_confirmation"])
+        }
+        try analytics.setEnabled(false, consentVersion: ProductAnalytics.consentVersion)
+        service.analyticsLog("analytics sharing turned off")
+        return HTTPResponse.json(200, ["enabled": false])
     }
 
     // MARK: - MCP revocation (the kill switches)

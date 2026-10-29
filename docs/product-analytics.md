@@ -10,6 +10,8 @@ The first-launch welcome window asks once per consent version, with the box unti
 
 Turning analytics off stops new collection, clears unsent reports and the cached comparison table, and cancels an active upload. A request already received by the server cannot be recalled. The collector has no persistent account or device identifier with which to locate a person's historical reports.
 
+Agents connected over MCP cannot opt the person in. The `set_analytics_sharing` tool turns sharing off at once, but `enabled: true` changes nothing: it answers `{"enabled": false, "status": "pending_user_confirmation"}` and the agent asks the person to turn sharing on in the Keysrs app, where the existing switch is the confirmation.
+
 ## Collected fields (schema and consent version 2)
 
 Every report contains only:
