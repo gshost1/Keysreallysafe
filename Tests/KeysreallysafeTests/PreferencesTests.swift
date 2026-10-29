@@ -40,12 +40,15 @@ final class PreferencesTests: XCTestCase {
         XCTAssertFalse(third.updateChecks)
     }
 
+    // VAL-H-005: a 0.13 store wrote "off" for update checks only after an explicit
+    // turn-off, and the headless-defaults migration force-wrote "on" over it — a
+    // stored answer must survive; only an absent value is defaulted.
     func testHeadlessDefaultsMigrateOnceAndPreserveUnrelatedState() throws {
         let (db, _) = try makeDB()
         // A 0.13-shaped store: the welcome answered, the analytics question
         // already asked for the current consent version, Claude refresh on,
-        // cards hidden, the relay's keep-awake chosen, and usage rows in the
-        // catalog.
+        // cards hidden, the relay's keep-awake chosen, update checks explicitly
+        // turned off, and usage rows in the catalog.
         try db.setMeta(AppPreferences.welcomeKey, "2026-10-01T00:00:00Z")
         try db.setMeta(AppPreferences.analyticsAskedKey, String(ProductAnalytics.consentVersion))
         try db.setMeta(AppPreferences.claudeRefreshKey, "on")
@@ -57,7 +60,7 @@ final class PreferencesTests: XCTestCase {
         try prefs.applyHeadlessDefaults()
         XCTAssertFalse(prefs.showUsageMeter, "the meter is off after the migration")
         XCTAssertFalse(prefs.menubarItem)
-        XCTAssertTrue(prefs.updateChecks, "the migration re-applies the install default over the old check-for-updates value")
+        XCTAssertFalse(prefs.updateChecks, "an explicitly stored \"off\" survives the migration; only an absent value is defaulted")
         XCTAssertEqual(try db.allUsageEvents(), before, "usage rows survive the migration untouched")
         XCTAssertTrue(prefs.claudeUsageRefresh, "an unrelated preference keeps its answer")
         XCTAssertEqual(prefs.hiddenUsage, ["openai"])

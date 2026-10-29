@@ -27,7 +27,7 @@ final class AppPreferences: @unchecked Sendable {
     var updateChecks: Bool {
         // Absent means the 0.14 default: the daily check runs and installs a
         // verified release. 0.13 stored "off" only after an explicit turn-off,
-        // and the one-time migration re-applies the new default below.
+        // and the one-time migration below defaults only an absent value.
         ((try? catalog.metaValue(Self.updateChecksKey)) ?? "on") == "on"
     }
 
@@ -75,17 +75,20 @@ final class AppPreferences: @unchecked Sendable {
 
     /// The 0.13-to-0.14 migration: the app became headless, so the meter and the
     /// menu-bar item are off until the person turns them on, and updates install
-    /// automatically (the old key meant "check for updates", and its meaning
-    /// changed, so the migration re-applies the default rather than carrying a
-    /// stale answer over). Applied once per store, with no prompt and no
-    /// keep-old-UI choice; a later launch never overwrites choices made after
-    /// this one. Usage rows and every unrelated preference are left alone.
+    /// automatically. Only absent values are defaulted: 0.13 stored "off" for
+    /// update checks solely after an explicit turn-off, so force-writing "on"
+    /// would silently re-enable automatic installs over a choice the person
+    /// made. Applied once per store, with no prompt and no keep-old-UI choice;
+    /// a later launch never overwrites choices made after this one. Usage rows
+    /// and every unrelated preference are left alone.
     func applyHeadlessDefaults() throws {
         guard (try? catalog.metaValue(Self.headlessDefaultsKey)) != "yes" else { return }
         try catalog.withTransaction {
             try catalog.setMeta(Self.showUsageMeterKey, "off")
             try catalog.setMeta(Self.menubarItemKey, "off")
-            try catalog.setMeta(Self.updateChecksKey, "on")
+            if try catalog.metaValue(Self.updateChecksKey) == nil {
+                try catalog.setMeta(Self.updateChecksKey, "on")
+            }
             try catalog.setMeta(Self.headlessDefaultsKey, "yes")
         }
     }
