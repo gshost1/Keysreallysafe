@@ -116,6 +116,13 @@ def info_plist(version: str) -> dict[str, object]:
         "CFBundleVersion": version,
         "LSApplicationCategoryType": "public.app-category.developer-tools",
         "LSMinimumSystemVersion": "14.0",
+        # Deliberately false, and pinned by test_build_app.py: the Dock icon at
+        # headless launch is hidden by the app's own runtime .accessory
+        # activation policy, not by agent-app bundle identity. LSUIElement true
+        # would lock the app out of the Dock for good; an explicit false lets it
+        # become a regular, Dock-visible application whenever the dashboard
+        # window is shown.
+        "LSUIElement": False,
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
         # The window loads the dashboard over http from 127.0.0.1; allow loopback only.

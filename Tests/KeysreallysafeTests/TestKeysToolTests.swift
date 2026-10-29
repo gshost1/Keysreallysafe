@@ -89,7 +89,7 @@ final class TestKeysToolTests: XCTestCase {
     /// The onboarding group wired over injected seams, never the machine's real
     /// catalog or installed app.
     private func roster(control: URL) -> MCPToolRegistry {
-        MCPToolRegistry(groups: [MCPOnboardingTools(control: control)])
+        MCPToolRegistry(groups: [MCPOnboardingTools(control: control, launch: .neverLaunching)])
     }
 
     /// One test_keys tools/call through real server frames — the surface the model
@@ -503,7 +503,7 @@ final class TestKeysToolTests: XCTestCase {
             pid: ProcessInfo.processInfo.processIdentifier, to: control
         )
 
-        let group = MCPOnboardingTools(control: control)
+        let group = MCPOnboardingTools(control: control, launch: .neverLaunching)
         let confirmed = Slot<(elapsed: TimeInterval, result: MCPToolResult?)>()
         let unconfirmed = Slot<(elapsed: TimeInterval, failure: String?)>()
         let done = DispatchGroup()
@@ -558,7 +558,7 @@ final class TestKeysToolTests: XCTestCase {
         let (frames, _) = try MCPSession.run([
             MCPSession.initialize(),
             #"{"jsonrpc":"2.0","id":"t","method":"tools/call","params":{"name":"test_keys","arguments":\#(String(decoding: try JSONValue.data(arguments), as: UTF8.self))}}"#,
-        ], registry: rig.registry)
+        ], registry: try rig.registry())
         XCTAssertLessThanOrEqual(Date().timeIntervalSince(started), 2)
         let result = try MCPSession.assertResult(frames[1], id: "t")
         XCTAssertTrue(result["isError"] as? Bool ?? false, "no app means the not-running result")

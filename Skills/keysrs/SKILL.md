@@ -60,8 +60,9 @@ still gets all of them:
 - `keys grant <key> --task "…" --minutes N --json` — one Touch ID, one scoped
   token; treat the token as a secret.
 - Never run `keys` with no arguments (it starts the app or shows an alert), and
-  never run a never-returning command (`keys dashboard`, `keys relay run`,
-  `keys tunnel` without `--print`).
+  never run a never-returning command (`keys menubar`, `keys relay run`,
+  `keys tunnel` without `--print`); `keys dashboard` just shows the app's
+  window and returns.
 
 The full manual for the agent surface — the workflows, the exit codes, remote
 agents and what never to do — is `docs/agents.md` in the Keysrs repository

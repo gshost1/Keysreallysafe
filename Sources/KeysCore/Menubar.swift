@@ -145,8 +145,12 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let service: KeysService
     private let server: LoopbackHTTPServer
     private let url: URL
-    private let itemController: MenubarItemController
-    private var item: NSStatusItem { itemController.item }
+    /// Present only while the menu-bar item preference is on. An intentional off
+    /// leaves no controller, so no recovery observer exists that could read the
+    /// missing item as an accident and re-show it (docs/menubar-recovery.md).
+    private var itemController: MenubarItemController?
+    var item: NSStatusItem? { itemController?.item }
+    private let makeItemController: () -> MenubarItemController
     private var timer: Timer?
     private var lastSnapshot: MenubarSnapshot?
     private var updatedAt: Date?
@@ -161,20 +165,35 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// are ignored.
     private var relayPending: String?
     private static let tabKey = "menubar.tab"
+    /// The deferred welcome: headless launch presents nothing, the first window
+    /// show runs this. Injectable so the launch tests can prove a headless
+    /// launch raises no dialog.
+    var presentWelcome: () -> Void = {}
 
-    init(service: KeysService, server: LoopbackHTTPServer, url: URL) {
+    init(service: KeysService, server: LoopbackHTTPServer, url: URL,
+         makeItemController: @escaping () -> MenubarItemController = { MenubarItemController() },
+         itemVisible: Bool? = nil) {
         self.service = service
         self.server = server
         self.url = url
-        self.itemController = MenubarItemController()
+        self.makeItemController = makeItemController
         super.init()
+        // The app-mode default comes from the persisted preference; the explicit
+        // legacy `keys menubar` command passes true so its requested status item
+        // is created even while the app-mode item preference is off.
+        if itemVisible ?? service.preferences.menubarItem {
+            itemController = makeItemController()
+        }
+        presentWelcome = { [weak self] in self?.showWelcomeIfNeeded() }
         panel.selectedTab = UserDefaults.standard.string(forKey: Self.tabKey) ?? "overview"
         panel.onSelect = { [weak self] id in
             UserDefaults.standard.set(id, forKey: Self.tabKey)
             self?.renderPanel()
         }
-        item.menu = buildMenu()
-        item.menu?.delegate = self
+        if let item {
+            item.menu = buildMenu()
+            item.menu?.delegate = self
+        }
         refresh()
         timer = Timer.scheduledTimer(
             timeInterval: 60,
@@ -190,14 +209,20 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let web = try? WebRoot.find(), let icon = NSImage(contentsOf: web.appendingPathComponent("icon.png")) {
             NSApp.applicationIconImage = icon
         }
+        // Headless launch: no window and no welcome here; didLaunch registers the
+        // login item and starts the daily update check, and the welcome waits for
+        // the first window show.
         appWindow?.didLaunch()
-        // After the run loop starts, so the status item is already in the menu bar.
-        DispatchQueue.main.async { [weak self] in self?.showWelcomeIfNeeded() }
+    }
+
+    func applicationDidHide(_ notification: Notification) {
+        // ⌘H leaves no visible window either: back to accessory like a close.
+        appWindow?.noteWindowHidden()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
-        itemController.stop()
+        itemController?.stop()
         service.stopRelay()
         service.stopGateway()
         server.stop()
@@ -212,6 +237,29 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func openDashboard() {
         if let appWindow { appWindow.show() } else { NSWorkspace.shared.open(url) }
+    }
+
+    /// The menu-bar item preference, applied live. Creating the controller is the
+    /// whole on path (it seeds the item's position and registers its recovery
+    /// observers); off stops and releases it, so nothing exists that recovery
+    /// could repair — an intentional off is never an accidental disappearance.
+    func setMenubarItemShown(_ shown: Bool) {
+        if shown {
+            guard itemController == nil else { return }
+            let controller = makeItemController()
+            itemController = controller
+            controller.item.menu = buildMenu()
+            controller.item.menu?.delegate = self
+            refresh()
+        } else {
+            itemController?.stop()
+            itemController = nil
+        }
+    }
+
+    /// The deferred welcome, as the window show path drives it.
+    func presentWelcomeIfNeeded() {
+        presentWelcome()
     }
 
     @objc func ingestNow() {
@@ -236,7 +284,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Refresh right before the menu drops down, so the rows are never a minute stale.
     func menuWillOpen(_ menu: NSMenu) {
-        itemController.menuIsOpen = true
+        itemController?.menuIsOpen = true
         claudeRefreshItem?.state = service.preferences.claudeUsageRefresh ? .on : .off
         // The legacy menubar CLI has no app window, login item or bundle to link to.
         appOnlyItems.forEach { $0.isHidden = appWindow == nil }
@@ -253,23 +301,23 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuDidClose(_ menu: NSMenu) {
-        itemController.menuDidClose()
+        itemController?.menuDidClose()
     }
 
     @objc func refresh() {
-        itemController.checkVisibility()
+        itemController?.checkVisibility()
         if service.preferences.claudeUsageRefresh {
             ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
                 DispatchQueue.main.async { self?.refresh() }
             }
         }
         let snap = MenubarSnapshot.from(try? service.liveStatus(), hidden: service.preferences.hiddenUsage)
-        item.button?.title = snap.title
-        item.button?.toolTip = snap.tooltip
+        item?.button?.title = snap.title
+        item?.button?.toolTip = snap.tooltip
         lastSnapshot = snap
         updatedAt = Date()
         renderPanel()
-        if item.menu == nil {
+        if let item, item.menu == nil {
             item.menu = buildMenu()
             item.menu?.delegate = self
         }
@@ -342,14 +390,30 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateRelayItems()
     }
 
-    private func updateRelayItems() {
+    /// One relay snapshot both surfaces read — the status item's menu and the
+    /// app menu while the window is shown — so the two can never diverge.
+    struct RelayMenuState {
+        var on: Bool
+        var line: String
+        var awake: Bool
+        var lastError: String?
+    }
+
+    func relayMenuState() -> RelayMenuState {
         let report = service.relayReport()
-        relayItem?.state = report.host.on ? .on : .off
-        let line = relayPending ?? Self.relayLine(report)
-        relayStatusItem?.title = line
-        relayStatusItem?.isHidden = line.isEmpty
-        relayStatusItem?.toolTip = report.host.state.lastError
-        relayAwakeItem?.state = report.stayAwake ? .on : .off
+        return RelayMenuState(on: report.host.on,
+                              line: relayPending ?? Self.relayLine(report),
+                              awake: report.stayAwake,
+                              lastError: report.host.state.lastError)
+    }
+
+    private func updateRelayItems() {
+        let state = relayMenuState()
+        relayItem?.state = state.on ? .on : .off
+        relayStatusItem?.title = state.line
+        relayStatusItem?.isHidden = state.line.isEmpty
+        relayStatusItem?.toolTip = state.lastError
+        relayAwakeItem?.state = state.awake ? .on : .off
     }
 
     /// The disabled line under the toggle; empty hides it.

@@ -34,6 +34,23 @@ final class KeysService: @unchecked Sendable {
     /// The relay this process runs when it is turned on from the menu, the dashboard or
     /// `keys relay on`. AppRuntime swaps in one that logs to menubar.log before the site serves.
     var relayHost = RelayHost()
+    /// The app-owned notification service. nil in every non-app process (CLI, MCP,
+    /// tests that do not inject one), so a gateway trip or a pending ask warns only
+    /// from the running app.
+    var notifications: AppNotifier?
+    /// The app's notification poll, retained here so its timer outlives the launch
+    /// seam that started it (a local would deallocate and its weak handler would go
+    /// quiet). nil outside the app process.
+    var notificationPoller: AppNotificationPoller?
+    /// The app's user-presence prompts in progress (Touch ID asks), observed by
+    /// the background updater's quiet gate. The production app wraps its gate
+    /// in `CountingPresenceGate` around this counter; a service built with an
+    /// unwrapped test gate honestly reports none.
+    let presencePrompts: InFlightWork
+    /// The gateway's requests in flight, observed by the background updater's
+    /// quiet gate. On the service, not the listener, so requests that outlive a
+    /// listener stop are still seen.
+    let gatewayActivity = InFlightWork()
     /// Held while the relay is turned on or off, so two toggles at once (menu and dashboard)
     /// cannot both find it off and race for the lock.
     private let relayToggleLock = NSLock()
@@ -55,12 +72,14 @@ final class KeysService: @unchecked Sendable {
         droidHome: URL = Paths.droidHome,
         runner: any CommandRunner = SpawnCommandRunner(),
         openRouter: any OpenRouterFetching = OpenRouterHTTP(),
-        relaySecrets: (any SecretStore)? = nil
+        relaySecrets: (any SecretStore)? = nil,
+        presencePrompts: InFlightWork = InFlightWork()
     ) {
         self.catalog = catalog
         self.secrets = secrets
         self.relaySecrets = relaySecrets
         self.presence = presence
+        self.presencePrompts = presencePrompts
         self.clipboard = clipboard
         self.grokHome = grokHome
         self.claudeHome = claudeHome
@@ -740,6 +759,37 @@ final class KeysService: @unchecked Sendable {
         grants.list(includeInactive: includeInactive)
     }
 
+    /// What the app's notification poll reads from local state: active grants,
+    /// every client token, and the ids of grant requests still awaiting approval.
+    /// Only timing and status — never a secret.
+    func notificationSnapshot(now: Date = Date()) -> AppNotificationState {
+        let pending = mcpPendingGrants.statuses().compactMap { record -> String? in
+            if case .pending = record.resolution { return record.id }
+            return nil
+        }
+        return AppNotificationState(
+            grants: grants.list(now: now),
+            clients: (try? catalog.allGatewayClients()) ?? [],
+            pendingGrantIDs: pending
+        )
+    }
+
+    /// A `GatewayBreaker` trip is an app-owned event: the app warns once per trip.
+    /// Handed to the notifier, which delivers off this thread, so a gateway answer
+    /// is never held up by a notification.
+    func noteBreakerTrip() {
+        notifications?.breakerTripped()
+    }
+
+    /// An MCP grant request whose prompt is up is time-sensitive: warn immediately
+    /// (the poller would otherwise wait for its next pass). A request already
+    /// resolved is not warned; a request refused before it became pending never
+    /// reaches this call at all.
+    func notePendingGrant(id: String) {
+        guard notifications != nil, mcpPendingGrants.isLive(id: id) else { return }
+        notifications?.pendingGrantRequested(id: id)
+    }
+
     @discardableResult
     func revokeGrant(id: String, caller: String = "dashboard") throws -> Grant {
         guard let g = grants.revoke(id: id, reason: "revoked") else { throw AppError.notFound(id) }
@@ -949,7 +999,7 @@ final class KeysService: @unchecked Sendable {
         if let running = gatewayLock.withLock({ gatewayListener }) {
             return running
         }
-        let listener = try GatewayListener(service: self, port: port)
+        let listener = try GatewayListener(service: self, port: port, activity: gatewayActivity)
         // Another thread may have started one meanwhile; keep the first and drop ours.
         let winner: GatewayListener = gatewayLock.withLock {
             if let existing = gatewayListener { return existing }
@@ -2161,12 +2211,17 @@ final class KeysService: @unchecked Sendable {
 enum AppFactory {
     static func makeService() throws -> KeysService {
         let db = try CatalogDB(path: Paths.catalogDB)
+        // The production gate is wrapped so the app can see when a Touch ID
+        // ask is up: the background updater waits prompts out before it
+        // installs. The wrapped gate changes no answer a gate gives.
+        let prompts = InFlightWork()
         let service = KeysService(
             catalog: db,
             secrets: KeychainStore(),
-            presence: LocalPresenceGate(),
+            presence: CountingPresenceGate(inner: LocalPresenceGate(), activity: prompts),
             clipboard: AppKitClipboard(),
-            relaySecrets: KeychainStore(service: KeysService.relayKeychainService)
+            relaySecrets: KeychainStore(service: KeysService.relayKeychainService),
+            presencePrompts: prompts
         )
         service.observeScreenLock()
         service.analytics = ProductAnalytics(catalog: db)

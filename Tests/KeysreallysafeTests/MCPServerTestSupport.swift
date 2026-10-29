@@ -207,18 +207,23 @@ struct TestToolGroup: MCPToolGroup, @unchecked Sendable {
 /// fetches through `fetchLatestRelease`, and the grants and onboarding groups
 /// name `projectFolder` as their own project — so the real tool code runs against
 /// the caller's temp state, never the machine's real catalog or installed app.
+/// Building a roster is itself fail-closed: the isolation guard rejects a
+/// production control path or production launch pair before any group is
+/// constructed.
 enum MCPRoster {
     static func groups(
         catalog: @escaping () throws -> CatalogDB,
         control: URL,
         fetchLatestRelease: @escaping () throws -> ReleaseInfo,
-        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
-    ) -> [any MCPToolGroup] {
-        [
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
+        launch: AppLaunchSeam = .neverLaunching
+    ) throws -> [any MCPToolGroup] {
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch)
+        return [
             MCPVersionTool(),
-            MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease),
-            MCPGrantTools(control: control, projectFolder: projectFolder),
-            MCPOnboardingTools(control: control, projectFolder: projectFolder),
+            MCPReadTools(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease, launch: launch),
+            MCPGrantTools(control: control, projectFolder: projectFolder, launch: launch),
+            MCPOnboardingTools(control: control, projectFolder: projectFolder, launch: launch),
         ]
     }
 
@@ -226,9 +231,13 @@ enum MCPRoster {
         catalog: @escaping () throws -> CatalogDB,
         control: URL,
         fetchLatestRelease: @escaping () throws -> ReleaseInfo,
-        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
-    ) -> MCPToolRegistry {
-        MCPToolRegistry(groups: groups(catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease, projectFolder: projectFolder))
+        projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
+        launch: AppLaunchSeam = .neverLaunching
+    ) throws -> MCPToolRegistry {
+        MCPToolRegistry(groups: try groups(
+            catalog: catalog, control: control, fetchLatestRelease: fetchLatestRelease,
+            projectFolder: projectFolder, launch: launch
+        ))
     }
 }
 
@@ -258,9 +267,10 @@ enum MCPSweepRig {
         /// The rig-wired roster the sweep drives: every production group, wired over
         /// the rig so its tools answer from THIS catalog and service, never the real
         /// ones. The sweep's production-roster comparison fails naming any tool
-        /// registered in production but not wired here.
-        var registry: MCPToolRegistry {
-            MCPRoster.registry(
+        /// registered in production but not wired here. Building it runs the shared
+        /// isolation guard first, inside `MCPRoster.registry`.
+        func registry() throws -> MCPToolRegistry {
+            try MCPRoster.registry(
                 catalog: { db },
                 control: control,
                 fetchLatestRelease: { MCPSweepRig.fetchedRelease }
@@ -314,8 +324,13 @@ enum MCPSweepRig {
     ] }
 
     static func make(planted: String = fixtureSecret) throws -> Built {
-        let (db, dir) = try makeDB()
-        let (service, gate) = makeGatedService(db: db)
+        // The guarded world first: the control URL beside the catalog is
+        // fail-closed-checked, with the rig's fake store, before any fixture,
+        // file or socket operation runs.
+        let secrets = MemorySecretStore()
+        let (dir, catalog, control) = try AppConnectionIsolationGuard.makeWorld(secrets: secrets)
+        let db = try CatalogDB(path: catalog)
+        let (service, gate) = makeGatedService(db: db, secrets: secrets)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: planted)
         _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
         let grantToken = try grantFor(service, "demo", task: "sweep")
@@ -332,7 +347,7 @@ enum MCPSweepRig {
             gate: gate,
             grantToken: grantToken,
             clientToken: client.token,
-            control: ControlFile.url(beside: db.path),
+            control: control,
             setupPrompts: gate.reasons.count
         )
     }

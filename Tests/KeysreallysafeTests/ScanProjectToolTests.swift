@@ -80,7 +80,7 @@ final class ScanProjectToolTests: XCTestCase {
         control: URL,
         projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
     ) -> MCPToolRegistry {
-        MCPToolRegistry(groups: [MCPOnboardingTools(control: control, projectFolder: projectFolder)])
+        MCPToolRegistry(groups: [MCPOnboardingTools(control: control, projectFolder: projectFolder, launch: .neverLaunching)])
     }
 
     /// One tools/call through real server frames — the surface the model sees.

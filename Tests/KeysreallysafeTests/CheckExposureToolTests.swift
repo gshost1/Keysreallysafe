@@ -37,7 +37,10 @@ final class CheckExposureToolTests: XCTestCase {
         gitExecutable: @escaping () -> String? = { MCPOnboardingTools.gitOnPATH() }
     ) throws -> MCPToolRegistry {
         MCPToolRegistry(groups: [
-            MCPOnboardingTools(control: try deadControl(), projectFolder: projectFolder, gitExecutable: gitExecutable)
+            MCPOnboardingTools(
+                control: try deadControl(), projectFolder: projectFolder, gitExecutable: gitExecutable,
+                launch: .neverLaunching
+            )
         ])
     }
 

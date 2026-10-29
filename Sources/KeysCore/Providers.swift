@@ -55,6 +55,11 @@ enum Providers {
         return cache.value.byID[id]
     }
 
+    /// Snapshot of the user-added overlay, for the guided CLI picker's merged listing.
+    static func overlayRecords() -> [Record] {
+        overlayLock.withLock { Array(overlay.values) }
+    }
+
     /// Shipped records in file order, for the merged listing. Hidden ones stay in; the listing
     /// flags them and the callers that must not show them skip the flag.
     static func builtinList() -> [Record] {

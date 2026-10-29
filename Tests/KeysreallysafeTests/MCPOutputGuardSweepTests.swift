@@ -18,7 +18,7 @@ final class MCPOutputGuardSweepTests: XCTestCase {
 
     func testPlantedSecretSweep() throws {
         let rig = try MCPSweepRig.make()
-        let registry = rig.registry
+        let registry = try rig.registry()
 
         // Roster-derived: the roster comes from tools/list of the rig-wired registry.
         let (listing, _) = try MCPSession.run([
@@ -125,7 +125,7 @@ final class MCPOutputGuardSweepTests: XCTestCase {
         let (listing, _) = try MCPSession.run([
             MCPSession.initialize(),
             #"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#,
-        ], registry: rig.registry)
+        ], registry: try rig.registry())
         let roster = try MCPSession.toolNames(in: listing[1], id: "list")
         XCTAssertFalse(roster.isEmpty)
 
@@ -137,7 +137,7 @@ final class MCPOutputGuardSweepTests: XCTestCase {
             let (frames, _) = try MCPSession.run([
                 MCPSession.initialize(),
                 #"{"jsonrpc":"2.0","id":"one","method":"tools/call","params":{"name":"\#(name)","arguments":\#(arguments)}}"#,
-            ], registry: rig.registry)
+            ], registry: try rig.registry())
             let elapsed = Date().timeIntervalSince(started)
             XCTAssertEqual(frames.last, "")
             let responses = Array(frames.dropLast())

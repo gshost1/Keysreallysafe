@@ -768,6 +768,15 @@ final class CatalogDB: @unchecked Sendable {
         )
     }
 
+    /// Every gateway client, active or not, for the app's notification poll. Reads
+    /// only ids, labels, hints and expiry — never a token value.
+    func allGatewayClients() throws -> [GatewayClient] {
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project ORDER BY gc.id;",
+            row: decodeGatewayClient
+        )
+    }
+
     func gatewayClient(tokenHash: String) throws -> GatewayClient? {
         try one(
             "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.token_hash = ? LIMIT 1;",

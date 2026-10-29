@@ -7,52 +7,124 @@ import WebKit
 final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, NSMenuDelegate {
     private let url: URL
     private let preferences: AppPreferences
-    private var window: NSWindow?
+    private let activation: AppActivation
+    private let window: any DashboardWindow
     private var loginItem: NSMenuItem?
+    private var meterItem: NSMenuItem?
+    private var menubarToggleItem: NSMenuItem?
     private var updateItem: NSMenuItem?
+    private var relayAppItem: NSMenuItem?
+    private var relayAppStatusItem: NSMenuItem?
+    private var relayAppAwakeItem: NSMenuItem?
     private var updateTimer: Timer?
     private var checking = false
     private weak var menubar: MenubarExtra?
     private var installer: UpdateInstaller?
     private var updateWindow: UpdateProgressWindow?
     private var updating = false
+    /// App-owned alerts raised before a window existed (a failed login
+    /// registration). Headless launch must present nothing, so they wait for the
+    /// first window show instead of popping over a Dock-less app.
+    private var deferredAlerts: [(title: String, text: String)] = []
+    /// The modal presenter and login registration, injected so the headless
+    /// launch contract is testable without a real NSAlert or SMAppService call.
+    private let presentAlert: (String, String) -> Void
+    private let registerLoginItem: () throws -> Void
+    /// The release lookup, injected so a launch test never reaches the network.
+    private let latestRelease: () async throws -> ReleaseInfo
+    /// The manual offer's answer, injected so a test can choose without a real
+    /// dialog; production shows the same three-button alert.
+    private let offerChoice: (ReleaseInfo) -> UpdateChoice
+    /// The manual Update Now execution, injected so a test observes the choice's
+    /// effect without a progress window; production runs the real installer. A
+    /// var with a no-op default because the production closure captures self,
+    /// which only exists once initialization is done.
+    private var runManualInstall: (ReleaseInfo) -> Void = { _ in }
+    /// The scheduled check's install half: the quiet wait, the installer, the
+    /// notification and the relaunch. Absent only where a rig injects its own;
+    /// the manual Check for Updates never touches it.
+    private let background: BackgroundUpdater?
+    private let log: (String) -> Void
 
-    init(url: URL, preferences: AppPreferences) {
+    init(
+        url: URL,
+        preferences: AppPreferences,
+        activation: AppActivation = AppActivation(),
+        window: (any DashboardWindow)? = nil,
+        presentAlert: ((String, String) -> Void)? = nil,
+        registerLoginItem: (() throws -> Void)? = nil,
+        latestRelease: (() async throws -> ReleaseInfo)? = nil,
+        offerChoice: ((ReleaseInfo) -> UpdateChoice)? = nil,
+        startManualUpdate: ((ReleaseInfo) -> Void)? = nil,
+        background: BackgroundUpdater? = nil,
+        log: ((String) -> Void)? = nil
+    ) {
         self.url = url
         self.preferences = preferences
+        self.activation = activation
+        self.window = window ?? AppKitDashboardWindow(url: url)
+        self.presentAlert = presentAlert ?? { title, text in
+            let alert = NSAlert(); alert.messageText = title; alert.informativeText = text; alert.runModal()
+        }
+        self.registerLoginItem = registerLoginItem ?? { try SMAppService.mainApp.register() }
+        self.latestRelease = latestRelease ?? { try await UpdateCheck.latestRelease() }
+        self.offerChoice = offerChoice ?? AppWindowController.askUpdateChoice
+        self.background = background
+        self.log = log ?? { _ in }
+        super.init()
+        // The production manual install is a weak-self closure so the stored
+        // closure does not retain the controller it lives on.
+        self.runManualInstall = startManualUpdate ?? { [weak self] release in self?.startUpdate(release) }
+        if let real = self.window as? AppKitDashboardWindow {
+            real.configure = { [weak self] web in
+                web.navigationDelegate = self
+                web.uiDelegate = self
+            }
+        }
+        // Closing the window is not Quit: activation returns to accessory and
+        // the app's services keep running until an explicit Quit.
+        self.window.onClosed = { [weak self] in self?.activation.windowHidden() }
     }
 
     func show() {
-        if window == nil {
-            let configuration = WKWebViewConfiguration()
-            configuration.websiteDataStore = .default()
-            let web = WKWebView(frame: .zero, configuration: configuration)
-            web.navigationDelegate = self
-            web.uiDelegate = self
-            let created = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 800),
-                                   styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            created.title = "Keysrs"
-            created.minSize = NSSize(width: 760, height: 560)
-            created.isReleasedWhenClosed = false
-            created.contentView = web
-            created.center()
-            window = created
-            web.load(URLRequest(url: url))
+        activation.windowShown()
+        window.orderFront()
+        // The deferred welcome and any launch-time error wait for a visible
+        // window; both run after the show returns, so a remote caller
+        // (MCP open_app) is not blocked behind a modal answer.
+        let present = menubar?.presentWelcome
+        let deferred = deferredAlerts
+        deferredAlerts = []
+        DispatchQueue.main.async { [weak self] in
+            present?()
+            for note in deferred { self?.presentAlert(note.title, note.text) }
         }
-        window?.deminiaturize(nil)
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Hide (⌘H) also leaves no visible window: same accessory return as close.
+    func noteWindowHidden() {
+        activation.windowHidden()
     }
 
     func didLaunch() {
-        show()
+        // Headless launch: no window is shown here. The app registers its login
+        // item and starts the daily update check as background work; the window
+        // appears only when a show path asks for it.
         if !preferences.loginRegistrationAttempted {
             do {
-                try SMAppService.mainApp.register()
+                try registerLoginItem()
                 try preferences.recordLoginRegistration()
-            } catch { alert("Start at Login", "Registration could not finish. Try Start at Login from the Keysrs menu. \(error.localizedDescription)") }
+            } catch { deferAlert("Start at Login", "Registration could not finish. Try Start at Login from the Keysrs menu. \(error.localizedDescription)") }
         }
         scheduleUpdates()
+    }
+
+    /// A launch-time app-owned alert: shown at once only when a window is
+    /// already visible, otherwise held until the first show. A headless launch
+    /// never raises a modal.
+    private func deferAlert(_ title: String, _ text: String) {
+        if activation.current == .regular { presentAlert(title, text) }
+        else { deferredAlerts.append((title, text)) }
     }
 
     func installMenu(extra: MenubarExtra) {
@@ -72,8 +144,22 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         appMenu.addItem(.separator())
         loginItem = add("Start at Login", #selector(toggleLogin), self)
         _ = add("Install Command Line Tool…", #selector(installCLI), self)
+        appMenu.addItem(.separator())
+        meterItem = add("Show Usage Meter", #selector(toggleShowUsageMeter), self)
+        menubarToggleItem = add("Show Menu Bar Item", #selector(toggleMenubarItem), self)
+        appMenu.addItem(.separator())
         _ = add("Check for Updates…", #selector(checkForUpdates), self)
-        updateItem = add("Automatically Check for Updates", #selector(toggleUpdates), self)
+        updateItem = add("Install Updates Automatically", #selector(toggleUpdates), self)
+        appMenu.addItem(.separator())
+        // The same relay controls the menu bar item carries; the app menu is
+        // what is visible while the window is shown and the item may be off.
+        relayAppItem = add("Relay for Cloud Agents", #selector(MenubarExtra.toggleRelay), extra)
+        let relayStatus = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        relayStatus.indentationLevel = 1
+        relayStatus.isHidden = true
+        appMenu.addItem(relayStatus)
+        relayAppStatusItem = relayStatus
+        relayAppAwakeItem = add("Keep Mac Awake for Relay Calls", #selector(MenubarExtra.toggleRelayAwake), extra)
         appMenu.addItem(.separator())
         _ = add("Hide Keysrs", #selector(NSApplication.hide(_:)), NSApp, "h")
         _ = add("Quit Keysrs", #selector(MenubarExtra.quit), extra, "q")
@@ -96,7 +182,16 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
 
     func menuWillOpen(_ menu: NSMenu) {
         loginItem?.state = startsAtLogin ? .on : .off
+        meterItem?.state = preferences.showUsageMeter ? .on : .off
+        menubarToggleItem?.state = preferences.menubarItem ? .on : .off
         updateItem?.state = preferences.updateChecks ? .on : .off
+        if let relay = menubar?.relayMenuState() {
+            relayAppItem?.state = relay.on ? .on : .off
+            relayAppStatusItem?.title = relay.line
+            relayAppStatusItem?.isHidden = relay.line.isEmpty
+            relayAppStatusItem?.toolTip = relay.lastError
+            relayAppAwakeItem?.state = relay.awake ? .on : .off
+        }
     }
 
     @objc func toggleLogin() {
@@ -106,6 +201,19 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
             else { try SMAppService.mainApp.register() }
             try preferences.recordLoginRegistration()
         } catch { alert("Start at Login", error.localizedDescription) }
+    }
+
+    @objc func toggleShowUsageMeter() {
+        do { try preferences.setShowUsageMeter(!preferences.showUsageMeter) }
+        catch { alert("Show Usage Meter", error.localizedDescription) }
+    }
+
+    @objc func toggleMenubarItem() {
+        let on = !preferences.menubarItem
+        do {
+            try preferences.setMenubarItem(on)
+            menubar?.setMenubarItemShown(on)
+        } catch { alert("Menu Bar Item", error.localizedDescription) }
     }
 
     @objc func installCLI() {
@@ -126,7 +234,13 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     }
 
     @objc private func toggleUpdates() {
-        do { try preferences.setUpdateChecks(!preferences.updateChecks); scheduleUpdates() }
+        applyUpdateChecks(!preferences.updateChecks)
+    }
+
+    /// The one setter behind both the app menu and the dashboard Settings
+    /// switch: the persisted choice plus the scheduler that follows it.
+    func applyUpdateChecks(_ on: Bool) {
+        do { try preferences.setUpdateChecks(on); scheduleUpdates() }
         catch { alert("Updates", error.localizedDescription) }
     }
 
@@ -139,7 +253,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         }
     }
 
-    @objc private func checkForUpdates() { checkUpdates(manual: true) }
+    @objc func checkForUpdates() { checkUpdates(manual: true) }
 
     private func checkUpdates(manual: Bool) {
         guard !checking else { return }
@@ -147,39 +261,61 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         Task {
             defer { checking = false }
             do {
-                let release = try await UpdateCheck.latestRelease()
+                let release = try await latestRelease()
                 if UpdateCheck.isNewer(release.version, than: ProductAnalyticsConfiguration.appVersion) {
-                    offerUpdate(release)
+                    // Only the person's Check for Updates offers the modal. The
+                    // scheduled check runs over a Dock-less app, so it installs
+                    // through the background path and raises no dialog; a failed
+                    // check on that path is logged, never shown.
+                    if manual { offerUpdate(release) }
+                    else { background?.install(release) }
                 } else if manual {
                     alert("Keysrs Is Up to Date", "Keysrs \(ProductAnalyticsConfiguration.appVersion) is the newest release.")
                 }
-            } catch { if manual { alert("Could Not Check for Updates", error.localizedDescription) } }
+            } catch {
+                if manual { alert("Could Not Check for Updates", error.localizedDescription) }
+                else { log("scheduled update check failed: \(error.localizedDescription)") }
+            }
         }
     }
 
-    /// The one-click update. Update Now does the whole install from GitHub inside the app.
+    /// The one-click update. Update Now does the whole install from GitHub inside
+    /// the app; Release Notes re-offers, Later leaves the app as it is. The
+    /// person's answer comes through the injected seam, so the choice is
+    /// testable without a real dialog.
     private func offerUpdate(_ release: ReleaseInfo) {
+        while true {
+            switch offerChoice(release) {
+            case .updateNow:
+                runManualInstall(release)
+                return
+            case .releaseNotes:
+                if let notes = release.notes { NSWorkspace.shared.open(notes) }
+            case .later:
+                return
+            }
+        }
+    }
+
+    /// Production's manual offer: the same three buttons the menu always had.
+    private static func askUpdateChoice(_ release: ReleaseInfo) -> UpdateChoice {
         let prompt = NSAlert()
         prompt.messageText = "Keysrs \(release.version) is available"
         prompt.informativeText = "You have \(ProductAnalyticsConfiguration.appVersion). Update Now downloads the new version from GitHub, checks its checksum and Apple signature, replaces this copy and restarts. Keys and history are untouched."
         prompt.addButton(withTitle: "Update Now")
         prompt.addButton(withTitle: "Release Notes")
         prompt.addButton(withTitle: "Later")
-        while true {
-            switch prompt.runModal() {
-            case .alertFirstButtonReturn:
-                startUpdate(release)
-                return
-            case .alertSecondButtonReturn:
-                if let notes = release.notes { NSWorkspace.shared.open(notes) }
-            default:
-                return
-            }
+        switch prompt.runModal() {
+        case .alertFirstButtonReturn: return .updateNow
+        case .alertSecondButtonReturn: return .releaseNotes
+        default: return .later
         }
     }
 
     private func startUpdate(_ release: ReleaseInfo) {
-        guard !updating else { return }
+        // One install at a time across both paths: the scheduled install and
+        // Update Now stage beside the same bundle names.
+        guard !updating, background?.inFlight != true else { return }
         updating = true
         let pending = UpdateInstaller(release: release, app: Bundle.main.bundleURL)
         pending.report = { [weak self] phase in self?.updateWindow?.update(phase) }
@@ -203,7 +339,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     }
 
     private func alert(_ title: String, _ text: String) {
-        let alert = NSAlert(); alert.messageText = title; alert.informativeText = text; alert.runModal()
+        presentAlert(title, text)
     }
 
     // Keep API-origin privileges inside our loopback page. External links use the default browser.
@@ -236,7 +372,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
                   completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = URL(fileURLWithPath: suggestedFilename).lastPathComponent
-        guard let window else { completionHandler(nil); return }
+        guard let window = window.nsWindow else { completionHandler(nil); return }
         panel.beginSheetModal(for: window) { result in
             completionHandler(result == .OK ? panel.url : nil)
         }
@@ -246,6 +382,14 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         alert("Download Failed", error.localizedDescription)
     }
 
+}
+
+/// The person's answer to the manual update offer. The scheduled path never
+/// asks: it installs in the background.
+enum UpdateChoice: Sendable {
+    case updateNow
+    case releaseNotes
+    case later
 }
 
 

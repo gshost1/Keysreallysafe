@@ -51,15 +51,21 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// degraded answers are as much the contract as the facts. Read per call,
     /// never at init, so construction stays offline-safe.
     private let gitExecutable: () -> String?
+    /// The launch seams behind `AppConnection.connect()`: the app-bound tools
+    /// auto-launch the installed app when no live one exists, and tests wire
+    /// recording fakes so no test path ever opens the real app or sleeps.
+    private let launch: AppLaunchSeam
 
     init(
         control: URL = ControlFile.url(),
         projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
-        gitExecutable: @escaping () -> String? = { MCPOnboardingTools.gitOnPATH() }
+        gitExecutable: @escaping () -> String? = { MCPOnboardingTools.gitOnPATH() },
+        launch: AppLaunchSeam = .production
     ) {
         self.control = control
         self.projectFolder = projectFolder
         self.gitExecutable = gitExecutable
+        self.launch = launch
     }
 
     func tools() -> [MCPTool] { [scanProject, checkExposure, importAndWrap, testKeys] }
@@ -194,7 +200,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         var matched: [String: String] = [:]
         var vaultCheck = "unavailable"
         do {
-            let app = try AppConnection.connect(control: control)
+            let app = try AppConnection.connect(control: control, launch: launch)
             let answer = try app.call(
                 method: "POST", path: "/api/mcp/vault_lookup",
                 body: ["hashes": report.candidates.map { Self.digest($0.value) }], expect: 200
@@ -479,7 +485,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
             guard let docker = JSONValue.bool(raw) else { throw AppError.usage("docker must be a boolean") }
             body["docker"] = docker
         }
-        let app = try AppConnection.connect(control: control)
+        let app = try AppConnection.connect(control: control, launch: launch)
         let answer = try app.call(
             method: "POST", path: "/api/mcp/import_and_wrap", body: body, expect: 200,
             timeout: AppConnection.presenceCallTimeout
@@ -503,7 +509,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
             guard let flag = JSONValue.bool(raw) else { throw AppError.usage("confirm must be a boolean") }
             confirm = flag
         }
-        let app = try AppConnection.connect(control: control)
+        let app = try AppConnection.connect(control: control, launch: launch)
         let answer = try app.call(
             method: "POST", path: "/api/mcp/test_keys",
             body: ["keys": names, "confirm": confirm],

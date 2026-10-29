@@ -457,7 +457,7 @@ final class MCPOutputGuardTests: XCTestCase {
         // Behaviorally: every registered tool runs against the planted rig and not
         // one of them prompts for presence.
         let rig = try MCPSweepRig.make()
-        let registry = rig.registry
+        let registry = try rig.registry()
         let (listing, _) = try MCPSession.run([
             MCPSession.initialize(),
             #"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#,

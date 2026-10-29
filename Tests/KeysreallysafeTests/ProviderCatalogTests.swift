@@ -143,6 +143,18 @@ final class ProviderCatalogTests: XCTestCase {
         XCTAssertFalse(try db.customProviderExists(id: "a"))
     }
 
+    /// VAL-ADD-002: the guided CLI picker's OpenAI exception is picker-only — the shipped
+    /// record keeps its hidden flag and the dashboard listing still reports the app reason.
+    func testGuidedPickerExceptionLeavesTheCatalogFlagAlone() throws {
+        let (db, _) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        let entries = GuidedProviders.pickerEntries(userHidden: [])
+        XCTAssertTrue(entries.contains { $0.id == "openai" }, "the approved CLI picker exception")
+        XCTAssertEqual(Providers.provider(id: "openai")?.hidden, true, "the shipped row stays hidden")
+        let openai = try XCTUnwrap(try listing(service).first { $0["id"] as? String == "openai" })
+        XCTAssertEqual(openai["hidden"] as? String, "app", "the dashboard picker still skips it")
+    }
+
     func testProviderAPIRoutesServeAndGuardTheCatalog() throws {
         let (handler, service, _) = try makeHandler()
         let list = handle(handler, method: "GET", path: "/api/providers")

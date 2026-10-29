@@ -106,4 +106,47 @@ final class GatewayBreakerTests: XCTestCase {
         XCTAssertEqual(again, 401)
         XCTAssertEqual(hits.count, GatewayBreaker.threshold + 1)
     }
+
+    /// VAL-NOTIFY-004: a trip is an app-owned event and warns the app once; a
+    /// blocked call that never reaches upstream warns nothing.
+    func testATripNotifiesTheAppOnceAndABlockedCallDoesNot() async throws {
+        let rig = try GatewayRig { _ in
+            HTTPResponse.json(401, ["error": ["message": "invalid api key"]])
+        }
+        defer { rig.stop() }
+        let delivery = RecordingNotificationDelivery()
+        rig.service.notifications = AppNotifier(
+            preferences: rig.service.preferences,
+            authorizer: RecordingNotificationAuthorizer(),
+            delivery: delivery
+        )
+        try rig.key()
+        let grant = try grantFor(rig.service, "demo", task: "breaker")
+
+        func call() async throws -> Int {
+            var req = URLRequest(url: rig.url("v1/chat/completions"))
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(grant)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = Data("{\"model\":\"gpt-4.1\"}".utf8)
+            let (_, response) = try await URLSession.shared.data(for: req)
+            return (response as? HTTPURLResponse)?.statusCode ?? -1
+        }
+
+        for _ in 0..<(GatewayBreaker.threshold - 1) { _ = try await call() }
+        XCTAssertEqual(delivery.count, 0, "below the threshold nothing trips, so nothing warns")
+
+        let tripStatus = try await call()
+        XCTAssertEqual(tripStatus, 401, "the fifth upstream 401 trips the breaker")
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline && delivery.count == 0 { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertEqual(delivery.notifications.map(\.kind), [.gatewayBreakerTrip], "the trip warns once")
+
+        // The paused call is answered locally and never reaches upstream, so it
+        // records no trip and warns nothing more.
+        let blockedStatus = try await call()
+        XCTAssertEqual(blockedStatus, 503)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(delivery.count, 1, "a blocked call does not warn again")
+    }
 }

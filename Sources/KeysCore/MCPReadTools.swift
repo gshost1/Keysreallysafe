@@ -35,15 +35,21 @@ struct MCPReadTools: MCPToolGroup, @unchecked Sendable {
     /// The read-only release fetch behind `check_update`: no network session is
     /// constructed here, and the production wiring is the existing check itself.
     private let fetchLatestRelease: () throws -> ReleaseInfo
+    /// The launch seams behind `AppConnection.connect()`: the app-bound tools
+    /// auto-launch the installed app when no live one exists, and tests wire
+    /// recording fakes so no test path ever opens the real app or sleeps.
+    private let launch: AppLaunchSeam
 
     init(
         catalog: @escaping () throws -> CatalogDB = { try CatalogDB(path: Paths.catalogDB) },
         control: URL = ControlFile.url(),
-        fetchLatestRelease: @escaping () throws -> ReleaseInfo = { try UpdateCheck.latestReleaseSync() }
+        fetchLatestRelease: @escaping () throws -> ReleaseInfo = { try UpdateCheck.latestReleaseSync() },
+        launch: AppLaunchSeam = .production
     ) {
         self.openCatalog = catalog
         self.control = control
         self.fetchLatestRelease = fetchLatestRelease
+        self.launch = launch
     }
 
     func tools() -> [MCPTool] { [listKeys, gatewayInfo, openApp, checkUpdate] }
@@ -130,7 +136,7 @@ struct MCPReadTools: MCPToolGroup, @unchecked Sendable {
     /// indistinguishable from "cannot see grants", so a partial answer (base URL
     /// and tokens without grants) is never emitted.
     private func serveGatewayInfo() throws -> MCPToolResult {
-        let app = try AppConnection.connect(control: control)
+        let app = try AppConnection.connect(control: control, launch: launch)
         return try MCPToolResult.json(
             try app.call(method: "POST", path: "/api/mcp/gateway_info", body: [:], expect: 200)
         )
@@ -139,9 +145,11 @@ struct MCPReadTools: MCPToolGroup, @unchecked Sendable {
     /// The dedicated app-side show path, and nothing else: the app fronts its own
     /// window and answers ok; no window means nothing happened, still ok. There is
     /// deliberately no browser fallback on that path, and this tool never opens
-    /// one either.
+    /// one either. With no app up, `connect()` launches it and waits for a healthy
+    /// control endpoint first; if that launch fails the call is the plain
+    /// not-running result and no show is attempted.
     private func serveOpenApp() throws -> MCPToolResult {
-        let app = try AppConnection.connect(control: control)
+        let app = try AppConnection.connect(control: control, launch: launch)
         return try MCPToolResult.json(
             try app.call(method: "POST", path: "/api/mcp/app/show", body: [:], expect: 200)
         )

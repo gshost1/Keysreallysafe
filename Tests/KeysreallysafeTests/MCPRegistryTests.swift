@@ -65,7 +65,7 @@ final class MCPRegistryTests: XCTestCase {
             let arguments = String(decoding: try JSONValue.data(row), as: UTF8.self)
             lines.append(#"{"jsonrpc":"2.0","id":"call:\#(name)","method":"tools/call","params":{"name":"\#(name)","arguments":\#(arguments)}}"#)
         }
-        let (callFrames, callStderr) = try MCPSession.run(lines, registry: rig.registry)
+        let (callFrames, callStderr) = try MCPSession.run(lines, registry: try rig.registry())
         XCTAssertEqual(callFrames.last, "")
         XCTAssertTrue(callStderr.isEmpty, "the rig-wired roster registers cleanly")
         let callResponses = Array(callFrames.dropLast())

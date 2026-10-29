@@ -114,7 +114,7 @@ final class ImportAndWrapTests: XCTestCase {
         control: URL,
         projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath }
     ) -> MCPToolRegistry {
-        MCPToolRegistry(groups: [MCPOnboardingTools(control: control, projectFolder: projectFolder)])
+        MCPToolRegistry(groups: [MCPOnboardingTools(control: control, projectFolder: projectFolder, launch: .neverLaunching)])
     }
 
     /// One import tools/call through real server frames — the surface the model sees.
@@ -863,7 +863,7 @@ final class ImportAndWrapTests: XCTestCase {
         let (frames, _) = try MCPSession.run([
             MCPSession.initialize(),
             #"{"jsonrpc":"2.0","id":"t","method":"tools/call","params":{"name":"import_and_wrap","arguments":\#(String(decoding: try JSONValue.data(arguments), as: UTF8.self))}}"#,
-        ], registry: rig.registry)
+        ], registry: try rig.registry())
         XCTAssertLessThanOrEqual(Date().timeIntervalSince(started), 2)
         let result = try MCPSession.assertResult(frames[1], id: "t")
         XCTAssertTrue(result["isError"] as? Bool ?? false, "no app means the not-running result")

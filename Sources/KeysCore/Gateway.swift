@@ -27,12 +27,23 @@ final class GatewayListener: @unchecked Sendable {
     private let service: KeysService
     /// The whole call's limit: `resourceTimeout`, unless a test shortens it.
     private let requestTimeout: TimeInterval
+    /// The requests this listener serves, counted into the service's counter so
+    /// the background updater's quiet gate can wait real traffic out. On the
+    /// service, not here, so requests that outlive a listener stop are still
+    /// seen.
+    let activity: InFlightWork
 
     var boundPort: UInt16 { listener.port }
 
-    init(service: KeysService, port: UInt16 = GatewayListener.port, requestTimeout: TimeInterval = GatewayListener.resourceTimeout) throws {
+    init(
+        service: KeysService,
+        port: UInt16 = GatewayListener.port,
+        requestTimeout: TimeInterval = GatewayListener.resourceTimeout,
+        activity: InFlightWork = InFlightWork()
+    ) throws {
         self.service = service
         self.requestTimeout = requestTimeout
+        self.activity = activity
         self.listener = try LoopbackListener(
             port: port, acceptLabel: "keysreallysafe.gateway.accept", workLabel: "keysreallysafe.gateway",
             ioTimeoutSeconds: Self.ioTimeoutSeconds, maxConcurrent: Self.maxConcurrent
@@ -41,7 +52,12 @@ final class GatewayListener: @unchecked Sendable {
 
     func start() {
         listener.start { [weak self] client in
-            self?.serve(client: client)
+            guard let self else { return }
+            // The whole request is in flight from its first byte to the last:
+            // the quiet gate must not install over a call an agent waits on.
+            self.activity.begin()
+            self.serve(client: client)
+            self.activity.end()
         }
     }
 
@@ -226,6 +242,8 @@ final class GatewayListener: @unchecked Sendable {
         )
         if service.breaker.record(key: target.name, status: status) {
             service.recordGatewayDenial(name: target.name, reason: GatewayBreaker.code, via: via)
+            // The trip is an app-owned event: the app warns once per trip.
+            service.noteBreakerTrip()
         }
         do {
             try service.recordGatewayUsage(
