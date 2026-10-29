@@ -17,7 +17,10 @@ var FULL = {
   person_profiles: "always",
   disable_session_recording: false,
   session_recording: { maskAllInputs: true, maskTextSelector: "*" },
-  capture_performance: { web_vitals: true },
+  // The project has console logs and network timings on; privacy.html promises
+  // neither, so the site turns them off here rather than relying on that setting.
+  enable_recording_console_log: false,
+  capture_performance: { web_vitals: true, network_timing: false },
   capture_dead_clicks: true,
   rageclick: true
 };
