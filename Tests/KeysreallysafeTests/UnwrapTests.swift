@@ -578,6 +578,57 @@ final class UnwrapTests: XCTestCase {
         XCTAssertEqual(try site.db.listWrappedFiles().count, 0, "nothing was recorded")
     }
 
+    // MARK: - VAL-O-005 (a token another recorded file still holds is kept)
+
+    /// import_and_wrap gives ONE project token to several files, so unwrapping one
+    /// file must not revoke the token the others still hold: the token is kept, this
+    /// file's record still clears, and the report names the file that still uses it.
+    /// Failed pre-fix: the unwrap revoked the shared project token and the other
+    /// file's line stopped authorizing at the gateway.
+    func testUnwrapKeepsTheTokenWhileAnotherRecordedFileUsesIt() throws {
+        let site = try makeSite()
+        let project = try makeProject("shared", in: site.dir)
+        let originalA = "OPENAI_API_KEY=\(openaiValue)\n"
+        let envA = try write(originalA, to: ".env", under: project)
+        let originalB = "ANTHROPIC_API_KEY=\(anthropicValue)\n"
+        let envB = try write(originalB, to: "sub/.env.local", under: project)
+        let imported = try wrapByImport(site, folder: project)
+        let openaiKey = try importedKey(imported, "OPENAI_API_KEY")
+        let anthropicKey = try importedKey(imported, "ANTHROPIC_API_KEY")
+        let token = try XCTUnwrap(try value("OPENAI_API_KEY", in: envA))
+        XCTAssertEqual(try value("ANTHROPIC_API_KEY", in: envB), token, "one project token covers both files")
+        assertDecision("allowed", name: openaiKey, token: token, service: site.service)
+        assertDecision("allowed", name: anthropicKey, token: token, service: site.service)
+        let promptsBefore = site.gate.reasons.count
+
+        var lines: [String] = []
+        let runner = UnwrapRunner(
+            connect: { try ControlClient.connect(control: site.control) },
+            out: { lines.append($0) }
+        )
+        let result = try runner.run(path: envA.path)
+
+        XCTAssertEqual(site.gate.reasons.count - promptsBefore, 1, "one Touch ID for the one file")
+        XCTAssertEqual(result["revoked"] as? Int, 0, "the token was kept, not revoked")
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        let stillUsedBy = try XCTUnwrap(files[0]["still_used_by"] as? [String])
+        XCTAssertEqual(stillUsedBy, [KeysService.canonicalPath(envB.path) ?? envB.path],
+                       "the report names the file that still uses the token")
+        let printed = lines.joined(separator: "\n")
+        XCTAssertTrue(printed.contains(".env.local"), "the runner's report names the other file")
+        XCTAssertTrue(printed.contains("kept"), "the report says the token was kept")
+
+        assertDecision("allowed", name: openaiKey, token: token, service: site.service)
+        assertDecision("allowed", name: anthropicKey, token: token, service: site.service)
+        XCTAssertEqual(try Data(contentsOf: envA), Data(originalA.utf8),
+                       "the unwrapped file is byte-for-byte restored")
+        XCTAssertTrue(try String(contentsOf: envB, encoding: .utf8).contains("ksfc_"),
+                      "the other file keeps its token line untouched")
+        let rows = try site.db.listWrappedFiles()
+        XCTAssertEqual(rows.map(\.path), [KeysService.canonicalPath(envB.path) ?? envB.path],
+                       "only the unwrapped file's record is cleared; the other file keeps its own")
+    }
+
     // MARK: - The route and the CLI runner (both forms, the token gate, no leaks)
 
     /// The route is origin-token gated like /api/wrap (403 without the token), and the

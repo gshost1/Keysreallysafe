@@ -4,13 +4,14 @@ import Foundation
 /// Every wrapped line of the target file(s) gets its real value back from the vault,
 /// the companion base URLs the wrap wrote are restored from the wrap-time backup (or
 /// removed when no backup holds the original — the documented fallback), and the
-/// gateway client tokens those lines held are revoked, all under ONE presence prompt:
-/// reading the vault, rewriting the file and revoking are one user-approved action,
-/// the mirror of the import's one prompt. Unwrap lives in the app on purpose — the
-/// vault and `gateway_clients` belong to the one process that owns them — and the MCP
-/// surface deliberately has no unwrap tool (the roster's `neverRegistered` pin keeps
-/// it out), so this flow is reachable only through the local, origin-token-gated
-/// `/api/unwrap` route.
+/// gateway client tokens those lines held are revoked — except a token another
+/// recorded wrapped file still holds, which is kept so the others keep working — all
+/// under ONE presence prompt: reading the vault, rewriting the file and revoking are
+/// one user-approved action, the mirror of the import's one prompt. Unwrap lives in
+/// the app on purpose — the vault and `gateway_clients` belong to the one process that
+/// owns them — and the MCP surface deliberately has no unwrap tool (the roster's
+/// `neverRegistered` pin keeps it out), so this flow is reachable only through the
+/// local, origin-token-gated `/api/unwrap` route.
 extension KeysService {
 
     /// One unwrap call. Exactly one of `file` (the file form: exactly that file) or
@@ -135,8 +136,10 @@ extension KeysService {
     /// Reads the file fresh (the prompt window may have been long), restores each
     /// wrapped line's value from the vault, fixes the companion lines the wrap wrote,
     /// swaps the file in without a new backup, revokes the tokens the file held by
-    /// the hash of their values, and clears the file's record. Per-line failures are
-    /// reported and the other lines still restore — no silent partial state.
+    /// the hash of their values — except a token another recorded wrapped file still
+    /// holds, which is kept and reported — and clears the file's record. Per-line
+    /// failures are reported and the other lines still restore — no silent partial
+    /// state.
     private func restoreFile(canonical: String, caller: String, now: Date) throws -> FileOutcome {
         var outcome = FileOutcome(path: canonical)
         let display = URL(fileURLWithPath: canonical).lastPathComponent
@@ -221,12 +224,26 @@ extension KeysService {
 
         // Revoke exactly the tokens this file held, found by hashing each wrapped
         // line's token value: per-key tokens from `keys wrap` and the project token
-        // from `import_and_wrap` alike. A token the catalog no longer knows (a purge
-        // since wrap) has nothing to revoke; the revocation is idempotent, so the
-        // same token on several lines flips once.
+        // from `import_and_wrap` alike. A token another RECORDED wrapped file still
+        // holds is kept — import_and_wrap gives one project token to several files,
+        // and unwrapping one must leave the others working: the token dies when the
+        // last of its files unwraps (its own check finds no other holder), or with the
+        // project revoke in the project form. A token the catalog no longer knows (a
+        // purge since wrap) has nothing to revoke; the revocation is idempotent, so
+        // the same token on several lines flips once.
         var seenTokens: Set<String> = []
         for (_, entry) in wrapped where seenTokens.insert(entry.value).inserted {
             guard let client = try catalog.gatewayClient(tokenHash: GatewayClientToken.hash(entry.value)) else {
+                continue
+            }
+            let stillUsedBy = try catalog.listWrappedFiles()
+                .filter { $0.path != canonical }
+                .filter { Self.fileHoldsToken($0.path, token: entry.value) }
+                .map(\.path)
+            if !stillUsedBy.isEmpty {
+                outcome.stillUsedBy.append(
+                    contentsOf: stillUsedBy.filter { !outcome.stillUsedBy.contains($0) }
+                )
                 continue
             }
             if try catalog.revokeGatewayClient(id: client.id, keyName: client.keyName, at: UTC.iso(now)) {
@@ -294,6 +311,15 @@ extension KeysService {
             .map { ($0.index, $0.entry) }
     }
 
+    /// True when the file on disk still assigns this exact token value — the check
+    /// that keeps a project token alive while another recorded wrapped file still
+    /// holds it. The token value never leaves this process; only the boolean does.
+    static func fileHoldsToken(_ canonical: String, token: String) -> Bool {
+        guard let data = FileManager.default.contents(atPath: canonical),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        return wrappedLines(in: EnvFile.parse(text)).contains { $0.entry.value == token }
+    }
+
     /// The lines assigning one of the three wrap companion variables a value that
     /// points at this gateway. Relay URLs, upstream URLs and the user's own proxies
     /// are not wrap companions and are never touched.
@@ -340,6 +366,9 @@ extension KeysService {
         var failed: [(variable: String, reason: String)] = []
         var companionsRestored: [String] = []
         var companionsRemoved: [String] = []
+        /// Other recorded wrapped files still holding one of this file's tokens —
+        /// why those tokens were kept instead of revoked.
+        var stillUsedBy: [String] = []
         var backup: String?
         var revoked = 0
         var message: String?
@@ -356,6 +385,7 @@ extension KeysService {
                 "failed": failed.map { ["variable": $0.variable, "reason": $0.reason] },
                 "companions_restored": companionsRestored,
                 "companions_removed": companionsRemoved,
+                "still_used_by": stillUsedBy,
                 "revoked": revoked,
                 "backup": backup ?? NSNull(),
             ]
@@ -439,6 +469,12 @@ struct UnwrapRunner {
             let companionsRemoved = (file["companions_removed"] as? [Any])?.compactMap { $0 as? String } ?? []
             if !companionsRemoved.isEmpty {
                 out("  \(companionsRemoved.joined(separator: ", ")) removed (the wrap-time backup holds no original for it)")
+            }
+            let stillUsedBy = (file["still_used_by"] as? [Any])?.compactMap { $0 as? String } ?? []
+            if !stillUsedBy.isEmpty {
+                let names = stillUsedBy.map { URL(fileURLWithPath: $0).lastPathComponent }
+                    .joined(separator: ", ")
+                out("  \(names) still use\(stillUsedBy.count == 1 ? "s" : "") this file's gateway token; it was kept")
             }
             let revoked = JSONValue.int(file["revoked"]) ?? 0
             if revoked > 0 { out("  \(revoked) gateway client token\(revoked == 1 ? "" : "s") revoked") }
