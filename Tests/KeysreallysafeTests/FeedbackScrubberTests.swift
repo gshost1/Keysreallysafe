@@ -183,9 +183,10 @@ final class FeedbackScrubberTests: XCTestCase {
     // MARK: - prompt_text (VAL-FB-007)
 
     /// The prompt argument's exact text is removed and counted; without the
-    /// argument nothing is removed on that account. The marker is prose —
-    /// real prompt text is prose, and a single 16+ printable character run
-    /// would be (correctly) claimed by the key_shape rule first.
+    /// argument nothing is removed on that account. The rule runs immediately
+    /// after vault_value and before every rewriting rule (F1), so the prompt is
+    /// claimed whole even when a path, an email or a key shape inside it would
+    /// otherwise be masked first and the exact match would then find nothing.
     func testPromptTextRemoved() throws {
         let marker = "the user asked for MARKER-Q7 output"
         let draft = "the user said \(marker) and it repeated \(marker) later"
@@ -196,6 +197,22 @@ final class FeedbackScrubberTests: XCTestCase {
         out = try scrub(draft)
         XCTAssertTrue(out.scrubbed.contains(marker), "no prompt argument, no prompt_text removal")
         XCTAssertNil(out.removed[FeedbackScrubber.promptText])
+    }
+
+    /// VAL-F-001. A prompt whose text carries what the rewriting rules would
+    /// mask — a path and an email — is removed WHOLE: the prompt_text rule runs
+    /// right after vault_value, so no rewriting rule has a chance to rewrite a
+    /// part of the prompt first and leave the exact match with nothing to find
+    /// (the pre-fix leak: the path and email were masked, then the exact
+    /// prompt match missed and the rest of the prompt stayed in the draft).
+    func testPromptTextRemovedBeforeRewritingRules() throws {
+        let marker = "the user asked about /Users/planted/secret and joe@example.com please"
+        let draft = "intro \(marker) outro"
+        let out = try scrub(draft, prompt: marker)
+        XCTAssertFalse(out.scrubbed.contains(marker))
+        XCTAssertFalse(out.scrubbed.contains("the user asked about"),
+                       "the whole prompt is gone, not just the parts a rewriting rule would have masked")
+        XCTAssertEqual(out.removed[FeedbackScrubber.promptText], 1)
     }
 
     // MARK: - length (VAL-FB-008)

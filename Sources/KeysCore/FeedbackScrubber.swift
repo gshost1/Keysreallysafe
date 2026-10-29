@@ -16,30 +16,36 @@ import Foundation
 /// 1. `vault_value` — exact-substring removal of every vault value, the
 ///    `Redact.scrub` loop including its 4-character floor (a 3-character needle
 ///    is not evidence).
-/// 2. `token` — every Keysrs token family's runs, from the full minted shapes
+/// 2. `prompt_text` — the exact text of the `prompt` argument, whatever the
+///    agent marked with it. This runs IMMEDIATELY after vault_value and before
+///    every rewriting rule: once a rewriting rule has masked a part of the
+///    prompt the exact match finds nothing and the rest of the prompt leaks,
+///    so the prompt must be claimed before any rewriting rule can touch it.
+/// 3. `token` — every Keysrs token family's runs, from the full minted shapes
 ///    down to a bare `ksf_`: `ksfp_`, `ksfc_`, `ksf_`, `ksfr_` followed by any
 ///    run of token characters. Deliberately stricter than the output guard,
 ///    whose length floors would let a short run through — the scrubber removes
 ///    the prefix itself, so nothing Keysrs-shaped can survive into a result
 ///    the guard would then have to reject.
-/// 3. `key_shape` header forms — `Bearer <value>` and the
+/// 4. `key_shape` header forms — `Bearer <value>` and the
 ///    `x-api-key`/`x-goog-api-key`/`api-key`/`authorization: <value>` shapes
 ///    from `Redact.scrub`, prefix kept, value masked.
-/// 4. `path` — whitespace-delimited tokens starting `/` or `~`, removed
-///    without corroboration: feedback leaves the Mac, so a leading slash is
-///    always a path. URLs start with a scheme and never match.
-/// 5. `email` — email-shaped strings except `support@keysrs.com` (the address
-///    the feedback is going to).
-/// 6. `key_shape` token forms — provider-key-shaped tokens: a long distinctive
+/// 5. `path` — a path anywhere in the text (after a quote, a paren, a backtick,
+///    `cwd:`, `path=`, `file://`, or a plain boundary), removed without
+///    corroboration: feedback leaves the Mac, so a leading slash is always a
+///    path. http(s) URLs are lifted out first, so a URL's own slashes are never
+///    read as a path and the pinned survivors stay.
+/// 6. `email` — email-shaped strings except `support@keysrs.com` (the address
+///    the feedback is going to); the fullwidth `＠` (U+FF20) counts as an `@`.
+/// 7. `key_shape` token forms — provider-key-shaped tokens: a long distinctive
 ///    provider prefix (`sk-ant-`, `AIza`, `xai-`, `gsk_` — 4+ characters, one
 ///    owner in the catalog) is evidence on its own, exactly as `WrapDetect`
 ///    treats it; a short shared prefix (`sk-`) is corroborated only by the
 ///    token being otherwise key-shaped, and a plain 16–512 printable
 ///    single-token string is removed by shape alone.
-/// 7. `name` — every catalog key name and project label, word-boundary aware
-///    (so "demographic" keeps a key named "demo" embedded inside it).
-/// 8. `prompt_text` — the exact text of the `prompt` argument, whatever the
-///    agent marked with it.
+/// 8. `name` — every catalog key name and project label, word-boundary aware
+///    (so "demographic" keeps a key named "demo" embedded inside it),
+///    case-insensitive and escaped (a label is data, never a pattern).
 /// 9. `length` — the cap on the scrubbed text (10,000 characters). The count
 ///    is the character count the cap removed, not an occurrence count.
 ///
@@ -104,10 +110,17 @@ struct FeedbackScrubber {
             bump(vaultValue, by: replaceLiteral(&text, value))
         }
 
-        // 2. token — every Keysrs family's runs, full shape to bare prefix.
+        // 2. prompt_text — the marked text, exact and whole, BEFORE any
+        //    rewriting rule: a rewriting rule that masks part of the prompt
+        //    would leave the exact match with nothing to find.
+        if let prompt = request.prompt, !prompt.isEmpty {
+            bump(promptText, by: replaceLiteral(&text, prompt))
+        }
+
+        // 3. token — every Keysrs family's runs, full shape to bare prefix.
         bump(token, by: replaceRegex(&text, tokenRunPattern, with: Redact.mask))
 
-        // 3. key_shape, header forms — prefix kept, value masked (Redact's two).
+        // 4. key_shape, header forms — prefix kept, value masked (Redact's two).
         bump(keyShape, by: replaceRegex(
             &text, #"(?i)(bearer\s+)[A-Za-z0-9._\-~+/=]{8,}"#, with: "$1" + Redact.mask
         ))
@@ -116,17 +129,17 @@ struct FeedbackScrubber {
             with: "$1$2" + Redact.mask
         ))
 
-        // 4. path — tokens starting / or ~, removed whole without corroboration.
+        // 5. path — tokens starting / or ~, removed whole without corroboration.
         bump(path, by: scrubTokens(&text) { $0.hasPrefix("/") || $0.hasPrefix("~") })
 
-        // 5. email — every email-shaped string except the support address.
+        // 6. email — every email-shaped string except the support address.
         bump(email, by: replaceRegex(
             &text, #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#, with: Redact.mask,
             except: supportAddress
         ))
 
-        // 6. key_shape, token forms — provider-prefix evidence and key shape.
-        //    Path- and email-shaped tokens are the other rules' (rules 4 and 5
+        // 7. key_shape, token forms — provider-prefix evidence and key shape.
+        //    Path- and email-shaped tokens are the other rules' (rules 5 and 6
         //    claimed theirs; the spared support address is email-shaped and
         //    stays), so the shape scan judges only what is left.
         let records = request.records
@@ -141,16 +154,11 @@ struct FeedbackScrubber {
             return WrapDetect.valueLooksLikeKey(token)
         })
 
-        // 7. name — key names and project labels, whole words only.
+        // 8. name — key names and project labels, whole words only.
         for needle in request.names where !needle.isEmpty {
             bump(name, by: replaceRegex(
                 &text, #"(?<![A-Za-z0-9])\Q"# + needle + #"\E(?![A-Za-z0-9])"#, with: Redact.mask
             ))
-        }
-
-        // 8. prompt_text — the marked text, exact and whole.
-        if let prompt = request.prompt, !prompt.isEmpty {
-            bump(promptText, by: replaceLiteral(&text, prompt))
         }
 
         // 9. length — the cap, LAST, on the scrubbed text (never mid-secret:
