@@ -22,16 +22,38 @@ final class MCPGrantTests: XCTestCase {
 
     // MARK: - Rigs
 
-    /// The one clock the store reads: tests move it, they never wait for it.
+    /// The one clock the store reads: tests move it, they never wait for it. The
+    /// `expireAfterReads` seam is the expiry-window probe: once armed, the first
+    /// `hold` reads answer the held instant and every read after answers one past
+    /// the pending TTL, so the approval thread's live check and its approve flip
+    /// land on opposite sides of an ask's expiry — deterministically, with no
+    /// sleeping and no racing the mint.
     private final class Clock {
         private let lock = NSLock()
         private var instant: Date
+        private var holdReads: Int?
+        private var flippedTo: Date?
+        private var reads = 0
         init(_ start: Date = Date(timeIntervalSinceReferenceDate: 700_000_000)) { instant = start }
         var current: Date {
-            get { lock.lock(); defer { lock.unlock() }; return instant }
+            get {
+                lock.lock(); defer { lock.unlock() }
+                if let hold = holdReads {
+                    reads += 1
+                    return reads <= hold ? instant : flippedTo!
+                }
+                return instant
+            }
             set { lock.lock(); instant = newValue; lock.unlock() }
         }
         func advance(_ seconds: TimeInterval) { current = current.addingTimeInterval(seconds) }
+        func expireAfterReads(_ hold: Int) {
+            lock.lock()
+            holdReads = hold
+            flippedTo = instant.addingTimeInterval(MCPPendingGrants.ttl + 1)
+            reads = 0
+            lock.unlock()
+        }
     }
 
     /// The in-process app: a real `APIHandler` over a temp catalog behind a loopback
@@ -726,6 +748,74 @@ final class MCPGrantTests: XCTestCase {
         let pruned = try poll(site, approvedAnswer["id"] as! String,
                               secret: approvedAnswer["secret"] as? String ?? "")
         XCTAssertEqual(pruned.status, 404, "a pruned id is not_found, never a zombie state")
+    }
+
+    // MARK: VAL-G-002 — a lapsed approval revokes what it minted
+
+    /// An approval that lands in the window between issuance's last live check
+    /// and the record's flip must not strand the just-minted grant: `approve`
+    /// re-checks the ask's expiry under its lock, settles the ask expired exactly
+    /// as a poll would, and the approval thread revokes the grant it just minted
+    /// through the house revoke path. The armed fake clock lands the approval
+    /// thread's two reads on opposite sides of the expiry — the mint still
+    /// happens, the flip lands past the TTL.
+    func testApprovalLandingPastTheAskExpiryRevokesTheMintedGrantInsteadOfStrandingIt() throws {
+        let site = try makeSite()
+        // The ask is created while the clock reads its held instant, and the
+        // approval thread is parked inside its prompt.
+        let created = try json(create(site, ask(site)))
+        XCTAssertEqual(created["status"] as? String, "pending")
+        let id = created["id"] as! String
+        let secret = created["secret"] as! String
+
+        // Arm the window: the approval thread's first read after the release is
+        // issuance's live check — still live at the held instant — and every
+        // read after, approve's flip among them, answers one past the ask's TTL.
+        site.clock.expireAfterReads(1)
+        site.gate.release()
+
+        // The mint's audit row is the signal that issuance's live check passed:
+        // it is awaited without touching the store's clock, so the armed flip is
+        // left for the flip itself (approve's, or a poll's — both are the fix's).
+        let mintDeadline = Date().addingTimeInterval(5)
+        var minted = false
+        while Date() < mintDeadline {
+            minted = try site.db.keyEvents(name: "demo", limit: 50).contains { $0.action == "grant" }
+            if minted { break }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertTrue(minted, "the lapsed ask still minted — issuance's live check read the held instant")
+
+        let settled = waitSettled(site, id)
+        if case .expired = settled.resolution {} else {
+            return XCTFail("the ask that lapsed at its approval reads expired: \(settled.resolution)")
+        }
+
+        // The just-minted grant is the approval thread's to revoke: a bounded
+        // wait for the revoke, then the pinned state — not a live row living out
+        // its window on the dashboard with no caller left who may claim it.
+        let deadline = Date().addingTimeInterval(5)
+        var row: Grant?
+        while Date() < deadline {
+            row = site.service.listGrants(includeInactive: true).first
+            if row?.revokeReason != nil { break }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(row?.revokeReason, "revoked", "the just-minted grant is revoked, not stranded")
+        XCTAssertTrue(site.service.listGrants().isEmpty, "nothing stays live from a lapsed ask")
+
+        // The revoke went through the house path: the mint and the revoke are
+        // each audited exactly once, the caller pinned to mcp.
+        let events = try site.db.keyEvents(name: "demo", limit: 50)
+        XCTAssertEqual(events.filter { $0.action == "grant" }.count, 1, "the mint is audited once")
+        let revokes = events.filter { $0.action == "grant_revoke" }
+        XCTAssertEqual(revokes.count, 1, "the revoke of the lapsed ask's grant is audited")
+        XCTAssertEqual(revokes.first?.caller, "mcp", "the caller is pinned to mcp")
+
+        // And the claim still answers the honest expired state, tokenless.
+        let answer = try json(poll(site, id, secret: secret))
+        XCTAssertEqual(answer["status"] as? String, "expired")
+        XCTAssertEqual(Set(answer.keys), ["status", "id"], "the expired answer is tokenless")
     }
 
     // MARK: VAL-G-001 — the poll secret binds the claim to the creator

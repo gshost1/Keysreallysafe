@@ -114,13 +114,28 @@ final class MCPPendingGrants: @unchecked Sendable {
         Hex.encode(SecureRandom.bytes(16))
     }
 
-    /// The approval thread's success path: only a still-pending record takes it.
-    func approve(id: String, token: String, grant: Grant) {
+    /// The approval thread's success path: only a still-pending, still-live
+    /// record takes it. The expiry re-check under this lock closes the window
+    /// issuance's `stillValid` pass cannot — a record whose ask lapsed between
+    /// that pass and the flip is settled expired exactly as a poll would settle
+    /// it, and the caller learns the flip did not take so it can revoke the
+    /// grant it just minted. A record a racing poll settled first reads the
+    /// same way: the flip does not take, nothing is overwritten.
+    @discardableResult
+    func approve(id: String, token: String, grant: Grant) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard records[id] != nil, case .pending = records[id]?.resolution else { return }
+        guard let record = records[id] else { return false }
+        guard case .pending = record.resolution, record.expiresAt > clock() else {
+            if case .pending = record.resolution {
+                records[id]?.resolution = .expired
+                records[id]?.resolvedAt = record.expiresAt
+            }
+            return false
+        }
         records[id]?.resolution = .approved(token: token, grant: grant)
         records[id]?.resolvedAt = clock()
+        return true
     }
 
     /// The approval thread's denial path: only a still-pending record takes it.
@@ -363,7 +378,11 @@ extension KeysService {
     /// one prompt, on the app's own queue — `requestMCPGrant` has already validated,
     /// so this thread blocks only in `require`. The record is settled to whatever
     /// the user did; an approval that lands after the request's TTL never mints
-    /// (`stillValid` is the store's own live check), and a denial is terminal.
+    /// (`stillValid` is the store's own live check), and the one window that pass
+    /// cannot close — between itself and the record's flip — is `approve`'s expiry
+    /// re-check, whose lapsed landing revokes the grant this thread just minted
+    /// instead of stranding it live for its whole window with no caller left who
+    /// may claim it. A denial is terminal.
     private func runMCPApproval(
         id: String,
         name: String,
@@ -386,7 +405,13 @@ extension KeysService {
                     gate: promptGate,
                     stillValid: { [weak self] in self?.mcpPendingGrants.isLive(id: id) ?? false }
                 )
-                self.mcpPendingGrants.approve(id: id, token: issued.token, grant: issued.grant)
+                if !self.mcpPendingGrants.approve(id: id, token: issued.token, grant: issued.grant) {
+                    // The ask lapsed in the one window `stillValid` cannot close:
+                    // the grant this thread just minted would live out its window on
+                    // the gateway with no caller left who may collect it. The house
+                    // revoke path ends it — audited, and idempotent if it is gone.
+                    try? self.revokeGrant(id: issued.grant.id, caller: "mcp")
+                }
             } catch {
                 // An expired (or already-resolved) request keeps its honest state:
                 // a late approval must never mint, and a denial must not overwrite
