@@ -652,6 +652,12 @@ final class KeysService: @unchecked Sendable {
             caller: caller,
             detail: Self.grantDetail(issued.grant)
         )
+        // The onboarding `grant_issue` counter's producer: the MCP `request_grant`
+        // flow issues with caller "mcp". The key-event audit's `grant_create`
+        // (recordKeyEvent just above) already counts every issuance, so this stays
+        // the onboarding-only signal. Opt-in: `record` is a no-op while analytics
+        // sharing is off.
+        if caller == "mcp" { analytics?.record(.grantIssue) }
         return issued
     }
 

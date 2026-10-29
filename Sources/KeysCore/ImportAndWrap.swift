@@ -135,6 +135,14 @@ extension KeysService {
             _ = try setGateway(name: key, enabled: true, host: nil, caller: caller, presenceChecked: true)
         }
 
+        // The onboarding counters' producers. This flow imported at least one key, so
+        // the `key_import` step is recorded now; the flow's completion records
+        // `onboarding_finished` after the rewrite below. Both are opt-in — `record`
+        // is a no-op while analytics sharing is off — so an import never records
+        // anything a non-sharing user did not ask for.
+        let importedKeys = Set(decisions.compactMap(\.importedKey))
+        if !importedKeys.isEmpty { analytics?.record(.keyImport) }
+
         // The ONE project token, under the same prompt: one gateway_clients row plus one
         // membership row per wrapped key. Nothing to wrap means no token and a null
         // expiry — never a zero-member mint.
@@ -172,6 +180,10 @@ extension KeysService {
         // approved tradeoff — the token is still the gate) and this import writes
         // host.docker.internal base URLs. Absent or false never touches the pref.
         if docker { try preferences.setDockerAccess(true) }
+
+        // The onboarding's final step reached the end of the flow: the keys were
+        // imported and the files rewritten, so the flow is finished.
+        if !importedKeys.isEmpty { analytics?.record(.onboardingFinished) }
 
         let outcomes = Self.mergedOutcomes(
             report: report, wanted: wanted, decisions: decisions, alreadyWrapped: alreadyWrapped,
@@ -218,6 +230,16 @@ extension KeysService {
                 return (key, candidate.value, provider)
             default:
                 return nil
+            }
+        }
+
+        /// The vault key this decision imported (a wrap or an import-left-in-place);
+        /// nil for a skip, which imports nothing. The onboarding `key_import`
+        /// counter's producer reads this.
+        var importedKey: String? {
+            switch self {
+            case let .wrap(_, key, _, _), let .leave(_, key, _, _, _): return key
+            case .skip: return nil
             }
         }
 

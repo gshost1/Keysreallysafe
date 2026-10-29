@@ -235,4 +235,28 @@ final class AnalyticsToolsTests: XCTestCase {
                        "the pinned sentence passes the output guard")
         XCTAssertEqual(screened.isError, true)
     }
+
+    // MARK: - The app-runtime seam (VAL-INT-004)
+
+    /// The repo checkout root, for the source-level pin below.
+    private static let repoRoot: URL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+
+    /// VAL-INT-004: the one analytics log seam is wired in `AppRuntime.run()` beside
+    /// the relay host, so the running app (and only the app) records the
+    /// `set_analytics_sharing` confirmation line. That path needs a signed bundle and
+    /// a window server, so it cannot be driven in a test; the assignment is pinned at
+    /// the source instead — the exact line the route drives, writing the menubar log.
+    func testAppRuntimeWiresTheAnalyticsLogSeam() throws {
+        let source = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("Sources/KeysCore/AppRuntime.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            source.contains("service.analyticsLog = { logFile.write($0) }"),
+            "AppRuntime.run() wires KeysService.analyticsLog to the menubar log beside the relay host"
+        )
+    }
 }

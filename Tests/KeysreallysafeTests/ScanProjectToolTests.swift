@@ -486,4 +486,32 @@ final class ScanProjectToolTests: XCTestCase {
             XCTAssertEqual(variables[0]["last4"] as? String, String(anthropicValue.suffix(4)))
         }
     }
+
+    // MARK: - VAL-INT-004 (the scan_run onboarding counter)
+
+    /// The app side of a scan records the onboarding `scan_run` counter once per
+    /// scan — the vault comparison is the scan's only app touchpoint — and records
+    /// nothing at all while analytics sharing is off (the opt-in gate).
+    func testScanProjectRecordsScanRunOnlyWhenSharingIsOn() throws {
+        let site = try makeSite()
+        let transport = ProductAnalyticsTests.Transport()
+        let analytics = ProductAnalytics(catalog: site.db, transport: transport)
+        site.service.analytics = analytics
+        let folder = try TempDir.make()
+        try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: folder)
+        try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, to: site.control)
+        let registry = roster(control: site.control, projectFolder: { folder.path })
+
+        func counts() throws -> [String: Int]? {
+            (((try analytics.status()["preview"] as? [String: Any])?["reports"] as? [[String: Any]])?
+                .first?["counts"] as? [String: Int])
+        }
+
+        _ = try callJSON(registry, arguments: [:])
+        XCTAssertNil(try counts(), "sharing is off: the scan records nothing")
+
+        try analytics.setEnabled(true, consentVersion: 2)
+        _ = try callJSON(registry, arguments: [:])
+        XCTAssertEqual(try counts(), ["scan_run": 1], "one scan records one scan_run")
+    }
 }

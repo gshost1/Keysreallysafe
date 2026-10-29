@@ -546,7 +546,7 @@ extension KeysService {
             guard let secret = try? secrets.get(name: row.name) else { continue }
             stored.append((row.name, Array(Self.digest(secret).utf8)))
         }
-        return hashes.map { hash in
+        let matches = hashes.map { hash in
             let wanted = Array(hash.lowercased().utf8)
             var match: String?
             for entry in stored where ConstantTime.equal(entry.digest, wanted) {
@@ -554,6 +554,13 @@ extension KeysService {
             }
             return (hash.lowercased(), match)
         }
+        // The onboarding `scan_run` counter's producer: this comparison is the one
+        // app-side touchpoint of a `scan_project` run, so one call is one scan. The
+        // counter is opt-in — `record` is a no-op while analytics sharing is off — so
+        // a scan never enrolls the user and never records anything they did not ask
+        // for.
+        analytics?.record(.scanRun)
+        return matches
     }
 
     /// The digest form the vault comparison shares: SHA-256 hex, lowercase.

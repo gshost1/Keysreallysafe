@@ -1284,4 +1284,35 @@ final class MCPGrantTests: XCTestCase {
             XCTAssertEqual((error as? AppError)?.description, AppConnection.notRunningMessage)
         }
     }
+
+    // MARK: VAL-INT-004 — the grant_issue onboarding counter
+
+    /// A grant issued through the MCP `request_grant` flow records the onboarding
+    /// `grant_issue` counter — and records nothing while analytics sharing is off
+    /// (the opt-in gate). The dashboard's own issuance stays on `grant_create`, so
+    /// this onboarding counter is produced by the MCP flow alone.
+    func testRequestGrantRecordsGrantIssueOnlyWhenSharingIsOn() throws {
+        let site = try makeSite()
+        let transport = ProductAnalyticsTests.Transport()
+        let analytics = ProductAnalytics(catalog: site.db, transport: transport)
+        site.service.analytics = analytics
+
+        func counts() throws -> [String: Int]? {
+            (((try analytics.status()["preview"] as? [String: Any])?["reports"] as? [[String: Any]])?
+                .first?["counts"] as? [String: Int])
+        }
+        func issue() throws {
+            site.gate.release()
+            let id = (try callToolJSON(site, name: "request_grant", arguments: ask(site)))["id"] as! String
+            _ = waitSettled(site, id)
+        }
+
+        try issue()
+        XCTAssertNil(try counts(), "sharing is off: the issue records nothing")
+
+        try analytics.setEnabled(true, consentVersion: 2)
+        try issue()
+        let counts = try XCTUnwrap(try counts(), "the issue recorded a counter")
+        XCTAssertEqual(counts["grant_issue"], 1, "the MCP issue records one grant_issue")
+    }
 }

@@ -99,6 +99,55 @@ final class ProductAnalyticsTests: XCTestCase {
                        ["scan_run": 1, "key_import": 1, "grant_issue": 1, "onboarding_finished": 1])
     }
 
+    /// VAL-INT-004: the four onboarding counters have PRODUCERS on their flows, and
+    /// the opt-in gate holds. The app-side flows are driven directly — a scan's
+    /// in-vault comparison (`scan_run`), an import (`key_import` and
+    /// `onboarding_finished`, the import being the onboarding's final write step),
+    /// and a grant issued through the MCP flow (`grant_issue`) — first with sharing
+    /// off (nothing is recorded) and then on (each flow records its counter).
+    func testOnboardingCounterProducersAreWiredAndOptInGated() throws {
+        let (db, dir) = try makeDB()
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let (service, _) = makeGatedService(db: db)
+        let transport = Transport()
+        let analytics = ProductAnalytics(catalog: db, transport: transport)
+        service.analytics = analytics
+
+        // One vault key with a gateway host (the grant's target) and one fake value
+        // built at runtime, never a committed literal.
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.patch(name: "demo", provider: nil, kind: nil, notes: nil, host: "127.0.0.1:1", updateHost: true)
+        let planted = "sk-ant-" + "FAKE0TEST0VALUE0NOT0A0REAL0KEY" + "01"
+
+        // A fresh project per run: an import rewrites its env file, so a second run
+        // needs its own folder to import again.
+        func makeProject(_ name: String) throws -> URL {
+            let project = dir.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+            try Data("ANTHROPIC_API_KEY=\(planted)\n".utf8).write(to: project.appendingPathComponent(".env"))
+            return project
+        }
+        func runFlows(project: URL) throws {
+            _ = try service.vaultLookup(hashes: [String(repeating: "0", count: 64)])
+            _ = try service.importAndWrap(folder: project.path, variables: nil, docker: false)
+            _ = try service.issueGrant(name: "demo", request: GrantRequest(task: "onboarding", minutes: 5), caller: "mcp")
+        }
+
+        // Off (the default): every flow runs, and nothing is recorded.
+        try runFlows(project: try makeProject("off"))
+        XCTAssertTrue(try reports(analytics).isEmpty, "sharing is off: the flows record nothing")
+
+        // On: the same flows record the four counters. (The flows also record their
+        // pre-existing counters — key_add, client_create, grant_create — so the
+        // assertion names the four onboarding counters rather than the whole map.)
+        try analytics.setEnabled(true, consentVersion: 2)
+        try runFlows(project: try makeProject("on"))
+        let counts = try XCTUnwrap(try reports(analytics).first?["counts"] as? [String: Int])
+        for counter in ["scan_run", "key_import", "grant_issue", "onboarding_finished"] {
+            XCTAssertEqual(counts[counter], 1, "the \(counter) producer recorded its counter")
+        }
+    }
+
     func testCompletedDayRetryIsImmutableAndAcknowledgmentPreservesNewDay() throws {
         let (_, clock, transport, analytics) = try harness()
         try analytics.setEnabled(true, consentVersion: 2)

@@ -870,4 +870,35 @@ final class ImportAndWrapTests: XCTestCase {
         let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
         XCTAssertEqual(text, AppConnection.notRunningMessage)
     }
+
+    // MARK: - the onboarding counters (VAL-INT-004)
+
+    /// A completed import records the onboarding `key_import` and `onboarding_finished`
+    /// counters, and records nothing at all while analytics sharing is off (the opt-in
+    /// gate). Each run imports into a fresh project, because an import rewrites its env
+    /// file and a second run over the same file would find it already wrapped.
+    func testImportRecordsKeyImportAndOnboardingFinishedOnlyWhenSharingIsOn() throws {
+        let vault = try makeVault()
+        let transport = ProductAnalyticsTests.Transport()
+        let analytics = ProductAnalytics(catalog: vault.db, transport: transport)
+        vault.service.analytics = analytics
+
+        func counts() throws -> [String: Int]? {
+            (((try analytics.status()["preview"] as? [String: Any])?["reports"] as? [[String: Any]])?
+                .first?["counts"] as? [String: Int])
+        }
+
+        let offProject = try makeProject("off", in: vault.dir)
+        try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: offProject)
+        _ = try vault.service.importAndWrap(folder: offProject.path, variables: nil, docker: false)
+        XCTAssertNil(try counts(), "sharing is off: the import records nothing")
+
+        try analytics.setEnabled(true, consentVersion: 2)
+        let onProject = try makeProject("on", in: vault.dir)
+        try write("GROQ_API_KEY=\(groqValue)\n", to: ".env", under: onProject)
+        _ = try vault.service.importAndWrap(folder: onProject.path, variables: nil, docker: false)
+        let counts = try XCTUnwrap(try counts(), "the import recorded counters")
+        XCTAssertEqual(counts["key_import"], 1, "the import records one key_import")
+        XCTAssertEqual(counts["onboarding_finished"], 1, "a completed import records one onboarding_finished")
+    }
 }
