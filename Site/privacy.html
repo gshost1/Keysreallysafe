@@ -44,7 +44,7 @@
 <p>The app never reads other tools' authentication files (for example <code>~/.codex/auth.json</code> or <code>~/.grok/auth.json</code>), never opens provider websites, and never uses browser cookies or sessions.</p>
 
 <h2>Update check</h2>
-<p>From version 0.10, the app can check GitHub for a newer release. It is off by default: it runs when you choose Check for Updates, or at launch and once a day if you turn on Automatically Check for Updates. It asks GitHub's public releases API for the latest version number and download address, sends no cookies and nothing from your data, and downloads nothing. From version 0.11, choosing Update Now downloads the release's disk image from GitHub and installs it in place after checking its checksum and Apple signature; the download happens only when you click Update Now. GitHub, not us, receives the request and the download under <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>.</p>
+<p>The app can check GitHub for a newer release. From version 0.14, Automatically Check for Updates is on unless you turned it off before: once a day the app asks GitHub's public releases API for the latest version number and download address, sending no cookies and nothing from your data. When a newer release exists, it downloads the release's disk image from GitHub, checks its checksum and signing identity, and installs it once the Mac is idle and nothing is waiting on you. With the setting off, nothing is checked or downloaded unless you choose Check for Updates and then Update Now. GitHub, not us, receives the request and the download under <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy statement</a>.</p>
 
 <h2>What stays on your Mac</h2>
 <ul>
@@ -53,7 +53,7 @@
 </ul>
 
 <h2>Optional "share to compare"</h2>
-<p>It is off by default. The welcome window asks once, with the box unticked, and the dashboard's Privacy dialog shows the destination, what is waiting to be sent (with a preview you can download) and lets you turn it off at any time. Turning it off stops collection and discards unsent reports. Nothing from before you opted in is ever summarized.</p>
+<p>It is off by default. The welcome window asks once, with the box unticked, the first time you open the app's window. A coding agent can record your answer through the MCP server, but an agent's "on" only takes effect after you switch sharing on in the app yourself. The dashboard's Privacy dialog shows the destination, what is waiting to be sent (with a preview you can download) and lets you turn it off at any time. Turning it off stops collection and discards unsent reports. Nothing from before you opted in is ever summarized.</p>
 <p>While it is on, the app sends one report per day to <code>https://analytics.keysrs.com</code>, a server we run ourselves. A report contains only:</p>
 <ul>
   <li>the app version, macOS major version, CPU architecture, the UTC day it covers and a random report ID;</li>
