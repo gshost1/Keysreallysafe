@@ -72,7 +72,10 @@ is the full list CI runs; match it before claiming a change is verified.
 
 Tests must stay offline: no keychain, Touch ID, clipboard, provider calls or
 real credentials. Use `CLAUDE_CONFIG_DIR=Fixtures/claude-home`, `GROK_HOME=Fixtures/grok-home`
-and `GROK_BOT_HOME=Fixtures/grok-bot-home` as CI does.
+and `GROK_BOT_HOME=Fixtures/grok-bot-home` as CI does. Under XCTest the
+production code refuses the real control file, catalog, Application Support
+and Keychain unless `KEYS_CATALOG` points at a temp file (a 0.14 test once
+reached the installed app); keep new paths behind that tripwire.
 
 ## Installed copy vs checkout
 
@@ -96,7 +99,11 @@ Updates → Update Now downloads `Keysrs-arm64.dmg` from the latest GitHub
 release, verifies the checksum and the stable signing identity, swaps the
 bundle beside the old one and relaunches (`AppUpdater.swift`; the old bundle
 is removed by a helper after the process exits, and stale leftovers are
-swept on the next launch).
+swept on the next launch). From 0.14 the app is headless: the CLI and MCP
+launch it on demand only from `/Applications/Keysrs.app`, and background
+updates wait until no prompt, relay or grant is active before swapping and
+restarting. `packaging/homebrew/keysrs.rb` is the cask for the tap
+`gshost1/homebrew-keysrs`; its sha256 is filled at release time.
 
 0.9.x ran as the launchd agent `com.keysreallysafe.menubar` from
 `Application Support/Keysreallysafe/bin/keys`. That label and the plist path
@@ -128,6 +135,12 @@ The README's "Privacy boundaries" section is the contract. In short:
   touches them writes to a temp home.
 - Gateway requests need a grant: one Touch ID, one key, one host, method/path
   scope, expiry. Request bodies never reach the usage catalog.
+- MCP (`keys mcp`, 0.14) is the main agent surface. No tool returns a key
+  value, and there is no rm, rotate, reveal, copy, env, unwrap, long-lived
+  token or relay-on tool. Grants still need Touch ID, folder tools stay inside
+  the session's folder, and only the person turns analytics sharing on.
+  Imported projects get a 30-day project token; `keys unwrap` restores the
+  files.
 - Product analytics (v2, "share to compare") is opt-in and aggregate: daily
   counters, token totals per tool/provider/public model, gateway totals and
   plan-window peaks, sent to https://analytics.keysrs.com (the collector on
@@ -167,3 +180,8 @@ expired. The license D1 database is deleted. Workers Paid stays active (kept on 
   the original disappearance was never reproduced, so recovery is a
   mitigation, not a proven fix.
 - Long docs and fixtures: read with `offset`/`limit`, don't dump them.
+- Multi-session work: the coordinating session detaches from whatever started
+  it and owns the rest. Review, CI and scan sessions report to it, write
+  results to the shared notes folder, and are archived once those are saved.
+  Big builds run in their own worktrees; nothing merges until an independent
+  full CI run and a security review pass.
