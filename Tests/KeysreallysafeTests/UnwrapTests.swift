@@ -48,7 +48,10 @@ final class UnwrapTests: XCTestCase {
         server.start()
         addTeardownBlock { server.stop() }
         let control = ControlFile.url(beside: db.path)
+        // Both isolation guards: the onboarding-side path check and the shared
+        // configuration guard, before any write.
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return Site(service: service, db: db, gate: gate, handler: handler, server: server, control: control, dir: dir)
     }
@@ -58,6 +61,7 @@ final class UnwrapTests: XCTestCase {
     private func deadControl() throws -> URL {
         let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         return control
     }
 

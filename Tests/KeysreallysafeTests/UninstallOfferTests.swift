@@ -246,7 +246,10 @@ final class UninstallOfferTests: XCTestCase {
         server.start()
         addTeardownBlock { server.stop() }
         let control = ControlFile.url(beside: db.path)
+        // Both isolation guards: the onboarding-side path check and the shared
+        // configuration guard, before any write.
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return OfferSite(db: db, dir: dir, service: service, gate: gate, handler: handler,
                          server: server, control: control)

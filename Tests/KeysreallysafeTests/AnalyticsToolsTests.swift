@@ -56,6 +56,7 @@ final class AnalyticsToolsTests: XCTestCase {
         let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
         server.start()
         let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return Site(server: server, handler: handler, service: service, db: db, dir: dir,
                     control: control, gate: gate, log: log, transport: transport,
@@ -226,7 +227,9 @@ final class AnalyticsToolsTests: XCTestCase {
     /// not-running sentence as a tool error result, byte for byte through the guard.
     func testNotRunningSentence() throws {
         let dir = try TempDir.make()
-        let tools = MCPAnalyticsTools(control: dir.appendingPathComponent("control.json"), launch: .neverLaunching)
+        let control = dir.appendingPathComponent("control.json")
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
+        let tools = MCPAnalyticsTools(control: control, launch: .neverLaunching)
         let result = served(tools, ["enabled": true])
         XCTAssertEqual(result.isError, true)
         XCTAssertEqual(text(result), Self.notRunningSentence)

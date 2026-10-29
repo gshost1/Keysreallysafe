@@ -299,9 +299,11 @@ final class ActivityToolsTests: XCTestCase {
         let issued = try service.issueGatewayClient(name: "demo", label: "agent")
         try call(db, "demo", hoursAgo: 1, requestId: "BODY-SENTINEL-fragment")
 
+        let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         let registry = try MCPRoster.registry(
             catalog: { db },
-            control: ControlFile.url(beside: db.path),
+            control: control,
             fetchLatestRelease: { throw AppError.usage("the activity rig fetches no release") }
         )
         let (frames, stderr) = try MCPSession.run([
@@ -329,6 +331,7 @@ final class ActivityToolsTests: XCTestCase {
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         try call(db, "demo", hoursAgo: 1, requestId: "d1")
         let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         XCTAssertFalse(fm.fileExists(atPath: control.path), "no control file is written")
 
         let result = try tools(db).call("activity", arguments: [:])
@@ -361,9 +364,11 @@ final class ActivityToolsTests: XCTestCase {
         let (service, db, _, _) = try makeRig()
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         try call(db, "demo", hoursAgo: 1, requestId: "d1")
+        let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         let registry = try MCPRoster.registry(
             catalog: { db },
-            control: ControlFile.url(beside: db.path),
+            control: control,
             fetchLatestRelease: { throw AppError.usage("the activity rig fetches no release") }
         )
         let (frames, stderr) = try MCPSession.run([

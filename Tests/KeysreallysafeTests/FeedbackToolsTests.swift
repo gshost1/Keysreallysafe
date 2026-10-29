@@ -69,6 +69,7 @@ final class FeedbackToolsTests: XCTestCase {
         }
         server.start()
         let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return Site(
             server: server, handler: handler, service: service, db: db, dir: dir,
@@ -376,7 +377,9 @@ final class FeedbackToolsTests: XCTestCase {
     /// byte, exactly as a client sees it.
     func testNotRunningSentence() throws {
         let dir = try TempDir.make()
-        let tools = MCPFeedbackTools(control: dir.appendingPathComponent("control.json"), launch: .neverLaunching)
+        let control = dir.appendingPathComponent("control.json")
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
+        let tools = MCPFeedbackTools(control: control, launch: .neverLaunching)
         let result = try served(tools, ["draft": "hello there"])
         XCTAssertEqual(result.isError, true)
         XCTAssertEqual((result.content.first?["text"] as? String) ?? "", Self.notRunningSentence)
@@ -444,6 +447,7 @@ final class FeedbackToolsTests: XCTestCase {
         let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
         server.start()
         let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         addTeardownBlock { server.stop() }
 

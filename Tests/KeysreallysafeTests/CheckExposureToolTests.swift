@@ -26,7 +26,9 @@ final class CheckExposureToolTests: XCTestCase {
     /// A control URL no live site answers: exposure never contacts the app, but
     /// the group's shared init takes the seam like every other tool.
     private func deadControl() throws -> URL {
-        ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
+        let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
+        return control
     }
 
     /// The onboarding group wired over injected seams, never the machine's real

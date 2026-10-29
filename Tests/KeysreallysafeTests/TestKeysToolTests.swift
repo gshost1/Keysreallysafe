@@ -70,7 +70,10 @@ final class TestKeysToolTests: XCTestCase {
         server.start()
         addTeardownBlock { server.stop() }
         let control = ControlFile.url(beside: db.path)
+        // Both isolation guards: the onboarding-side path check and the shared
+        // configuration guard, before any write.
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return Site(
             service: service, db: db, gate: gate, checker: checker, handler: handler,
@@ -83,6 +86,7 @@ final class TestKeysToolTests: XCTestCase {
     private func deadControl() throws -> URL {
         let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         return control
     }
 
@@ -498,6 +502,7 @@ final class TestKeysToolTests: XCTestCase {
         addTeardownBlock { slow.stop() }
         let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(
             port: slow.boundPort, token: "slow-site",
             pid: ProcessInfo.processInfo.processIdentifier, to: control

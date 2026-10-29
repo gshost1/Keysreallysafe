@@ -92,7 +92,10 @@ final class ImportAndWrapTests: XCTestCase {
         server.start()
         addTeardownBlock { server.stop() }
         let control = ControlFile.url(beside: db.path)
+        // Both isolation guards: the onboarding-side path check and the shared
+        // configuration guard, before any write.
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return Site(
             service: service, db: db, gate: gate, handler: handler, server: server, log: log,
@@ -105,6 +108,7 @@ final class ImportAndWrapTests: XCTestCase {
     private func deadControl() throws -> URL {
         let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
         try assertNotProductionPath(control)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         return control
     }
 
@@ -1114,10 +1118,16 @@ final class ImportAndWrapTests: XCTestCase {
     /// The guard's own proof: the production locations — the default catalog seam, the
     /// control file beside it, the Application Support root itself — fail closed, while
     /// a temp path passes. A test rig that reaches for the real app dies here instead.
+    /// The production control shape is built directly (the resolver itself now refuses
+    /// under the tripwire, which is this suite's own subject), and the shared guard is
+    /// asserted on the same shapes — both guards fail closed on production paths.
     func testGuardFailsClosedOnProductionPaths() throws {
+        let productionControl = Paths.appSupport.appendingPathComponent("control.json")
         XCTAssertThrowsError(try assertNotProductionPath(Paths.appSupport))
         XCTAssertThrowsError(try assertNotProductionPath(Paths.catalogDB), "the production-default catalog seam")
-        XCTAssertThrowsError(try assertNotProductionPath(ControlFile.url()), "the production-default control seam")
+        XCTAssertThrowsError(try assertNotProductionPath(productionControl), "the production-default control seam")
+        XCTAssertThrowsError(try AppConnectionIsolationGuard.assertIsolated(control: productionControl),
+                             "the shared guard rejects the production control shape too")
         XCTAssertThrowsError(try assertNotProductionPath(Paths.appSupport.appendingPathComponent("nested/control.json")))
         XCTAssertNoThrow(try assertNotProductionPath(try TempDir.make().appendingPathComponent("catalog.db")))
         XCTAssertNoThrow(try assertNotProductionPath(try deadControl()))

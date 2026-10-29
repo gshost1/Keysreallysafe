@@ -243,6 +243,10 @@ final class AppConnectionIsolationGuardTests: XCTestCase {
             "ReadToolsTests.swift", "GrantMCPTests.swift", "MCPClientFlowTests.swift",
             "MCPOutputGuardSweepTests.swift", "MCPOutputGuardTests.swift", "MCPRegistryTests.swift",
             "MCPServerTestSupport.swift", "TestSupport.swift",
+            "ImportAndWrapTests.swift", "TestKeysToolTests.swift", "CheckExposureToolTests.swift",
+            "ScanProjectToolTests.swift", "FeedbackToolsTests.swift", "RevokeToolsTests.swift",
+            "AnalyticsToolsTests.swift", "ActivityToolsTests.swift", "UnwrapTests.swift",
+            "UninstallOfferTests.swift",
         ]
         // A use hands the configured control world to something that can act on it.
         let uses = [

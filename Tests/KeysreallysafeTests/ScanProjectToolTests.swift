@@ -62,16 +62,20 @@ final class ScanProjectToolTests: XCTestCase {
         }
         server.start()
         addTeardownBlock { server.stop() }
+        let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         return Site(
             service: service, db: db, gate: gate, handler: handler, server: server, log: log,
-            control: ControlFile.url(beside: db.path)
+            control: control
         )
     }
 
     /// A control URL no live site answers: a fresh temp dir with no control.json in
     /// it, the shape an installed app leaves behind by never having been started.
     private func deadControl() throws -> URL {
-        ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
+        let control = ControlFile.url(beside: try TempDir.make().appendingPathComponent("catalog.db"))
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
+        return control
     }
 
     /// The onboarding group wired over injected seams, never the machine's real
@@ -404,6 +408,7 @@ final class ScanProjectToolTests: XCTestCase {
         let prompts = site.gate.reasons.count
         let folder = try TempDir.make()
         try write("ANTHROPIC_API_KEY=\(anthropicValue)\nGROQ_API_KEY=\(groqValue)\n", to: ".env", under: folder)
+        try AppConnectionIsolationGuard.assertIsolated(control: site.control)
         try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, to: site.control)
 
         let result = try callJSON(roster(control: site.control, projectFolder: { folder.path }), arguments: [:])
@@ -503,6 +508,7 @@ final class ScanProjectToolTests: XCTestCase {
         for (label, text) in [("invalid json", #"not json"#), ("pid 0", #"{"port":443,"pid":0,"token":"t"}"#)] {
             let dir = try TempDir.make()
             let url = dir.appendingPathComponent("control.json")
+            try AppConnectionIsolationGuard.assertIsolated(control: url)
             try Data(text.utf8).write(to: url)
             controls.append((label, url))
         }
@@ -544,6 +550,7 @@ final class ScanProjectToolTests: XCTestCase {
         site.service.analytics = analytics
         let folder = try TempDir.make()
         try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: folder)
+        try AppConnectionIsolationGuard.assertIsolated(control: site.control)
         try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, to: site.control)
         let registry = roster(control: site.control, projectFolder: { folder.path })
 

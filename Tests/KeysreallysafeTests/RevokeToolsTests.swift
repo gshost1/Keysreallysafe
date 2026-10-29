@@ -70,6 +70,7 @@ final class RevokeToolsTests: XCTestCase {
         }
         server.start()
         let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return Site(
             server: server, handler: handler, service: service, db: db, dir: dir,
@@ -483,7 +484,9 @@ final class RevokeToolsTests: XCTestCase {
     /// the output guard.
     func testNotRunningSentenceForBothTools() throws {
         let dir = try TempDir.make()
-        let tools = MCPRevokeTools(control: dir.appendingPathComponent("control.json"), launch: .neverLaunching)
+        let control = dir.appendingPathComponent("control.json")
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
+        let tools = MCPRevokeTools(control: control, launch: .neverLaunching)
         for (name, arguments) in [("revoke_all", [:] as [String: Any]), ("revoke_project", ["label": "any"])] {
             let result = served(tools, name, arguments)
             XCTAssertEqual(result.isError, true, name)
@@ -530,6 +533,7 @@ final class RevokeCLIPathTests: XCTestCase {
         let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
         server.start()
         let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         return Site(server: server, handler: handler, service: service, db: db, dir: dir, gate: gate)
     }
