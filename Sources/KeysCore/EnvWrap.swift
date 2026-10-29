@@ -498,7 +498,7 @@ enum EnvFileWriter {
         do {
             try writeNew(temp, data: Data(text.utf8), mode: mode)
             guard Darwin.rename(temp.path, url.path) == 0 else {
-                throw AppError.usage("could not replace \(url.path): \(String(cString: strerror(errno)))")
+                throw AppError.usage("could not replace \(url.lastPathComponent): \(String(cString: strerror(errno)))")
             }
         } catch {
             try? FileManager.default.removeItem(at: temp)
@@ -506,10 +506,14 @@ enum EnvFileWriter {
         }
     }
 
+    /// The messages below name the file's last component, never its path: they are
+    /// user- and agent-facing (a tool result, a Terminal line), and a bare file name
+    /// identifies the file without telling a reader of the error where on disk to
+    /// look (VAL-O-007).
     static func currentMode(_ url: URL) throws -> mode_t {
         var st = stat()
         guard stat(url.path, &st) == 0 else {
-            throw AppError.usage("cannot read \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot read \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
         return st.st_mode & 0o7777
     }
@@ -519,11 +523,11 @@ enum EnvFileWriter {
     private static func writeNew(_ url: URL, data: Data, mode: mode_t) throws {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else {
-            throw AppError.usage("cannot create \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot create \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
         defer { close(fd) }
         guard fchmod(fd, mode) == 0 else {
-            throw AppError.usage("cannot set permissions on \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot set permissions on \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
         try data.withUnsafeBytes { buf in
             var off = 0
@@ -531,13 +535,13 @@ enum EnvFileWriter {
                 let n = write(fd, buf.baseAddress! + off, buf.count - off)
                 if n < 0 {
                     if errno == EINTR { continue }
-                    throw AppError.usage("cannot write \(url.path): \(String(cString: strerror(errno)))")
+                    throw AppError.usage("cannot write \(url.lastPathComponent): \(String(cString: strerror(errno)))")
                 }
                 off += n
             }
         }
         guard fsync(fd) == 0 else {
-            throw AppError.usage("cannot sync \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot sync \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
     }
 }

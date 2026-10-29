@@ -176,14 +176,29 @@ extension KeysService {
         // inside the project (VAL-O-002) — and the result says so without a path.
         var backupsKeptOutsideProject = false
         if let token {
-            let rewritten = try Self.rewriteWrappedFiles(
-                decisions: decisions, fresh: fresh, token: token, docker: docker, now: now,
-                conflicted: conflicted,
-                backupRoot: EnvFileWriter.backupsRoot(beside: catalog.path)
-            ) { path, companions in
-                try recordWrappedFile(path: path, project: project.id, now: now, companions: companions)
+            do {
+                let rewritten = try Self.rewriteWrappedFiles(
+                    decisions: decisions, fresh: fresh, token: token, docker: docker, now: now,
+                    conflicted: conflicted,
+                    backupRoot: EnvFileWriter.backupsRoot(beside: catalog.path)
+                ) { path, companions in
+                    try recordWrappedFile(path: path, project: project.id, now: now, companions: companions)
+                }
+                backupsKeptOutsideProject = rewritten > 0
+            } catch {
+                // The project token was minted moments before, with nothing else ever
+                // pointing at it; a rewrite that cannot land must not strand a live
+                // 30-day capability (VAL-O-007). The same idempotent revocation call
+                // unwrap makes, with its client_revoke audit row; best effort, because
+                // the rewrite's refusal is the failure the caller needs to see. Every
+                // message this path can throw is lastPathComponent-based — no
+                // absolute path rides the rethrown error.
+                if let client = try? catalog.gatewayClient(tokenHash: GatewayClientToken.hash(token)),
+                   (try? catalog.revokeGatewayClient(id: client.id, keyName: client.keyName, at: UTC.iso(now))) == true {
+                    try? recordKeyEvent(name: client.keyName, action: "client_revoke", caller: caller, detail: "#\(client.id)")
+                }
+                throw error
             }
-            backupsKeptOutsideProject = rewritten > 0
         }
 
         // The docker flag only acts when true: it turns the global setting on (the

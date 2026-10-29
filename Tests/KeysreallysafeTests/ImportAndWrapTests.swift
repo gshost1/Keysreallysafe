@@ -274,6 +274,50 @@ final class ImportAndWrapTests: XCTestCase {
                        "unwrap restores byte-for-byte from the backup kept outside the project")
     }
 
+    // MARK: - VAL-O-007 (a rewrite failure revokes the minted token; no path leaks)
+
+    /// The project token is minted right before the rewrite, so a rewrite that
+    /// fails after it must not leave a live 30-day token with no file pointing at
+    /// it: the failure path revokes the just-minted token (with its client_revoke
+    /// audit row), rethrows a message with no absolute path, leaves the docker
+    /// preference untouched (VAL-O-003's ordering) and records nothing. The
+    /// injected failure is deterministic: a plain file squatting on the backups
+    /// tree's root, so the very first backup cannot be created. Failed pre-fix:
+    /// the import succeeded (the blocker changed nothing) and the token stayed
+    /// live with no audit row.
+    func testARewriteFailureRevokesTheMintedTokenAndNamesNoPath() throws {
+        let vault = try makeVault()
+        let project = try makeProject("failedrewrite", in: vault.dir)
+        let original = "OPENAI_API_KEY=\(plainValue)\n"
+        let env = try write(original, to: ".env", under: project)
+        // The blocker: a regular file where the backups tree's root would go.
+        try Data("x".utf8).write(to: EnvFileWriter.backupsRoot(beside: vault.db.path))
+
+        XCTAssertThrowsError(
+            try vault.service.importAndWrap(folder: project.path, variables: nil, docker: true)
+        ) { error in
+            guard case let AppError.usage(message) = error else {
+                return XCTFail("a usage refusal, not \(error)")
+            }
+            XCTAssertFalse(message.contains("/"), "the error text carries no path: \(message)")
+        }
+
+        // The just-minted project token is revoked, and the audit row says so.
+        let clients = try vault.db.gatewayClients(keyName: "openai")
+        XCTAssertEqual(clients.count, 1, "the minted client row exists")
+        XCTAssertNotNil(clients[0].revokedAt, "the rewrite failure revoked the minted project token")
+        XCTAssertTrue(
+            try vault.db.keyEvents(name: "openai", limit: 10).contains { $0.action == "client_revoke" },
+            "the revocation wrote its client_revoke audit row"
+        )
+        // The docker preference is set only after a successful rewrite (VAL-O-003).
+        XCTAssertNil(try vault.db.metaValue(AppPreferences.dockerAccessKey),
+                     "a failed rewrite leaves the docker preference untouched")
+        // Nothing was recorded, and the file kept its original bytes.
+        XCTAssertTrue(try vault.db.listWrappedFiles().isEmpty, "no wrapped_files record survived")
+        XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8), "the file was not rewritten")
+    }
+
     // MARK: - VAL-IMW-002 (the app reads the values; nothing crosses the MCP surface)
 
     /// The MCP request carries the folder, names and flags only; the request log proves
