@@ -2,11 +2,13 @@ import Foundation
 
 /// The grants group: `request_grant` and `grant_status` — the two tools that can
 /// mint anything, and neither of them does. `request_grant` asks the app (the only
-/// issuer) to create a pending request and answers `{status:"pending", id}` while
-/// the user's Touch ID prompt is up; `grant_status` polls it and, on exactly one
-/// approved poll, hands over the token. Nothing here holds a secret, a key value or
-/// a long-lived token, and the app's answer is relayed whole — the output guard's
-/// one handover exemption is the delivered token and nothing else.
+/// issuer) to create a pending request and answers `{status:"pending", id, secret}`
+/// while the user's Touch ID prompt is up; `grant_status` polls it — proving the
+/// ask with that secret — and, on exactly one approved poll, hands over the token.
+/// No key value or long-lived token is ever held here: the poll secret is the
+/// ask's own proof, it travels only between its creator and the app, and the
+/// app's answer is relayed whole — the output guard's one handover exemption is
+/// the delivered token and nothing else.
 ///
 /// **No host input.** The host is derived from the key's row exactly as `keys grant`
 /// does and shown in the prompt, because a caller-chosen host would contradict the
@@ -57,10 +59,12 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
             name: "request_grant",
             title: "Request a grant",
             description: "Ask the user to approve a scoped, time-boxed grant for one vault key, through the "
-                + "Keysrs gateway. Returns {status:\"pending\", id} immediately, before the user decides; poll "
-                + "grant_status with the id. The user approves with Touch ID in the Keysrs app; the token, base "
-                + "URL and auth header are handed over on exactly one approved poll. The host is the key's own "
-                + "and is never an input. Denial, expiry and refusal are all plain answers, never a hang.",
+                + "Keysrs gateway. Returns {status:\"pending\", id, secret} immediately, before the user "
+                + "decides: the secret proves this ask is yours — keep it and send it with the id on every "
+                + "grant_status poll, because no other caller can read the ask's state without it. The user "
+                + "approves with Touch ID in the Keysrs app; the token, base URL and auth header are handed "
+                + "over on exactly one approved poll. The host is the key's own and is never an input. "
+                + "Denial, expiry and refusal are all plain answers, never a hang.",
             inputSchema: [
                 "type": "object",
                 "properties": [
@@ -83,15 +87,18 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
         MCPTool(
             name: "grant_status",
             title: "Poll a grant request",
-            description: "Poll one request_grant ask by its id: pending, approved (the token, base_url, "
-                + "auth_header and gateway_url — delivered once, on exactly this poll), approved with "
-                + "delivered:true after that, denied with a reason (cancelled, failed, unavailable), expired, "
-                + "or not_found. With no id, a status-only listing of the app's requests that never carries a "
-                + "token in any state.",
+            description: "Poll one request_grant ask by its id, passing the secret from its create answer: "
+                + "pending, approved (the token, base_url, auth_header and gateway_url — delivered once, on "
+                + "exactly this poll), approved with delivered:true after that, denied with a reason "
+                + "(cancelled, failed, unavailable), expired, or not_found. With no id, send every secret "
+                + "you hold in secrets and the answer lists exactly the asks they prove — a status-only "
+                + "listing that never carries a token or a secret in any state.",
             inputSchema: [
                 "type": "object",
                 "properties": [
                     "id": ["type": "string"],
+                    "secret": ["type": "string"],
+                    "secrets": ["type": "array", "items": ["type": "string"]],
                 ] as [String: Any],
                 "additionalProperties": false,
             ]
@@ -124,27 +131,38 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
         )
     }
 
-    /// Polls one request, or lists every request when no id came. The approved answer
-    /// carries the token, and that one value is declared as the result's handover so
-    /// the output guard lets exactly it through — every other token shape in any
-    /// result is the guard's to refuse.
+    /// Polls one request — proving the ask with the secret its create answer
+    /// carried — or lists the requests the caller can prove when no id came. The
+    /// approved answer carries the token, and that one value is declared as the
+    /// result's handover so the output guard lets exactly it through — every other
+    /// token shape in any result is the guard's to refuse.
     private func serveGrantStatus(_ arguments: [String: Any]) throws -> MCPToolResult {
         let app = try AppConnection.connect(control: control, launch: launch)
         if let id = JSONValue.string(arguments["id"]) {
             // The id shapes the route's path, so it is checked here too: anything
             // that is not the 8-hex id the app issued is a plain refusal, never a
-            // mangled request to the app.
+            // mangled request to the app. The secret is the ask's proof and is
+            // required beside it: a caller that lost it is told so here, rather
+            // than reading the app's not-found for an id it knows exists.
             guard id.count == 8, id.allSatisfy({ $0.isHexDigit }) else {
                 throw AppError.usage("grant_status takes the request's 8-character id")
             }
-            let answer = try app.call(method: "POST", path: "/api/mcp/grants/\(id)/status", body: [:], expect: 200)
+            guard let secret = JSONValue.string(arguments["secret"]) else {
+                throw AppError.usage("grant_status takes the poll secret from the request_grant answer")
+            }
+            let answer = try app.call(
+                method: "POST", path: "/api/mcp/grants/\(id)/status", body: ["secret": secret], expect: 200
+            )
             if let token = answer["token"] as? String {
                 return try MCPToolResult.json(answer, handover: token)
             }
             return try MCPToolResult.json(answer)
         }
+        // The no-id listing: only the asks the caller's secrets prove are listed,
+        // and an empty proof lists nothing — the app enforces both.
+        let secrets = (arguments["secrets"] as? [Any])?.compactMap { $0 as? String } ?? []
         return try MCPToolResult.json(
-            try app.call(method: "POST", path: "/api/mcp/grants/status", body: [:], expect: 200)
+            try app.call(method: "POST", path: "/api/mcp/grants/status", body: ["secrets": secrets], expect: 200)
         )
     }
 }

@@ -181,10 +181,12 @@ The tools the server offers:
   and installs nothing.
 - `request_grant` — ask the user for a scoped, time-boxed grant for one key.
   No host input: the host is the key's own, so a caller cannot retarget it.
-- `grant_status` — poll the ask: `pending`, then `approved` with the token,
-  `base_url` and `auth_header` on exactly the first approved poll (the only
-  time a token is returned; later polls say `delivered`), or `denied`,
-  `expired`, `not_found`.
+- `grant_status` — poll the ask by its id, passing the secret the create answer
+  carried: `pending`, then `approved` with the token, `base_url` and
+  `auth_header` on exactly the first approved poll (the only time a token is
+  returned; later polls say `delivered`), or `denied`, `expired`, `not_found`.
+  With no id, pass every secret you hold as `secrets` and the answer lists
+  exactly the asks they prove — ids, keys and states only.
 - `scan_project` — scan a project folder for credential-shaped environment
   variables without reading the files yourself: each one's name, relative
   file, likely provider, category (`provider_key`, `aws_pair`,
@@ -265,12 +267,15 @@ The tools the server offers:
   `project` keeps one label's keys, and an unknown label answers no rows
   rather than an error. Never a token, a key value or a request body.
 
-The grant ask returns `{"status":"pending","id":…}` immediately, while the
-Keysrs app shows one Touch ID prompt naming the key, the host and the
-project's label — never a path, never a token. Poll `grant_status` with the
-id; the user's answer decides it, and a denial is the user cancelling the
-prompt. Treat the handed-over token exactly like a `keys grant` token: it is
-printed for this one task and never belongs in a log, a file or a message.
+The grant ask returns `{"status":"pending","id":…,"secret":…}` immediately,
+while the Keysrs app shows one Touch ID prompt naming the key, the host and the
+project's label — never a path, never a token. Poll `grant_status` with the id
+and the secret: the secret proves the ask is yours, no listing, log or audit
+carries it, and a process that read only the app's control token can neither
+poll the ask nor list it. The user's answer decides it, and a denial is the
+user cancelling the prompt. Treat the handed-over token exactly like a
+`keys grant` token: it is printed for this one task and never belongs in a
+log, a file or a message.
 
 Everything the server does stays on this Mac: it reads the catalog locally,
 reaches the app over the same loopback control channel the CLI uses, and adds

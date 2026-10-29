@@ -344,7 +344,7 @@ extension AppUpdaterTests {
         pending.approve(id: record.id, token: "synthetic-grant-token", grant: grant)
         XCTAssertTrue(pending.anyUnsettled(), "an approved, unclaimed token would be dropped by a restart")
 
-        _ = pending.claim(id: record.id)
+        _ = pending.claim(id: record.id, secret: record.secret)
         XCTAssertFalse(pending.anyUnsettled(), "once delivered the ask no longer holds the app")
 
         let second = try pending.insert(key: "demo")

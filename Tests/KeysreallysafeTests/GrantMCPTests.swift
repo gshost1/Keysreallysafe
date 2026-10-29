@@ -2,11 +2,13 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
-/// VAL-GRANT-001..022: grants over MCP. The app is the only issuer — `request_grant`
-/// creates a pending ask and answers `{status:"pending", id}` while the one Touch ID
-/// prompt is up; `grant_status` polls it and hands the token over exactly once. Every
-/// synchronous refusal lands before any prompt; profile bounds tighten and never
-/// widen; there is no host input; nothing token-shaped is persisted.
+/// VAL-GRANT-001..022 and VAL-G-001/002: grants over MCP. The app is the only
+/// issuer — `request_grant` creates a pending ask and answers
+/// `{status:"pending", id, secret}` while the one Touch ID prompt is up;
+/// `grant_status` polls it — proving the ask with its poll secret — and hands
+/// the token over exactly once. Every synchronous refusal lands before any
+/// prompt; profile bounds tighten and never widen; there is no host input;
+/// nothing token-shaped is persisted.
 ///
 /// The whole suite drives the real surfaces: the app-side routes through a real
 /// `APIHandler` behind a loopback server on an ephemeral port, and the tools through
@@ -124,13 +126,24 @@ final class MCPGrantTests: XCTestCase {
         handle(site.handler, method: "POST", path: "/api/mcp/grants", body: try JSONValue.data(body), token: token)
     }
 
-    private func poll(_ site: Site, _ id: String, token: Bool = true) throws -> HTTPResponse {
-        handle(site.handler, method: "POST", path: "/api/mcp/grants/\(id)/status", body: Data(), token: token)
+    /// One poll of the app's status route as a caller that may or may not hold
+    /// the ask's poll secret. The control token is always the site's own: the
+    /// secret, not the token, is what separates the ask's creator from any other
+    /// same-user process.
+    private func poll(_ site: Site, _ id: String, secret: String = "", token: Bool = true) throws -> HTTPResponse {
+        handle(site.handler, method: "POST", path: "/api/mcp/grants/\(id)/status",
+               body: try JSONValue.data(["secret": secret]), token: token)
     }
 
-    private func statusList(_ site: Site) throws -> HTTPResponse {
-        handle(site.handler, method: "POST", path: "/api/mcp/grants/status", body: Data())
+    /// The no-id status listing, carrying the poll secrets the caller can prove.
+    private func statusList(_ site: Site, secrets: [String] = []) throws -> HTTPResponse {
+        handle(site.handler, method: "POST", path: "/api/mcp/grants/status",
+               body: try JSONValue.data(["secrets": secrets]))
     }
+
+    /// A random, secret-shaped wrong guess — runtime-built, never a committed
+    /// literal, and never (statistically) the minted secret of any ask.
+    private var wrongSecret: String { Hex.encode(SecureRandom.bytes(16)) }
 
     private func json(_ response: HTTPResponse) throws -> [String: Any] {
         try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
@@ -185,7 +198,7 @@ final class MCPGrantTests: XCTestCase {
         }
         XCTFail("the request \(id) never settled")
         return site.service.mcpPendingGrants.snapshot(id: id)
-            ?? MCPPendingGrants.Record(id: id, key: "", createdAt: Date(), expiresAt: Date(),
+            ?? MCPPendingGrants.Record(id: id, key: "", secret: "", createdAt: Date(), expiresAt: Date(),
                                        resolution: .expired, resolvedAt: Date(), deliveredAt: nil)
     }
 
@@ -212,7 +225,7 @@ final class MCPGrantTests: XCTestCase {
         file: StaticString = #filePath, line: UInt = #line
     ) throws {
         XCTAssertEqual(site.gate.recordedReasons.count, prompts, "a refusal consumed no prompt", file: file, line: line)
-        XCTAssertTrue(try site.service.mcpGrantStatuses().isEmpty, "a refusal left no pending record", file: file, line: line)
+        XCTAssertTrue(site.service.mcpPendingGrants.statuses().isEmpty, "a refusal left no pending record", file: file, line: line)
         XCTAssertTrue(site.service.listGrants(includeInactive: true).isEmpty, "a refusal issued nothing", file: file, line: line)
         XCTAssertTrue(try site.db.keyEvents(name: "demo", limit: 50).filter { $0.action == "grant" }.isEmpty,
                       "a refusal audited nothing", file: file, line: line)
@@ -234,13 +247,16 @@ final class MCPGrantTests: XCTestCase {
         let id = answer["id"] as! String
         XCTAssertEqual(id.count, 8, "the id is the 8-hex convention")
         XCTAssertTrue(id.allSatisfy { $0.isHexDigit })
-        XCTAssertEqual(Set(answer.keys), ["status", "id"], "the pending payload carries nothing else")
+        let secret = answer["secret"] as? String
+        XCTAssertNotNil(secret, "the answer carries the ask's poll secret to its creator alone")
+        XCTAssertEqual(Set(answer.keys), ["status", "id", "secret"], "the pending payload carries the ask and its proof, nothing else")
         XCTAssertFalse(String(decoding: try JSONValue.data(answer), as: UTF8.self).contains("ksf_"))
         XCTAssertEqual(site.gate.recordedReasons.count, 1, "the prompt went up before the answer")
 
         // Three polls while the prompt is still up: pending, tokenless, no change.
         for _ in 0..<3 {
-            let pollAnswer = try callToolJSON(site, name: "grant_status", arguments: ["id": id])
+            let pollAnswer = try callToolJSON(site, name: "grant_status",
+                                              arguments: ["id": id, "secret": secret ?? ""])
             XCTAssertEqual(pollAnswer["status"] as? String, "pending")
             XCTAssertEqual(pollAnswer["id"] as? String, id)
             XCTAssertEqual(Set(pollAnswer.keys), ["status", "id"], "pending polls stay tokenless")
@@ -355,11 +371,13 @@ final class MCPGrantTests: XCTestCase {
         // Happy: polls and delivery never prompt.
         let happy = try makeSite()
         happy.gate.release()
-        let id = (try callToolJSON(happy, name: "request_grant", arguments: ask(happy)))["id"] as! String
+        let happyAnswer = try callToolJSON(happy, name: "request_grant", arguments: ask(happy))
+        let id = happyAnswer["id"] as! String
+        let secret = happyAnswer["secret"] as? String ?? ""
         _ = waitSettled(happy, id)
-        _ = try callToolJSON(happy, name: "grant_status", arguments: ["id": id])
-        _ = try callToolJSON(happy, name: "grant_status", arguments: ["id": id])
-        _ = try callToolJSON(happy, name: "grant_status", arguments: ["id": id])
+        _ = try callToolJSON(happy, name: "grant_status", arguments: ["id": id, "secret": secret])
+        _ = try callToolJSON(happy, name: "grant_status", arguments: ["id": id, "secret": secret])
+        _ = try callToolJSON(happy, name: "grant_status", arguments: ["id": id, "secret": secret])
         XCTAssertEqual(happy.gate.recordedReasons.count, 1, "one prompt for the whole happy flow")
 
         // Gateway off: the one prompt turns it on and issues, same count.
@@ -394,8 +412,9 @@ final class MCPGrantTests: XCTestCase {
         if case .denied("cancelled") = deniedRecord.resolution {} else {
             return XCTFail("the cancelled prompt denied the request")
         }
-        _ = try callToolJSON(denied, name: "grant_status", arguments: ["id": deniedAnswer["id"] as! String])
-        _ = try callToolJSON(denied, name: "grant_status", arguments: ["id": deniedAnswer["id"] as! String])
+        let deniedArguments = ["id": deniedAnswer["id"] as! String, "secret": deniedAnswer["secret"] as? String ?? ""]
+        _ = try callToolJSON(denied, name: "grant_status", arguments: deniedArguments)
+        _ = try callToolJSON(denied, name: "grant_status", arguments: deniedArguments)
         XCTAssertEqual(denied.gate.recordedReasons.count, 1, "a denial consumed exactly one prompt")
     }
 
@@ -410,9 +429,11 @@ final class MCPGrantTests: XCTestCase {
         site.gate.release()
         let ask = ask(site, ["max_requests": 3])
 
-        let id = (try callToolJSON(site, name: "request_grant", arguments: ask))["id"] as! String
+        let answer = try callToolJSON(site, name: "request_grant", arguments: ask)
+        let id = answer["id"] as! String
+        let secret = answer["secret"] as? String ?? ""
         _ = waitSettled(site, id)
-        let approved = try callToolJSON(site, name: "grant_status", arguments: ["id": id])
+        let approved = try callToolJSON(site, name: "grant_status", arguments: ["id": id, "secret": secret])
         XCTAssertEqual(approved["status"] as? String, "approved")
         let token = approved["token"] as! String
         XCTAssertTrue(GrantToken.looksLikeToken(token))
@@ -444,12 +465,14 @@ final class MCPGrantTests: XCTestCase {
     func testTokenDeliveredOnce() throws {
         let site = try makeSite()
         site.gate.release()
-        let id = (try callToolJSON(site, name: "request_grant", arguments: ask(site)))["id"] as! String
+        let created = try callToolJSON(site, name: "request_grant", arguments: ask(site))
+        let id = created["id"] as! String
+        let secret = created["secret"] as? String ?? ""
         _ = waitSettled(site, id)
 
         // The first claim — through the real tool frames, guard included: the token
         // is on the wire exactly here.
-        let first = try callTool(site, name: "grant_status", arguments: ["id": id])
+        let first = try callTool(site, name: "grant_status", arguments: ["id": id, "secret": secret])
         XCTAssertFalse(first.isError, first.text)
         let approved = try JSONSerialization.jsonObject(with: Data(first.text.utf8)) as! [String: Any]
         XCTAssertEqual(approved["status"] as? String, "approved")
@@ -459,7 +482,7 @@ final class MCPGrantTests: XCTestCase {
         // Every later poll: the pinned tokenless shape.
         var tokenBearers = 1
         for _ in 0..<3 {
-            let later = try callToolJSON(site, name: "grant_status", arguments: ["id": id])
+            let later = try callToolJSON(site, name: "grant_status", arguments: ["id": id, "secret": secret])
             XCTAssertEqual(later["status"] as? String, "approved")
             XCTAssertEqual(later["delivered"] as? Bool, true)
             XCTAssertEqual(Set(later.keys), ["status", "id", "delivered"], "no token, no stale connection fields")
@@ -472,7 +495,11 @@ final class MCPGrantTests: XCTestCase {
         if case .delivered = record.resolution {} else {
             return XCTFail("the record is delivered, not token-holding: \(record.resolution)")
         }
-        XCTAssertNil(try site.service.mcpGrantStatuses().first { $0["id"] as? String == id }?["token"])
+        // And the delivered state's own listing entry carries no token either.
+        let listing = try json(statusList(site, secrets: [secret]))
+        let entry = (listing["requests"] as! [[String: Any]]).first { $0["id"] as? String == id }
+        XCTAssertNotNil(entry, "the proven listing still names the delivered ask")
+        XCTAssertNil(entry?["token"], "a delivered ask never lists a token")
     }
 
     // MARK: VAL-GRANT-007 — the delivered token works on the gateway
@@ -499,11 +526,14 @@ final class MCPGrantTests: XCTestCase {
              "folder": rig.dir.path]
         ))
         XCTAssertEqual(created.status, 200)
-        let id = (try json(created))["id"] as! String
+        let createdAnswer = try json(created)
+        let id = createdAnswer["id"] as! String
+        let secret = createdAnswer["secret"] as? String ?? ""
         let deadline = Date().addingTimeInterval(5)
         var approved = [String: Any]()
         while Date() < deadline {
-            approved = try json(handle(handler, method: "POST", path: "/api/mcp/grants/\(id)/status", body: Data()))
+            approved = try json(handle(handler, method: "POST", path: "/api/mcp/grants/\(id)/status",
+                                          body: try JSONValue.data(["secret": secret])))
             if approved["status"] as? String == "approved" { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -544,22 +574,23 @@ final class MCPGrantTests: XCTestCase {
         site.gate.release(AppError.authFailed)
         site.gate.release(AppError.authUnavailable("no Touch ID session"))
 
-        var ids = [String]()
+        var asks = [(id: String, secret: String)]()
         for _ in 0..<3 {
             let answer = try callToolJSON(site, name: "request_grant", arguments: ask(site))
             XCTAssertEqual(answer["status"] as? String, "pending")
-            ids.append(answer["id"] as! String)
+            asks.append((answer["id"] as! String, answer["secret"] as? String ?? ""))
         }
-        let expected = zip(ids, ["cancelled", "failed", "unavailable"])
-        for (id, reason) in expected {
-            let record = waitSettled(site, id)
+        let expected = zip(asks, ["cancelled", "failed", "unavailable"])
+        for (ask, reason) in expected {
+            let record = waitSettled(site, ask.id)
             if case .denied(let got) = record.resolution {
                 XCTAssertEqual(got, reason)
             } else {
-                return XCTFail("the request \(id) denied: \(record.resolution)")
+                return XCTFail("the request \(ask.id) denied: \(record.resolution)")
             }
             for _ in 0..<2 {
-                let pollAnswer = try callToolJSON(site, name: "grant_status", arguments: ["id": id])
+                let pollAnswer = try callToolJSON(site, name: "grant_status",
+                                                   arguments: ["id": ask.id, "secret": ask.secret])
                 XCTAssertEqual(pollAnswer["status"] as? String, "denied")
                 XCTAssertEqual(pollAnswer["reason"] as? String, reason)
                 XCTAssertEqual(Set(pollAnswer.keys), ["status", "id", "reason"], "the denial is tokenless and final")
@@ -601,7 +632,8 @@ final class MCPGrantTests: XCTestCase {
             }
             XCTAssertEqual(wide.windowMinutes, expected,
                            "the grant window follows the ask, the pending TTL stays 300 s")
-            _ = try callToolJSON(site, name: "grant_status", arguments: ["id": answer["id"] as! String])
+            _ = try callToolJSON(site, name: "grant_status",
+                                 arguments: ["id": answer["id"] as! String, "secret": answer["secret"] as? String ?? ""])
         }
 
         // Expiry fails closed: expired, tokenless, no row, no grant event.
@@ -609,7 +641,9 @@ final class MCPGrantTests: XCTestCase {
         let expiringAnswer = try callToolJSON(expiring, name: "request_grant", arguments: ask(expiring))
         XCTAssertEqual(expiringAnswer["status"] as? String, "pending")
         expiring.clock.advance(MCPPendingGrants.ttl + 1)
-        let expired = try callToolJSON(expiring, name: "grant_status", arguments: ["id": expiringAnswer["id"] as! String])
+        let expired = try callToolJSON(expiring, name: "grant_status",
+                                       arguments: ["id": expiringAnswer["id"] as! String,
+                                                   "secret": expiringAnswer["secret"] as? String ?? ""])
         XCTAssertEqual(expired["status"] as? String, "expired")
         XCTAssertEqual(Set(expired.keys), ["status", "id"], "the expired answer is tokenless")
         XCTAssertTrue(expiring.service.listGrants(includeInactive: true).isEmpty, "no GrantStore row")
@@ -623,7 +657,9 @@ final class MCPGrantTests: XCTestCase {
         if case .expired = late.resolution {} else {
             return XCTFail("the late approval did not mint and the state stayed expired: \(late.resolution)")
         }
-        let after = try callToolJSON(expiring, name: "grant_status", arguments: ["id": expiringAnswer["id"] as! String])
+        let after = try callToolJSON(expiring, name: "grant_status",
+                                     arguments: ["id": expiringAnswer["id"] as! String,
+                                                 "secret": expiringAnswer["secret"] as? String ?? ""])
         XCTAssertEqual(after["status"] as? String, "expired", "never approved, never a token")
         XCTAssertTrue(expiring.service.listGrants(includeInactive: true).isEmpty)
         XCTAssertTrue(try expiring.db.keyEvents(name: "demo", limit: 50).filter { $0.action == "grant" }.isEmpty)
@@ -638,8 +674,11 @@ final class MCPGrantTests: XCTestCase {
         site.gate.release()
         site.gate.release(AppError.authCancelled)
 
-        // Unknown id at the tool surface: the house not-found, scrubbed.
-        let unknown = try callTool(site, name: "grant_status", arguments: ["id": "0badf00d"])
+        // Unknown id at the tool surface: the house not-found, scrubbed. The poll
+        // carries a secret — any secret — because the id's existence is the app's
+        // to answer, and only a proven ask could read a real state.
+        let unknown = try callTool(site, name: "grant_status",
+                                   arguments: ["id": "0badf00d", "secret": wrongSecret])
         XCTAssertTrue(unknown.isError)
         XCTAssertEqual(unknown.text, "not found: pending grant request 0badf00d")
         // Malformed: the tool refuses without building a broken path.
@@ -655,14 +694,19 @@ final class MCPGrantTests: XCTestCase {
         let approvedAnswer = try callToolJSON(site, name: "request_grant", arguments: ask(site))
         let approvedRecord = waitSettled(site, approvedAnswer["id"] as! String)
         guard case .approved = approvedRecord.resolution else { return XCTFail("the first ask approved") }
-        _ = try callToolJSON(site, name: "grant_status", arguments: ["id": approvedAnswer["id"] as! String])
+        _ = try callToolJSON(site, name: "grant_status",
+                             arguments: ["id": approvedAnswer["id"] as! String,
+                                         "secret": approvedAnswer["secret"] as? String ?? ""])
         let deniedAnswer = try callToolJSON(site, name: "request_grant", arguments: ask(site))
         _ = waitSettled(site, deniedAnswer["id"] as! String)
 
-        // The no-id form across states: never a token, in any state.
-        let listing = try callToolJSON(site, name: "grant_status", arguments: [:])
+        // The no-id form across states, seen by a caller holding both secrets:
+        // never a token, in any state.
+        let listing = try callToolJSON(site, name: "grant_status", arguments: [
+            "secrets": [approvedAnswer["secret"] as? String ?? "", deniedAnswer["secret"] as? String ?? ""],
+        ])
         let requests = listing["requests"] as! [[String: Any]]
-        XCTAssertEqual(requests.count, 2, "the listing shows every live request")
+        XCTAssertEqual(requests.count, 2, "the listing shows both proven requests")
         var states = Set<String>()
         for entry in requests {
             states.insert(entry["status"] as! String)
@@ -676,27 +720,177 @@ final class MCPGrantTests: XCTestCase {
         let frame = String(decoding: try JSONValue.data(listing), as: UTF8.self)
         XCTAssertFalse(frame.contains("ksf_"), "no token shape anywhere in the listing")
 
-        // A consumed-then-pruned id: retention passes, the honest not_found.
+        // A consumed-then-pruned id: retention passes, the honest not_found —
+        // the poll carries its own secret, so the prune is the only reason.
         site.clock.advance(MCPPendingGrants.retention + 1)
-        let pruned = try poll(site, approvedAnswer["id"] as! String)
+        let pruned = try poll(site, approvedAnswer["id"] as! String,
+                              secret: approvedAnswer["secret"] as? String ?? "")
         XCTAssertEqual(pruned.status, 404, "a pruned id is not_found, never a zombie state")
+    }
+
+    // MARK: VAL-G-001 — the poll secret binds the claim to the creator
+
+    /// The create answer carries a random poll secret, and only its creator can
+    /// collect the token: a second client that holds the control token and the
+    /// ask's id but not the secret reads the house not-found in every state —
+    /// pending and approved alike — and its polls never consume the claim, so
+    /// the creator still receives the token. The secret reaches no notification
+    /// and no file under the site's own directory.
+    func testSecondClientWithoutThePollSecretGetsNoTokenAndTheCreatorStillReceivesIt() throws {
+        let site = try makeSite()
+        // The pending-ask warning is delivered for real, so the secret's absence
+        // from the notification surface is asserted on the exact payload.
+        let delivery = RecordingNotificationDelivery()
+        site.service.notifications = AppNotifier(
+            preferences: AppPreferences(catalog: site.db),
+            authorizer: RecordingNotificationAuthorizer(),
+            delivery: delivery,
+            clock: { Date() }
+        )
+
+        // The creator's ask: pending immediately, carrying the poll secret.
+        let created = try callToolJSON(site, name: "request_grant", arguments: ask(site))
+        XCTAssertEqual(created["status"] as? String, "pending")
+        let id = created["id"] as! String
+        let secret = created["secret"] as? String
+        XCTAssertNotNil(secret, "the create answer carries the ask's poll secret")
+        let pollSecret = secret ?? ""
+        XCTAssertNotEqual(pollSecret, id, "the secret is not the id restated")
+        XCTAssertEqual(pollSecret.count, 32, "the secret is the 32-hex shape")
+        XCTAssertTrue(pollSecret.allSatisfy { $0.isHexDigit }, "the secret is hex, like the ids")
+        XCTAssertEqual(Set(created.keys), ["status", "id", "secret"], "the pending payload carries the ask and its proof")
+
+        // While the prompt is still up: a second client — same control token,
+        // the id, no secret — reads the house not-found, not a pending state.
+        let blind = try poll(site, id)
+        XCTAssertEqual(blind.status, 404, "a poll without the secret learns nothing, not even that the id exists")
+        XCTAssertEqual(try json(blind)["error"] as? String, "not_found")
+        let guessed = try poll(site, id, secret: wrongSecret)
+        XCTAssertEqual(guessed.status, 404, "a wrong secret reads the same not-found")
+        XCTAssertEqual(try json(guessed)["error"] as? String, "not_found")
+        // The tool surface refuses the same client before any round trip.
+        let refused = try callTool(site, name: "grant_status", arguments: ["id": id])
+        XCTAssertTrue(refused.isError, "a poll that cannot prove its ask is a tool error")
+        XCTAssertEqual(refused.text, "grant_status takes the poll secret from the request_grant answer")
+        // The creator still reads the real state.
+        let own = try json(poll(site, id, secret: pollSecret))
+        XCTAssertEqual(own["status"] as? String, "pending")
+        XCTAssertEqual(Set(own.keys), ["status", "id"], "pending polls stay tokenless")
+
+        // Approve, then the second client polls the approved id first: no
+        // token, no consumption.
+        site.gate.release()
+        let settled = waitSettled(site, id)
+        guard case .approved = settled.resolution else {
+            return XCTFail("the released prompt approved: \(settled.resolution)")
+        }
+        let blindApproved = try poll(site, id)
+        XCTAssertEqual(blindApproved.status, 404, "an approved id without the secret still answers not-found")
+        let guessedApproved = try poll(site, id, secret: wrongSecret)
+        XCTAssertEqual(guessedApproved.status, 404, "a wrong secret on the approved id answers not-found")
+        let afterGuess = site.service.mcpPendingGrants.snapshot(id: id)!
+        if case .approved = afterGuess.resolution {} else {
+            return XCTFail("the unproven polls never consumed the claim: \(afterGuess.resolution)")
+        }
+
+        // The creator still receives the token — through the real tool frames,
+        // guard included — and a later poll reads the pinned delivered shape.
+        let first = try callTool(site, name: "grant_status", arguments: ["id": id, "secret": pollSecret])
+        XCTAssertFalse(first.isError, first.text)
+        let approved = try JSONSerialization.jsonObject(with: Data(first.text.utf8)) as! [String: Any]
+        XCTAssertEqual(approved["status"] as? String, "approved")
+        let token = approved["token"] as? String
+        XCTAssertNotNil(token, "the creator's poll is the one that collects")
+        XCTAssertTrue(token.map(GrantToken.looksLikeToken) ?? false, "the gateway's own token shape")
+        let later = try json(poll(site, id, secret: pollSecret))
+        XCTAssertEqual(later["status"] as? String, "approved")
+        XCTAssertEqual(later["delivered"] as? Bool, true)
+        XCTAssertEqual(Set(later.keys), ["status", "id", "delivered"], "the token never crosses twice")
+
+        // The secret reaches no notification payload and no file on disk.
+        if let pollSecret = secret {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, delivery.count < 1 { Thread.sleep(forTimeInterval: 0.01) }
+            XCTAssertEqual(delivery.notifications.map(\.kind), [.pendingGrant], "the pending ask warned once")
+            for note in delivery.notifications {
+                let payload = "\(note.identifier)\n\(note.title)\n\(note.body)"
+                XCTAssertFalse(payload.contains(pollSecret), "the notification payload carries no poll secret")
+            }
+            assertNoSentinel(pollSecret, in: site.dir)
+        }
+    }
+
+    /// The no-id listing returns only the ids the request body proves with their
+    /// poll secrets — a caller that proves nothing lists nothing, a caller that
+    /// proves one secret sees one ask — and never carries a secret of its own.
+    func testNoIdListingReturnsOnlyIdsTheCallerProvesAndLeaksNeitherIdsNorSecrets() throws {
+        let site = try makeSite()
+        site.gate.release()
+        site.gate.release(AppError.authCancelled)
+
+        // Two asks from two creators: one approved, one denied.
+        let firstAnswer = try callToolJSON(site, name: "request_grant", arguments: ask(site))
+        let firstID = firstAnswer["id"] as! String
+        let firstSecret = firstAnswer["secret"] as? String
+        XCTAssertNotNil(firstSecret, "the create answer carries the secret")
+        _ = waitSettled(site, firstID)
+        let secondAnswer = try callToolJSON(site, name: "request_grant", arguments: ask(site))
+        let secondID = secondAnswer["id"] as! String
+        let secondSecret = secondAnswer["secret"] as? String
+        XCTAssertNotNil(secondSecret, "the create answer carries the secret")
+        _ = waitSettled(site, secondID)
+        let provenFirst = firstSecret ?? ""
+        let provenSecond = secondSecret ?? ""
+
+        // A caller that proves nothing lists nothing — at the route and the tool.
+        let emptyRoute = try json(statusList(site))
+        XCTAssertEqual((emptyRoute["requests"] as? [[String: Any]])?.count, 0, "an unproving listing is empty")
+        let emptyTool = try callToolJSON(site, name: "grant_status", arguments: [:])
+        XCTAssertEqual((emptyTool["requests"] as? [[String: Any]])?.count, 0, "the tool's unproving listing is empty")
+        let wrong = try callToolJSON(site, name: "grant_status", arguments: ["secrets": [wrongSecret]])
+        XCTAssertEqual((wrong["requests"] as? [[String: Any]])?.count, 0, "a wrong secret proves nothing")
+
+        // The first creator's secret lists exactly the first ask — the second
+        // id never crosses, and no secret crosses in either direction.
+        let listing = try callToolJSON(site, name: "grant_status", arguments: ["secrets": [provenFirst]])
+        let requests = listing["requests"] as! [[String: Any]]
+        XCTAssertEqual(requests.map { $0["id"] as! String }, [firstID], "only the proven ask is listed")
+        XCTAssertEqual(requests[0]["status"] as? String, "approved")
+        XCTAssertFalse(requests[0].keys.contains("secret"), "a listing entry never carries a secret")
+        let frame = String(decoding: try JSONValue.data(listing), as: UTF8.self)
+        XCTAssertFalse(frame.contains(provenFirst), "the listing answer leaks no secret")
+        XCTAssertFalse(frame.contains(provenSecond), "the listing answer leaks no secret")
+        XCTAssertFalse(frame.contains("ksf_"), "no token shape anywhere in the listing")
+
+        // The second creator's secret lists exactly the denied ask, reason and all.
+        let deniedListing = try json(statusList(site, secrets: [provenSecond]))
+        let deniedRequests = deniedListing["requests"] as! [[String: Any]]
+        XCTAssertEqual(deniedRequests.map { $0["id"] as! String }, [secondID])
+        XCTAssertEqual(deniedRequests[0]["status"] as? String, "denied")
+        XCTAssertEqual(deniedRequests[0]["reason"] as? String, "cancelled")
+        // And a caller holding both secrets lists both, states only.
+        let both = try json(statusList(site, secrets: [provenFirst, provenSecond]))
+        let bothIDs = ((both["requests"] as? [[String: Any]])?.map { $0["id"] as! String }) ?? []
+        XCTAssertEqual(bothIDs.sorted(), [firstID, secondID].sorted(), "both proven asks list")
     }
 
     // MARK: VAL-GRANT-011 — nothing token-shaped is ever persisted
 
     /// After the full flow — create, approve, deliver, extra polls, plus the denial
     /// and expiry variants — a recursive byte scan of the catalog directory finds
-    /// zero occurrences of the delivered token's bytes.
+    /// zero occurrences of the delivered token's bytes, and of the poll secret's.
     func testNothingTokenShapedPersisted() throws {
         let site = try makeSite()
         site.gate.release()
         site.gate.release(AppError.authCancelled)
 
-        let id = (try callToolJSON(site, name: "request_grant", arguments: ask(site)))["id"] as! String
+        let created = try callToolJSON(site, name: "request_grant", arguments: ask(site))
+        let id = created["id"] as! String
+        let secret = try XCTUnwrap(created["secret"] as? String, "the create answer carries the poll secret")
         _ = waitSettled(site, id)
-        let approved = try callToolJSON(site, name: "grant_status", arguments: ["id": id])
+        let approved = try callToolJSON(site, name: "grant_status", arguments: ["id": id, "secret": secret])
         let token = approved["token"] as! String
-        _ = try callToolJSON(site, name: "grant_status", arguments: ["id": id])
+        _ = try callToolJSON(site, name: "grant_status", arguments: ["id": id, "secret": secret])
 
         // A denial variant on the same catalog.
         let denied = try callToolJSON(site, name: "request_grant", arguments: ask(site))
@@ -706,23 +900,29 @@ final class MCPGrantTests: XCTestCase {
         // ask expires with its prompt still up, exactly the honest edge.
         let expiring = try callToolJSON(site, name: "request_grant", arguments: ask(site))
         site.clock.advance(MCPPendingGrants.ttl + 1)
-        let expired = try callToolJSON(site, name: "grant_status", arguments: ["id": expiring["id"] as! String])
+        let expired = try callToolJSON(site, name: "grant_status",
+                                       arguments: ["id": expiring["id"] as! String,
+                                                   "secret": expiring["secret"] as? String ?? ""])
         XCTAssertEqual(expired["status"] as? String, "expired")
 
         assertNoSentinel(token, in: site.dir)
+        assertNoSentinel(secret, in: site.dir)
     }
 
     // MARK: VAL-GRANT-012 — the audit trail: caller "mcp", no phantom events
 
     /// An approved MCP issuance records exactly one grant event with the dashboard's
     /// detail shape and the caller pinned to "mcp"; a denial, an expiry and a
-    /// synchronous refusal each leave the table alone.
+    /// synchronous refusal each leave the table alone. Neither the token nor the
+    /// ask's poll secret ever reaches the detail.
     func testAuditTrail() throws {
         let site = try makeSite()
         XCTAssertTrue(try events(site).filter { $0.action == "grant" }.isEmpty)
 
         site.gate.release()
-        let id = (try callToolJSON(site, name: "request_grant", arguments: ask(site)))["id"] as! String
+        let created = try callToolJSON(site, name: "request_grant", arguments: ask(site))
+        let id = created["id"] as! String
+        let secret = try XCTUnwrap(created["secret"] as? String, "the create answer carries the poll secret")
         let settled = waitSettled(site, id)
         guard case .approved(let token, let grant) = settled.resolution else {
             return XCTFail("the ask approved")
@@ -733,6 +933,7 @@ final class MCPGrantTests: XCTestCase {
         XCTAssertEqual(rows[0].caller, "mcp", "the caller is pinned to mcp")
         XCTAssertEqual(rows[0].detail, KeysService.grantDetail(grant), "the dashboard detail shape")
         XCTAssertNil(rows[0].detail?.range(of: token), "the token never reaches the events table")
+        XCTAssertNil(rows[0].detail?.range(of: secret), "the poll secret never reaches the events table")
 
         // A denial, an expiry and a synchronous refusal: no further rows.
         site.gate.release(AppError.authCancelled)
@@ -740,7 +941,9 @@ final class MCPGrantTests: XCTestCase {
         _ = waitSettled(site, denied["id"] as! String)
         let expiring = try callToolJSON(site, name: "request_grant", arguments: ask(site))
         site.clock.advance(MCPPendingGrants.ttl + 1)
-        _ = try callToolJSON(site, name: "grant_status", arguments: ["id": expiring["id"] as! String])
+        _ = try callToolJSON(site, name: "grant_status",
+                             arguments: ["id": expiring["id"] as! String,
+                                         "secret": expiring["secret"] as? String ?? ""])
         let refused = try callTool(site, name: "request_grant", arguments: ask(site, ["key": "nope"]))
         XCTAssertTrue(refused.isError)
         XCTAssertEqual(try events(site).filter { $0.action == "grant" }.count, 1, "nothing else audited")
@@ -969,9 +1172,11 @@ final class MCPGrantTests: XCTestCase {
         let hostBefore = try site.db.catalogRow(name: "demo")?.gatewayHost
 
         // A full MCP ask with different inputs, approved and delivered.
-        let id = (try callToolJSON(site, name: "request_grant", arguments: ask(site)))["id"] as! String
+        let mcpAnswer = try callToolJSON(site, name: "request_grant", arguments: ask(site))
+        let id = mcpAnswer["id"] as! String
         _ = waitSettled(site, id)
-        let approved = try callToolJSON(site, name: "grant_status", arguments: ["id": id])
+        let approved = try callToolJSON(site, name: "grant_status",
+                                        arguments: ["id": id, "secret": mcpAnswer["secret"] as? String ?? ""])
         XCTAssertEqual(approved["host"] as? String, "api.openai.com", "the grant targets the key's resolved host")
         XCTAssertEqual(try site.db.catalogRow(name: "demo")?.gatewayHost, hostBefore,
                       "the key row's host is byte-identical")
@@ -1020,9 +1225,10 @@ final class MCPGrantTests: XCTestCase {
         // No token: both routes, nothing created, nothing leaked.
         try gateCheck(create(site, ask(site), token: false), "create without a token")
         try gateCheck(poll(site, "00000000", token: false), "poll without a token")
-        try gateCheck(handle(site.handler, method: "POST", path: "/api/mcp/grants/status", body: Data(), token: false),
+        try gateCheck(handle(site.handler, method: "POST", path: "/api/mcp/grants/status",
+                              body: Data(), token: false),
                       "listing without a token")
-        XCTAssertTrue(try site.service.mcpGrantStatuses().isEmpty)
+        XCTAssertTrue(site.service.mcpPendingGrants.statuses().isEmpty)
 
         // A wrong token is the same refusal.
         let wrong = ["x-ksf-token": "wrong-token"]
@@ -1037,7 +1243,7 @@ final class MCPGrantTests: XCTestCase {
             XCTAssertEqual(get.status, 405, "a GET is refused on \(path)")
             XCTAssertEqual(try json(get)["error"] as? String, "method_not_allowed")
         }
-        XCTAssertTrue(try site.service.mcpGrantStatuses().isEmpty, "no route created anything yet")
+        XCTAssertTrue(site.service.mcpPendingGrants.statuses().isEmpty, "no route created anything yet")
 
         // A foreign Host is refused before any handler logic, on both routes.
         let foreign = ["host": "evil.example:12765"]
@@ -1086,43 +1292,49 @@ final class MCPGrantTests: XCTestCase {
         site.gate.release(AppError.authCancelled)
         let outcomes = ids.map { waitSettled(site, $0) }
         var deniedReasons = Set<String>()
-        var approvedID: String?
+        var approvedAsk: (id: String, secret: String)?
         for (id, record) in zip(ids, outcomes) {
             switch record.resolution {
-            case .approved: approvedID = id
+            case .approved:
+                let answer = created.first { $0["id"] as? String == id }!
+                approvedAsk = (id, answer["secret"] as? String ?? "")
             case .denied(let reason): deniedReasons.insert(reason)
             default: XCTFail("each id resolved on its own: \(id) → \(record.resolution)")
             }
         }
         XCTAssertEqual(deniedReasons, ["cancelled"])
-        let winner = try callToolJSON(site, name: "grant_status", arguments: ["id": approvedID!])
+        let winner = try callToolJSON(site, name: "grant_status",
+                                      arguments: ["id": approvedAsk!.id, "secret": approvedAsk!.secret])
         let token = winner["token"] as! String
         XCTAssertEqual(GrantToken.idOf(token), winner["id"] as? String,
                        "the token belongs to this request's own grant, no cross-talk")
 
         // The storm: creates to the cap, concurrent polls, a concurrent expiry sweep,
         // concurrent approvals — every id retrievable and distinct at each phase.
-        var stormSet = Set<String>()
+        var stormAsks = [String: String]()
         DispatchQueue.concurrentPerform(iterations: 12) { _ in
             if let body = try? JSONValue.data(ask(site)) {
                 let response = handle(site.handler, method: "POST", path: "/api/mcp/grants", body: body)
                 if let object = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
                    object["status"] as? String == "pending" {
-                    lock.lock(); stormSet.insert(object["id"] as! String); lock.unlock()
+                    lock.lock(); stormAsks[object["id"] as! String] = object["secret"] as? String ?? ""; lock.unlock()
                 }
             }
         }
-        XCTAssertEqual(stormSet.count, MCPPendingGrants.liveCap, "the storm filled the cap, no more")
+        XCTAssertEqual(stormAsks.count, MCPPendingGrants.liveCap, "the storm filled the cap, no more")
         XCTAssertTrue(site.gate.waitPrompts(MCPPendingGrants.liveCap))
-        let storm = Array(stormSet)
+        let storm = Array(stormAsks.keys)
         DispatchQueue.concurrentPerform(iterations: 32) { index in
             let id = storm[index % storm.count]
-            _ = handle(site.handler, method: "POST", path: "/api/mcp/grants/\(id)/status", body: Data())
+            if let body = try? JSONValue.data(["secret": stormAsks[id] ?? ""]) {
+                _ = handle(site.handler, method: "POST", path: "/api/mcp/grants/\(id)/status", body: body)
+            }
         }
         site.clock.advance(MCPPendingGrants.ttl + 1)
         DispatchQueue.concurrentPerform(iterations: storm.count) { index in
             let id = storm[index]
-            let response = handle(site.handler, method: "POST", path: "/api/mcp/grants/\(id)/status", body: Data())
+            guard let body = try? JSONValue.data(["secret": stormAsks[id] ?? ""]) else { return }
+            let response = handle(site.handler, method: "POST", path: "/api/mcp/grants/\(id)/status", body: body)
             guard let object = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] else {
                 return XCTFail("every id stays retrievable through the sweep")
             }
@@ -1132,14 +1344,18 @@ final class MCPGrantTests: XCTestCase {
         // they must not eat the credit the racing ask below needs.
         site.gate.releaseAll(AppError.authCancelled)
 
-        // Racing polls across an approval: exactly one token between them.
+        // Racing polls across an approval: exactly one token between them — every
+        // racer holds the ask's own secret, so the race is about delivery, not proof.
         let racing = try create(site, ask(site))
-        let racingID = (try json(racing))["id"] as! String
+        let racingAnswer = try json(racing)
+        let racingID = racingAnswer["id"] as! String
+        let racingSecret = racingAnswer["secret"] as? String ?? ""
         site.gate.release()
         _ = waitSettled(site, racingID)
         var tokens = 0
         DispatchQueue.concurrentPerform(iterations: 6) { _ in
-            let response = handle(site.handler, method: "POST", path: "/api/mcp/grants/\(racingID)/status", body: Data())
+            guard let body = try? JSONValue.data(["secret": racingSecret]) else { return }
+            let response = handle(site.handler, method: "POST", path: "/api/mcp/grants/\(racingID)/status", body: body)
             if let object = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any] {
                 if object.keys.contains("token") {
                     lock.lock(); tokens += 1; lock.unlock()
@@ -1165,13 +1381,13 @@ final class MCPGrantTests: XCTestCase {
             let answer = try json(create(site, ask(site)))
             XCTAssertEqual(answer["status"] as? String, "pending")
         }
-        XCTAssertEqual(try site.service.mcpGrantStatuses().count, 8)
+        XCTAssertEqual(site.service.mcpPendingGrants.statuses().count, 8)
         let ninth = try create(site, ask(site))
         XCTAssertEqual(ninth.status, 400)
         XCTAssertEqual(try json(ninth)["error"] as? String,
                        "too many grant requests are waiting; wait for one to resolve or expire, then ask again")
         XCTAssertEqual(site.gate.recordedReasons.count, 8, "the ninth consumed no prompt")
-        XCTAssertEqual(try site.service.mcpGrantStatuses().count, 8, "the ninth left no record")
+        XCTAssertEqual(site.service.mcpPendingGrants.statuses().count, 8, "the ninth left no record")
 
         // Expiry frees every slot. The first batch's prompts are still up — unpark
         // them first, so they cannot eat the later phases' outcomes.
@@ -1187,11 +1403,13 @@ final class MCPGrantTests: XCTestCase {
         site.gate.release()
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline {
-            let pending = try site.service.mcpGrantStatuses().filter { $0["status"] as? String == "pending" }.count
+            let pending = site.service.mcpPendingGrants.statuses()
+                .filter { if case .pending = $0.resolution { return true }; return false }.count
             if pending == 7 { break }
             Thread.sleep(forTimeInterval: 0.01)
         }
-        XCTAssertEqual(try site.service.mcpGrantStatuses().filter { $0["status"] as? String == "pending" }.count, 7,
+        XCTAssertEqual(site.service.mcpPendingGrants.statuses()
+            .filter { if case .pending = $0.resolution { return true }; return false }.count, 7,
                        "one resolution freed one slot")
         let afterFree = try json(create(site, ask(site)))
         XCTAssertEqual(afterFree["status"] as? String, "pending", "a freed slot admits the next ask")
@@ -1221,7 +1439,7 @@ final class MCPGrantTests: XCTestCase {
         XCTAssertFalse(text.contains(String(other)), "the pid is scrubbed: \(text)")
 
         XCTAssertEqual(site.gate.recordedReasons.count, 0, "no prompt was consumed")
-        XCTAssertTrue(try site.service.mcpGrantStatuses().isEmpty, "no pending record")
+        XCTAssertTrue(site.service.mcpPendingGrants.statuses().isEmpty, "no pending record")
         XCTAssertTrue(site.service.listGrants(includeInactive: true).isEmpty, "no grant")
     }
 

@@ -279,9 +279,9 @@ final class APIHandler: @unchecked Sendable {
             // The poll route's no-id spelling: the status-only listing, never a token.
             // It must sit above the <id>/status pattern so it is never read as an id.
             case ("POST", "/api/mcp/grants/status"):
-                return try mcpGrantStatusList()
+                return try mcpGrantStatusList(request)
             case ("POST", let p) where p.hasPrefix("/api/mcp/grants/") && p.hasSuffix("/status"):
-                return try mcpGrantStatus(path: p)
+                return try mcpGrantStatus(path: p, request: request)
             // The onboarding mission's scan comparison: hashes in, key names out.
             // A POST like the rest — no GET under /api/ ever carries state.
             case ("POST", "/api/mcp/vault_lookup"):
@@ -1250,31 +1250,48 @@ final class APIHandler: @unchecked Sendable {
     /// POST /api/mcp/grants — create a pending grant request. Everything the ask can
     /// get wrong is refused here, synchronously, before any prompt; the body carries
     /// the project FOLDER, which the app canonicalizes, derives the label for and
-    /// get-or-creates the row of. The answer is `{status:"pending", id}` and no
-    /// token: if the user approves the one prompt, the token is delivered on exactly
-    /// one later poll.
+    /// get-or-creates the row of. The answer is `{status:"pending", id, secret}` and
+    /// no token: the secret is the caller's private proof it created the ask — every
+    /// later poll of the id requires it, and it reaches no listing, log or audit. If
+    /// the user approves the one prompt, the token is delivered on exactly one
+    /// later poll.
     private func mcpGrantCreate(_ request: HTTPRequest) throws -> HTTPResponse {
         let ask = try mcpGrantAsk(try jsonBody(request))
-        let id = try service.requestMCPGrant(
+        let created = try service.requestMCPGrant(
             name: ask.name, request: ask.request, profile: ask.profile,
             specified: ask.specified, folder: ask.folder
         )
-        return HTTPResponse.json(200, ["status": "pending", "id": id])
+        return HTTPResponse.json(200, ["status": "pending", "id": created.id, "secret": created.secret])
     }
 
     /// POST /api/mcp/grants/<id>/status — poll one request: pending (tokenless),
     /// approved (the token and the connection fields, once), approved with
     /// `delivered: true` (never a token again), denied with its reason, expired
-    /// after the pending TTL, or the house not-found.
-    private func mcpGrantStatus(path: String) throws -> HTTPResponse {
+    /// after the pending TTL, or the house not-found — which is also all a poller
+    /// without the ask's poll secret ever reads, in every state, so the id's
+    /// existence is the one thing it cannot learn.
+    private func mcpGrantStatus(path: String, request: HTTPRequest) throws -> HTTPResponse {
         let id = String(path.dropFirst("/api/mcp/grants/".count).dropLast("/status".count))
-        return HTTPResponse.json(200, try service.mcpGrantStatus(id: id))
+        let body = jsonProofBody(request)
+        return HTTPResponse.json(
+            200, try service.mcpGrantStatus(id: id, secret: JSONValue.string(body["secret"]) ?? "")
+        )
     }
 
-    /// POST /api/mcp/grants/status — the no-id form: every request's id, key and
-    /// state, never a token in any state.
-    private func mcpGrantStatusList() throws -> HTTPResponse {
-        HTTPResponse.json(200, ["requests": service.mcpGrantStatuses()])
+    /// POST /api/mcp/grants/status — the no-id form: exactly the asks whose poll
+    /// secrets the body proves, and nothing else for a caller that proves nothing —
+    /// never a token, never a secret, in any state.
+    private func mcpGrantStatusList(_ request: HTTPRequest) throws -> HTTPResponse {
+        let body = jsonProofBody(request)
+        let secrets = (body["secrets"] as? [Any])?.compactMap { $0 as? String } ?? []
+        return HTTPResponse.json(200, ["requests": service.mcpGrantStatuses(secrets: secrets)])
+    }
+
+    /// The body of a proof-carrying route: an empty or malformed body proves
+    /// nothing, so it parses to an empty object instead of a 400 — the poll and
+    /// the no-id listing fail closed on missing proof, never on syntax.
+    private func jsonProofBody(_ request: HTTPRequest) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) ?? [:]
     }
 
     /// POST /api/mcp/vault_lookup — the scan tool's in-vault comparison. The

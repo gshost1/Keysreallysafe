@@ -7,6 +7,13 @@ import Foundation
 /// `grant_status` poll reports and — only between approval and the first delivery —
 /// the token's plaintext, because `GrantStore` keeps only its hash.
 ///
+/// Every record also holds a poll secret, minted at insert and shown to the ask's
+/// creator alone (the create answer carries it once). A poller must prove it:
+/// the control token that gates every route is readable by any same-user
+/// process, so it is the secret — not the token — that binds the claim to the
+/// process that asked, and a caller that cannot prove an ask reads the same
+/// house not-found it would read for an id that never existed.
+///
 /// The store is memory and nothing else: a restart drops every pending request
 /// (`not_found`), nothing token-shaped is ever persisted, and screen lock's revoke
 /// path is unaffected by it. The one clock every TTL, retention and expiry decision
@@ -38,6 +45,10 @@ final class MCPPendingGrants: @unchecked Sendable {
     struct Record {
         var id: String
         var key: String
+        /// The ask's poll secret: random at creation, delivered to the creator in
+        /// the create answer and required by every later read of the ask. It
+        /// reaches no listing, log or audit — `statuses` renders state only.
+        var secret: String
         var createdAt: Date
         var expiresAt: Date
         var resolution: Resolution
@@ -68,7 +79,8 @@ final class MCPPendingGrants: @unchecked Sendable {
     }
 
     /// Stores a new request, refusing over the live cap. Prunes first, so an
-    /// expired record frees its slot before the cap is counted.
+    /// expired record frees its slot before the cap is counted. The record's
+    /// poll secret is minted here, beside its id, from the same CSPRNG.
     func insert(key: String) throws -> Record {
         lock.lock()
         defer { lock.unlock() }
@@ -86,12 +98,20 @@ final class MCPPendingGrants: @unchecked Sendable {
         var id = GrantToken.newID()
         while records[id] != nil { id = GrantToken.newID() }
         let record = Record(
-            id: id, key: key, createdAt: now,
+            id: id, key: key, secret: Self.newSecret(), createdAt: now,
             expiresAt: now.addingTimeInterval(Self.ttl),
             resolution: .pending, resolvedAt: nil, deliveredAt: nil
         )
         records[id] = record
         return record
+    }
+
+    /// The poll secret's mint: `GrantToken.newID()`'s randomness at secret
+    /// strength — 16 bytes of the same CSPRNG, hex-encoded. The 32-hex shape is
+    /// deliberately not the 8-hex id's, so a caller can never mistake one for
+    /// the other, and a holder of only the control token cannot guess it.
+    private static func newSecret() -> String {
+        Hex.encode(SecureRandom.bytes(16))
     }
 
     /// The approval thread's success path: only a still-pending record takes it.
@@ -138,12 +158,16 @@ final class MCPPendingGrants: @unchecked Sendable {
     }
 
     /// One poll, with the consume-once flip inside the same lock the read holds:
-    /// exactly one racing poller can see `approved` carrying the token.
-    func claim(id: String) -> Claim? {
+    /// exactly one racing poller can see `approved` carrying the token. The
+    /// secret is checked inside that same lock, so a poller that cannot prove
+    /// it created the ask learns nothing — not even that the id exists — and
+    /// never consumes the claim; `nil` is the answer for an unknown id, a wrong
+    /// secret and a missing one alike.
+    func claim(id: String, secret: String) -> Claim? {
         lock.lock()
         defer { lock.unlock() }
         refreshLocked()
-        guard let record = records[id] else { return nil }
+        guard let record = records[id], record.secret == secret else { return nil }
         switch record.resolution {
         case .pending:
             return .pending
@@ -160,7 +184,10 @@ final class MCPPendingGrants: @unchecked Sendable {
         }
     }
 
-    /// Every record for the status-only listing — states and reasons, never a token.
+    /// Every record as the store holds it — the internal view. The records carry
+    /// their poll secrets; the only renderer over this is the service's listing,
+    /// which first filters to the secrets the request body proves and never
+    /// renders the field. States and reasons only, never a token.
     func statuses() -> [Record] {
         lock.lock()
         defer { lock.unlock() }
@@ -217,8 +244,11 @@ extension KeysService {
     /// unknown key, a non-proxiable provider, an unresolvable host, the request's
     /// own shape, every profile over-ceiling case) and refuses before any prompt,
     /// then hands the ask to the one approval prompt and returns the request's id
-    /// while that prompt is up. The answer the caller gets is pending and tokenless;
-    /// the token, if the user approves, is delivered on exactly one later poll.
+    /// and its poll secret while that prompt is up. The answer the caller gets is
+    /// pending and tokenless; the secret is the caller's private proof it created
+    /// the ask — every later poll of the id requires it, and it reaches no
+    /// listing, log or audit — and the token, if the user approves, is delivered
+    /// on exactly one later poll.
     ///
     /// The folder is the MCP process's project folder — the app canonicalizes it,
     /// derives the label and get-or-creates the `projects` row; the calling process
@@ -229,7 +259,7 @@ extension KeysService {
         profile profileName: String?,
         specified: GrantSpecified,
         folder: String
-    ) throws -> String {
+    ) throws -> (id: String, secret: String) {
         // The owner check runs at CREATE time: a second live site is a clear error
         // here, never a denial the user has to cancel a prompt over.
         try requireGatewayOwner()
@@ -264,19 +294,21 @@ extension KeysService {
         _ = armed.wait(timeout: .now() + 2)
         // The ask is pending and its prompt is up: the app warns immediately, once.
         notePendingGrant(id: record.id)
-        return record.id
+        return (record.id, record.secret)
     }
 
     /// One request's poll, rendered as the payload `grant_status` relays: pending
     /// (tokenless), approved (the token plus the exact `keysGrant` connection fields
     /// — the only time a token is returned), approved with `delivered: true` (no
     /// token), denied with its reason, expired, or the house not-found for an id
-    /// this process never issued or has already pruned.
-    func mcpGrantStatus(id raw: String) throws -> [String: Any] {
+    /// this process never issued or has already pruned. The secret is the poll's
+    /// proof: without it the answer is that same not-found, in every state, so a
+    /// caller that holds only the control token learns nothing.
+    func mcpGrantStatus(id raw: String, secret: String) throws -> [String: Any] {
         guard raw.count == 8, raw.allSatisfy({ $0.isHexDigit }) else {
             throw AppError.notFound("pending grant request")
         }
-        guard let claim = mcpPendingGrants.claim(id: raw) else {
+        guard let claim = mcpPendingGrants.claim(id: raw, secret: secret) else {
             throw AppError.notFound("pending grant request \(raw)")
         }
         switch claim {
@@ -300,10 +332,14 @@ extension KeysService {
         }
     }
 
-    /// The no-id status listing: every request's id, key and state — never a token
-    /// in any state, so a status poller cannot collect another session's approval.
-    func mcpGrantStatuses() -> [[String: Any]] {
-        mcpPendingGrants.statuses().map { record in
+    /// The no-id status listing: exactly the asks the request body proves with
+    /// their poll secrets — a caller that proves nothing lists nothing, and one
+    /// that proves one secret sees one ask — so a status poller can never
+    /// collect another session's id. Ids, keys and states only: never a token,
+    /// never a secret, in any state.
+    func mcpGrantStatuses(secrets: [String]) -> [[String: Any]] {
+        let proven = Set(secrets)
+        return mcpPendingGrants.statuses().filter { proven.contains($0.secret) }.map { record in
             var entry: [String: Any] = ["id": record.id, "key": record.key]
             switch record.resolution {
             case .pending:

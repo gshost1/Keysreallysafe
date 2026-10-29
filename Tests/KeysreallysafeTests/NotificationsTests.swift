@@ -241,7 +241,7 @@ final class NotificationsTests: XCTestCase {
         XCTAssertEqual(delivery.count, 0, "a refused ask is not pending and warns nothing")
 
         // A pending ask whose Touch ID prompt is up warns exactly once.
-        let id = try service.requestMCPGrant(
+        let ask = try service.requestMCPGrant(
             name: "demo",
             request: GrantRequest(task: "ship", minutes: 5, methods: ["GET"], paths: ["/v1/messages"]),
             profile: nil, specified: GrantSpecified(), folder: dir.path
@@ -252,7 +252,7 @@ final class NotificationsTests: XCTestCase {
         XCTAssertEqual(delivery.notifications.map(\.kind), [.pendingGrant])
 
         let state = service.notificationSnapshot()
-        XCTAssertTrue(state.pendingGrantIDs.contains(id), "the ask is pending while its prompt waits")
+        XCTAssertTrue(state.pendingGrantIDs.contains(ask.id), "the ask is pending while its prompt waits")
         await notifier.poll(grants: state.grants, clients: state.clients, pendingGrantIDs: state.pendingGrantIDs)
         XCTAssertEqual(delivery.count, 1, "the poll does not duplicate the pending warning")
 

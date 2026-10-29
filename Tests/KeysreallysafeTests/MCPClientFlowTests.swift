@@ -415,13 +415,18 @@ final class MCPClientFlowTests: XCTestCase {
         let id = pending["id"] as! String
         XCTAssertEqual(id.count, 8, "the id is the 8-hex convention")
         XCTAssertTrue(id.allSatisfy { $0.isHexDigit })
-        XCTAssertEqual(Set(pending.keys), ["status", "id"], "the pending payload carries nothing else")
+        let secret = pending["secret"] as? String
+        XCTAssertNotNil(secret, "the answer carries the ask's poll secret to its creator")
+        XCTAssertEqual(Set(pending.keys), ["status", "id", "secret"],
+                       "the pending payload carries the ask and its proof, nothing else")
         XCTAssertEqual(rig.gate.recordedReasons.count, 2,
                        "exactly one prompt for the ask, after the setup's client issuance")
 
-        // Polls while the prompt is provably still up: pending, tokenless.
+        // Polls while the prompt is provably still up: pending, tokenless. Each
+        // poll proves the ask with the secret its create answer carried.
         for (index, requestID) in ["p1", "p2"].enumerated() {
-            let poll = try toolCall(client, id: requestID, name: "grant_status", arguments: ["id": id])
+            let poll = try toolCall(client, id: requestID, name: "grant_status",
+                                    arguments: ["id": id, "secret": secret ?? ""])
             responses += 1
             XCTAssertEqual(poll["status"] as? String, "pending", "poll \(index) while the prompt is up")
             XCTAssertEqual(poll["id"] as? String, id)
@@ -438,7 +443,8 @@ final class MCPClientFlowTests: XCTestCase {
         for attempt in 0..<200 {
             approvedPolls += 1
             responses += 1
-            let poll = try toolCall(client, id: "a\(attempt)", name: "grant_status", arguments: ["id": id])
+            let poll = try toolCall(client, id: "a\(attempt)", name: "grant_status",
+                                    arguments: ["id": id, "secret": secret ?? ""])
             let status = poll["status"] as? String
             if status == "pending" { continue }
             if status == "approved" { approved = poll; break }
@@ -455,7 +461,8 @@ final class MCPClientFlowTests: XCTestCase {
         XCTAssertEqual(approved["auth_header"] as? String, "Authorization")
 
         // The next poll reports the delivery, never the token again.
-        let later = try toolCall(client, id: "d1", name: "grant_status", arguments: ["id": id])
+        let later = try toolCall(client, id: "d1", name: "grant_status",
+                                 arguments: ["id": id, "secret": secret ?? ""])
         responses += 1
         XCTAssertEqual(later["status"] as? String, "approved")
         XCTAssertEqual(later["delivered"] as? Bool, true)
@@ -472,7 +479,7 @@ final class MCPClientFlowTests: XCTestCase {
         rig.server.stop()
         try fm.removeItem(at: rig.control)
         let deadStarted = Date()
-        try client.send(#"{"jsonrpc":"2.0","id":"dead","method":"tools/call","params":{"name":"grant_status","arguments":{"id":"\#(id)"}}}"#)
+        try client.send(#"{"jsonrpc":"2.0","id":"dead","method":"tools/call","params":{"name":"grant_status","arguments":{"id":"\#(id)","secret":"\#(secret ?? "")"}}}"#)
         responses += 1
         let deadFrame = try client.frame()
         XCTAssertLessThan(Date().timeIntervalSince(deadStarted), 5,
