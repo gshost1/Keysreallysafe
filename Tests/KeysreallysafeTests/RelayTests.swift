@@ -574,6 +574,12 @@ final class RelayTests: XCTestCase {
             let expired = try socket.json(try await socket.frame(.error, id: id))
             XCTAssertEqual(expired["code"] as? String, "upload_timeout")
         }
+        // The keepalive sweeps too, and the test sleeper runs it every millisecond, so 3 and 4
+        // can expire before request 5 is read; their errors do not mean 5 is in yet.
+        let deadline = Date().addingTimeInterval(5)
+        while client.inflightCount != 1, Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(client.inflightCount, 1, "only the fresh request survives")
         XCTAssertTrue(socket.frames.filter { $0.id == 5 }.isEmpty)
     }
