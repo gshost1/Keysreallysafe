@@ -182,7 +182,7 @@ final class MCPPendingGrants: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         refreshLocked()
-        guard let record = records[id], record.secret == secret else { return nil }
+        guard let record = records[id], ConstantTime.equal(Array(record.secret.utf8), Array(secret.utf8)) else { return nil }
         switch record.resolution {
         case .pending:
             return .pending

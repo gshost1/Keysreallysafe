@@ -631,7 +631,7 @@ final class KeysService: @unchecked Sendable {
             task: effective.task, key: name, provider: provider, host: host, minutes: effective.minutes
         )
         if let projectLabel {
-            reason += ", project \(projectLabel)"
+            reason += ", project \(Self.promptLabel(projectLabel))"
         }
         if let cached = lookupGateway(name: name), cached.host == host {
             try (gate ?? presence).require(reason: reason)
@@ -2208,6 +2208,18 @@ final class KeysService: @unchecked Sendable {
     static func unlockReason(_ names: [String]) -> String {
         guard names.count > 1 else { return "unlock \(names.first ?? "")" }
         return "unlock \(names.count) keys: " + names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+    }
+
+    /// A folder-derived project label as the Touch ID reason shows it. The label
+    /// comes from a folder name a same-user process can choose, so control
+    /// characters (a newline that fakes a second line of the prompt) are dropped
+    /// and the length is capped; key, host and duration stay in the reason.
+    static func promptLabel(_ label: String) -> String {
+        let visible = String(String.UnicodeScalarView(label.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0)
+                && !($0.properties.generalCategory == .format)
+        }))
+        return visible.count > 60 ? String(visible.prefix(59)) + "…" : visible
     }
 
     func liveStatus() throws -> LiveStatus {
