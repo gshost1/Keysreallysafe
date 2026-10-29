@@ -370,6 +370,51 @@ final class UninstallOfferTests: XCTestCase {
                         "one Touch ID — the surviving file's, under the one per-project prompt")
     }
 
+    /// S4: the whole project folder deleted since wrap. Answered yes, the offer's
+    /// per-project unwrap treats the project as stale — its records clear and its
+    /// token is revoked, with no prompt — and the uninstall completes. Failed
+    /// pre-fix: Project.canonicalFolder threw "that project folder does not exist",
+    /// the removal never ran, and every retry failed the same way.
+    func testDeletedProjectFolderDoesNotAbortTheUninstall() throws {
+        let site = try makeOfferSite()
+        let project = site.dir.appendingPathComponent("acme", isDirectory: true)
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        try Data("OPENAI_API_KEY=\(openaiValue)\n".utf8).write(to: project.appendingPathComponent(".env"))
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let projectID = try XCTUnwrap(try site.db.listWrappedFiles().first?.project)
+        let liveBefore = try site.db.gatewayClients(keyName: "openai").filter { $0.revokedAt == nil }
+        XCTAssertEqual(liveBefore.count, 1, "the import minted one project token")
+        try fm.removeItem(at: project)
+        let promptsBefore = site.gate.reasons.count
+
+        let rec = Recorder()
+        let runner = UninstallOfferRunner(
+            wrappedFiles: { try UninstallOfferRunner.recordedWrappedFiles(catalog: site.db.path) },
+            isInteractive: { true },
+            confirm: { rec.confirmCalls += 1; return true },
+            unwrap: { projectID in
+                rec.events.append("unwrap:\(projectID)")
+                let folder = try XCTUnwrap(try site.db.project(id: projectID)?.path)
+                let unwrap = UnwrapRunner(
+                    connect: { try ControlClient.connect(control: site.control) },
+                    out: { _ in },
+                    projectFolder: { folder }
+                )
+                _ = try unwrap.run(path: nil)
+            },
+            uninstall: { rec.events.append("uninstall") },
+            report: { rec.reports.append($0) }
+        )
+
+        try runner.run()
+
+        XCTAssertEqual(rec.events, ["unwrap:\(projectID)", "uninstall"], "the removal ran")
+        XCTAssertTrue(try site.db.listWrappedFiles().isEmpty, "the stale record was cleared")
+        XCTAssertTrue(try site.db.gatewayClients(keyName: "openai").allSatisfy { $0.revokedAt != nil },
+                      "the project's token was revoked")
+        XCTAssertEqual(site.gate.reasons.count, promptsBefore, "nothing to restore, so no prompt")
+    }
+
     /// The command surface: `autostart --remove`'s help names the offer, so the
     /// behavior is discoverable before it ever runs.
     func testTheRemoveFlagHelpNamesTheOffer() {

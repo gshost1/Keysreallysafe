@@ -69,6 +69,10 @@ extension KeysService {
     private func unwrapProject(folder: String, caller: String, now: Date) throws -> [String: Any] {
         // A lookup, never a get-or-create: a cwd whose project was never wrapped must
         // answer an honest "nothing was changed" without leaving a row behind.
+        let expanded = (folder as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: expanded) else {
+            return try clearDeletedProject(folder: expanded)
+        }
         let canonical = try Project.canonicalFolder(folder)
         guard let project = try catalog.project(path: canonical) else {
             throw AppError.notFound("no project at the working directory was ever wrapped; nothing was changed")
@@ -129,6 +133,23 @@ extension KeysService {
         // token values their files held.
         revoked += try revokeGatewayClients(project: project.id)
         return ["project": project.label, "files": files, "revoked": revoked]
+    }
+
+    /// A recorded project whose folder was deleted since wrap is stale, like a
+    /// deleted file: there is nothing left to restore, so its records clear and
+    /// its tokens are revoked, with no prompt — both only remove access. The
+    /// uninstall offer unwraps every recorded project before the removal, and a
+    /// throw here used to abort it on every retry. A folder that never was a
+    /// project keeps the honest "nothing was changed".
+    private func clearDeletedProject(folder: String) throws -> [String: Any] {
+        let spelled = Self.canonicalSpelling(evenIfMissing: folder)
+        guard let project = try catalog.project(path: spelled) ?? catalog.project(path: folder) else {
+            throw AppError.usage("that project folder does not exist")
+        }
+        let rows = try catalog.listWrappedFiles().filter { $0.project == project.id }
+        for row in rows { try catalog.clearWrappedFile(path: row.path) }
+        let revoked = try revokeGatewayClients(project: project.id)
+        return ["project": project.label, "files": rows.map { Self.goneRow(path: $0.path) }, "revoked": revoked]
     }
 
     // MARK: - The per-file restore (shared by both forms, already under the prompt)
