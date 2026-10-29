@@ -40,3 +40,12 @@ scripts/tests/.e2e/
 
 # The relay Worker's pinned tooling, installed by `npm ci` in Relay.
 Relay/node_modules/
+
+# Internal working notes: agent instructions, mission reports, proposals and
+# the owner's release checklist stay in local checkouts, not on GitHub.
+CLAUDE.md
+AGENTS.md
+TASKS.md
+docs/missions/
+docs/proposals/
+docs/manual-e2e-*.md
