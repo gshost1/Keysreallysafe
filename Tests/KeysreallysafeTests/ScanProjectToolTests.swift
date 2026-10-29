@@ -150,24 +150,69 @@ final class ScanProjectToolTests: XCTestCase {
     }
 
     /// A wired seam stands in for the process cwd the way `MCPRoster` wires it, and
-    /// an explicit folder argument beats both.
+    /// an explicit folder argument that is a folder INSIDE the session's working
+    /// directory beats both (VAL-O-006: a folder outside it is refused below, so
+    /// the pin an outside folder used to win no longer holds).
     func testSuppliedFolderWinsOverTheDefault() throws {
         let seamFolder = try TempDir.make()
         try write("SEAM_ONLY=\(anthropicValue)\n", to: ".env", under: seamFolder)
-        let askedFolder = try TempDir.make()
-        try write("GROQ_API_KEY=\(groqValue)\n", to: "nested/.env", under: askedFolder)
 
         let bySeam = try callJSON(roster(control: deadControl(), projectFolder: { seamFolder.path }), arguments: [:])
         XCTAssertEqual(bySeam["env_files"] as? [String], [".env"], "the seam answers when no folder came")
+
+        // A subfolder of the seam folder, created after the seam's own scan: inside
+        // the session working directory's subtree, so the argument is honoured.
+        let askedFolder = seamFolder.appendingPathComponent("nested", isDirectory: true)
+        try write("GROQ_API_KEY=\(groqValue)\n", to: "deep/.env", under: askedFolder)
 
         let byArgument = try callJSON(
             roster(control: deadControl(), projectFolder: { seamFolder.path }),
             arguments: ["folder": askedFolder.path]
         )
-        XCTAssertEqual(byArgument["env_files"] as? [String], ["nested/.env"], "the argument wins over the seam")
+        XCTAssertEqual(byArgument["env_files"] as? [String], ["deep/.env"], "the argument wins over the seam")
         let variables = byArgument["variables"] as! [[String: Any]]
         XCTAssertEqual(variables.count, 1)
-        XCTAssertEqual(variables[0]["file"] as? String, "nested/.env")
+        XCTAssertEqual(variables[0]["file"] as? String, "deep/.env")
+    }
+
+    // MARK: - VAL-O-006 (folders outside the session working directory are refused)
+
+    /// A folder argument outside the session working directory's subtree is refused
+    /// with a path-free error — today it is scanned, which is exactly the hazard the
+    /// restriction exists to remove. Failed pre-fix: the outside folder was scanned
+    /// and answered (isError false), because nothing compared it with the seam.
+    func testAnOutsideFolderIsRefusedWithAPathFreeError() throws {
+        let seamFolder = try TempDir.make()
+        try write("SEAM_ONLY=\(anthropicValue)\n", to: ".env", under: seamFolder)
+        let outside = try TempDir.make()
+        try write("OUTSIDE_KEY=\(groqValue)\n", to: ".env", under: outside)
+
+        let (isError, text) = try call(
+            roster(control: deadControl(), projectFolder: { seamFolder.path }),
+            arguments: ["folder": outside.path]
+        )
+        XCTAssertTrue(isError, "an outside folder is a plain refusal, not a scan")
+        XCTAssertEqual(text, "the folder must be this session's working directory or inside it",
+                       "the exact path-free message")
+        XCTAssertFalse(text.contains(outside.path), "the message names no path")
+        XCTAssertFalse(text.contains("/"), "the message carries no filesystem tell")
+    }
+
+    /// The disk root and the home directory — the two folders a careless or hostile
+    /// caller reaches for — are refused the same way, before anything is read. The
+    /// same containment check the previous test pins; these rows were deliberately
+    /// NOT run pre-fix, because the pre-fix behavior of a supplied "/" or "~" is to
+    /// actually walk them (decision recorded in the mission log).
+    func testTheRootAndTheHomeFolderAreRefused() throws {
+        let seamFolder = try TempDir.make()
+        let registry = try roster(control: deadControl(), projectFolder: { seamFolder.path })
+        for (label, folder) in [("the disk root", "/"), ("the home directory", "~")] {
+            let (isError, text) = try call(registry, arguments: ["folder": folder])
+            XCTAssertTrue(isError, "\(label): a plain refusal, not a scan")
+            XCTAssertEqual(text, "the folder must be this session's working directory or inside it",
+                          "\(label): the exact path-free message")
+            XCTAssertFalse(text.contains("/"), "\(label): the message carries no filesystem tell")
+        }
     }
 
     /// A nonexistent folder, a plain file and a non-string are plain tool errors,

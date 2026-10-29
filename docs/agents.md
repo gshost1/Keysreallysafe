@@ -193,20 +193,25 @@ The tools the server offers:
   `credential_url`, `wrapped`), a last-4 hint, whether the value is already
   in the vault and whether the gateway could proxy it, plus the env files
   read and the Docker files at the root. The one input, `folder`, is
-  optional and defaults to the server process's working directory. Never
+  optional and defaults to the server process's working directory, and is
+  refused when it is outside that working directory's subtree — the session
+  working directory is the folder the user pointed the agent at, and it is
+  the only subtree a session may scan or rewrite. Never
   returns a key value — at most the last 4 characters. The in-vault answer
   needs the app (a hash-only comparison); without it the scan still answers
   and `in_vault` is null.
 - `check_exposure` — which of those env files git has ever seen: three
   read-only booleans per file (`gitignored`, `tracked`, `in_history`), the
   relative paths, and a rotate-the-keys recommendation for any file that
-  was ever committed. Never file contents or diffs. Same optional `folder`;
-  needs no app, no vault and no network, and answers null booleans with a
+  was ever committed. Never file contents or diffs. Same optional `folder`
+  with the same working-directory restriction as `scan_project`; needs no
+  app, no vault and no network, and answers null booleans with a
   plain statement when git or the repository is missing.
 - `import_and_wrap` — import the found keys into the vault and rewrite each
   line to a single 30-day project gateway token, inside the app under one
   Touch ID prompt naming the keys and the project. Ask the user first in
-  the same call. Inputs: the optional `folder` (same default), an optional
+  the same call. Inputs: the optional `folder` (same default and the same
+  working-directory restriction as `scan_project`), an optional
   `variables` list restricting the import to those names, and the `docker`
   flag — pass true only on the user's explicit yes, because it also lets
   Docker containers reach the gateway (the host.docker.internal section

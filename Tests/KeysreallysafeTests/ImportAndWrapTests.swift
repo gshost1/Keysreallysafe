@@ -845,6 +845,35 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(AppConnection.appCallTimeout, 10, "the default every other call keeps")
     }
 
+    // MARK: - VAL-O-006 (the folder input is restricted to the session working directory)
+
+    /// import_and_wrap takes the same `folder` input as the two read-only tools, and
+    /// it is the write path — so the same safety property applies (VAL-O-006, the
+    /// mission's recorded decision): a folder outside the session working directory
+    /// is refused at the tool layer with the path-free error, before anything is
+    /// sent to the app. Failed pre-fix: the outside folder was forwarded to the app
+    /// and imported.
+    func testTheToolRefusesAFolderOutsideTheSessionWorkingDirectory() throws {
+        let site = try makeSite()
+        let project = try makeProject(in: site.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        let outside = try TempDir.make()
+        try write("OUTSIDE_KEY=\(groqValue)\n", to: ".env", under: outside)
+
+        let (isError, text) = try callTool(
+            roster(control: site.control, projectFolder: { project.path }),
+            arguments: ["folder": outside.path]
+        )
+        XCTAssertTrue(isError, "an outside folder is a plain refusal, not an import: \(text)")
+        XCTAssertEqual(text, "the folder must be this session's working directory or inside it",
+                       "the onboarding group's shared path-free message")
+        XCTAssertTrue(
+            try site.log.all.filter { $0.path == "/api/mcp/import_and_wrap" }.isEmpty,
+            "the outside folder never reached the app"
+        )
+        XCTAssertTrue(try site.service.list().isEmpty, "nothing was imported from it")
+    }
+
     // MARK: - the fail-closed isolation guard (owner directive 2026-10-28)
 
     /// The guard's own proof: the production locations — the default catalog seam, the

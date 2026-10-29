@@ -90,7 +90,8 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
                 + "already in the vault, whether the gateway could proxy it, plus the env files read and the "
                 + "docker files at the root. Never returns a key value: at most the last 4 characters. The "
                 + "folder is optional and defaults to this process's working directory; a folder that does not "
-                + "exist is a plain error. in_vault needs the Keysrs app (a hash-only vault comparison); "
+                + "exist is a plain error, and a folder outside the working directory's subtree is refused. "
+                + "in_vault needs the Keysrs app (a hash-only vault comparison); "
                 + "without the app the scan still answers and in_vault is null.",
             inputSchema: [
                 "type": "object",
@@ -113,7 +114,8 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
                 + "rotate-the-keys recommendation for any file that was ever committed. When the folder "
                 + "is not a git repository, or git is not installed, every file reports null booleans "
                 + "and the git field says so plainly. The folder is optional and defaults to this "
-                + "process's working directory; a folder that does not exist is a plain error. Needs "
+                + "process's working directory; a folder that does not exist is a plain error, and a "
+                + "folder outside the working directory's subtree is refused. Needs "
                 + "no app, no vault and no network.",
             inputSchema: [
                 "type": "object",
@@ -141,7 +143,8 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
                 + "import but keep their lines; values with no recognized provider and no vault match "
                 + "are not imported. docker true only with the user's explicit yes: it also lets "
                 + "Docker containers reach the gateway through host.docker.internal base URLs. The "
-                + "folder is optional and defaults to this process's working directory; variables "
+                + "folder is optional and defaults to this process's working directory, and is "
+                + "refused when it is outside that working directory's subtree; variables "
                 + "restricts the import to those names. Without the app running the whole call fails "
                 + "with one sentence.",
             inputSchema: [
@@ -192,7 +195,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// failure (the app down, a refused answer) is one honest disposition:
     /// `in_vault` unknown, with the scan itself still succeeding.
     private func serveScanProject(_ arguments: [String: Any]) throws -> MCPToolResult {
-        let report = try EnvScan.scan(folder: try Self.folderArgument(arguments) ?? projectFolder())
+        let report = try EnvScan.scan(folder: try checkedFolder(arguments) ?? projectFolder())
 
         // In-vault comparison: one call for every candidate's digest, hashes only.
         // The scan never depends on it, so every failure — connect, status, shape —
@@ -276,6 +279,27 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         return supplied
     }
 
+    /// The folder a call may touch (VAL-O-006): the session's own working
+    /// directory, or a folder inside it. A supplied folder is canonicalized and
+    /// refused when it resolves anywhere else — `folder: "/"` and the home
+    /// directory are refused before a single file is read — with a path-free
+    /// error, since it can end up in a tool result. The session working directory
+    /// is the folder the user pointed the agent at, and it is the only subtree a
+    /// session may scan or rewrite; `import_and_wrap` takes the same input as the
+    /// two read-only tools and shares the check, because it is the write path and
+    /// the same safety property applies (the mission's recorded decision).
+    /// `EnvScan` itself stays permissive: the app's own import re-scans a folder
+    /// this check has already passed.
+    private func checkedFolder(_ arguments: [String: Any]) throws -> String? {
+        guard let supplied = try Self.folderArgument(arguments) else { return nil }
+        let canonical = try Project.canonicalFolder(supplied)
+        let session = try Project.canonicalFolder(projectFolder())
+        guard canonical == session || canonical.hasPrefix(session == "/" ? "/" : session + "/") else {
+            throw AppError.usage("the folder must be this session's working directory or inside it")
+        }
+        return supplied
+    }
+
     // MARK: - check_exposure
 
     /// One exposure pass over the same EnvScan discovery: which env files exist
@@ -289,7 +313,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// never a hang. No app, no vault, no network: exposure needs nothing but
     /// the folder and, when it answers, a local read-only git.
     private func serveCheckExposure(_ arguments: [String: Any]) throws -> MCPToolResult {
-        let report = try EnvScan.scan(folder: try Self.folderArgument(arguments) ?? projectFolder())
+        let report = try EnvScan.scan(folder: try checkedFolder(arguments) ?? projectFolder())
 
         guard let git = gitExecutable(), Self.isRunnable(git) else {
             return try Self.degraded(
@@ -474,7 +498,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// construction (the one token lives in the rewritten file, never on the wire).
     private func serveImportAndWrap(_ arguments: [String: Any]) throws -> MCPToolResult {
         var body: [String: Any] = [:]
-        if let folder = try Self.folderArgument(arguments) { body["folder"] = folder }
+        if let folder = try checkedFolder(arguments) { body["folder"] = folder }
         if let raw = arguments["variables"], !(raw is NSNull) {
             guard let names = raw as? [Any], names.allSatisfy({ $0 is String }) else {
                 throw AppError.usage("variables must be a list of variable names")
