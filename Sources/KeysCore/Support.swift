@@ -139,7 +139,9 @@ enum KeyName {
             throw AppError.usage("name too long")
         }
         guard name.wholeMatch(of: /^[a-z0-9][a-z0-9._-]*$/) != nil else {
-            throw AppError.usage("invalid name \(name) (expected [a-z0-9][a-z0-9._-]*)")
+            // Never the input itself: a key pasted into a name field lands here,
+            // and the error is printed and relayed to the dashboard.
+            throw AppError.usage("invalid name (expected [a-z0-9][a-z0-9._-]*)")
         }
     }
 }

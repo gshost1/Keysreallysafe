@@ -374,6 +374,49 @@ final class GuidedAddTests: XCTestCase {
         }
     }
 
+    // S3: the shapes the first rule missed — a mixed-case base62 run with no known
+    // prefix (Mistral/Cohere style, few digits), an uppercase-hex run, and a key
+    // carrying a user-added provider's prefix — are refused the same way. Each fake
+    // is built at runtime. Failed pre-fix: all three were accepted, and the first
+    // two were echoed back by KeyName.validate's error.
+    func testMixedCaseUppercaseHexAndCustomPrefixKeysAreRefusedAsAName() throws {
+        let lower = "abcdefghijkmnopqrstuvwxyz"
+        let upper = lower.uppercased()
+        var base62 = String((0..<36).map { _ in (lower + upper).randomElement()! })
+        base62.replaceSubrange(base62.index(base62.startIndex, offsetBy: 7)...base62.index(base62.startIndex, offsetBy: 7), with: "4")
+        base62.replaceSubrange(base62.index(base62.startIndex, offsetBy: 3)...base62.index(base62.startIndex, offsetBy: 3), with: "Q")
+        base62.replaceSubrange(base62.index(base62.startIndex, offsetBy: 5)...base62.index(base62.startIndex, offsetBy: 5), with: "q")
+        let upperHex = String((0..<40).map { _ in "0123456789ABCDEF".randomElement()! })
+        let customPrefix = "fakeco-" + String((0..<32).map { _ in lower.randomElement()! })
+
+        // The overlay is what KeysService loads from the catalog's user-added
+        // providers; it is set after the rig's service has loaded its own (empty) one.
+        let custom = Providers.Record(
+            id: "fakeco", name: "FakeCo", host: "api.fakeco.invalid", api: "openai",
+            authHeader: "Authorization", authPrefix: "Bearer ", pathPrefix: "", gateway: true,
+            keyPrefix: "fakeco-", custom: true
+        )
+        defer { Providers.setOverlay([:]) }
+
+        for (index, pasted) in [base62, upperHex, customPrefix].enumerated() {
+            var rig = try makeRig()
+            Providers.setOverlay(["fakeco": custom])
+            rig.ui.providerAnswer = "openrouter"
+            rig.ui.nameAnswer = pasted
+            try assertNameRefused(&rig, pasted: pasted, label: "S3 shape \(index)")
+        }
+    }
+
+    // S3: KeyName.validate's own refusal names the rule, never the input.
+    func testKeyNameValidateNeverEchoesTheInput() {
+        let pasted = "Sk" + String((0..<30).map { _ in "ABCdef123".randomElement()! })
+        XCTAssertThrowsError(try KeyName.validate(pasted)) { error in
+            let text = (error as? AppError)?.description ?? "\(error)"
+            XCTAssertEqual(text, "invalid name (expected [a-z0-9][a-z0-9._-]*)")
+            XCTAssertFalse(text.contains(pasted))
+        }
+    }
+
     // VAL-H-007: the refusal targets secret shapes, not long or provider-derived
     // names — a word-like name past the length floor, a short hex-ish word and a
     // short name that merely starts with a provider's key prefix (the flow's own

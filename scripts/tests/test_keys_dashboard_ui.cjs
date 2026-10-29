@@ -326,7 +326,7 @@ function handle(method, pathname, body, params) {
     // only the server can refuse it.
     if (body.name.length > 128) return [400, { error: "name too long" }];
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(body.name)) {
-      return [400, { error: `invalid name ${body.name} (expected [a-z0-9][a-z0-9._-]*)` }];
+      return [400, { error: "invalid name (expected [a-z0-9][a-z0-9._-]*)" }];
     }
     if (keys.some((k) => k.name === body.name)) return [409, { error: "already_exists" }];
     fixtureSecrets.set(body.name, body.secret);

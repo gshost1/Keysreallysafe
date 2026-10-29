@@ -205,7 +205,10 @@ enum GuidedAdd {
     /// like, and word-like names never are. Whitespace around a paste does not
     /// hide it. Refused before the secret prompt, the store and any emit, so a
     /// pasted key is never stored as a name and never printed (VAL-H-007).
-    static func rejectSecretShapedName(_ name: String, records: [Providers.Record] = Providers.builtinList()) throws {
+    static func rejectSecretShapedName(
+        _ name: String,
+        records: [Providers.Record] = Providers.builtinList() + Providers.overlayRecords()
+    ) throws {
         let pasted = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let providerShaped = pasted.count >= 16
             && records.contains(where: { $0.keyPrefix.map(pasted.hasPrefix) ?? false })
@@ -219,12 +222,23 @@ enum GuidedAdd {
 
     /// The character-distribution half of the shape: names are words spread across
     /// the alphabet with digits rare; a pasted secret that carries no known prefix
-    /// is a long run of hex, or of digits. 32 sits past every honest name and at
-    /// the short end of real secrets.
+    /// is a long run of hex (either case), of digits, or of mixed-case base62. 32
+    /// sits past every honest name and at the short end of real secrets; a
+    /// separator-free run that mixes upper case, lower case and digits is no name
+    /// a person types, so it is caught from 24 (Mistral- and Cohere-style keys
+    /// carry no prefix and only a sprinkling of digits).
     static func looksLikeARandomRun(_ name: String) -> Bool {
+        let digits = name.filter(\.isASCIIDigit).count
+        if name.count >= 24,
+           !name.contains(where: { "-._ ".contains($0) }),
+           name.contains(where: \.isASCIIUppercase),
+           name.contains(where: \.isASCIILowercase),
+           digits > 0 {
+            return true
+        }
         guard name.count >= 32 else { return false }
         if name.allSatisfy({ "0123456789abcdef-._".contains($0) }) { return true }
-        let digits = name.filter { "0123456789".contains($0) }.count
+        if name.allSatisfy({ "0123456789ABCDEF-._".contains($0) }) { return true }
         return digits * 5 >= name.count * 2
     }
 
@@ -394,4 +408,10 @@ final class TerminalGuidedAddUI: GuidedAddInteracting {
         clearFrame()
         write(line + "\r\n")
     }
+}
+
+private extension Character {
+    var isASCIIDigit: Bool { isASCII && isNumber }
+    var isASCIIUppercase: Bool { isASCII && isUppercase }
+    var isASCIILowercase: Bool { isASCII && isLowercase }
 }
