@@ -3123,8 +3123,16 @@ test("the Keys figures follow the Chart's unit at 390 px and stay inside the row
   assert.equal(await gatewayText(page, "alpha"), "3 requests");
   await page.getByRole("tab", { name: "Chart" }).click();
   await chooseUsd(page);
+  // The unit switch redraws the hidden Keys rows at once, so a "$" is on screen before the pane's
+  // own /api/keys answer lands and replaces every row. Measuring or focusing the figure in that
+  // gap holds a node about to be detached (a null box, or Enter pressed on <body>), so the wait
+  // is for a row drawn after the Keys tab was opened.
+  await page.locator('#keys-body .key-row[data-name="alpha"]').evaluate((row) => { row.dataset.stale = "1"; });
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.waitForFunction(() => /\$/.test(document.querySelector('#keys-body .key-row[data-name="alpha"] .key-gateway').textContent));
+  await page.waitForFunction(() => {
+    const row = document.querySelector('#keys-body .key-row[data-name="alpha"]');
+    return row && !row.dataset.stale && /\$/.test(row.querySelector(".key-gateway").textContent);
+  });
   const box = await rowCell(page, "alpha", "gateway").boundingBox();
   assert.ok(box.width > 0 && box.x >= 0 && box.x + box.width <= 390, `the figure leaves the viewport: ${JSON.stringify(box)}`);
   // Reachable by keyboard: it is a button of the selected row, and Enter opens the chart.
