@@ -1419,8 +1419,11 @@ test("the grants box sits below the list and its Revoke button revokes", async (
   await page.waitForFunction(() => document.getElementById("status").textContent === "Grant aa11bb22 revoked.");
   // The reload reads the mutated state: the kill stays on the list as a revoked row that
   // offers nothing, so the count breaks out revoked instead of calling the box empty.
+  // The status line is set as soon as the DELETE answers, before that reload redraws the box,
+  // so the active row can still be on screen here; the wait is for the redrawn one.
+  await page.waitForFunction(() => [...document.querySelectorAll("#grants-list li")]
+    .some((li) => li.textContent.includes("fixture task") && li.querySelector(".badge")?.textContent === "revoked"));
   const row = page.locator("#grants-list li", { hasText: "fixture task" });
-  await row.waitFor();
   assert.deepEqual(await row.locator(".badge").allTextContents(), ["revoked"], "the row shows its revoked fate");
   assert.equal(await row.locator('[aria-label="Revoke grant aa11bb22"]').count(), 0, "a revoked row offers no Revoke button");
   assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.");
