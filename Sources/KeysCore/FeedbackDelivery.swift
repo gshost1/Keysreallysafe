@@ -73,11 +73,18 @@ enum FeedbackDelivery {
         return (encoded, decoded)
     }
 
-    /// The prefilled GitHub issue page for a scrubbed draft.
-    static func githubIssueURL(body: String) -> URL? {
-        URL(string: issuesURL
+    /// The prefilled GitHub issue page for a scrubbed draft, capped exactly like
+    /// the mailto: browsers and GitHub truncate a long query silently, and an
+    /// unbounded draft makes a URL no one can review before it opens.
+    static func githubIssueURL(body: String, footer: String, cap: Int = maxURLLength)
+        -> (url: URL?, body: String, truncated: Bool) {
+        let prefix = issuesURL
             + "?title=\(queryValue(feedbackSubject))"
-            + "&body=\(queryValue(body))")
+            + "&body="
+        let encodedFooter = queryValue(footer)
+        let budget = max(0, cap - prefix.count - encodedFooter.count)
+        let (encodedBody, kept) = capped(body, encodedLimit: budget)
+        return (URL(string: prefix + encodedBody + encodedFooter), kept + footer, kept.count < body.count)
     }
 
     /// The closing footer the scrubbed draft gains: the Keysrs version (the

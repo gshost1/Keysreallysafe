@@ -1428,17 +1428,15 @@ final class APIHandler: @unchecked Sendable {
         var text = scrubbed.scrubbed + footer
         var truncated = false
         let url: URL?
-        if destination == "github" {
-            url = FeedbackDelivery.githubIssueURL(body: text)
-        } else {
-            // The mailto URL is capped near 2,000 characters with the footer
-            // always kept; the answer reports the cut instead of opening a
-            // silently short draft (VAL-F-005).
-            let built = FeedbackDelivery.mailtoURL(body: scrubbed.scrubbed, footer: footer)
-            text = built.body
-            truncated = built.truncated
-            url = built.url
-        }
+        // Both URLs are capped near 2,000 characters with the footer always
+        // kept; the answer reports the cut instead of opening a silently short
+        // draft (VAL-F-005, and the GitHub page since I4).
+        let built = destination == "github"
+            ? FeedbackDelivery.githubIssueURL(body: scrubbed.scrubbed, footer: footer)
+            : FeedbackDelivery.mailtoURL(body: scrubbed.scrubbed, footer: footer)
+        text = built.body
+        truncated = built.truncated
+        url = built.url
         guard let url else {
             // Unreachable in practice: the query is fully percent-encoded above;
             // a URL that cannot be built must fail closed, never half-open.

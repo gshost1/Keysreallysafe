@@ -265,6 +265,29 @@ final class FeedbackToolsTests: XCTestCase {
         XCTAssertTrue((shortAnswer["scrubbed"] as? String)?.contains("the chart is nice") ?? false)
     }
 
+    /// I4. The GitHub issue URL is capped exactly like the mailto: near 2,000
+    /// characters, footer kept, truncation reported. Failed pre-fix: the GitHub
+    /// URL carried the whole draft, uncapped, and `truncated` was always false.
+    func testLongDraftCapsTheGitHubURLToo() throws {
+        let site = try makeSite()
+        defer { site.server.stop() }
+        let filler = String(repeating: "word ", count: 1_500)
+
+        let response = handle(site.handler, method: "POST", path: "/api/mcp/feedback",
+                              body: try body(["draft": filler + filler, "destination": "github"]))
+        XCTAssertEqual(response.status, 200)
+        let answer = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
+        XCTAssertEqual(answer["truncated"] as? Bool, true, "the cut is reported")
+
+        let url = try XCTUnwrap(site.open.recorded.last)
+        XCTAssertEqual(url.host, "github.com")
+        XCTAssertLessThanOrEqual(url.absoluteString.count, 2_000, "the encoded URL is capped near 2,000")
+        let bodyValue = (try queryItems(of: url) ?? []).first { $0.name == "body" }?.value ?? ""
+        XCTAssertTrue(bodyValue.contains("Keysrs \(ProductAnalyticsConfiguration.appVersion) on macOS"),
+                      "the version footer is always kept")
+        XCTAssertEqual(bodyValue, answer["scrubbed"] as? String, "the answer names the opened body")
+    }
+
     /// The route re-validates every argument type: no draft, an empty draft, a
     /// non-string draft, a non-string destination and a non-string prompt are
     /// all 400s, and none of them opens anything.

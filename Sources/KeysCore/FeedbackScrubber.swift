@@ -125,7 +125,9 @@ struct FeedbackScrubber {
         // 2. prompt_text — the marked text, exact and whole, BEFORE any
         //    rewriting rule: a rewriting rule that masks part of the prompt
         //    would leave the exact match with nothing to find.
-        if let prompt = request.prompt, !prompt.isEmpty {
+        //    The prompt is normalized like the draft, or a zero-width
+        //    character in it would make the exact match miss the stripped draft.
+        if let prompt = request.prompt.map(stripZeroWidth), !prompt.isEmpty {
             bump(promptText, by: replaceLiteral(&text, prompt))
         }
 

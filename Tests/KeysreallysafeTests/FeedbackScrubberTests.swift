@@ -325,6 +325,19 @@ final class FeedbackScrubberTests: XCTestCase {
         XCTAssertEqual(out.removed[FeedbackScrubber.promptText], 1)
     }
 
+    /// I4. The prompt is zero-width-normalized like the draft: a zero-width
+    /// character inside the prompt argument would otherwise make the exact match
+    /// miss the already-stripped draft, and the whole prompt would stay in it.
+    /// Failed pre-fix: the match missed and the prompt text survived.
+    func testAPromptCarryingZeroWidthCharactersIsStillRemoved() throws {
+        let marker = "please look at my private project notes"
+        let spiked = "please look at my\u{200B} private\u{2060} project notes"
+        let out = try scrub("intro \(spiked) outro", prompt: spiked)
+        XCTAssertFalse(out.scrubbed.contains(marker), "the prompt is gone from the draft")
+        XCTAssertFalse(out.scrubbed.contains("private project"))
+        XCTAssertEqual(out.removed[FeedbackScrubber.promptText], 1)
+    }
+
     // MARK: - length (VAL-FB-008)
 
     /// The cap runs AFTER scrubbing, so a secret straddling the 10,000-character
