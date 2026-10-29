@@ -462,6 +462,9 @@ final class MCPGrantTests: XCTestCase {
         XCTAssertEqual(approved["base_url"] as? String, "http://127.0.0.1:12767/demo/v1")
         XCTAssertEqual(approved["gateway_url"] as? String, "http://127.0.0.1:12767/demo")
         XCTAssertEqual(approved["auth_header"] as? String, "Authorization")
+        let source = approved["response_source"] as? String ?? ""
+        XCTAssertTrue(source.contains(GatewayListener.sourceHeader), source)
+        XCTAssertTrue(source.contains("upstream") && source.contains("not that the grant was refused"), source)
 
         // The same ask through the dashboard route, for parity.
         let dashBody: [String: Any] = ["task": "ship it", "minutes": 5, "methods": ["GET"], "paths": ["/v1/messages"], "max_requests": 3]

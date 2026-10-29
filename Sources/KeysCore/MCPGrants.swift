@@ -319,6 +319,13 @@ extension KeysService {
     /// this process never issued or has already pruned. The secret is the poll's
     /// proof: without it the answer is that same not-found, in every state, so a
     /// caller that holds only the control token learns nothing.
+    /// Rides with the token, the moment the agent starts calling the gateway: the
+    /// 0.14 test showed an agent blaming the grant for a provider's own 401.
+    static let mcpResponseSourceNote = "Every gateway response has an \(GatewayListener.sourceHeader) header. "
+        + "gateway: Keysrs refused or failed the call, and the JSON error code says why. "
+        + "upstream: the provider answered; a 401 or 403 then means the provider rejected the stored key, "
+        + "not that the grant was refused."
+
     func mcpGrantStatus(id raw: String, secret: String) throws -> [String: Any] {
         guard raw.count == 8, raw.allSatisfy({ $0.isHexDigit }) else {
             throw AppError.notFound("pending grant request")
@@ -337,6 +344,7 @@ extension KeysService {
             let prefix = Providers.provider(id: grant.provider)?.pathPrefix ?? ""
             body["base_url"] = "http://127.0.0.1:\(GatewayListener.port)/\(grant.key)" + prefix
             body["auth_header"] = Providers.provider(id: grant.provider)?.authHeader ?? "Authorization"
+            body["response_source"] = Self.mcpResponseSourceNote
             return body
         case .delivered:
             return ["status": "approved", "id": raw, "delivered": true]

@@ -97,6 +97,11 @@ class Session:
         self.proc = subprocess.Popen(
             [str(KEYS), "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=env)
+        # Unbuffered reads: a buffered readline() pulls every frame already in the
+        # pipe into Python's buffer, and the next select() then waits on an empty
+        # pipe with the answer sitting unread. That timed out on CI runners
+        # whenever the server's error frames arrived together.
+        self.stdout = os.fdopen(self.proc.stdout.fileno(), "rb", buffering=0, closefd=False)
         test.addCleanup(self.close)
 
     def send(self, text):
@@ -111,10 +116,10 @@ class Session:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
+            ready, _, _ = select.select([self.stdout], [], [], remaining)
             if not ready:
                 return None
-            line = self.proc.stdout.readline()
+            line = self.stdout.readline()
             return line.decode() if line else None
 
     def read_frame(self, timeout=SHUTDOWN_BOUND_S):

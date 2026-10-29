@@ -206,6 +206,7 @@ final class GatewayTests: XCTestCase {
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 401)
         XCTAssertTrue(String(data: data, encoding: .utf8)!.contains("client_required"))
+        XCTAssertEqual(http.value(forHTTPHeaderField: GatewayListener.sourceHeader), "gateway")
         XCTAssertEqual(hits.count, 0)
         // A client bound to another key does not turn a missing key into a 404 either.
         try service.add(name: "real", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
@@ -275,6 +276,7 @@ final class GatewayTests: XCTestCase {
         let http = try XCTUnwrap(response as? HTTPURLResponse)
         XCTAssertEqual(http.statusCode, 200)
         XCTAssertEqual(data, stubBody)
+        XCTAssertEqual(http.value(forHTTPHeaderField: GatewayListener.sourceHeader), "upstream")
         let upstream = try XCTUnwrap(captured.last)
         XCTAssertEqual(upstream.headers["authorization"], "Bearer sk-test-secret")
         XCTAssertNil(upstream.headers["x-ksf-client"])
@@ -319,6 +321,35 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(rows.first?["key"] as? String, "demo")
         XCTAssertEqual(rows.first?["model"] as? String, "gpt-4.1")
         XCTAssertGreaterThan(spendObj["catalog_version"] as? Int ?? 0, 0)
+    }
+
+    /// The 0.14 test's confusion: a provider's own 401 for a bad stored key, read as the
+    /// gateway refusing the grant. The source header tells them apart, and a provider
+    /// that sends its own copy of the header cannot pass for the gateway.
+    func testProviderRefusalIsMarkedUpstreamAndCannotSpoofTheGateway() async throws {
+        let rig = try GatewayRig { _ in
+            var refused = HTTPResponse.json(401, ["error": ["message": "Incorrect API key provided"]])
+            refused.headers[GatewayListener.sourceHeader] = "gateway"
+            return refused
+        }
+        defer { rig.stop() }
+        try rig.key(secret: "sk-test-secret")
+        let token = try grantFor(rig.service, "demo", task: "source header")
+
+        var req = URLRequest(url: rig.url("v1/models"))
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (_, response) = try await URLSession.shared.data(for: req)
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 401)
+        XCTAssertEqual(http.value(forHTTPHeaderField: GatewayListener.sourceHeader), "upstream")
+
+        // A bad grant is the gateway's own refusal.
+        var bad = URLRequest(url: rig.url("v1/models"))
+        bad.setValue("Bearer \(GrantToken.generate(id: "0a0b0c0d"))", forHTTPHeaderField: "Authorization")
+        let (_, refusal) = try await URLSession.shared.data(for: bad)
+        let refused = try XCTUnwrap(refusal as? HTTPURLResponse)
+        XCTAssertNotEqual(refused.statusCode, 200)
+        XCTAssertEqual(refused.value(forHTTPHeaderField: GatewayListener.sourceHeader), "gateway")
     }
 
     func testEveryQueryGrantTokenIsStrippedEvenWhenAHeaderCarriesOne() {

@@ -2,13 +2,13 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
-/// VAL-MCP-INSTRUCTIONS-001..002: the initialize result carries the frozen seven-rule
+/// VAL-MCP-INSTRUCTIONS-001..002: the initialize result carries the frozen twelve-rule
 /// instructions string — present, sane, never anywhere else, byte-for-byte as the
 /// contract freezes it.
 final class MCPServerInstructionsTests: XCTestCase {
 
     /// The contract's literal, copied verbatim from the validation contract's fenced
-    /// block: eight lines, LF-joined, no trailing newline.
+    /// block: thirteen lines, LF-joined, no trailing newline.
     static let frozen = """
 Keysrs is the local API-key vault on this Mac. When using its tools, follow these rules:
 1. Never open or read .env files yourself; use the scan_project tool instead.
@@ -18,6 +18,11 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
 5. After a failure, offer send_feedback but never send it.
 6. Never print tokens back to the user unless they ask.
 7. Only call set_analytics_sharing after the user has explicitly answered the analytics question; never enable sharing on your own.
+8. To see which env files git has seen, call check_exposure; never run git on env files yourself.
+9. Before import_and_wrap, if the scan found docker files, ask whether Docker containers may reach the gateway; the default is no.
+10. After a successful import, ask the analytics question once and record only the user's answer.
+11. Folder tools take an optional folder inside the working directory, which is the default; anything outside it, or a working directory of root or home, is refused.
+12. The X-Keysrs-Source response header tells refusals apart: gateway means Keysrs refused; upstream means the provider answered, so an upstream 401 is the provider rejecting the stored key, not the grant.
 """
 
     /// INSTRUCTIONS-001: every initialize carries instructions, no other method's
@@ -56,7 +61,7 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
     }
 
     /// INSTRUCTIONS-002: the byte-for-byte pin — LF-joined, no trailing newline,
-    /// exactly the eight contract lines.
+    /// exactly the thirteen contract lines.
     func testInstructionsBytePinned() throws {
         let (frames, _) = try MCPSession.run([MCPSession.initialize()])
         XCTAssertEqual(frames.last, "")
@@ -68,10 +73,11 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
         XCTAssertEqual(instructions, Self.frozen)
         XCTAssertFalse(instructions.hasSuffix("\n"), "no trailing newline")
         XCTAssertFalse(instructions.contains("\r"), "LF-joined, never CRLF")
-        XCTAssertEqual(instructions.split(separator: "\n", omittingEmptySubsequences: false).count, 8,
-                       "the preamble line plus the seven rules")
+        XCTAssertEqual(instructions.split(separator: "\n", omittingEmptySubsequences: false).count, 13,
+                       "the preamble line plus the twelve rules")
         // The rules that name a tool, each present once.
-        for rule in ["scan_project", "keys add", "send_feedback", "set_analytics_sharing"] {
+        for rule in ["scan_project", "keys add", "send_feedback", "set_analytics_sharing", "check_exposure",
+                     "import_and_wrap", "X-Keysrs-Source"] {
             XCTAssertEqual(instructions.components(separatedBy: rule).count - 1, 1)
         }
         XCTAssertEqual(MCPServer.instructions, Self.frozen, "the server constant matches the contract literal")
