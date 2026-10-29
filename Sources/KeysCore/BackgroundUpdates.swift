@@ -42,6 +42,9 @@ enum BackgroundUpdatePolicy {
 @MainActor
 protocol BackgroundInstallRunning {
     func run() async throws
+    /// Starts the restart helper `run()` left pending; called only right before
+    /// the quit, once the quit-time idleness re-check passed.
+    func relaunch() throws
 }
 
 extension UpdateInstaller: BackgroundInstallRunning {}
@@ -245,6 +248,7 @@ final class BackgroundUpdater {
         self.makeInstaller = makeInstaller ?? { release, app in
             let installer = UpdateInstaller(release: release, app: app)
             installer.idleGate = activity
+            installer.defersRelaunch = true
             return installer
         }
         self.appURL = appURL
@@ -266,8 +270,9 @@ final class BackgroundUpdater {
     /// window that opened before them says nothing about the moment they end:
     /// once right before the swap (inside the installer — that gate is the one
     /// that guarantees no relaunch helper was spawned, because it fires before
-    /// the first bundle move) and once immediately before the quit. Busy at
-    /// either point defers to the next daily check and the app keeps running.
+    /// the first bundle move) and once immediately before the quit. Busy before
+    /// the swap defers to the next daily check; busy before the quit holds the
+    /// restart helper and the quit until the next quiet window.
     func install(_ release: ReleaseInfo) {
         guard !installing else { return }
         installing = true
@@ -296,12 +301,25 @@ final class BackgroundUpdater {
             }
             await self.notifier?.noteUpdateInstalled()
             // The quit's own re-check: a prompt or gateway call that came up
-            // while the installer ran must not die to the relaunch. Busy here
-            // defers too — the update is installed and its relaunch helper is
-            // pending, so the new version takes over at the app's next quit —
-            // and the app keeps serving until then.
+            // while the installer ran must not die to the relaunch. The swap
+            // is done but the restart helper has not started (S2): it deletes
+            // the old bundle and opens the new one once this process is gone,
+            // so starting it while the app stays up would pull the bundle out
+            // from under a running app and open a second copy. Busy here waits
+            // for the next quiet window, and only then are the helper and the
+            // quit started, back to back. A person quitting first simply
+            // launches the new version next time; the leftover old bundle is
+            // swept at that launch.
             if self.activity.busy {
                 self.logDeferred()
+                while !(await self.waitForQuiet()) {
+                    if Task.isCancelled { return }
+                }
+            }
+            do {
+                try installer.relaunch()
+            } catch {
+                self.log("background update installed but did not restart: \(error.localizedDescription)")
                 return
             }
             self.quit()

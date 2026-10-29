@@ -55,7 +55,7 @@ extension AppUpdaterTests {
                        "the install begins only after the quiet window, not at the check's instant")
         XCTAssertTrue(rig.alerts.all.isEmpty, "the scheduled path never raises the manual offer's modal")
         XCTAssertFalse(rig.window.orderedFront, "no dashboard window is surfaced over the headless app")
-        XCTAssertEqual(rig.order.all, ["install", "notify", "quit"],
+        XCTAssertEqual(rig.order.all, ["install", "notify", "relaunch", "quit"],
                        "the install, the notification and the relaunch quit happen in that order")
         XCTAssertEqual(rig.delivery.notifications, [AppNotification.updateInstalled],
                        "the fixed update notification and nothing else")
@@ -314,7 +314,7 @@ extension AppUpdaterTests {
         await drain(until: quitCounter.calls == 1)
 
         XCTAssertEqual(installer.installCalls, 1, "the background install ran once")
-        XCTAssertEqual(order.all, ["install", "notify", "quit"],
+        XCTAssertEqual(order.all, ["install", "notify", "relaunch", "quit"],
                        "install, then the notification, then the relaunch quit")
         XCTAssertEqual(delivery.notifications, [AppNotification.updateInstalled])
         XCTAssertEqual(rig.appliedPolicies, [.accessory], "the install never surfaced a window or changed activation")
@@ -435,11 +435,13 @@ extension AppUpdaterTests {
         }
 
         rig.controller.didLaunch()
-        await drain(until: rig.logs.all.contains { $0.contains("deferred") })
+        await drain(until: rig.quits.calls > 0)
 
         XCTAssertEqual(rig.installer.installCalls, 1, "the install began after the quiet window")
         XCTAssertEqual(rig.installer.runCount, 1, "the installer ran")
-        XCTAssertEqual(rig.quits.calls, 0, "busy at quit time defers the relaunch: the app keeps running")
+        XCTAssertGreaterThanOrEqual(rig.clock.offset, 10_000,
+                                    "busy at quit time defers the relaunch: the app kept running through the busy stretch")
+        XCTAssertEqual(rig.quits.calls, 1, "the quit came once the Mac went quiet again")
         XCTAssertTrue(
             rig.logs.all.contains { $0.contains("background update deferred") },
             "the deferral is the existing deferred line, logged for the next daily check"
@@ -448,6 +450,88 @@ extension AppUpdaterTests {
             rig.delivery.notifications, [AppNotification.updateInstalled],
             "the update did install, so its notification was already delivered; only the relaunch waits"
         )
+        XCTAssertEqual(Array(rig.order.all.suffix(2)), ["relaunch", "quit"],
+                       "the restart helper starts only right before the quit (S2)")
+    }
+
+    /// S2: the background path's swap leaves the restart helper pending, and the
+    /// helper starts only after the quit-time re-check passes, right before the
+    /// quit. The installer is the production factory's real `UpdateInstaller`
+    /// (its download, disk image and signing steps cannot run offline, so the
+    /// stand-in run makes the Mac busy and then calls the real post-swap
+    /// hand-off), with its spawn seam counting instead of spawning. Failed
+    /// pre-fix: the helper was spawned inside run(), before the re-check, so it
+    /// ran — and would have deleted the bundle 30 s later — while the app stayed
+    /// up.
+    @MainActor
+    func testABusyQuitTimeHoldsTheRestartHelperUntilTheNextQuietWindow() async throws {
+        let clock = FakeClock()
+        let activity = ScriptedUpdateActivity(clock: clock)
+        let order = EventOrder()
+        let logs = LineBag()
+        let busyUntil: TimeInterval = 120
+        let release = newerRelease()
+        let real = try XCTUnwrap(
+            BackgroundUpdater(activity: activity).makeInstaller(release, URL(fileURLWithPath: "/nonexistent/Keysrs.app"))
+                as? UpdateInstaller
+        )
+        var spawnedAt: [TimeInterval] = []
+        real.spawn = { argv in
+            XCTAssertEqual(argv.first, "/bin/sh")
+            spawnedAt.append(clock.offset)
+            order.record("spawn")
+        }
+        let stand = SwappingInstaller(real: real) {
+            activity.busy(from: clock.offset, through: busyUntil)
+        }
+        let updater = BackgroundUpdater(
+            activity: activity,
+            makeInstaller: { _, _ in stand },
+            appURL: { URL(fileURLWithPath: "/nonexistent/Keysrs.app") },
+            quit: { order.record("quit") },
+            now: { clock.now },
+            pause: { seconds in clock.advance(seconds) },
+            log: { line in logs.record(line) }
+        )
+
+        updater.install(release)
+        await drain(until: order.all.contains("quit"))
+
+        XCTAssertTrue(logs.all.contains { $0.contains("background update deferred") },
+                      "busy at quit time is logged as the deferral")
+        XCTAssertEqual(order.all, ["spawn", "quit"], "one helper, started right before the quit")
+        XCTAssertEqual(spawnedAt.count, 1)
+        XCTAssertGreaterThanOrEqual(spawnedAt.first ?? 0, busyUntil + BackgroundUpdatePolicy.quietInterval,
+                                    "the helper waited out the busy stretch and a full quiet window")
+        XCTAssertFalse(updater.inFlight, "the install is over once the app hands off")
+    }
+
+    /// S2 at the installer: the background hand-off neither spawns nor quits, and
+    /// `relaunch()` spawns exactly once; the manual Update Now still spawns and
+    /// quits at the end of its own run.
+    @MainActor
+    func testTheInstallerHandOffSpawnsOnlyWhenTheCallerSays() throws {
+        let release = newerRelease()
+        var spawns = 0
+        var quits = 0
+        let background = UpdateInstaller(release: release, app: URL(fileURLWithPath: "/nonexistent/Keysrs.app"))
+        background.defersRelaunch = true
+        background.spawn = { _ in spawns += 1 }
+        background.quit = { quits += 1 }
+        try background.handOff(["/bin/sh"])
+        XCTAssertEqual(spawns, 0, "the background swap leaves the helper pending")
+        XCTAssertEqual(quits, 0)
+        try background.relaunch()
+        try background.relaunch()
+        XCTAssertEqual(spawns, 1, "relaunch starts the pending helper once")
+        XCTAssertEqual(quits, 0, "the background updater quits by itself")
+
+        let manual = UpdateInstaller(release: release, app: URL(fileURLWithPath: "/nonexistent/Keysrs.app"))
+        manual.spawn = { _ in spawns += 1 }
+        manual.quit = { quits += 1 }
+        try manual.handOff(["/bin/sh"])
+        XCTAssertEqual(spawns, 2, "the manual flow keeps spawning at the end of its run")
+        XCTAssertEqual(quits, 1)
     }
 
     /// The pre-swap half of VAL-H-002, pinned on the source: the real
@@ -538,7 +622,7 @@ extension AppUpdaterTests {
         await drain(until: rig.quits.calls == 1)
 
         XCTAssertEqual(rig.installer.installCalls, 1, "the install completes once the relay is off")
-        XCTAssertEqual(rig.order.all, ["install", "notify", "quit"], "install, notify, quit in the usual order")
+        XCTAssertEqual(rig.order.all, ["install", "notify", "relaunch", "quit"], "install, notify, quit in the usual order")
     }
 
     /// The grant source of VAL-H-004: a grant used moments ago is a session the
@@ -908,6 +992,8 @@ private final class RecordingUpdateInstaller: BackgroundInstallRunning, @uncheck
         if let failure { throw failure }
     }
 
+    func relaunch() throws { order.record("relaunch") }
+
     var installCalls: Int { handled.count }
     var runCount: Int { runs }
     var releases: [ReleaseInfo] { handled.map(\.release) }
@@ -917,6 +1003,31 @@ private final class RecordingUpdateInstaller: BackgroundInstallRunning, @uncheck
         handled.append((release, app))
         starts.append(clock.offset)
     }
+}
+
+/// The background stand-in around a real `UpdateInstaller`: its run marks the
+/// Mac busy, as a Touch ID ask arriving mid-install would, and then performs the
+/// real installer's post-swap hand-off; the relaunch is the real one.
+@MainActor
+private final class SwappingInstaller: BackgroundInstallRunning {
+    let real: UpdateInstaller
+    let duringRun: () -> Void
+
+    init(real: UpdateInstaller, duringRun: @escaping () -> Void) {
+        self.real = real
+        self.duringRun = duringRun
+    }
+
+    func run() async throws {
+        duringRun()
+        try real.handOff(AppUpdater.relauncher(
+            pid: getpid(),
+            old: URL(fileURLWithPath: "/nonexistent/Keysrs.app.previous"),
+            new: URL(fileURLWithPath: "/nonexistent/Keysrs.app")
+        ))
+    }
+
+    func relaunch() throws { try real.relaunch() }
 }
 
 /// The manual offer's scripted answers, in order; an exhausted script answers
