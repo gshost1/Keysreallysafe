@@ -4,9 +4,10 @@
 The input is an already-built and already-signed Keysrs.app (see
 scripts/build-app.py). The output directory holds exactly what the DMG window
 shows: Keysrs.app and an Applications symlink, plus a hidden checksum manifest.
-This tool never signs, queries Keychain identities, notarizes, installs an
-app, launches a native authorization flow, or inspects/modifies a live
-installation.
+With --dmg the packed image's digest also fills the unpublished Homebrew cask's
+sha256 (and version) lines. This tool never signs, queries Keychain identities,
+notarizes, installs an app, launches a native authorization flow, runs brew,
+or inspects/modifies a live installation.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +46,9 @@ MANIFEST_NAME = ".release-manifest.json"
 PACKAGE_SYMLINKS = {"Applications": "/Applications"}
 DMG_NAME = "Keysrs-arm64.dmg"  # keysrs.com download links depend on this name
 VOLUME_NAME = "Keysrs"
+# The unpublished tap's cask (gshost1/homebrew-keysrs; no repository exists).
+# fill_cask rewrites its sha256 and version lines from the packed DMG.
+CASK_PATH = Path("packaging/homebrew/keysrs.rb")
 
 ReleaseError = build_app.BuildError
 absolute_path = build_app.absolute_path
@@ -257,6 +262,38 @@ def make_dmg(package: Path, dmg: Path) -> None:
         raise ReleaseError(f"hdiutil unavailable: {error}") from None
 
 
+def fill_cask(repo: Path, dmg: Path) -> None:
+    """Fill the unpublished tap cask's version and sha256 from a packed DMG.
+
+    The cask keeps a sha256 :no placeholder in the checkout; at release time
+    this step writes the DMG's real digest and the version the bundle was
+    verified against, so the tap can never point at a checksum nobody
+    computed. It prints both values and rewrites nothing but those two lines.
+    """
+    repo = absolute_path(repo)
+    dmg = absolute_path(dmg)
+    require_regular(dmg, "release DMG", dmg.parent)
+    if dmg.name != DMG_NAME:
+        raise ReleaseError(f"DMG must be named {DMG_NAME}; the cask download URL depends on it")
+    cask = repo / CASK_PATH
+    require_regular(cask, "homebrew cask", repo)
+    version = build_app.read_version(repo)
+    digest = sha256(dmg)
+    text = cask.read_text(encoding="utf-8")
+    # The stanzas are indented inside the cask block; only whole lines are
+    # rewritten, keeping each line's own indentation, so nothing else moves.
+    text, count = re.subn(r'(?m)^([ \t]*)version "[^"]*"[ \t]*$',
+                          lambda match: f'{match.group(1)}version "{version}"', text)
+    if count != 1:
+        raise ReleaseError(f"cask must hold exactly one version line: {CASK_PATH}")
+    text, count = re.subn(r'(?m)^([ \t]*)sha256 (?::no|"[0-9a-fA-F]{64}")[ \t]*$',
+                          lambda match: f'{match.group(1)}sha256 "{digest}"', text)
+    if count != 1:
+        raise ReleaseError(f'cask must hold exactly one sha256 :no or "hex" line: {CASK_PATH}')
+    cask.write_text(text, encoding="utf-8")
+    print(f"cask filled: {absolute_path(cask)} version {version} sha256 {digest}")
+
+
 def prepare(repo: Path, app: Path, output: Path, check_codesign: bool, dry_run: bool = False) -> None:
     repo = absolute_path(repo)
     app = absolute_path(app)
@@ -302,10 +339,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="perform every source preflight without writing output")
     parser.add_argument("--verify-package", type=Path,
                         help="verify an existing package manifest and reject missing, changed, or unexpected files")
+    parser.add_argument("--fill-cask", type=Path, metavar="DMG",
+                        help=f"fill {CASK_PATH}'s version and sha256 from this {DMG_NAME} and exit")
     args = parser.parse_args(argv)
-    if args.verify_package:
+    if args.verify_package and args.fill_cask:
+        parser.error("--verify-package cannot be combined with --fill-cask")
+    if args.verify_package or args.fill_cask:
         if args.app or args.output or args.dry_run or args.verify_codesign or args.dmg:
-            parser.error("--verify-package cannot be combined with packaging options")
+            parser.error("--verify-package and --fill-cask cannot be combined with packaging options")
     elif not args.app or not args.output:
         parser.error("--app and --output are required when preparing a package")
     elif args.dry_run and args.dmg:
@@ -320,9 +361,17 @@ def main(argv: list[str] | None = None) -> int:
             verify_package(args.verify_package)
             print(f"package verification passed: {absolute_path(args.verify_package)}")
             return 0
+        if args.fill_cask:
+            fill_cask(args.repo, args.fill_cask)
+            return 0
         prepare(args.repo, args.app, args.output, args.verify_codesign, args.dry_run)
         if args.dmg:
             make_dmg(args.output, args.dmg)
+            # The cask's checksum names the artifact the release carries, so it
+            # is filled the moment the DMG exists. The published release ships
+            # the styled, signed, notarized DMG instead, whose bytes differ;
+            # --fill-cask re-runs this step against that final artifact.
+            fill_cask(args.repo, args.dmg)
     except ReleaseError as error:
         print(f"release preflight failed: {error}", file=sys.stderr)
         return 2
