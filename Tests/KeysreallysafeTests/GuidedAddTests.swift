@@ -306,4 +306,94 @@ final class GuidedAddTests: XCTestCase {
         // --help leaves the parser through ArgumentParser's help path, not AddCommand.
         XCTAssertFalse(try KeysCLI.parseAsRoot(["add", "--help"]) is AddCommand)
     }
+
+    /// The shared refusal assertions for a pasted secret fed to the name prompt
+    /// (VAL-H-007): one fixed message that never echoes the pasted value, and
+    /// nothing asked, stored or emitted past the refusal.
+    private func assertNameRefused(_ rig: inout Rig, pasted: String, label: String) throws {
+        XCTAssertThrowsError(try runGuided(&rig), label) { error in
+            XCTAssertEqual(
+                (error as? AppError)?.description,
+                "that looks like a pasted key rather than a name; name the key briefly, "
+                    + "and paste the key itself at the hidden prompt that follows",
+                label
+            )
+            XCTAssertFalse(
+                ((error as? AppError)?.description ?? "").contains(pasted),
+                "\(label): the refusal never echoes the pasted value"
+            )
+        }
+        XCTAssertEqual(rig.ui.calls, ["provider", "name"], "\(label): both prompts ran, nothing further")
+        XCTAssertTrue(rig.secretCalls.isEmpty, "\(label): the hidden secret prompt never ran")
+        XCTAssertTrue(try rig.service.list().isEmpty, "\(label): nothing stored")
+        XCTAssertTrue(rig.emitted.isEmpty, "\(label): nothing emitted")
+    }
+
+    // VAL-H-007: a provider key pasted at the name prompt is refused — the shipped
+    // providers' key prefixes are the same shape wrap detection reads — before the
+    // hidden secret prompt, the store and any emit, so the paste is never stored as
+    // a name and never printed.
+    func testPastedProviderKeyShapeIsRefusedAsAName() throws {
+        for (index, pasted) in [
+            "sk-ant-" + UUID().uuidString.lowercased() + UUID().uuidString.lowercased(),
+        ].enumerated() {
+            var rig = try makeRig()
+            rig.ui.providerAnswer = "anthropic"
+            rig.ui.nameAnswer = pasted
+            try assertNameRefused(&rig, pasted: pasted, label: "provider shape \(index)")
+        }
+    }
+
+    // VAL-H-007: every Keysrs token prefix pasted as a name is refused the same way —
+    // grant, client, relay-secret and relay-pairing credentials, minted at runtime.
+    func testKeysrsTokenShapesAreRefusedAsAName() throws {
+        let minted = [
+            GrantToken.generate(id: "ab12cd34"),
+            GatewayClientToken.generate(),
+            RelaySecret.generate(),
+            RelayPairing.generate(),
+        ]
+        for (index, pasted) in minted.enumerated() {
+            var rig = try makeRig()
+            rig.ui.providerAnswer = "openrouter"
+            rig.ui.nameAnswer = pasted
+            try assertNameRefused(&rig, pasted: pasted, label: "token shape \(index)")
+        }
+    }
+
+    // VAL-H-007: a long run with no known prefix still shows in its character
+    // distribution — hex-only and digit-heavy names are refused.
+    func testLongHighEntropyNamesAreRefusedAsAName() throws {
+        let hexRun = String((0..<48).map { _ in "0123456789abcdef".randomElement()! })
+        let digitRun = String((0..<40).map { _ in "0123456789".randomElement()! })
+        for (index, pasted) in [hexRun, digitRun].enumerated() {
+            var rig = try makeRig()
+            rig.ui.providerAnswer = "openrouter"
+            rig.ui.nameAnswer = pasted
+            try assertNameRefused(&rig, pasted: pasted, label: "high-entropy shape \(index)")
+        }
+    }
+
+    // VAL-H-007: the refusal targets secret shapes, not long or provider-derived
+    // names — a word-like name past the length floor, a short hex-ish word and a
+    // short name that merely starts with a provider's key prefix (the flow's own
+    // suggestions are that shape: xai's suggestion xai-2 carries xai's "xai-"
+    // prefix) are still stored as typed.
+    func testLongWordishNamesAreStillAccepted() throws {
+        var rig = try makeRig()
+        rig.ui.providerAnswer = "openrouter"
+        rig.ui.nameAnswer = "openrouter-claude-3-7-sonnet-work-2026"
+        let wordish = try runGuided(&rig)
+        XCTAssertEqual(wordish, "openrouter-claude-3-7-sonnet-work-2026")
+        XCTAssertEqual(try rig.service.list().map(\.name), ["openrouter-claude-3-7-sonnet-work-2026"])
+        XCTAssertEqual(rig.emitted, ["added openrouter-claude-3-7-sonnet-work-2026"])
+
+        for short in ["cafe-babe-2026", "sk-ant-notes", "xai-2"] {
+            var shortRig = try makeRig()
+            shortRig.ui.providerAnswer = "xai"
+            shortRig.ui.nameAnswer = short
+            XCTAssertEqual(try runGuided(&shortRig), short)
+            XCTAssertEqual(try shortRig.service.list().map(\.name), [short])
+        }
+    }
 }

@@ -189,6 +189,45 @@ enum GuidedAdd {
         throw AppError.usage("unknown provider \(trimmed); did you mean \(near.joined(separator: ", "))?")
     }
 
+    /// The fixed refusal every secret-shaped name gets. It names no value, so the
+    /// pasted key is neither echoed back nor logged (VAL-H-007).
+    static let secretShapedNameMessage =
+        "that looks like a pasted key rather than a name; name the key briefly, "
+        + "and paste the key itself at the hidden prompt that follows"
+
+    /// A name that looks like a secret is a paste aimed at the wrong prompt: the
+    /// provider was picked first, and the hidden prompt that follows is where the
+    /// key itself goes. The known shapes go first — the shipped providers' key
+    /// prefixes (the same builtinList wrap detection reads, with wrap's key-shape
+    /// length floor so the flow's own short provider-derived suggestions never
+    /// trip it) and every Keysrs token prefix — then the shapeless remainder: a
+    /// long run that is hex-only or digit-heavy is what a random secret looks
+    /// like, and word-like names never are. Whitespace around a paste does not
+    /// hide it. Refused before the secret prompt, the store and any emit, so a
+    /// pasted key is never stored as a name and never printed (VAL-H-007).
+    static func rejectSecretShapedName(_ name: String, records: [Providers.Record] = Providers.builtinList()) throws {
+        let pasted = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let providerShaped = pasted.count >= 16
+            && records.contains(where: { $0.keyPrefix.map(pasted.hasPrefix) ?? false })
+        if providerShaped
+            || [GrantToken.prefix, GatewayClientToken.prefix, RelaySecret.prefix, RelayPairing.prefix]
+                .contains(where: { pasted.hasPrefix($0) })
+            || looksLikeARandomRun(pasted) {
+            throw AppError.usage(secretShapedNameMessage)
+        }
+    }
+
+    /// The character-distribution half of the shape: names are words spread across
+    /// the alphabet with digits rare; a pasted secret that carries no known prefix
+    /// is a long run of hex, or of digits. 32 sits past every honest name and at
+    /// the short end of real secrets.
+    static func looksLikeARandomRun(_ name: String) -> Bool {
+        guard name.count >= 32 else { return false }
+        if name.allSatisfy({ "0123456789abcdef-._".contains($0) }) { return true }
+        let digits = name.filter { "0123456789".contains($0) }.count
+        return digits * 5 >= name.count * 2
+    }
+
     /// The no-argument flow. Returns the stored name, or nil when the user cancelled.
     /// The write happens only after the hidden secret prompt confirmed.
     @discardableResult
@@ -217,6 +256,9 @@ enum GuidedAdd {
             return nil
         }
         let name = answer.isEmpty ? suggestion : answer
+        // Refused here, not inside service.add: the store's own shape error would
+        // echo the pasted value back, and the add would happen first (VAL-H-007).
+        try Self.rejectSecretShapedName(name)
         let secret = try readSecret(clipboard, true)
         try service.add(name: name, provider: providerID, kind: kind, notes: notes, secret: secret, caller: "add")
         emit("added \(name)")
