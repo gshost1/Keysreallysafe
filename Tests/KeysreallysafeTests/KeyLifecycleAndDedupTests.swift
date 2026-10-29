@@ -140,6 +140,8 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
             )
         )
         let (service, _) = makeGatedService(db: db, openRouter: fake)
+        // A temp plan snapshot, never the owner's real Application Support one (S6).
+        service.claudePlanFile = try TempDir.make().appendingPathComponent("claude-plan.json")
         try service.add(name: "or-bill", provider: "openrouter", kind: "billing", notes: "", secret: fixtureSecret)
         try service.pollOpenRouter()
         XCTAssertEqual(fake.calls, [])

@@ -45,6 +45,69 @@ final class AgentSkillTests: XCTestCase {
         XCTAssertLessThan(lines, 500, "the body is progressive disclosure and must stay short")
     }
 
+    /// The shortening: the skill is a pointer note now, and the new bound keeps it
+    /// from growing back into a manual.
+    func testBodyGenuinelyShort() throws {
+        let body = try Self.body(of: text)
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false).count
+        XCTAssertLessThanOrEqual(lines, 200, "the note points at the MCP server; the manual lives in docs/agents.md")
+    }
+
+    func testPointsAtMCPServer() throws {
+        let body = try Self.body(of: text)
+        XCTAssertNotNil(body.range(of: "MCP", options: .caseInsensitive), "the note names the MCP server")
+        XCTAssertTrue(
+            body.contains("keys mcp") || body.contains(Self.skillName),
+            "the note references the `keys mcp` server or its registered name")
+        let description = try XCTUnwrap(try Self.frontmatter(of: text)["description"])
+        XCTAssertNotNil(description.range(of: "MCP", options: .caseInsensitive),
+                        "the description names the new surface")
+        // No stale claims about the removed long workflows survive in the description.
+        XCTAssertFalse(description.contains("wire and launch coding agents"))
+        XCTAssertFalse(description.contains("check plan-usage status"))
+    }
+
+    func testSafetyFloorRestated() throws {
+        // An agent that reads ONLY the skill still gets the floor rules, stated in the
+        // body — not as a pointer to another document.
+        let body = try Self.body(of: text)
+        XCTAssertTrue(body.contains("Touch ID"), "user presence is a floor rule")
+        XCTAssertNotNil(
+            body.range(of: #"(?i)never[^\n]*key value"#, options: .regularExpression),
+            "the floor says never echo a key value")
+        XCTAssertNotNil(
+            body.range(of: #"(?i)never[^\n]*token"#, options: .regularExpression),
+            "the floor says never echo a token")
+        XCTAssertTrue(body.contains("auth.json"), "the floor bars the provider credential stores")
+    }
+
+    func testOldWorkflowsGoneAndEveryReferenceResolves() throws {
+        // The old manual walked through these; the note must not. An exit-code table
+        // is the clearest marker of the old format.
+        for marker in [
+            "keys agent droid", "keys setup droid", "keys tunnel user@", "keys relay setup",
+            "| 6 |", "keys grant work-anthropic", "keys client issue router",
+        ] {
+            XCTAssertFalse(text.contains(marker), "the old workflow \(marker.debugDescription) is gone")
+        }
+        // Every repo-relative path the note names exists in the checkout. Doc
+        // references are checkout-only (the bundle ships no docs/), which the note
+        // itself says.
+        let pattern = #"(?:\bdocs/[A-Za-z0-9_./-]+\.md\b|\bREADME\.md\b)"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(text.startIndex..., in: text)
+        let references = regex.matches(in: text, range: range).map {
+            String(text[Range($0.range, in: text)!])
+        }
+        XCTAssertFalse(references.isEmpty, "the note keeps at least one resolvable reference")
+        for reference in Set(references) {
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: Self.repoRoot.appendingPathComponent(reference).path),
+                "\(reference) must resolve in the checkout"
+            )
+        }
+    }
+
     func testNoLiteralTokenValues() throws {
         // A real grant/client/relay token is a prefix plus a long run of token characters.
         // The bare prefix written as a format (`ksfc_…`) has no token characters after it

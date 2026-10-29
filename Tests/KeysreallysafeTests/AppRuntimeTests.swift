@@ -271,4 +271,38 @@ final class AppRuntimeTests: XCTestCase {
         try fm.createSymbolicLink(atPath: pending.path, withDestinationPath: retired.path)
         XCTAssertFalse(CommandLineLink.repairRetired(link: pending, retired: retired, binary: binary))
     }
+
+    /// A direct second invocation asks the running app to show its own window:
+    /// the running app is headless at rest, so activation alone would bring no
+    /// window forward.
+    func testSecondInvocationAsksTheRunningAppToShowItsWindow() throws {
+        let (db, dir) = try makeDB()
+        defer { try? fm.removeItem(at: dir) }
+        let (service, _, _) = makeService(db: db)
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try fm.createDirectory(at: web, withIntermediateDirectories: true)
+        let log = RequestLog()
+        let handler = APIHandler(service: service, webRoot: web)
+        let server = try LoopbackHTTPServer(port: 0) { request in
+            log.record(request)
+            return handler.handle(request)
+        }
+        server.start()
+        defer { server.stop() }
+        let control = ControlFile.url(beside: db.path)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+
+        XCTAssertTrue(AppRuntime.requestShowFromRunningInstance(control: control),
+                      "a live site is asked to show its window")
+        XCTAssertEqual(log.count, 1, "one show request, no retries")
+        XCTAssertEqual(log.last?.method, "POST")
+        XCTAssertEqual(log.last?.path, "/api/mcp/app/show")
+        XCTAssertEqual(log.last?.headers["x-ksf-token"], handler.originToken,
+                       "the show request rides the token-gated control channel")
+
+        // No live site: nothing is asked, so the caller falls through to its own launch.
+        let absent = try TempDir.make().appendingPathComponent("control.json")
+        XCTAssertFalse(AppRuntime.requestShowFromRunningInstance(control: absent))
+        XCTAssertEqual(log.count, 1)
+    }
 }

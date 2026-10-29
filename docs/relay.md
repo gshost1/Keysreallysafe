@@ -70,11 +70,12 @@ keys relay setup --url https://keysrs-relay.<your-subdomain>.workers.dev
 npx wrangler secret put RELAY_SECRET
 
 # 4. Connect, in Keysrs.app: one Touch ID, then it stays on until off or quit.
-keys relay on                           # or: menu bar → Relay for Cloud Agents
+keys relay on                           # or: Settings → Relay in the dashboard
 ```
 
 The relay runs inside Keysrs.app from then on, without a Terminal: **Relay
-for Cloud Agents** in the menu bar, Settings → Relay in the dashboard, and
+for Cloud Agents** in the menu bar (with the item shown; it is off by
+default), Settings → Relay in the dashboard, and
 `keys relay on` / `keys relay off` are the same switch. It lasts until you
 turn it off or quit Keysrs, reconnects on its own after a dropped socket or
 sleep ([Reconnection](#reconnection)), and writes its lines to
@@ -110,10 +111,10 @@ forgets the URL and the secret; run
 Cloudflare side to finish. `keys purge` removes the relay secret and URL with
 everything else.
 
-The relay needs the gateway running (it always is inside Keysrs.app; for
-`keys relay`, Keysrs.app or `keys dashboard`) and turned on for the key, the
-same precondition as `keys tunnel`. It reconnects on its own when the socket
-drops (see [Reconnection](#reconnection)).
+The relay needs the gateway running (it always is inside Keysrs.app, which
+`keys relay run` launches on demand when it is not) and turned on for the
+key, the same precondition as `keys tunnel`. It reconnects on its own when
+the socket drops (see [Reconnection](#reconnection)).
 
 ## Pairing
 

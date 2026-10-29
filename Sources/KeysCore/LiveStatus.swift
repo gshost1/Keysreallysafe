@@ -173,7 +173,7 @@ struct LiveStatus: Equatable {
         grokHome: URL,
         claudeHome: URL,
         grokWeekUsd: Double,
-        claudePlan: URL,
+        claudePlan: URL?,
         openaiWeekTokens: Int = 0,
         openaiWeekUsdEstimate: Double? = nil,
         codexHome: URL,
@@ -270,7 +270,7 @@ struct LiveStatus: Equatable {
         return row
     }
 
-    static func readClaudePlan(home: URL, extra: URL) -> ToolStatus {
+    static func readClaudePlan(home: URL, extra: URL?) -> ToolStatus {
         let empty = ToolStatus(
             source: "claude",
             title: "Claude",
@@ -279,7 +279,7 @@ struct LiveStatus: Equatable {
         let candidates = [
             home.appendingPathComponent("plugins/claude-hud/usage.json"),
             extra,
-        ]
+        ].compactMap { $0 }
         for url in candidates {
             guard let data = try? Data(contentsOf: url),
                   let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object)

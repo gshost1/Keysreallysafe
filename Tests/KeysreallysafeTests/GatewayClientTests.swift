@@ -114,6 +114,51 @@ final class GatewayClientTests: XCTestCase {
         XCTAssertTrue(reasons.contains("revoked"))
     }
 
+    /// The bulk revoke behind `revoke_all` — service level, through the real
+    /// gateway listener. A key-scoped bulk kills only that key's tokens (401 on
+    /// the wire) while the other key's keep answering, the full bulk sweeps the
+    /// rest, the counts mean "was live, now dead" so a second call answers zero,
+    /// and the audit log gains ONE client_revoke row per affected key naming the
+    /// revoked ids. No Touch ID anywhere on the path.
+    func testBulkRevokeKillsEveryTokenAndSparesOtherKeys() async throws {
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
+        try rig.key("other")
+        let a = try rig.service.issueGatewayClient(name: "demo", label: "a")
+        let b = try rig.service.issueGatewayClient(name: "demo", label: "b")
+        let c = try rig.service.issueGatewayClient(name: "other", label: "c")
+
+        // Alive first: every token reaches the stub upstream, each on its own key's path.
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + a.token]), 200)
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + b.token]), 200)
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/completions", key: "other"), headers: ["Authorization": "Bearer " + c.token]), 200)
+
+        let prompts = rig.gate.reasons.count
+        XCTAssertEqual(try rig.service.revokeGatewayClients(key: "demo"), 2)
+        XCTAssertEqual(rig.gate.reasons.count, prompts, "the bulk revoke consumed no prompt (VAL-RV-003)")
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + a.token]), 401)
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/completions"), headers: ["Authorization": "Bearer " + b.token]), 401)
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/completions", key: "other"), headers: ["Authorization": "Bearer " + c.token]), 200,
+                                "the other key's token survives the key-scoped bulk")
+        XCTAssertEqual(try rig.service.revokeGatewayClients(key: "demo"), 0, "the count means was-live, now dead")
+
+        // One client_revoke row per affected key, naming the revoked ids.
+        let rows = try rig.service.keyEvents(name: "demo").filter { $0.action == "client_revoke" }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.detail, "#\(a.client.id) #\(b.client.id)")
+        XCTAssertEqual(try rig.service.keyEvents(name: "other").filter { $0.action == "client_revoke" }.count, 0,
+                       "no audit row for a key that lost nothing")
+
+        // The full bulk sweeps the rest; an already-revoked row never recounts, and
+        // an expired-but-unrevoked row is swept too — it was a live row, and it
+        // could never authorize again either way.
+        XCTAssertEqual(try rig.service.revokeGatewayClients(key: nil), 1)
+        await AsyncAssert.equal(try await send(rig.url("v1/chat/completions", key: "other"), headers: ["Authorization": "Bearer " + c.token]), 401)
+        XCTAssertEqual(try rig.service.revokeGatewayClients(key: nil), 0)
+        XCTAssertEqual(try rig.service.keyEvents(name: "other").filter { $0.action == "client_revoke" }.count, 1)
+        XCTAssertEqual(rig.gate.reasons.count, prompts, "no prompt on the full path either")
+    }
+
     func testTrailingSlashPrefixMatchesTheEndpointItNames() throws {
         XCTAssertEqual(try GatewayClientToken.validatePathPrefix("/v1/messages/"), "v1/messages")
         XCTAssertNil(try GatewayClientToken.validatePathPrefix("///"))

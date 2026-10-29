@@ -83,7 +83,23 @@ struct LocalPresenceGate: PresenceGate {
 
 /// macOS Keychain generic passwords. Presence is the gate, not a Keychain ACL.
 struct KeychainStore: SecretStore {
-    var service: String = "keysreallysafe"
+    var service: String
+
+    /// The real Keychain is production state, so building this store refuses
+    /// under the test tripwire (VAL-H-001): the guards reject a rig wired to
+    /// this type, and the tripwire means a test process cannot construct it in
+    /// the first place — tests inject `MemorySecretStore`, never the real
+    /// store. The Keychain is not catalog-derived, so no `KEYS_CATALOG`
+    /// override can sanction it; production builds it exactly as before.
+    init(service: String = "keysreallysafe") throws {
+        guard !TestIsolation.armed else {
+            throw AppError.usage(
+                "test isolation refused the production Keychain store (XCTest or KEYS_TEST_ISOLATION "
+                    + "is set); inject a fake SecretStore"
+            )
+        }
+        self.service = service
+    }
 
     func add(name: String, secret: String) throws {
         try KeyName.validate(name)

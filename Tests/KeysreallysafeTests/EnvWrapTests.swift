@@ -184,7 +184,11 @@ final class EnvWrapTests: XCTestCase {
 
         var lines: [String] = []
         let runner = WrapRunner(backend: ServiceWrapBackend(service: service), out: { lines.append($0) }, confirm: { true })
-        let summary = try runner.run(.init(file: env))
+        var options = WrapRunner.Options(file: env)
+        // The catalog-sibling backups tree of this rig's temp catalog (VAL-O-002):
+        // never the real Application Support, never inside the project.
+        options.backupRoot = EnvFileWriter.backupsRoot(beside: dir.appendingPathComponent("catalog.db"))
+        let summary = try runner.run(options)
 
         XCTAssertEqual(gate.reasons.count, 1, "one presence prompt for the whole batch")
         XCTAssertTrue(summary.changed)
@@ -222,6 +226,9 @@ final class EnvWrapTests: XCTestCase {
         XCTAssertFalse(screen.contains(fakeBody), "values never reach the terminal")
         XCTAssertFalse(screen.contains("ksfc_"), "tokens are written to the file, not printed")
         XCTAssertTrue(screen.contains("OPENAI_API_KEY -> router"))
+        XCTAssertTrue(screen.contains("backup with the original values kept outside the project"),
+                      "the runner says a backup exists without saying where on disk")
+        XCTAssertFalse(screen.contains(backup.path), "the absolute backup path is never printed (VAL-O-002)")
         assertNoSentinel(fakeBody, in: dir.appendingPathComponent("catalog.db").deletingLastPathComponent(), skipping: [env, backup])
     }
 
@@ -230,9 +237,11 @@ final class EnvWrapTests: XCTestCase {
         let env = dir.appendingPathComponent(".env")
         try Data("ANTHROPIC_API_KEY=\(anthropicValue)\n".utf8).write(to: env)
         let runner = WrapRunner(backend: ServiceWrapBackend(service: service), out: { _ in }, confirm: { true })
-        _ = try runner.run(.init(file: env))
+        var options = WrapRunner.Options(file: env)
+        options.backupRoot = EnvFileWriter.backupsRoot(beside: dir.appendingPathComponent("catalog.db"))
+        _ = try runner.run(options)
         let after = try Data(contentsOf: env)
-        let again = try runner.run(.init(file: env))
+        let again = try runner.run(options)
         XCTAssertFalse(again.changed)
         XCTAssertEqual(try Data(contentsOf: env), after)
         XCTAssertEqual(gate.reasons.count, 1, "nothing to compare means no prompt")
@@ -265,6 +274,7 @@ final class EnvWrapTests: XCTestCase {
         try Data("OPENAI_API_KEY=\(openrouterValue)\nOPENAI_BASE_URL=https://openrouter.ai/api/v1\n".utf8).write(to: env)
         var options = WrapRunner.Options(file: env)
         options.relay = try RelayURL.validate("https://relay.example.workers.dev")
+        options.backupRoot = EnvFileWriter.backupsRoot(beside: dir.appendingPathComponent("catalog.db"))
         _ = try WrapRunner(backend: ServiceWrapBackend(service: service), out: { _ in }, confirm: { true }).run(options)
         let file = EnvFile.parse(try String(contentsOf: env, encoding: .utf8))
         XCTAssertEqual(file.value(of: "OPENAI_BASE_URL"), "https://relay.example.workers.dev/openrouter")
@@ -275,7 +285,10 @@ final class EnvWrapTests: XCTestCase {
         let dir = try TempDir.make()
         let env = dir.appendingPathComponent(".env")
         try Data("A=1\n".utf8).write(to: env)
-        XCTAssertThrowsError(try EnvFileWriter.rewrite(env, original: Data("A=0\n".utf8), text: "A=2\n"))
+        XCTAssertThrowsError(try EnvFileWriter.rewrite(
+            env, original: Data("A=0\n".utf8), text: "A=2\n",
+            backupRoot: EnvFileWriter.backupsRoot(beside: dir.appendingPathComponent("catalog.db"))
+        ))
         XCTAssertEqual(try String(contentsOf: env, encoding: .utf8), "A=1\n")
     }
 
@@ -335,7 +348,9 @@ private final class RecordingBackend: WrapBackend {
     let inner: ServiceWrapBackend
     var cancelled: [String] = []
     init(service: KeysService) { inner = ServiceWrapBackend(service: service) }
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan { try inner.plan(file: file, candidates: candidates) }
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan {
+        try inner.plan(file: file, path: path, candidates: candidates)
+    }
     func apply(id: String, label: String, days: Int?) throws -> [WrapIssued] { try inner.apply(id: id, label: label, days: days) }
     func cancel(id: String) {
         cancelled.append(id)

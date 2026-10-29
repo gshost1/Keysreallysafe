@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -398,35 +399,91 @@ enum EnvFileWriter {
         var backup: URL
     }
 
-    static func backupURL(for url: URL, now: Date) -> URL {
+    /// Where wrap-time backups live: beside the CATALOG, like control.json and
+    /// relay.lock — never inside the project (VAL-O-002). A backup holds the real
+    /// secret values, so it must not sit in the tree the agent works in, where one
+    /// `git add -A` commits it and `git clean` eats the only restore source.
+    /// Derived from the catalog location each call, never a bare `Paths.appSupport`,
+    /// so `KEYS_CATALOG` keeps every writer and reader on the same tree.
+    static func backupsRoot(beside catalog: URL) -> URL {
+        catalog.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
+    }
+
+    /// The root for a caller with no catalog in hand: this process's own catalog
+    /// location (`keys wrap` in a Terminal; the app's catalog IS the default),
+    /// resolved at CALL time through the tripwire-checked resolver — a test that
+    /// forgets to inject a `backupRoot` fails closed instead of writing into
+    /// the real Application Support (VAL-H-001). Injectable through the
+    /// `rewrite` parameter so tests point at their temp catalog and never at the
+    /// real Application Support.
+    static func defaultBackupsRoot() throws -> URL {
+        backupsRoot(beside: try Paths.resolvingCatalog())
+    }
+
+    /// The per-file folder inside the backups root, keyed by the SHA-256 of the
+    /// file's canonical (POSIX realpath) PARENT directory — the one key both sides
+    /// can compute with nothing but the file in hand: `keys wrap` has no catalog,
+    /// and unwrap reads the recorded canonical path. Two files with the same name
+    /// can never share a folder, because the same name in the same parent is one
+    /// file.
+    static func backupDirectory(for url: URL, under root: URL) -> URL? {
+        guard let parent = realpath(url.deletingLastPathComponent().path, nil) else { return nil }
+        defer { free(parent) }
+        let key = Hex.encode(SHA256.hash(data: Data(String(cString: parent).utf8)))
+        return root.appendingPathComponent(key, isDirectory: true)
+    }
+
+    /// The backup's file name inside its folder: the wrapped file's own name plus
+    /// the `.keysrs-backup-<ts>` suffix. The timestamp sorts lexically and the
+    /// `-2`/`-3` collision suffixes sort after their base, so the lexical maximum
+    /// is the most recent wrap — the property unwrap's restore relies on.
+    static func backupName(of url: URL, now: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd-HHmmss"
-        return url.deletingLastPathComponent()
-            .appendingPathComponent(url.lastPathComponent + ".keysrs-backup-" + f.string(from: now))
+        return url.lastPathComponent + ".keysrs-backup-" + f.string(from: now)
     }
 
-    /// Backs up `original` (0600, never overwriting), then swaps `text` in with one rename so a
-    /// reader sees the old file or the new one, never half. The new file keeps the old mode.
-    /// Refuses if the file changed since it was read.
-    static func rewrite(_ url: URL, original: Data, text: String, now: Date = Date()) throws -> Result {
+    /// Backs up `original` (0600, never overwriting) under the catalog-sibling
+    /// backups tree — never beside the file — then swaps `text` in with one rename
+    /// so a reader sees the old file or the new one, never half. The new file keeps
+    /// the old mode. Refuses if the file changed since it was read, naming no
+    /// absolute path: the refusal is user-facing (a tool result, a Terminal line).
+    static func rewrite(
+        _ url: URL, original: Data, text: String, now: Date = Date(),
+        backupRoot: URL? = nil
+    ) throws -> Result {
+        // The default root resolves first, inside the body (a Swift default
+        // argument cannot throw), so the tripwire's refusal comes before any
+        // read or write — a forgotten injection fails closed with nothing done.
+        let backupRoot = try backupRoot ?? EnvFileWriter.defaultBackupsRoot()
         let mode = try currentMode(url)
-        var backup = backupURL(for: url, now: now)
+        guard let dir = backupDirectory(for: url, under: backupRoot) else {
+            throw AppError.usage("cannot decide where to keep the backup for \(url.lastPathComponent); nothing was rewritten")
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            throw AppError.usage("cannot create the backup folder for \(url.lastPathComponent); nothing was rewritten")
+        }
+        var backup = dir.appendingPathComponent(backupName(of: url, now: now))
         var n = 1
         while FileManager.default.fileExists(atPath: backup.path) {
             n += 1
-            backup = URL(fileURLWithPath: backupURL(for: url, now: now).path + "-\(n)")
+            backup = dir.appendingPathComponent(backupName(of: url, now: now) + "-\(n)")
         }
         try writeNew(backup, data: original, mode: 0o600)
         guard let current = FileManager.default.contents(atPath: url.path), current == original else {
-            throw AppError.usage("\(url.lastPathComponent) changed while keys wrap ran; nothing rewritten (backup kept at \(backup.path))")
+            throw AppError.usage("\(url.lastPathComponent) changed while keys wrap ran; nothing rewritten (the backup with the original values is kept outside the project)")
         }
         let temp = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
         do {
             try writeNew(temp, data: Data(text.utf8), mode: mode)
             guard Darwin.rename(temp.path, url.path) == 0 else {
-                throw AppError.usage("could not replace \(url.path): \(String(cString: strerror(errno)))")
+                throw AppError.usage("could not replace \(url.lastPathComponent): \(String(cString: strerror(errno)))")
             }
         } catch {
             try? FileManager.default.removeItem(at: temp)
@@ -435,10 +492,37 @@ enum EnvFileWriter {
         return Result(backup: backup)
     }
 
+    /// Unwrap's half of the swap: the same refuse-if-changed, one-rename replace as
+    /// `rewrite`, minus the backup. The wrap-time backup (outside the project since
+    /// VAL-O-002) is the restore's own source and stays put, and a fresh one would
+    /// archive the token unwrap exists to revoke — a dead capability parked on disk
+    /// for no reason.
+    static func swap(_ url: URL, original: Data, text: String) throws {
+        let mode = try currentMode(url)
+        guard let current = FileManager.default.contents(atPath: url.path), current == original else {
+            throw AppError.usage("\(url.lastPathComponent) changed while keys unwrap ran; nothing rewritten")
+        }
+        let temp = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
+        do {
+            try writeNew(temp, data: Data(text.utf8), mode: mode)
+            guard Darwin.rename(temp.path, url.path) == 0 else {
+                throw AppError.usage("could not replace \(url.lastPathComponent): \(String(cString: strerror(errno)))")
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            throw error
+        }
+    }
+
+    /// The messages below name the file's last component, never its path: they are
+    /// user- and agent-facing (a tool result, a Terminal line), and a bare file name
+    /// identifies the file without telling a reader of the error where on disk to
+    /// look (VAL-O-007).
     static func currentMode(_ url: URL) throws -> mode_t {
         var st = stat()
         guard stat(url.path, &st) == 0 else {
-            throw AppError.usage("cannot read \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot read \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
         return st.st_mode & 0o7777
     }
@@ -448,11 +532,11 @@ enum EnvFileWriter {
     private static func writeNew(_ url: URL, data: Data, mode: mode_t) throws {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else {
-            throw AppError.usage("cannot create \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot create \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
         defer { close(fd) }
         guard fchmod(fd, mode) == 0 else {
-            throw AppError.usage("cannot set permissions on \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot set permissions on \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
         try data.withUnsafeBytes { buf in
             var off = 0
@@ -460,13 +544,13 @@ enum EnvFileWriter {
                 let n = write(fd, buf.baseAddress! + off, buf.count - off)
                 if n < 0 {
                     if errno == EINTR { continue }
-                    throw AppError.usage("cannot write \(url.path): \(String(cString: strerror(errno)))")
+                    throw AppError.usage("cannot write \(url.lastPathComponent): \(String(cString: strerror(errno)))")
                 }
                 off += n
             }
         }
         guard fsync(fd) == 0 else {
-            throw AppError.usage("cannot sync \(url.path): \(String(cString: strerror(errno)))")
+            throw AppError.usage("cannot sync \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
     }
 }
@@ -474,17 +558,19 @@ enum EnvFileWriter {
 // MARK: - The command's steps
 
 /// Where the plan and the tokens come from: the running app over its control API, or a
-/// service in this process (tests).
+/// service in this process (tests). `path` in `plan` is the file's absolute path, kept
+/// for the apply point's `wrapped_files` record — `file` stays the display name prompts
+/// and labels show.
 protocol WrapBackend {
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan
     func apply(id: String, label: String, days: Int?) throws -> [WrapIssued]
     func cancel(id: String)
 }
 
 struct ServiceWrapBackend: WrapBackend {
     let service: KeysService
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan {
-        try service.wrapPlan(file: file, candidates: candidates)
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan {
+        try service.wrapPlan(file: file, candidates: candidates, path: path)
     }
     func apply(id: String, label: String, days: Int?) throws -> [WrapIssued] {
         try service.wrapApply(id: id, label: label, days: days, caller: "wrap")
@@ -496,8 +582,8 @@ struct ControlWrapBackend: WrapBackend {
     /// Connects on first use, so a file with nothing to wrap needs no running app.
     let connect: () throws -> ControlClient
 
-    func plan(file: String, candidates: [WrapCandidate]) throws -> WrapPlan {
-        let body: [String: Any] = [
+    func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan {
+        var body: [String: Any] = [
             "file": file,
             "candidates": candidates.map { c -> [String: Any] in
                 var o: [String: Any] = ["variable": c.variable, "value": c.value]
@@ -506,6 +592,9 @@ struct ControlWrapBackend: WrapBackend {
                 return o
             },
         ]
+        // The control channel is the wrap flow's own wire (it carries the values), so
+        // the file's absolute path rides it to the apply point's wrapped_files record.
+        if let path { body["path"] = path }
         return try WrapPlan(json: try Self.call { try connect().call(method: "POST", path: "/api/wrap", body: body, expect: 200) })
     }
 
@@ -547,6 +636,10 @@ struct WrapRunner {
         var days: Int?
         var port: UInt16 = GatewayListener.port
         var now = Date()
+        /// Where the rewrite keeps the pre-wrap backup: the catalog-sibling backups
+        /// tree by default (VAL-O-002), injectable so tests point at their temp
+        /// catalog and never at the real Application Support.
+        var backupRoot: URL? = nil
     }
 
     struct Summary: Equatable {
@@ -588,7 +681,7 @@ struct WrapRunner {
         out("\(found.count) value\(found.count == 1 ? "" : "s") in \(display) look\(found.count == 1 ? "s" : "") like provider keys: "
             + found.map(\.candidate.variable).joined(separator: ", "))
         out("Touch ID in Keysrs to compare them with the vault…")
-        let plan = try backend.plan(file: display, candidates: found.map(\.candidate))
+        let plan = try backend.plan(file: display, path: url.path, candidates: found.map(\.candidate))
         var applied = false
         defer { if !applied { backend.cancel(id: plan.id) } }
         guard plan.items.count == found.count else {
@@ -644,14 +737,17 @@ struct WrapRunner {
         for (v, u) in baseURLs where wrapped.contains(where: { WrapDetect.baseURLVariables[$0.variable] == v }) {
             file.upsert(name: v, value: u)
         }
-        let result = try EnvFileWriter.rewrite(url, original: original, text: file.render(), now: options.now)
+        let result = try EnvFileWriter.rewrite(
+            url, original: original, text: file.render(), now: options.now,
+            backupRoot: try options.backupRoot ?? EnvFileWriter.defaultBackupsRoot()
+        )
         out("wrapped \(wrapped.count) variable\(wrapped.count == 1 ? "" : "s") in \(display):")
         for item in wrapped {
             let client = issued.first { $0.key == item.key }.map { " client #\($0.clientID)" } ?? ""
             out("  \(item.variable) -> \(item.key ?? "")\(item.isNew ? " (added to the vault)" : "")\(client)")
         }
         for (v, _) in baseURLs.sorted(by: { $0.key < $1.key }) { out("  \(v) -> \(options.relay == nil ? "gateway" : "relay")") }
-        out("backup with the original values: \(result.backup.path) (0600); delete it once the agent works")
+        out("backup with the original values kept outside the project (0600); keys unwrap restores from it")
         out("the gateway forgets keys when Keysrs quits; after a relaunch run keys gateway on <key> for each")
         return Summary(wrapped: wrapped, baseURLs: baseURLs, backup: result.backup, changed: true)
     }

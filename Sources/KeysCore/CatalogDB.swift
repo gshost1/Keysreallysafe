@@ -183,7 +183,8 @@ final class CatalogDB: @unchecked Sendable {
               expires_at TEXT NOT NULL,
               revoked_at TEXT,
               last_used_at TEXT,
-              host TEXT
+              host TEXT,
+              project TEXT
             );
             """)
         // A client is bound to the upstream host it was issued for. Clients from before the
@@ -193,7 +194,26 @@ final class CatalogDB: @unchecked Sendable {
             try exec("ALTER TABLE gateway_clients ADD COLUMN host TEXT;")
             try exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('\(Self.clientHostBackfillKey)', 'pending');")
         }
+        // The project (a folder) a client token was issued for, by projects.id. Nullable
+        // and deliberately not a foreign key: clients from before projects existed keep
+        // working with a null project (no backfill), and a projects row vanishing under
+        // a live reference must not break the reader that decodes it.
+        if try !tableHasColumn("gateway_clients", "project") {
+            try exec("ALTER TABLE gateway_clients ADD COLUMN project TEXT;")
+        }
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
+        // A project client token serves several keys; this table is its membership list:
+        // one row per key the token may reach, each carrying the host the user approved
+        // for that key (the same target_changed discipline as gateway_clients.host). The
+        // guarded create lets a catalog from before projects upgrade in place.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS gateway_client_keys (
+              client_id INTEGER NOT NULL,
+              key_name TEXT NOT NULL,
+              host TEXT NOT NULL,
+              PRIMARY KEY (client_id, key_name)
+            );
+            """)
         // Pairings hold hashes, not credentials, so like gateway_clients they belong in the
         // catalog and not the Keychain. `keys` is a comma-separated scope; empty means all keys.
         try exec("""
@@ -271,6 +291,41 @@ final class CatalogDB: @unchecked Sendable {
               CHECK ((limit_amount IS NULL) = (limit_unit IS NULL) AND (limit_amount IS NULL) = (limit_period IS NULL))
             );
             """)
+        // A project is a folder an agent works in, held by its canonical symlink-resolved
+        // path (UNIQUE, so two processes can never manufacture two ids for one folder)
+        // and shown by a display label only: the path never leaves the Mac, so it never
+        // enters a tool result, a log line or an analytics report. Labels are recomputed
+        // across this (small) table on every insert, so no stored label goes stale.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS projects (
+              id TEXT PRIMARY KEY,
+              path TEXT NOT NULL UNIQUE,
+              label TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            """)
+        // Every env file a wrap ever rewrote, by canonical path and the project it was
+        // wrapped for, so `keys unwrap` and the uninstall offer can find them without
+        // guessing from backups alone. Local catalog only: the path is the file's real
+        // location, which never leaves this Mac (tool results carry relative paths, and
+        // nothing on the wire names this table). `project` is a soft projects.id like
+        // gateway_clients', so a dangling reference must never break a reader. Recorded
+        // at apply time by BOTH the import path and the existing keys wrap apply path.
+        try exec("""
+            CREATE TABLE IF NOT EXISTS wrapped_files (
+              path TEXT PRIMARY KEY,
+              project TEXT NOT NULL,
+              wrapped_at TEXT NOT NULL
+            );
+            """)
+        // Which companion BASE_URL variables each wrap wrote into the file, as a JSON
+        // array — so unwrap removes exactly those and leaves a hand-written gateway URL
+        // alone. Rows from before the column existed keep NULL: no record means the
+        // documented removal fallback (decision, 2026-10-28).
+        if try !tableHasColumn("wrapped_files", "companions") {
+            try exec("ALTER TABLE wrapped_files ADD COLUMN companions TEXT;")
+        }
         // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
         // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
         // the main file nor the WAL keeps the old page images. The vacuum is best effort.
@@ -625,6 +680,10 @@ final class CatalogDB: @unchecked Sendable {
             }
             // A capability for a key that no longer exists must not outlive it.
             try run("DELETE FROM gateway_clients WHERE key_name = ?;", name)
+            // A membership in the deleted key goes too, and so does any membership whose
+            // project row the line above removed (a project token keyed on the first member).
+            try run("DELETE FROM gateway_client_keys WHERE key_name = ?;", name)
+            try run("DELETE FROM gateway_client_keys WHERE client_id NOT IN (SELECT id FROM gateway_clients);")
         }
     }
 
@@ -639,14 +698,20 @@ final class CatalogDB: @unchecked Sendable {
         pathPrefix: String?,
         host: String,
         createdAt: String,
-        expiresAt: String
+        expiresAt: String,
+        project: String? = nil
     ) throws -> GatewayClient {
         try withLock {
             try run("""
                 INSERT INTO gateway_clients
-                  (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at, host)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """, keyName, label, tokenHash, hint, methods.joined(separator: ","), pathPrefix, createdAt, expiresAt, host)
+                  (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at, host, project)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """, keyName, label, tokenHash, hint, methods.joined(separator: ","), pathPrefix, createdAt, expiresAt,
+                host, project)
+            var projectLabel: String? = nil
+            if let project, let row = try self.project(id: project) {
+                projectLabel = row.label
+            }
             return GatewayClient(
                 id: sqlite3_last_insert_rowid(db),
                 keyName: keyName,
@@ -658,7 +723,9 @@ final class CatalogDB: @unchecked Sendable {
                 revokedAt: nil,
                 lastUsedAt: nil,
                 hint: hint,
-                host: host
+                host: host,
+                project: project,
+                projectLabel: projectLabel
             )
         }
     }
@@ -668,7 +735,7 @@ final class CatalogDB: @unchecked Sendable {
     /// Clients with no stored host, i.e. issued before host binding existed.
     func unboundGatewayClients() throws -> [GatewayClient] {
         try query(
-            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE host IS NULL ORDER BY id;",
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.host IS NULL ORDER BY gc.id;",
             row: decodeGatewayClient
         )
     }
@@ -677,8 +744,11 @@ final class CatalogDB: @unchecked Sendable {
         try run("UPDATE gateway_clients SET host = ? WHERE id = ? AND host IS NULL;", host, id)
     }
 
+    // The client's project label joins in here so every reader (and only readers) sees
+    // the display label next to the id it stored; a dangling project reference joins
+    // NULL instead of failing, which is why the label is soft, not a foreign key.
     private static let gatewayClientColumns =
-        "id, key_name, label, hint, methods, path_prefix, created_at, expires_at, revoked_at, last_used_at, host"
+        "gc.id, gc.key_name, gc.label, gc.hint, gc.methods, gc.path_prefix, gc.created_at, gc.expires_at, gc.revoked_at, gc.last_used_at, gc.host, gc.project, p.label AS project_label"
 
     private func decodeGatewayClient(_ stmt: OpaquePointer) -> GatewayClient {
         GatewayClient(
@@ -692,21 +762,32 @@ final class CatalogDB: @unchecked Sendable {
             revokedAt: columnText(stmt, 8),
             lastUsedAt: columnText(stmt, 9),
             hint: columnText(stmt, 3) ?? "",
-            host: columnText(stmt, 10)
+            host: columnText(stmt, 10),
+            project: columnText(stmt, 11),
+            projectLabel: columnText(stmt, 12)
         )
     }
 
     func gatewayClients(keyName: String) throws -> [GatewayClient] {
         try query(
-            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE key_name = ? ORDER BY id;", keyName,
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.key_name = ? ORDER BY gc.id;",
+            keyName, row: decodeGatewayClient
+        )
+    }
+
+    /// Every gateway client, active or not, for the app's notification poll. Reads
+    /// only ids, labels, hints and expiry — never a token value.
+    func allGatewayClients() throws -> [GatewayClient] {
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project ORDER BY gc.id;",
             row: decodeGatewayClient
         )
     }
 
     func gatewayClient(tokenHash: String) throws -> GatewayClient? {
         try one(
-            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients WHERE token_hash = ? LIMIT 1;", tokenHash,
-            row: decodeGatewayClient
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.token_hash = ? LIMIT 1;",
+            tokenHash, row: decodeGatewayClient
         )
     }
 
@@ -718,8 +799,265 @@ final class CatalogDB: @unchecked Sendable {
         ) > 0
     }
 
+    /// The active (unrevoked) client tokens one bulk revoke is about to touch —
+    /// the same WHERE shape as the matching `revokeGatewayClients` update. Read
+    /// BEFORE the update: once revoked_at is set, this revoke's rows are
+    /// indistinguishable from an older revoke's, so the audit walk needs them
+    /// while they still read active. `key` nil means every key's.
+    func activeGatewayClients(key: String?) throws -> [GatewayClient] {
+        if let key {
+            return try query(
+                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL AND gc.key_name = ? ORDER BY gc.id;",
+                key, row: decodeGatewayClient
+            )
+        }
+        return try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL ORDER BY gc.id;",
+            row: decodeGatewayClient
+        )
+    }
+
+    /// The active client tokens bound to one project, for the project-scoped
+    /// bulk revoke's audit walk.
+    func activeGatewayClients(project: String) throws -> [GatewayClient] {
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.revoked_at IS NULL AND gc.project = ? ORDER BY gc.id;",
+            project, row: decodeGatewayClient
+        )
+    }
+
+    /// Bulk revoke: every active client token, or one key's. The changed-row
+    /// count is what was still unrevoked, the count semantics GrantStore.revokeAll
+    /// gave grants — counts mean "was live, now dead", never "rows seen".
+    func revokeGatewayClients(key: String?, at iso: String) throws -> Int {
+        if let key {
+            return try run(
+                "UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL AND key_name = ?;",
+                iso, key
+            )
+        }
+        return try run("UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL;", iso)
+    }
+
+    /// Bulk revoke by projects.id (the gateway_clients.project column): one
+    /// project's active client tokens, same count semantics as the key-scoped one.
+    func revokeGatewayClients(project: String, at iso: String) throws -> Int {
+        try run(
+            "UPDATE gateway_clients SET revoked_at = ? WHERE revoked_at IS NULL AND project = ?;",
+            iso, project
+        )
+    }
+
     func touchGatewayClient(id: Int64, at iso: String) throws {
         try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
+    }
+
+    /// The newest `last_used_at` among the unrevoked client tokens — when a
+    /// token last carried an upstream call, for the background updater's
+    /// recent-use window (H4). "Active" matches `activeGatewayClients`: revoked
+    /// rows are out. Reads only the timestamp column, never a token or hash.
+    func latestActiveClientTokenUse() throws -> Date? {
+        try one(
+            "SELECT MAX(last_used_at) FROM gateway_clients WHERE revoked_at IS NULL AND last_used_at IS NOT NULL;",
+            row: { statement -> Date in
+                guard let text = columnText(statement, 0), let date = UTC.parse(text) else {
+                    throw AppError.sqlite("gateway_clients last_used_at is unreadable")
+                }
+                return date
+            }
+        )
+    }
+
+    /// One key a project client token may serve, with the host the user approved for it.
+    struct GatewayClientKey: Equatable {
+        var clientID: Int64
+        var keyName: String
+        var host: String
+    }
+
+    private func decodeGatewayClientKey(_ stmt: OpaquePointer) -> GatewayClientKey {
+        GatewayClientKey(
+            clientID: sqlite3_column_int64(stmt, 0),
+            keyName: columnText(stmt, 1) ?? "",
+            host: columnText(stmt, 2) ?? ""
+        )
+    }
+
+    /// Idempotent by primary key, so a retried mint cannot grow a duplicate membership.
+    func insertGatewayClientKey(clientID: Int64, keyName: String, host: String) throws {
+        _ = try withLock {
+            try run(
+                "INSERT OR IGNORE INTO gateway_client_keys (client_id, key_name, host) VALUES (?, ?, ?);",
+                clientID, keyName, host
+            )
+        }
+    }
+
+    /// The one membership row the authorize path consults, or nil when the key is not a
+    /// member of the token.
+    func gatewayClientKey(clientID: Int64, keyName: String) throws -> GatewayClientKey? {
+        try one(
+            "SELECT client_id, key_name, host FROM gateway_client_keys WHERE client_id = ? AND key_name = ? LIMIT 1;",
+            clientID, keyName, row: decodeGatewayClientKey
+        )
+    }
+
+    /// Every key a token may serve, in name order — the readers' member list.
+    func gatewayClientKeys(clientID: Int64) throws -> [GatewayClientKey] {
+        try query(
+            "SELECT client_id, key_name, host FROM gateway_client_keys WHERE client_id = ? ORDER BY key_name;",
+            clientID, row: decodeGatewayClientKey
+        )
+    }
+
+    // MARK: wrapped files
+
+    /// Records one file a wrap rewrote, by canonical path. A rewrap refreshes the row
+    /// (INSERT OR REPLACE on the path primary key), so the record always reflects the
+    /// latest wrap, and unwrapping clears it per file. `companions` are the BASE_URL
+    /// variable names this wrap wrote into the file — the exact list unwrap removes
+    /// from, never a blanket rule over every gateway-pointing line.
+    func recordWrappedFile(path: String, project: String, at iso: String, companions: [String] = []) throws {
+        try run(
+            "INSERT OR REPLACE INTO wrapped_files (path, project, wrapped_at, companions) VALUES (?, ?, ?, ?);",
+            path, project, iso, try Self.encodeCompanions(companions)
+        )
+    }
+
+    /// Companion names are env-variable names, but the array lives as JSON like
+    /// grant_profiles.paths so a corrupted row fails loudly instead of silently losing
+    /// half a list.
+    private static func encodeCompanions(_ names: [String]) throws -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: names, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            throw AppError.sqlite("wrapped_files companions could not be encoded")
+        }
+        return json
+    }
+
+    /// The companions a wrap recorded writing for one file, or nil when there is no
+    /// record to consult — no row at all, a row from before the record existed, or a
+    /// column that does not parse. Nil is the documented removal fallback; an empty
+    /// array is a real record of a wrap that wrote none.
+    func recordedCompanions(path: String) throws -> [String]? {
+        guard let json = try one(
+            "SELECT companions FROM wrapped_files WHERE path = ?;", path, row: { columnText($0, 0) ?? "" }
+        ), let data = json.data(using: .utf8),
+              let names = (try? JSONSerialization.jsonObject(with: data)) as? [String] else { return nil }
+        return names
+    }
+
+    /// Every recorded wrapped file, in path order — the base `keys unwrap` and the
+    /// uninstall offer read (both filter it further; a dangling project id must never
+    /// break the listing).
+    func listWrappedFiles() throws -> [(path: String, project: String, wrappedAt: String)] {
+        try query("SELECT path, project, wrapped_at FROM wrapped_files ORDER BY path;") {
+            (columnText($0, 0) ?? "", columnText($0, 1) ?? "", columnText($0, 2) ?? "")
+        }
+    }
+
+    /// Unwrap clears a file's record once its lines are restored: the row means "live
+    /// wrapped state worth unwrapping", and a revoked token is not live state. A path
+    /// that was never recorded is not an error.
+    func clearWrappedFile(path: String) throws {
+        try run("DELETE FROM wrapped_files WHERE path = ?;", path)
+    }
+
+    // MARK: projects
+
+    struct ProjectRow: Equatable {
+        var id: String
+        /// Canonical symlink-resolved absolute path. The one sanctioned holder of it is
+        /// this database: it is never serialized out of the process (labels only).
+        var path: String
+        var label: String
+        var createdAt: String
+        var updatedAt: String
+    }
+
+    private static let projectColumns = "id, path, label, created_at, updated_at"
+
+    private func decodeProject(_ stmt: OpaquePointer) -> ProjectRow {
+        ProjectRow(
+            id: columnText(stmt, 0) ?? "",
+            path: columnText(stmt, 1) ?? "",
+            label: columnText(stmt, 2) ?? "",
+            createdAt: columnText(stmt, 3) ?? "",
+            updatedAt: columnText(stmt, 4) ?? ""
+        )
+    }
+
+    /// Get-or-create the row for one canonical folder path. The path is UNIQUE, so two
+    /// processes (the app and the MCP server) resolving the same folder converge on the
+    /// winner's row instead of manufacturing two ids. Labels are recomputed across the
+    /// table on every insert, so no stored label goes stale when the collision set
+    /// changes under it. No delete surface: a project outlives the client tokens that
+    /// referenced it, and nothing but raw SQL can remove one.
+    func upsertProject(canonicalPath: String, now: String) throws -> ProjectRow {
+        try withLock {
+            if let existing = try project(path: canonicalPath) { return try settledLabel(existing, now: now) }
+            var id = Project.newID()
+            while true {
+                do {
+                    try run(
+                        "INSERT INTO projects (id, path, label, created_at, updated_at) VALUES (?, ?, '', ?, ?);",
+                        id, canonicalPath, now, now
+                    )
+                    break
+                } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
+                    if let winner = try project(path: canonicalPath) {
+                        return try settledLabel(winner, now: now)
+                    }
+                    // The collision was on the id, not the path: mint another.
+                    id = Project.newID()
+                }
+            }
+            try relabelProjects(now: now)
+            guard let row = try project(id: id) else { throw AppError.sqlite("project row vanished after insert") }
+            return row
+        }
+    }
+
+    /// A row another process just inserted can be read in the gap between its insert and
+    /// its label recompute, when the label is still blank. The recompute is idempotent
+    /// (rowid order, the live table), so finishing it here heals that window; the row
+    /// is only ever read back once its label is not blank.
+    private func settledLabel(_ row: ProjectRow, now: String) throws -> ProjectRow {
+        guard row.label.isEmpty else { return row }
+        try relabelProjects(now: now)
+        return try project(id: row.id) ?? row
+    }
+
+    /// Recompute every label from the live table: the folder name alone when no other
+    /// row shares it, "<folder> (<parent>)" — deeper while colliding — otherwise. One
+    /// row per folder an agent ever worked in keeps the table small, so a full pass on
+    /// insert costs less than tracking deltas and cannot leave a stale qualifier behind.
+    /// `rowid` is the insertion order, so the same history always yields the same labels.
+    private func relabelProjects(now: String) throws {
+        let rows = try query("SELECT id, path, label FROM projects ORDER BY rowid;") { row in
+            (id: columnText(row, 0) ?? "", path: columnText(row, 1) ?? "", label: columnText(row, 2) ?? "")
+        }
+        let labels = Project.labels(forProjects: rows.map { (id: $0.id, path: $0.path) })
+        for (row, label) in zip(rows, labels) where row.label != label {
+            try run("UPDATE projects SET label = ?, updated_at = ? WHERE id = ?;", label, now, row.id)
+        }
+    }
+
+    func projects() throws -> [ProjectRow] {
+        try query(
+            "SELECT \(Self.projectColumns) FROM projects ORDER BY rowid;", row: decodeProject
+        )
+    }
+
+    func project(id: String) throws -> ProjectRow? {
+        try one("SELECT \(Self.projectColumns) FROM projects WHERE id = ?;", id, row: decodeProject)
+    }
+
+    /// The project at a canonical path, or nil. The lookup form `keys unwrap`'s
+    /// project default needs: a folder that was never wrapped answers "nothing was
+    /// changed" without a row being created the way `upsertProject` would.
+    func project(path: String) throws -> ProjectRow? {
+        try one("SELECT \(Self.projectColumns) FROM projects WHERE path = ?;", path, row: decodeProject)
     }
 
     // MARK: relay pairings
@@ -1229,6 +1567,27 @@ final class CatalogDB: @unchecked Sendable {
             ORDER BY ts DESC, id DESC
             LIMIT ?;
             """, name, limit) {
+            KeyEventRow(
+                id: sqlite3_column_int64($0, 0),
+                ts: columnText($0, 1) ?? "",
+                name: columnText($0, 2) ?? "",
+                action: columnText($0, 3) ?? "",
+                caller: columnText($0, 4),
+                detail: columnText($0, 5)
+            )
+        }
+    }
+
+    /// The `gateway_denied` audit rows in `[startISO, endISO)` — the refusals the
+    /// `activity` tool counts, oldest first. Same half-open ISO comparison the
+    /// usage query uses, so the two sides of one window agree on its edges.
+    func gatewayRefusals(from startISO: String, to endISO: String) throws -> [KeyEventRow] {
+        try query("""
+            SELECT id, ts, name, action, caller, detail
+            FROM key_events
+            WHERE action = 'gateway_denied' AND ts >= ? AND ts < ?
+            ORDER BY ts, id;
+            """, [startISO, endISO]) {
             KeyEventRow(
                 id: sqlite3_column_int64($0, 0),
                 ts: columnText($0, 1) ?? "",

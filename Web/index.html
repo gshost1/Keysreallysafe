@@ -232,6 +232,26 @@
           <button type="button" id="btn-privacy" class="btn-quiet" aria-haspopup="dialog" title="Product analytics privacy settings">Privacy</button>
         </div>
       </section>
+      <section class="settings-group" aria-labelledby="set-app">
+        <h2 id="set-app">Keysrs app</h2>
+        <p class="setting-note">The same choices the Keysrs menu shows while the window is open. Hiding the meter or the menu-bar item only takes them off screen: usage keeps being recorded and still counts in the Chart.</p>
+        <div class="setting">
+          <span class="setting-label" id="meter-label">Show usage meter<span class="setting-hint">The plan-window meter on the Usage pane.</span></span>
+          <button type="button" role="switch" id="meter-switch" class="switch" aria-checked="false" aria-labelledby="meter-label"></button>
+        </div>
+        <div class="setting">
+          <span class="setting-label" id="menubar-item-label">Show menu bar item<span class="setting-hint">The status item with the plan windows.</span></span>
+          <button type="button" role="switch" id="menubar-item-switch" class="switch" aria-checked="false" aria-labelledby="menubar-item-label"></button>
+        </div>
+        <div class="setting">
+          <span class="setting-label" id="auto-update-label">Install updates automatically<span class="setting-hint">A daily check installs a verified release while the app is idle. Check for Updates… stays in the menu.</span></span>
+          <button type="button" role="switch" id="auto-update-switch" class="switch" aria-checked="false" aria-labelledby="auto-update-label"></button>
+        </div>
+        <div class="setting">
+          <span class="setting-label">Quit Keysrs<span class="setting-hint" id="quit-hint">Stops the app and its background services. Usage already recorded stays.</span></span>
+          <button type="button" id="btn-quit" class="btn-quiet" title="Quit Keysrs and its background services">Quit</button>
+        </div>
+      </section>
       <section class="settings-group" aria-labelledby="set-relay">
         <h2 id="set-relay">Relay</h2>
         <p class="setting-note">For cloud agents that cannot reach this Mac: one outbound connection to the Worker you deployed (docs/relay.md). Calls get through only while the Mac is awake and online; after sleep the relay reconnects by itself.</p>

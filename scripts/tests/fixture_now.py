@@ -16,11 +16,15 @@ read, and the checked-in fixtures are never touched.
 Usage:
     python3 scripts/tests/fixture_now.py --out /tmp/keys-now
 
-Then point an isolated dashboard at it (KEYS_CATALOG temp, never the real one):
+Then point an isolated Keysrs at it (KEYS_CATALOG temp, never the real one) and
+open the URL the command prints — from a checkout, `keys dashboard` is the dev
+copy: it serves the checkout's Web/ on 127.0.0.1:12765, and KEYS_NO_OPEN keeps
+it from opening a browser tab on the way up:
 
-    KEYS_NO_OPEN=1 KEYS_CATALOG=/tmp/keys-now/catalog.db \\
+    KEYS_CATALOG=/tmp/keys-now/catalog.db \\
       KEYS_DROID_HOME=/tmp/keys-now/droid-home \\
       CLAUDE_CONFIG_DIR=/tmp/keys-now/claude-home \\
+      KEYS_NO_OPEN=1 \\
       ./.build/debug/keys dashboard
 """
 import argparse

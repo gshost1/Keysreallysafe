@@ -232,7 +232,7 @@ struct LogCommand: ParsableCommand {
     func run() throws {
         if let key { try KeyName.validate(key) }
         let filter: GatewayLogFilter = failed ? .failed : .all
-        let db = try CatalogDB(path: Paths.catalogDB)
+        let db = try CatalogDB(path: Paths.resolvingCatalog())
         var cursor = try db.gatewayLogCursor()
         let recent = try db.gatewayLog(through: cursor, key: key, filter: filter, limit: limit)
         let timeZone = TimeZone.current

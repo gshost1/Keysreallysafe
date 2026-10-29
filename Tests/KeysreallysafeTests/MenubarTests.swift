@@ -147,3 +147,39 @@ final class MenubarPanelDataTests: XCTestCase {
         XCTAssertEqual(MenubarSnapshot.resetsLabel(nil, now: now, calendar: utc), "")
     }
 }
+
+/// The explicit legacy `keys menubar` command still creates the status item it
+/// was asked for, even though the app-mode menu-bar preference is now off by
+/// default. Real AppKit status items with isolated centers and defaults, like
+/// the recovery suite, so nothing touches the real menu-bar domains.
+@MainActor
+final class MenubarCommandItemTests: XCTestCase {
+    func testExplicitCommandCreatesItsItemWhileAppModeDefaultIsOff() throws {
+        _ = NSApplication.shared
+        let (db, dir) = try makeDB()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (service, _, _) = makeService(db: db)
+        XCTAssertFalse(service.preferences.menubarItem, "the app-mode menu-bar item is off by default")
+        let server = try LoopbackHTTPServer(port: 0) { _ in HTTPResponse.text(200, "x") }
+        defer { server.stop() }
+        let url = URL(string: "http://127.0.0.1:\(server.boundPort)/")!
+        let center = NotificationCenter()
+        let defaults = MemoryDefaults()
+        let makeItem = {
+            MenubarItemController(workspaceCenter: center, appCenter: center,
+                                  recoveryDelay: .seconds(5), defaults: defaults)
+        }
+
+        // The app-mode default: the preference is off, so no status item exists.
+        let appMode = MenubarExtra(service: service, server: server, url: url, makeItemController: makeItem)
+        XCTAssertNil(appMode.item, "app mode with the item preference off creates no status item")
+        appMode.applicationWillTerminate(Notification(name: Notification.Name("test terminate")))
+
+        // The explicit command: it always creates the status item it requested.
+        let cli = MenubarExtra(service: service, server: server, url: url,
+                               makeItemController: makeItem, itemVisible: true)
+        XCTAssertNotNil(cli.item, "keys menubar creates its requested status item regardless of the app-mode default")
+        XCTAssertNotNil(cli.item?.menu, "the explicit command's item carries its menu")
+        cli.applicationWillTerminate(Notification(name: Notification.Name("test terminate")))
+    }
+}

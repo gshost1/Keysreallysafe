@@ -34,7 +34,8 @@ COUNT_KEYS = frozenset(
     "client_create ingest_success ingest_failure gateway_success gateway_failure optimizer_success "
     "optimizer_failure optimizer_abstained optimizer_cache_hit context_prepared context_unchanged context_empty "
     "context_failure gateway_lt_100ms gateway_lt_1s gateway_lt_10s gateway_gte_10s "
-    "optimizer_lt_100ms optimizer_lt_1s optimizer_lt_10s optimizer_gte_10s".split()
+    "optimizer_lt_100ms optimizer_lt_1s optimizer_lt_10s optimizer_gte_10s "
+    "scan_run key_import grant_issue onboarding_finished".split()
 )
 FIELDS = frozenset(
     {"schema_version", "consent_version", "report_id", "day", "app_version", "os_major", "architecture", "counts",

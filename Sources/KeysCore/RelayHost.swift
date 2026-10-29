@@ -158,6 +158,14 @@ final class RelayHost: @unchecked Sendable {
     private let dialer: any RelayDialer
     private let blocker: any IdleSleepBlocker
     private let linger: TimeInterval
+    /// The clock the relay stamps its own activity with; injectable so a test
+    /// scripts the moment (the update gate reads the stamp, H4).
+    private let now: @Sendable () -> Date
+    /// When a relayed call last opened or closed; nil until the first. A call
+    /// relayed moments ago means an agent is mid-session, and the update
+    /// install's restart would cut its pipe — the quiet gate reads this stamp
+    /// to hold the install for the recent-use window.
+    private let lastCallAt = LockedValue<Date?>(nil)
     private let lock = NSLock()
     private var running: Running?
     private var stayAwake = false
@@ -170,15 +178,22 @@ final class RelayHost: @unchecked Sendable {
         log: @escaping @Sendable (String) -> Void = { line in FileHandle.standardError.write(Data("relay  \(line)\n".utf8)) },
         dialer: any RelayDialer = URLSessionRelayDialer(),
         blocker: any IdleSleepBlocker = IOKitIdleSleepBlocker(),
-        linger: TimeInterval = RelayHost.defaultLinger
+        linger: TimeInterval = RelayHost.defaultLinger,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.log = log
         self.dialer = dialer
         self.blocker = blocker
         self.linger = linger
+        self.now = now
     }
 
     var isOn: Bool { lock.withLock { running != nil } }
+
+    /// When a relayed call last opened or closed; nil until the first (H4's
+    /// quiet-gate source). Never reset by `stop()` — the last relayed call is
+    /// still the last, and the window ages it out on its own.
+    var lastRelayedCall: Date? { lastCallAt.get() }
 
     var status: Status {
         let (origin, state) = lock.withLock { (running?.origin, running?.client.state) }
@@ -196,7 +211,12 @@ final class RelayHost: @unchecked Sendable {
             options: options,
             dialer: dialer,
             log: log,
-            activity: { [weak self] in self?.activityChanged() }
+            activity: { [weak self] in
+                // A call opened or closed: stamp the moment for the update gate's
+                // recent-use window (H4), then let the awake machinery decide.
+                self?.lastCallAt.set(self?.now())
+                self?.activityChanged()
+            }
         )
         let done = DispatchSemaphore(value: 0)
         let started: Bool = lock.withLock {

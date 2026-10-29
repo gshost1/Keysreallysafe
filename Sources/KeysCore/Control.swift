@@ -11,15 +11,27 @@ enum ControlFile {
         var token: String
     }
 
-    /// Beside the catalog, so a service reads the owner of its own catalog. The default is
-    /// the installed catalog's sibling, which keeps the atexit cleanup capture-free.
-    static func url(beside catalog: URL = Paths.catalogDB) -> URL {
+    /// Beside an explicit catalog — pure math, never throwing, for the callers
+    /// that already hold their catalog (the app, a service, a rigged test).
+    static func url(beside catalog: URL) -> URL {
         catalog.deletingLastPathComponent().appendingPathComponent("control.json")
     }
 
+    /// The default control URL for a caller that resolved nothing itself. A
+    /// Swift default argument cannot throw, so this no-argument form resolves
+    /// the default catalog INSIDE the body — through the tripwire-checked
+    /// resolver, so under XCTest or `KEYS_TEST_ISOLATION` with no
+    /// `KEYS_CATALOG` it throws instead of naming the real control.json
+    /// (VAL-G-003/VAL-H-001). Production behavior is unchanged: outside the
+    /// tripwire this is the installed catalog's sibling, as before.
+    static func url() throws -> URL {
+        ControlFile.url(beside: try Paths.resolvingCatalog())
+    }
+
     static func write(
-        port: UInt16, token: String, pid: pid_t = ProcessInfo.processInfo.processIdentifier, to url: URL = url()
+        port: UInt16, token: String, pid: pid_t = ProcessInfo.processInfo.processIdentifier, to url: URL? = nil
     ) throws {
+        let url = try url ?? ControlFile.url()
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
@@ -29,12 +41,19 @@ enum ControlFile {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    static func remove(ifOwnedBy pid: pid_t = ProcessInfo.processInfo.processIdentifier, at url: URL = url()) {
+    static func remove(
+        ifOwnedBy pid: pid_t = ProcessInfo.processInfo.processIdentifier, at url: URL? = nil
+    ) {
+        // The tripwire's refusal reads as "nothing to remove" here, the
+        // fail-closed direction for a cleanup call: under test isolation there
+        // is deliberately no default control file to own.
+        guard let url = url ?? (try? ControlFile.url()) else { return }
         guard let info = try? read(at: url), info.pid == pid else { return }
         try? FileManager.default.removeItem(at: url)
     }
 
-    static func read(at url: URL = url()) throws -> Info? {
+    static func read(at url: URL? = nil) throws -> Info? {
+        let url = try url ?? ControlFile.url()
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let data = try Data(contentsOf: url)
         guard let obj = (try? JSONSerialization.jsonObject(with: data)).flatMap(JSONValue.object),
@@ -47,8 +66,10 @@ enum ControlFile {
     }
 
     /// A live owner, or nil when the file is missing or its process is gone.
-    static func live(at url: URL = url()) -> Info? {
-        guard let info = try? read(at: url) else { return nil }
+    /// Under the tripwire the no-argument form answers nil: there is
+    /// deliberately no default control file in a test process.
+    static func live(at url: URL? = nil) -> Info? {
+        guard let url = url ?? (try? ControlFile.url()), let info = try? read(at: url) else { return nil }
         if kill(info.pid, 0) != 0 && errno == ESRCH { return nil }
         return info
     }
@@ -58,7 +79,12 @@ enum ControlFile {
 struct ControlClient {
     var info: ControlFile.Info
 
-    static func connect(control: URL = ControlFile.url()) throws -> ControlClient {
+    /// The default control URL resolves INSIDE the body (a Swift default
+    /// argument cannot throw): under the test tripwire the no-argument form
+    /// throws the refusal instead of reaching for the real control.json, and a
+    /// caller with an explicit catalog sibling keeps today's behavior.
+    static func connect(control: URL? = nil) throws -> ControlClient {
+        let control = try control ?? ControlFile.url()
         guard let info = ControlFile.live(at: control) else {
             // Its own exit code (6), so a script can tell a site that is not running from a
             // mistyped command.

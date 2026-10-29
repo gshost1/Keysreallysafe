@@ -14,6 +14,9 @@ final class KeysService: @unchecked Sendable {
     var codexHome: URL
     var grokBotHome: URL
     var droidHome: URL
+    /// The optional Claude plan snapshot `liveStatus` reads; nil under the test
+    /// tripwire, so no test reads the owner's real one (S6).
+    var claudePlanFile: URL? = Paths.claudePlanFile
     /// Serialises ingest passes only. A five-minute log scan must never hold up a gateway lookup.
     private let ingestLock = NSLock()
     /// Guards `gatewayCache` and `gatewayListener`; held for dictionary access only.
@@ -22,6 +25,10 @@ final class KeysService: @unchecked Sendable {
     private var gatewayListener: GatewayListener?
     var openRouter: any OpenRouterFetching
     let grants = GrantStore()
+    /// The pending `request_grant` asks (the MCP grants surface), the wrapPending
+    /// pattern: lock-guarded, memory-only, nothing token-shaped persisted. The
+    /// approval threads settle its records; `MCPGrants.swift` owns its behavior.
+    let mcpPendingGrants = MCPPendingGrants()
     /// Pauses a key after consecutive upstream 401/403 answers (GatewayBreaker).
     let breaker = GatewayBreaker()
     /// The relay secret's own store (Keychain service `keysreallysafe.relay` in the app, memory
@@ -30,11 +37,33 @@ final class KeysService: @unchecked Sendable {
     /// The relay this process runs when it is turned on from the menu, the dashboard or
     /// `keys relay on`. AppRuntime swaps in one that logs to menubar.log before the site serves.
     var relayHost = RelayHost()
+    /// The app-owned notification service. nil in every non-app process (CLI, MCP,
+    /// tests that do not inject one), so a gateway trip or a pending ask warns only
+    /// from the running app.
+    var notifications: AppNotifier?
+    /// The app's notification poll, retained here so its timer outlives the launch
+    /// seam that started it (a local would deallocate and its weak handler would go
+    /// quiet). nil outside the app process.
+    var notificationPoller: AppNotificationPoller?
+    /// The app's user-presence prompts in progress (Touch ID asks), observed by
+    /// the background updater's quiet gate. The production app wraps its gate
+    /// in `CountingPresenceGate` around this counter; a service built with an
+    /// unwrapped test gate honestly reports none.
+    let presencePrompts: InFlightWork
+    /// The gateway's requests in flight, observed by the background updater's
+    /// quiet gate. On the service, not the listener, so requests that outlive a
+    /// listener stop are still seen.
+    let gatewayActivity = InFlightWork()
     /// Held while the relay is turned on or off, so two toggles at once (menu and dashboard)
     /// cannot both find it off and race for the lock.
     private let relayToggleLock = NSLock()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     var analytics: ProductAnalytics?
+    /// The app's one analytics confirmation line, as the MCP `set_analytics_sharing`
+    /// route drives it. The running app wires it to menubar.log in `AppRuntime.run()`
+    /// beside `relayHost`; every other process leaves it a no-op, so only the app
+    /// records the onboarding answer. The line names the new state and nothing else.
+    var analyticsLog: (String) -> Void = { _ in }
     /// First-launch answers: background Claude limit refresh, analytics question asked.
     let preferences: AppPreferences
     private var screenLockObserver: NSObjectProtocol?
@@ -51,12 +80,14 @@ final class KeysService: @unchecked Sendable {
         droidHome: URL = Paths.droidHome,
         runner: any CommandRunner = SpawnCommandRunner(),
         openRouter: any OpenRouterFetching = OpenRouterHTTP(),
-        relaySecrets: (any SecretStore)? = nil
+        relaySecrets: (any SecretStore)? = nil,
+        presencePrompts: InFlightWork = InFlightWork()
     ) {
         self.catalog = catalog
         self.secrets = secrets
         self.relaySecrets = relaySecrets
         self.presence = presence
+        self.presencePrompts = presencePrompts
         self.clipboard = clipboard
         self.grokHome = grokHome
         self.claudeHome = claudeHome
@@ -490,13 +521,18 @@ final class KeysService: @unchecked Sendable {
     }
 
     /// Enable requires one Touch ID (the same presence check as copy). Secret is held in memory only.
+    /// `gate` and `stillValid` are the MCP grants flow's seams (see `issueGrant`): the
+    /// former fronts the presence check, the latter is re-checked after the prompt and
+    /// before anything changes, so a prompt that outlives its ask changes nothing at all.
     func setGateway(
         name: String,
         enabled: Bool,
         host: String?,
         caller: String = "dashboard",
         reason: String? = nil,
-        presenceChecked: Bool = false
+        presenceChecked: Bool = false,
+        gate: (any PresenceGate)? = nil,
+        stillValid: (() -> Bool)? = nil
     ) throws -> CatalogRow {
         try requireGatewayOwner()
         let row = try existingRow(name)
@@ -515,7 +551,10 @@ final class KeysService: @unchecked Sendable {
             // A batch (keys wrap, client issue with the gateway) asked once for all of its keys,
             // and its own prompt or confirmed plan named each host.
             if !presenceChecked {
-                try presence.require(reason: reason ?? Self.gatewayReason(key: name, provider: provider, host: resolved))
+                try (gate ?? presence).require(reason: reason ?? Self.gatewayReason(key: name, provider: provider, host: resolved))
+            }
+            if let stillValid, !stillValid() {
+                throw AppError.usage("the request expired before it was approved")
             }
             let target = GatewayTarget(
                 name: name, secret: try secrets.get(name: name), provider: provider, host: resolved, version: row.version
@@ -548,12 +587,22 @@ final class KeysService: @unchecked Sendable {
     /// Touch ID, the profile's values default whatever the ask left unnamed, and a named bound
     /// must sit inside it. The grant itself is self-contained — the request path never
     /// consults profiles, and the profile is not read again after this returns.
+    ///
+    /// The three optional seams serve the MCP grants flow (milestone 2) and default to the
+    /// behavior every existing caller already has: `projectLabel` appends the project's
+    /// LABEL — never its path — to the one prompt's reason; `gate` fronts the presence
+    /// check so the create route can learn the prompt went up; `stillValid` is re-checked
+    /// after the prompt returns (and inside the gateway-on fold, before that fold changes
+    /// anything), so an approval that lands after the ask expired never mints a grant.
     func issueGrant(
         name: String,
         request raw: GrantRequest,
         profile profileName: String? = nil,
         specified: GrantSpecified = GrantSpecified(),
-        caller: String = "dashboard"
+        caller: String = "dashboard",
+        projectLabel: String? = nil,
+        gate: (any PresenceGate)? = nil,
+        stillValid: (() -> Bool)? = nil
     ) throws -> (grant: Grant, token: String) {
         try requireGatewayOwner()
         let row = try existingRow(name)
@@ -573,7 +622,7 @@ final class KeysService: @unchecked Sendable {
             )
             under = profile
         }
-        let reason = under.map {
+        var reason = under.map {
             Self.profileGrantReason(
                 task: effective.task, key: name, provider: provider, host: host,
                 minutes: effective.minutes, profile: $0, request: effective
@@ -581,10 +630,19 @@ final class KeysService: @unchecked Sendable {
         } ?? Self.grantReason(
             task: effective.task, key: name, provider: provider, host: host, minutes: effective.minutes
         )
+        if let projectLabel {
+            reason += ", project \(Self.promptLabel(projectLabel))"
+        }
         if let cached = lookupGateway(name: name), cached.host == host {
-            try presence.require(reason: reason)
+            try (gate ?? presence).require(reason: reason)
         } else {
-            _ = try setGateway(name: name, enabled: true, host: host, caller: caller, reason: reason)
+            _ = try setGateway(
+                name: name, enabled: true, host: host, caller: caller, reason: reason,
+                gate: gate, stillValid: stillValid
+            )
+        }
+        if let stillValid, !stillValid() {
+            throw AppError.usage("the request expired before it was approved")
         }
         grants.prune()
         let issued = grants.issue(
@@ -597,6 +655,12 @@ final class KeysService: @unchecked Sendable {
             caller: caller,
             detail: Self.grantDetail(issued.grant)
         )
+        // The onboarding `grant_issue` counter's producer: the MCP `request_grant`
+        // flow issues with caller "mcp". The key-event audit's `grant_create`
+        // (recordKeyEvent just above) already counts every issuance, so this stays
+        // the onboarding-only signal. Opt-in: `record` is a no-op while analytics
+        // sharing is off.
+        if caller == "mcp" { analytics?.record(.grantIssue) }
         return issued
     }
 
@@ -707,6 +771,37 @@ final class KeysService: @unchecked Sendable {
 
     func listGrants(includeInactive: Bool = false) -> [Grant] {
         grants.list(includeInactive: includeInactive)
+    }
+
+    /// What the app's notification poll reads from local state: active grants,
+    /// every client token, and the ids of grant requests still awaiting approval.
+    /// Only timing and status — never a secret.
+    func notificationSnapshot(now: Date = Date()) -> AppNotificationState {
+        let pending = mcpPendingGrants.statuses().compactMap { record -> String? in
+            if case .pending = record.resolution { return record.id }
+            return nil
+        }
+        return AppNotificationState(
+            grants: grants.list(now: now),
+            clients: (try? catalog.allGatewayClients()) ?? [],
+            pendingGrantIDs: pending
+        )
+    }
+
+    /// A `GatewayBreaker` trip is an app-owned event: the app warns once per trip.
+    /// Handed to the notifier, which delivers off this thread, so a gateway answer
+    /// is never held up by a notification.
+    func noteBreakerTrip() {
+        notifications?.breakerTripped()
+    }
+
+    /// An MCP grant request whose prompt is up is time-sensitive: warn immediately
+    /// (the poller would otherwise wait for its next pass). A request already
+    /// resolved is not warned; a request refused before it became pending never
+    /// reaches this call at all.
+    func notePendingGrant(id: String) {
+        guard notifications != nil, mcpPendingGrants.isLive(id: id) else { return }
+        notifications?.pendingGrantRequested(id: id)
     }
 
     @discardableResult
@@ -844,21 +939,51 @@ final class KeysService: @unchecked Sendable {
 
     // MARK: - Provider checks (read-only)
 
-    /// Authentication status and model list from the provider's read-only endpoint.
-    /// Uses the in-memory gateway secret when present, else one presence prompt.
-    func checkProvider(name: String, caller: String = "dashboard") throws -> ProviderCheck.Result {
+    /// One key's check target, resolved with no prompt and no secret read: the
+    /// row's provider, the host a probe would go to, and whether the provider has
+    /// a read-only endpoint at all. `checkProvider` and the `test_keys` flow share
+    /// it, so both refuse the same names and would probe the same hosts.
+    struct CheckTarget {
+        let provider: Providers.Record
+        let host: String?
+        let probe: ProviderCheck.Endpoint?
+    }
+
+    /// The resolution every check path starts with, with the same named refusals
+    /// `existingRow` and the provider lookup always give — before any presence
+    /// prompt, so a caller's typo never costs a Touch ID.
+    func checkTarget(name: String) throws -> CheckTarget {
         let row = try existingRow(name)
         guard let provider = Providers.provider(id: row.provider) else {
             throw AppError.usage("unknown provider \(row.provider); edit the key and pick one from the list")
         }
-        let host = row.gatewayHost ?? provider.host
+        return CheckTarget(provider: provider, host: row.gatewayHost ?? provider.host, probe: ProviderCheck.endpoint(for: provider))
+    }
+
+    /// The finish every completed probe shares: the result lands in the catalog's
+    /// last-check row and the audit log, with the caller named.
+    func recordCheck(_ result: ProviderCheck.Result, caller: String) throws {
+        try catalog.upsertProviderCheck(result)
+        try recordKeyEvent(
+            name: result.key,
+            action: "check",
+            caller: caller,
+            detail: result.summary,
+            touchLastUsed: true
+        )
+    }
+
+    /// Authentication status and model list from the provider's read-only endpoint.
+    /// Uses the in-memory gateway secret when present, else one presence prompt.
+    func checkProvider(name: String, caller: String = "dashboard") throws -> ProviderCheck.Result {
+        let target = try checkTarget(name: name)
         // Before any presence prompt: a provider with nothing to probe must not ask for Touch ID.
-        guard ProviderCheck.endpoint(for: provider) != nil else {
-            let result = ProviderCheck.noEndpoint(key: name, provider: provider, host: host ?? "")
+        guard target.probe != nil else {
+            let result = ProviderCheck.noEndpoint(key: name, provider: target.provider, host: target.host ?? "")
             try catalog.upsertProviderCheck(result)
             return result
         }
-        guard let host else {
+        guard let host = target.host else {
             throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
         }
         let secret: String
@@ -868,21 +993,14 @@ final class KeysService: @unchecked Sendable {
         // The whole record must match, not just the id: a provider override (no prompt) that
         // keeps the id and host but changes the path or auth header would otherwise point
         // the approved secret at a different request.
-        if let target = lookupGateway(name: name), target.provider == provider, target.host == host {
-            secret = target.secret
+        if let cached = lookupGateway(name: name), cached.provider == target.provider, cached.host == host {
+            secret = cached.secret
         } else {
-            try presence.require(reason: "check \(name) against \(provider.name) at \(host) (read-only)")
+            try presence.require(reason: "check \(name) against \(target.provider.name) at \(host) (read-only)")
             secret = try secrets.get(name: name)
         }
-        let result = ProviderCheck.run(key: name, provider: provider, host: host, secret: secret, fetcher: checker)
-        try catalog.upsertProviderCheck(result)
-        try recordKeyEvent(
-            name: name,
-            action: "check",
-            caller: caller,
-            detail: result.summary,
-            touchLastUsed: true
-        )
+        let result = ProviderCheck.run(key: name, provider: target.provider, host: host, secret: secret, fetcher: checker)
+        try recordCheck(result, caller: caller)
         return result
     }
 
@@ -895,7 +1013,7 @@ final class KeysService: @unchecked Sendable {
         if let running = gatewayLock.withLock({ gatewayListener }) {
             return running
         }
-        let listener = try GatewayListener(service: self, port: port)
+        let listener = try GatewayListener(service: self, port: port, activity: gatewayActivity)
         // Another thread may have started one meanwhile; keep the first and drop ours.
         let winner: GatewayListener = gatewayLock.withLock {
             if let existing = gatewayListener { return existing }
@@ -932,6 +1050,7 @@ final class KeysService: @unchecked Sendable {
         days: Int? = nil,
         methods: [String]? = nil,
         pathPrefix: String? = nil,
+        project: String? = nil,
         caller: String = "dashboard",
         enableGateway: Bool = false,
         now: Date = Date()
@@ -954,16 +1073,18 @@ final class KeysService: @unchecked Sendable {
             _ = try setGateway(name: name, enabled: true, host: nil, caller: caller, presenceChecked: true)
         }
         return try mintGatewayClient(
-            name: name, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix, host: host,
-            caller: caller, now: now
+            name: name, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix, project: project,
+            host: host, caller: caller, now: now
         )
     }
 
     /// Mints after presence was already taken by the caller; arguments are validated and `host`
-    /// is the key's effective host the caller showed the user.
+    /// is the key's effective host the caller showed the user. `project` is a resolved
+    /// projects.id (the caller got it from `resolveProject`); nil leaves the client
+    /// unbound, as every client issued before projects existed is.
     private func mintGatewayClient(
         name: String, label: String, days ttlDays: Int, methods allowed: [String], pathPrefix prefix: String?,
-        host: String, caller: String, now: Date
+        project: String?, host: String, caller: String, now: Date
     ) throws -> (token: String, client: GatewayClient) {
         let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
         let token = GatewayClientToken.generate()
@@ -976,7 +1097,8 @@ final class KeysService: @unchecked Sendable {
             pathPrefix: prefix,
             host: host,
             createdAt: UTC.iso(now),
-            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
+            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400)),
+            project: project
         )
         try recordKeyEvent(
             name: name,
@@ -990,14 +1112,16 @@ final class KeysService: @unchecked Sendable {
     // MARK: keys wrap
 
     /// Wrap plans waiting for the user's yes. Each holds the secrets of keys it will add, in
-    /// memory only, and dies after `WrapPlan.lifetime`.
+    /// memory only, and dies after `WrapPlan.lifetime`. `path` is the caller's absolute file
+    /// path when it has one (the CLI's), kept for `wrapApply`'s `wrapped_files` record —
+    /// the display `file` label stays what prompts and labels show.
     private let wrapLock = NSLock()
-    private var wrapPending: [String: (plan: WrapPlan, secrets: [String: String], file: String, expires: Date)] = [:]
+    private var wrapPending: [String: (plan: WrapPlan, secrets: [String: String], file: String, path: String?, expires: Date)] = [:]
 
     /// One presence prompt covers the whole batch: reading every vault secret to compare with
     /// the file's values here, and later adding keys, turning the gateway on and minting tokens
     /// in `wrapApply`. Values never leave this process; the plan carries names only.
-    func wrapPlan(file: String, candidates: [WrapCandidate], now: Date = Date()) throws -> WrapPlan {
+    func wrapPlan(file: String, candidates: [WrapCandidate], path: String? = nil, now: Date = Date()) throws -> WrapPlan {
         try requireGatewayOwner()
         guard !candidates.isEmpty else { throw AppError.usage("nothing to wrap") }
         guard candidates.count <= WrapPlan.maxCandidates else {
@@ -1061,7 +1185,7 @@ final class KeysService: @unchecked Sendable {
         let plan = WrapPlan(id: Hex.encode(SecureRandom.bytes(16)), items: items)
         wrapLock.withLock {
             wrapPending = wrapPending.filter { $0.value.expires > now }
-            wrapPending[plan.id] = (plan, newSecrets, label, now.addingTimeInterval(WrapPlan.lifetime))
+            wrapPending[plan.id] = (plan, newSecrets, label, path, now.addingTimeInterval(WrapPlan.lifetime))
         }
         return plan
     }
@@ -1098,16 +1222,55 @@ final class KeysService: @unchecked Sendable {
             }
             _ = try setGateway(name: key, enabled: true, host: nil, caller: caller, presenceChecked: true)
             let minted = try mintGatewayClient(
-                name: key, label: clientLabel, days: ttlDays, methods: methods, pathPrefix: nil, host: host,
-                caller: caller, now: now
+                name: key, label: clientLabel, days: ttlDays, methods: methods, pathPrefix: nil, project: nil,
+                host: host, caller: caller, now: now
             )
             issued.append(WrapIssued(key: key, token: minted.token, clientID: minted.client.id, isNew: item.isNew))
+        }
+        // The shared apply point's wrapped-files record: a plan whose caller named the
+        // file's absolute path (the CLI's wrap does) records it, so `keys unwrap` and the
+        // uninstall offer find every file this build ever wrapped. The project is the
+        // file's own folder — the folder whose slug named the keys — resolved the same
+        // way the import path resolves its scan root. The companions are derived from
+        // the plan exactly as WrapRunner derives its base URLs (one per wrapped
+        // variable whose SDK reads one), so the record says what Keysrs wrote and
+        // unwrap leaves anything else alone.
+        if let path = pending.path, !issued.isEmpty {
+            let canonical = Self.canonicalPath(path) ?? path
+            let folder = try resolveProject(
+                folder: URL(fileURLWithPath: canonical).deletingLastPathComponent().path, now: now
+            )
+            let companions = Set(pending.plan.items.compactMap { item -> String? in
+                guard item.skip == nil, item.key != nil else { return nil }
+                return WrapDetect.baseURLVariables[item.variable]
+            }).sorted()
+            try recordWrappedFile(path: canonical, project: folder.id, now: now, companions: companions)
         }
         return issued
     }
 
     func wrapCancel(id: String) {
         _ = wrapLock.withLock { wrapPending.removeValue(forKey: id) }
+    }
+
+    /// Records one file a wrap rewrote, by canonical path, in the `wrapped_files` table.
+    /// Both wrap paths land here — `wrapApply` for `keys wrap`, the import flow for its
+    /// own files — so every rewritten file is findable later with no guessing from
+    /// backups. `companions` are the BASE_URL variables the wrap wrote into THIS file;
+    /// unwrap removes exactly those. The path stays in this Mac's catalog; no tool
+    /// result ever carries it.
+    func recordWrappedFile(path: String, project: String, now: Date = Date(), companions: [String] = []) throws {
+        try catalog.recordWrappedFile(
+            path: Self.canonicalPath(path) ?? path, project: project, at: UTC.iso(now), companions: companions
+        )
+    }
+
+    /// POSIX `realpath`, the `Project.canonicalFolder` discipline, for a file. The same
+    /// spelling rule everywhere a path becomes an identity.
+    static func canonicalPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     func gatewayClients(name: String) throws -> [GatewayClient] {
@@ -1127,6 +1290,136 @@ final class KeysService: @unchecked Sendable {
         return client
     }
 
+    /// Mints ONE client token that serves several keys at once — the project token the
+    /// onboarding import needs. The token is a single `gateway_clients` row (one hash, one
+    /// 30-day expiry, one hint, one label, one revoke) plus one membership row per key it
+    /// may reach, each recording that key's approved host. Presence is taken here, naming
+    /// every key; `mintProjectGatewayClient` is the presence-free half the import flow
+    /// reuses under its own single prompt.
+    func issueProjectGatewayClient(
+        keys: [String],
+        label: String,
+        days: Int? = nil,
+        methods: [String]? = nil,
+        pathPrefix: String? = nil,
+        project: String,
+        caller: String = "dashboard",
+        now: Date = Date()
+    ) throws -> (token: String, client: GatewayClient) {
+        let ttlDays = try GatewayClientToken.validateDays(days)
+        let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
+        let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
+        let members = try projectMembers(keys)
+        try presence.require(reason: "issue one gateway client for \(members.map(\.name).joined(separator: ", "))")
+        return try mintProjectGatewayClient(
+            members: members, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix,
+            project: project, caller: caller, now: now
+        )
+    }
+
+    /// Resolves each key to its effective host, in first-seen order, refusing a key with
+    /// no host exactly as per-key issuance does. A repeated name collapses to one member.
+    /// Internal so the onboarding import flow resolves its wrapped keys' hosts here too.
+    func projectMembers(_ keys: [String]) throws -> [(name: String, host: String)] {
+        var seen: Set<String> = []
+        var members: [(name: String, host: String)] = []
+        for name in keys where seen.insert(name).inserted {
+            let row = try existingRow(name)
+            guard let host = Self.effectiveHost(row) else {
+                throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
+            }
+            members.append((name, host))
+        }
+        guard !members.isEmpty else { throw AppError.usage("at least one key is required") }
+        return members
+    }
+
+    /// Mints after presence was already taken by the caller. The project row's `key_name`
+    /// is its first member (the column is NOT NULL); every member — the first included —
+    /// also gets a membership row, so the authorize path resolves each one's own host.
+    /// Internal so the onboarding import flow reuses it under its own single prompt.
+    func mintProjectGatewayClient(
+        members: [(name: String, host: String)],
+        label: String, days ttlDays: Int, methods allowed: [String], pathPrefix prefix: String?,
+        project: String, caller: String, now: Date
+    ) throws -> (token: String, client: GatewayClient) {
+        let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        let token = GatewayClientToken.generate()
+        let first = members[0]
+        let client = try catalog.insertGatewayClient(
+            keyName: first.name,
+            label: trimmedLabel,
+            tokenHash: GatewayClientToken.hash(token),
+            hint: GatewayClientToken.hint(token),
+            methods: allowed,
+            pathPrefix: prefix,
+            host: first.host,
+            createdAt: UTC.iso(now),
+            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400)),
+            project: project
+        )
+        for member in members {
+            try catalog.insertGatewayClientKey(clientID: client.id, keyName: member.name, host: member.host)
+        }
+        try recordKeyEvent(
+            name: first.name,
+            action: "client_issue",
+            caller: caller,
+            detail: "#\(client.id) \(trimmedLabel) \(ttlDays)d project \(members.count) key\(members.count == 1 ? "" : "s")"
+        )
+        return (token, client)
+    }
+
+    /// Revokes every active client token bound to a project in one statement. Each
+    /// member's authorization dies with the token, since the authorize path checks the
+    /// row's revocation before a membership is trusted.
+    @discardableResult
+    func revokeGatewayClients(project: String) throws -> Int {
+        try catalog.revokeGatewayClients(project: project, at: UTC.iso(Date()))
+    }
+
+    // MARK: - Bulk client revoke (the kill switches)
+
+    /// One `client_revoke` audit row per affected key, naming the revoked ids —
+    /// the per-client row's detail, grouped, so `keys log` reads the same shape.
+    /// Keys and ids in sorted order, so the same catalog always writes the same
+    /// rows. The walk reads the affected clients BEFORE the update, while they
+    /// still read active: afterwards this revoke's rows are indistinguishable
+    /// from an older one's.
+    private func auditClientRevokes(_ clients: [GatewayClient], caller: String) {
+        let byKey = Dictionary(grouping: clients, by: \.keyName)
+        for name in byKey.keys.sorted() {
+            try? recordKeyEvent(
+                name: name,
+                action: "client_revoke",
+                caller: caller,
+                detail: byKey[name]!.sorted { $0.id < $1.id }.map { "#\($0.id)" }.joined(separator: " ")
+            )
+        }
+    }
+
+    /// Revokes every active client token, or one key's — the client half of the
+    /// combined revoke_all route. No presence prompt: revocation only removes
+    /// access. The count is the update's changed rows, so it means "was live,
+    /// now dead" and a second call answers zero.
+    @discardableResult
+    func revokeGatewayClients(key: String? = nil, caller: String = "dashboard", now: Date = Date()) throws -> Int {
+        let affected = try catalog.activeGatewayClients(key: key)
+        let count = try catalog.revokeGatewayClients(key: key, at: UTC.iso(now))
+        auditClientRevokes(affected, caller: caller)
+        return count
+    }
+
+    /// Revokes one project's active client tokens, by projects.id — the same
+    /// audit and count semantics as the key-scoped bulk revoke.
+    @discardableResult
+    func revokeGatewayClients(project: String, caller: String = "dashboard", now: Date = Date()) throws -> Int {
+        let affected = try catalog.activeGatewayClients(project: project)
+        let count = try catalog.revokeGatewayClients(project: project, at: UTC.iso(now))
+        auditClientRevokes(affected, caller: caller)
+        return count
+    }
+
     /// Decides whether one request may use `name` through the gateway. Never consults the
     /// dashboard token. Denial reasons are for the audit log; the caller sends a uniform 401.
     func authorizeGatewayClient(
@@ -1142,7 +1435,24 @@ final class KeysService: @unchecked Sendable {
         guard let client = try? catalog.gatewayClient(tokenHash: GatewayClientToken.hash(token)) else {
             return .denied("unknown_client")
         }
-        guard client.keyName == name else { return .denied("wrong_key") }
+        if client.keyName != name {
+            // A project token serves several keys. Its own `key_name` (the first member)
+            // matched through the per-key path below; every other member is authorized
+            // through the membership row it carries — the same revoked/active/scope checks,
+            // and the membership's own approved host, so a retargeted member refuses exactly
+            // like a per-key one. A key with no membership stays denied as today.
+            guard client.project != nil,
+                  let membership = try? catalog.gatewayClientKey(clientID: client.id, keyName: name) else {
+                return .denied("wrong_key")
+            }
+            guard client.revokedAt == nil else { return .denied("revoked") }
+            guard client.isActive(now: now) else { return .denied("expired") }
+            guard let row = try? catalog.catalogRow(name: name), membership.host == Self.effectiveHost(row) else {
+                return .denied("target_changed")
+            }
+            guard client.allows(method: method, rest: rest) else { return .denied("out_of_scope") }
+            return .allowed(client)
+        }
         guard client.revokedAt == nil else { return .denied("revoked") }
         guard client.isActive(now: now) else { return .denied("expired") }
         // lookupGateway then holds the unlocked target to this same catalog host.
@@ -1824,8 +2134,9 @@ final class KeysService: @unchecked Sendable {
         }
     }
 
-    /// Validates the name and returns its catalog row, or throws notFound.
-    private func existingRow(_ name: String) throws -> CatalogRow {
+    /// Validates the name and returns its catalog row, or throws notFound. Internal
+    /// so `MCPGrants.swift`'s extension runs the same check issuance does.
+    func existingRow(_ name: String) throws -> CatalogRow {
         try KeyName.validate(name)
         guard let row = try catalog.catalogRow(name: name) else { throw AppError.notFound(name) }
         return row
@@ -1899,6 +2210,18 @@ final class KeysService: @unchecked Sendable {
         return "unlock \(names.count) keys: " + names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
     }
 
+    /// A folder-derived project label as the Touch ID reason shows it. The label
+    /// comes from a folder name a same-user process can choose, so control
+    /// characters (a newline that fakes a second line of the prompt) are dropped
+    /// and the length is capped; key, host and duration stay in the reason.
+    static func promptLabel(_ label: String) -> String {
+        let visible = String(String.UnicodeScalarView(label.unicodeScalars.filter {
+            !CharacterSet.controlCharacters.contains($0)
+                && !($0.properties.generalCategory == .format)
+        }))
+        return visible.count > 60 ? String(visible.prefix(59)) + "…" : visible
+    }
+
     func liveStatus() throws -> LiveStatus {
         let grokWeek = try spend(range: .week, by: .model, source: .grok)
         let openaiWeek = try spend(range: .week, by: .model, source: .openai)
@@ -1907,7 +2230,7 @@ final class KeysService: @unchecked Sendable {
             grokHome: grokHome,
             claudeHome: claudeHome,
             grokWeekUsd: grokWeek.totals.grokUsd,
-            claudePlan: Paths.appSupport.appendingPathComponent("claude-plan.json"),
+            claudePlan: claudePlanFile,
             openaiWeekTokens: openaiWeek.totals.openaiTokens,
             openaiWeekUsdEstimate: openaiWeek.totals.openaiUsdEstimate,
             codexHome: codexHome,
@@ -1965,14 +2288,25 @@ final class KeysService: @unchecked Sendable {
 }
 
 enum AppFactory {
+    /// The no-argument production service. The catalog and the Keychain stores
+    /// resolve INSIDE the body through the tripwire-checked resolver
+    /// (VAL-G-003/VAL-H-001): under XCTest or `KEYS_TEST_ISOLATION` with no
+    /// `KEYS_CATALOG`, this throws before the real catalog is opened or the
+    /// production Keychain store is built — a test process constructs a service
+    /// over an explicit temp catalog with injected fakes, never this way.
     static func makeService() throws -> KeysService {
-        let db = try CatalogDB(path: Paths.catalogDB)
+        let db = try CatalogDB(path: try Paths.resolvingCatalog())
+        // The production gate is wrapped so the app can see when a Touch ID
+        // ask is up: the background updater waits prompts out before it
+        // installs. The wrapped gate changes no answer a gate gives.
+        let prompts = InFlightWork()
         let service = KeysService(
             catalog: db,
-            secrets: KeychainStore(),
-            presence: LocalPresenceGate(),
+            secrets: try KeychainStore(),
+            presence: CountingPresenceGate(inner: LocalPresenceGate(), activity: prompts),
             clipboard: AppKitClipboard(),
-            relaySecrets: KeychainStore(service: KeysService.relayKeychainService)
+            relaySecrets: try KeychainStore(service: KeysService.relayKeychainService),
+            presencePrompts: prompts
         )
         service.observeScreenLock()
         service.analytics = ProductAnalytics(catalog: db)
