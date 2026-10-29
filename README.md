@@ -735,11 +735,14 @@ keys relay [run] [--url <worker url>] | on | off | setup --url <worker url> | st
 keys purge
 ```
 
-`keys dashboard` fronts the Keysrs app's window — launching the app first
-when it is not running — prints one line and returns; it no longer opens a
-browser or serves a second copy of the dashboard. `--month` and `--week`
-are still accepted for older scripts, but the window opens on its own
-current range.
+`keys dashboard` fronts the app's window when `keys` is the installed app's
+binary — launching the app first when it is not running — prints one line
+and returns, with no browser and no second copy of the dashboard. A checkout
+build is instead the dev copy: it serves the checkout's `Web/` on
+`127.0.0.1:12765` and opens a browser unless `KEYS_NO_OPEN=1` is set, as the
+development recipe below does. `--month` and `--week` are still accepted for
+older scripts; the window opens on its own current range and the dev copy
+serves the requested one.
 
 `keys env` puts the secret in the child's environment only; nothing touches
 the clipboard. It prints the provider and host the key belongs to before the
@@ -879,7 +882,7 @@ deleting the app leaves both alone.
 ```sh
 CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home GROK_BOT_HOME=Fixtures/grok-bot-home KEYS_DROID_HOME=Fixtures/droid-home swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-./.build/debug/keys menubar   # dev copy: serves Web/ from the checkout and prints its loopback URL
+KEYS_NO_OPEN=1 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```
 
 `Web/` is plain HTML, CSS and JavaScript with no build step and no external
@@ -896,9 +899,9 @@ across Claude Code and Droid), write throwaway homes dated a few minutes ago:
 
 ```sh
 python3 scripts/tests/fixture_now.py --out /tmp/keys-now
-KEYS_CATALOG=/tmp/keys-now/catalog.db \
+KEYS_NO_OPEN=1 KEYS_CATALOG=/tmp/keys-now/catalog.db \
   KEYS_DROID_HOME=/tmp/keys-now/droid-home CLAUDE_CONFIG_DIR=/tmp/keys-now/claude-home \
-  ./.build/debug/keys menubar   # prints the dev dashboard's URL to open
+  ./.build/debug/keys dashboard
 ```
 
 The helper prints the per-model and merged totals the Chart should show for the
