@@ -1,9 +1,17 @@
 # Keysrs
 
-An API-key vault for the AI agents on your Mac. Agents get scoped,
-short-lived grant tokens instead of your real keys; a gateway on loopback
-swaps the real key in, and every grant needs your Touch ID. Keysrs also shows
-what Claude Code, Codex, Grok and Droid are spending.
+Short-lived tokens for AI agents, on your Mac and on cloud VMs. Your real API
+keys stay in the macOS Keychain; agents get a scoped token instead.
+
+- **MCP-first.** Agents talk to Keysrs over MCP: they find keys in a project,
+  import them, and ask you for access. You approve each grant with Touch ID.
+- **Short-lived tokens.** A grant covers one key, one host and minutes to
+  hours; a project token lasts 30 days. Revoke everything in one call.
+- **Cloud VMs too.** A VM or sandbox gets a token, never the key. Its calls
+  come back to the gateway on your Mac, over SSH or a relay you deploy
+  yourself, and the real key is swapped in there.
+
+Keysrs also shows what Claude Code, Codex, Grok and Droid are spending.
 
 Free and MIT-licensed. macOS 14+ on Apple Silicon.
 
@@ -36,6 +44,19 @@ and Claude Desktop. Restart the agent, then ask it in plain words:
 - "Revoke everything." Ends every grant and project token at once.
 
 `keys unwrap` puts the original values back.
+
+## Cloud VMs
+
+```sh
+keys gateway on openai                               # once per key
+keys client issue openai --label "my vm" --days 7   # a revocable token for the VM
+keys tunnel user@my-vm                               # VM reaches the gateway over SSH
+```
+
+On the VM, point the agent at `http://127.0.0.1:12767/openai` and use the
+`ksfc_…` token as its API key. For a sandbox you can't SSH into, `keys relay`
+carries the same gateway through a Cloudflare Worker you deploy into your own
+account. See [cloud agents](docs/cloud-agents.md) and [the relay](docs/relay.md).
 
 ## From the command line
 
