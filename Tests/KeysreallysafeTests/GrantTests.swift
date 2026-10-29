@@ -851,4 +851,71 @@ final class ControlClientTests: XCTestCase {
             body: ["message": AppError.authUnavailable("sandbox").description, "detail": "sandbox"]
         ) {} else { XCTFail("auth_unavailable reads detail, not the prefixed message") }
     }
+
+    /// F3: the combined revoke_all route over the control path — the route
+    /// `keys revoke --all` now drives — answers BOTH counts through the same
+    /// token-gated site, the caller the CLI sends rides the audit rows, a bad
+    /// key name keeps its usage refusal, and no presence prompt is consumed.
+    func testCLIRevokeAllRouteThroughTheSite() throws {
+        let (db, dir) = try makeDB()
+        let (service, gate) = makeGatedService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        try service.add(name: "other", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.setGateway(name: "demo", enabled: true, host: nil, presenceChecked: true)
+        _ = try service.setGateway(name: "other", enabled: true, host: nil, presenceChecked: true)
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+        let handler = APIHandler(service: service, webRoot: web)
+        let server = try LoopbackHTTPServer(port: 0) { handler.handle($0) }
+        server.start()
+        defer { server.stop() }
+        let control = ControlFile.url(beside: db.path)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        let client = try ControlClient.connect(control: control)
+
+        let doomed = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(task: "doomed").validated()
+        )
+        let survivor = service.grants.issue(
+            key: "other", provider: "openai", host: "api.openai.com",
+            request: try GrantRequest(task: "live").validated()
+        )
+        let prompts = gate.reasons.count
+        _ = try service.issueGatewayClient(name: "demo", label: "agent a")
+        _ = try service.issueGatewayClient(name: "other", label: "agent c")
+        XCTAssertEqual(gate.reasons.count, prompts + 2, "setup spent the two issuance prompts")
+
+        // The CLI's spelling: the body names the key and the caller.
+        let scoped = try client.call(
+            method: "POST", path: "/api/mcp/revoke_all", body: ["key": "demo", "caller": "cli"], expect: 200
+        )
+        XCTAssertEqual(scoped["revoked_grants"] as? Int, 1)
+        XCTAssertEqual(scoped["revoked_clients"] as? Int, 1)
+        XCTAssertEqual(gate.reasons.count, prompts + 2, "the revoke route consumed no prompt")
+        XCTAssertNoThrow(try service.grants.authorize(
+            token: survivor.token, key: "other", host: "api.openai.com", method: "GET",
+            rest: "", providerPrefix: ""
+        ).get(), "the named-out key keeps working")
+        XCTAssertEqual(
+            try service.keyEvents(name: "demo").filter { $0.action == "client_revoke" }.first?.caller, "cli",
+            "the caller the CLI sends rides the audit row"
+        )
+        XCTAssertEqual(
+            try service.keyEvents(name: "demo").filter { $0.action == "grant_revoke" }.first?.caller, "cli"
+        )
+
+        // The tool's spelling: no key, no caller — the route's own default.
+        let all = try client.call(method: "POST", path: "/api/mcp/revoke_all", body: [:], expect: 200)
+        XCTAssertEqual(all["revoked_grants"] as? Int, 1, "only the survivor grant was still live")
+        XCTAssertEqual(all["revoked_clients"] as? Int, 1)
+        XCTAssertEqual(try service.keyEvents(name: "other").filter { $0.action == "grant_revoke" }.first?.caller, "mcp")
+
+        // A bad key name keeps the usage refusal the CLI prints as exit 1, and the
+        // grants-only dashboard route still answers its old shape untouched.
+        XCTAssertThrowsError(try client.call(method: "POST", path: "/api/mcp/revoke_all", body: ["key": "BAD NAME!"], expect: 200)) { error in
+            XCTAssertEqual((error as? AppError)?.exitCode, 1)
+        }
+        XCTAssertEqual(try service.listGrants(includeInactive: true).count, 2, "a refused call revoked nothing")
+    }
 }

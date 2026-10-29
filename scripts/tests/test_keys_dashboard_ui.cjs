@@ -71,7 +71,7 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits, subscriptions, nextSubId, grants, profiles;
+let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits, subscriptions, nextSubId, grants, profiles, preferences;
 
 function reset() {
   keys = baseKeys();
@@ -107,6 +107,11 @@ function reset() {
     connected_since: null, retry_at: null, last_error: null, inflight: 0,
     elsewhere: false, elsewhere_pid: null, stay_awake: false, awake: false,
   };
+  // The persisted app choices (GET /api/preferences). The app-mode default has the
+  // meter off, but this suite is about the meter's own presentation, so its fixture
+  // starts with the meter on; the fresh-store default and its migration are pinned
+  // in the XCTest PreferencesTests. The meter-visibility case flips it off and back.
+  preferences = { show_usage_meter: true, menubar_item: false, update_checks: true };
 }
 let catalogVersion = 1;
 let keyEvents = [];
@@ -321,7 +326,7 @@ function handle(method, pathname, body, params) {
     // only the server can refuse it.
     if (body.name.length > 128) return [400, { error: "name too long" }];
     if (!/^[a-z0-9][a-z0-9._-]*$/.test(body.name)) {
-      return [400, { error: `invalid name ${body.name} (expected [a-z0-9][a-z0-9._-]*)` }];
+      return [400, { error: "invalid name (expected [a-z0-9][a-z0-9._-]*)" }];
     }
     if (keys.some((k) => k.name === body.name)) return [409, { error: "already_exists" }];
     fixtureSecrets.set(body.name, body.secret);
@@ -526,6 +531,21 @@ function handle(method, pathname, body, params) {
     }
     return [200, { hidden: [...new Set(body.hidden)].sort() }];
   }
+  // The persisted app choices, mirroring the engine: GET reads them, each write takes exactly
+  // {on: bool} and answers the whole persisted state.
+  if (pathname === "/api/preferences" && method === "GET") return [200, preferences];
+  const preferenceKeys = {
+    "/api/preferences/show-usage-meter": "show_usage_meter",
+    "/api/preferences/menubar-item": "menubar_item",
+    "/api/preferences/update-checks": "update_checks",
+  };
+  if (preferenceKeys[pathname] && method === "POST") {
+    if (Object.keys(body).length !== 1 || typeof body.on !== "boolean") return [400, { error: "send on" }];
+    preferences[preferenceKeys[pathname]] = body.on;
+    return [200, preferences];
+  }
+  // Quit: the engine answers before it terminates; the fixture only records that it was asked.
+  if (pathname === "/api/app/quit" && method === "POST") return [200, { ok: true }];
   if (pathname === "/api/relay" && method === "GET") return [200, relay];
   if (pathname === "/api/relay" && method === "POST") {
     const fields = Object.keys(body);
@@ -4724,6 +4744,97 @@ test("the relay switch says why it cannot turn on: not set up, a Terminal relay,
   assert.equal(await sw.getAttribute("aria-checked"), "false");
   await relayHintMatches(page, /^keys relay is running in a Terminal \(process 4242\)/);
   assert.equal(relay.on, false);
+});
+
+// ---------- Settings: the Keysrs app's own choices ----------
+
+// The meter, the menu-bar item and automatic updates are persisted in the catalog, not this
+// browser, so the app menu shows the same values. Each write rides the page token and answers the
+// whole persisted state; a reload reads the store, not a browser copy.
+test("Settings shows the app's persisted choices and writes each one with the page token", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  const meter = page.locator("#meter-switch");
+  const menubar = page.locator("#menubar-item-switch");
+  const autoUpdate = page.locator("#auto-update-switch");
+  await page.waitForFunction(() => document.getElementById("meter-switch").getAttribute("aria-checked") === "true");
+  assert.equal(await menubar.getAttribute("aria-checked"), "false", "the menu bar item starts off");
+  assert.equal(await autoUpdate.getAttribute("aria-checked"), "true", "automatic updates start on");
+
+  await menubar.click();
+  await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
+  const posts = requests.filter((r) => r.method === "POST" && r.pathname === "/api/preferences/menubar-item");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].token, "test-token", "the write carries the page token");
+  assert.deepEqual(posts[0].body, { on: true });
+  assert.equal(preferences.menubar_item, true, "the engine stored the choice");
+
+  await autoUpdate.click();
+  await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "false");
+  assert.equal(preferences.update_checks, false);
+  assert.equal(preferences.show_usage_meter, true, "a write to one choice leaves the others alone");
+  assert.equal(preferences.menubar_item, true);
+
+  // A reload reads the persisted truth, not a browser copy.
+  await page.reload();
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
+  assert.equal(await autoUpdate.getAttribute("aria-checked"), "false");
+});
+
+// The meter is the Usage pane's plan windows. Hiding it takes them off screen only: the month's
+// totals line and the Chart stay, and turning it back on renders them from the same status.
+test("Show usage meter off hides the meter without removing the data, and on restores it", async (page, origin) => {
+  plans = [subPlan()];
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#live-status .live-row").first().waitFor();
+  assert.equal(await page.locator("#live-status .live-row").count(), 1);
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.locator("#meter-switch").click();
+  await page.waitForFunction(() => document.getElementById("meter-switch").getAttribute("aria-checked") === "false");
+  assert.equal(preferences.show_usage_meter, false);
+
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.waitForFunction(() => document.getElementById("live-status").hidden === true);
+  assert.equal(await page.locator("#live-status .live-row").count(), 0, "the meter is hidden");
+  assert.equal(await page.locator("#usage-empty").isHidden(), true, "a hidden meter does not read as no plan windows");
+  // The month's totals line is not the meter, so it stays.
+  await page.locator("#usage-totals b").first().waitFor();
+
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.locator("#meter-switch").click();
+  await page.waitForFunction(() => document.getElementById("meter-switch").getAttribute("aria-checked") === "true");
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.locator("#live-status .live-row").first().waitFor();
+  assert.equal(await page.locator("#live-status .live-row").count(), 1, "the meter returns from the same data");
+});
+
+// Quit and the relay controls are reachable from Settings while the window is shown, even with the
+// menu-bar item off. Quit posts to the app's own route; it answers before it terminates, so the
+// fetch sees its 200 rather than a dropped connection.
+test("with the menu bar item off, Settings still carries Quit and the relay controls", async (page, origin) => {
+  preferences.menubar_item = false;
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "false");
+  assert.equal(await page.locator("#relay-switch").isVisible(), true);
+  assert.equal(await page.locator("#relay-switch").isDisabled(), false, "the relay is reachable though the menu bar item is off");
+  assert.equal(await page.locator("#relay-awake-switch").isVisible(), true);
+  assert.equal(await page.locator("#btn-quit").isVisible(), true);
+
+  await page.locator("#btn-quit").click();
+  await page.waitForFunction(() => /Quitting Keysrs/.test(document.getElementById("status").textContent));
+  const posts = requests.filter((r) => r.method === "POST" && r.pathname === "/api/app/quit");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].token, "test-token", "Quit carries the page token");
+  assert.equal(await page.locator("#btn-quit").isDisabled(), true, "Quit is not clickable twice");
+  assert.match(await page.locator("#quit-hint").textContent(), /Quitting Keysrs/);
 });
 
 // ---------- Settings: which cards Usage shows ----------

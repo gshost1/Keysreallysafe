@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline fixtures for scripts/prepare-release.py."""
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -26,6 +27,7 @@ sys.path.insert(0, str(HERE))
 from test_build_app import FakeTools, make_repo  # noqa: E402
 
 APP = "Keysrs.app"
+REPO_CASK = HERE.parent.parent / "packaging" / "homebrew" / "keysrs.rb"
 
 
 class ReleaseTests(unittest.TestCase):
@@ -209,6 +211,95 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(command[command.index("-srcfolder") + 1], str(output))
         self.assertEqual(command[-1], str(self.root / "Keysrs-arm64.dmg"))
         self.assertNotIn("codesign", " ".join(command))
+
+    def install_cask(self):
+        """The checkout's committed cask, copied into the synthetic repo."""
+        cask = self.repo / release.CASK_PATH
+        cask.parent.mkdir(parents=True, exist_ok=True)
+        cask.write_text(REPO_CASK.read_text(encoding="utf-8"), encoding="utf-8")
+        return cask
+
+    def test_cask_step_fills_version_and_sha256_from_the_dmg(self):
+        cask = self.install_cask()
+        dmg = self.root / release.DMG_NAME
+        dmg.write_bytes(b"synthetic dmg bytes")
+        original = cask.read_text(encoding="utf-8")
+        version = build_app.read_version(self.repo)
+        digest = hashlib.sha256(b"synthetic dmg bytes").hexdigest()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            release.fill_cask(self.repo, dmg)
+        self.assertEqual(out.getvalue().strip(),
+                         f"cask filled: {release.absolute_path(cask)} version {version} sha256 {digest}")
+        filled = cask.read_text(encoding="utf-8")
+        self.assertIn(f'version "{version}"', [l.strip() for l in filled.splitlines()])
+        self.assertIn(f'sha256 "{digest}"', [l.strip() for l in filled.splitlines()])
+        self.assertNotIn("sha256 :no", [l.strip() for l in filled.splitlines()])
+        # Only the two stanzas change; every other line is untouched.
+        keep = [l for l in original.splitlines()
+                if not (l.strip().startswith("version ") or l.strip().startswith("sha256 "))]
+        kept = [l for l in filled.splitlines()
+                if not (l.strip().startswith("version ") or l.strip().startswith("sha256 "))]
+        self.assertEqual(kept, keep)
+        # The checkout's committed cask keeps its placeholder; only a release run fills it.
+        self.assertIn("sha256 :no",
+                      [l.strip() for l in REPO_CASK.read_text(encoding="utf-8").splitlines()])
+        # Refilling from a changed DMG rewrites the filled digest, not just the placeholder.
+        dmg.write_bytes(b"changed dmg bytes")
+        with contextlib.redirect_stdout(io.StringIO()):
+            release.fill_cask(self.repo, dmg)
+        self.assertIn(f'sha256 "{hashlib.sha256(b"changed dmg bytes").hexdigest()}"',
+                      [l.strip() for l in cask.read_text(encoding="utf-8").splitlines()])
+
+    def test_cask_step_requires_the_frozen_dmg_name_and_cask_file(self):
+        self.install_cask()
+        wrong = self.root / "Keysreallysafe-arm64.dmg"
+        wrong.write_bytes(b"synthetic")
+        with self.assertRaisesRegex(release.ReleaseError, "Keysrs-arm64.dmg"):
+            release.fill_cask(self.repo, wrong)
+        with self.assertRaisesRegex(release.ReleaseError, "missing required release DMG"):
+            release.fill_cask(self.repo, self.root / release.DMG_NAME)
+        self.install_cask().unlink()
+        (self.root / release.DMG_NAME).write_bytes(b"synthetic")
+        with self.assertRaisesRegex(release.ReleaseError, "missing required homebrew cask"):
+            release.fill_cask(self.repo, self.root / release.DMG_NAME)
+
+    def test_dmg_run_also_fills_the_cask(self):
+        cask = self.install_cask()
+        output = self.root / "release"
+        dmg = self.root / release.DMG_NAME
+
+        def fake_run(command, **kwargs):
+            # hdiutil is faked, so the DMG appears here for the fill step to hash.
+            dmg.write_bytes(b"synthetic dmg bytes")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch("subprocess.run", fake_run), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(release.main(["--repo", str(self.repo), "--app", str(self.app),
+                                           "--output", str(output), "--dmg", str(dmg)]), 0)
+        digest = hashlib.sha256(b"synthetic dmg bytes").hexdigest()
+        self.assertIn(f"cask filled: {release.absolute_path(cask)} "
+                      f"version {build_app.read_version(self.repo)} sha256 {digest}",
+                      out.getvalue())
+        self.assertIn(f'sha256 "{digest}"',
+                      [l.strip() for l in cask.read_text(encoding="utf-8").splitlines()])
+
+    def test_cli_fill_cask_is_standalone(self):
+        dmg = self.root / release.DMG_NAME
+        dmg.write_bytes(b"synthetic dmg bytes")
+        args = release.parse_args(["--fill-cask", str(dmg)])
+        self.assertEqual(args.fill_cask, dmg)
+        for argv in (["--fill-cask", str(dmg), "--app", str(self.app),
+                      "--output", str(self.root / "release")],
+                     ["--verify-package", str(self.root), "--fill-cask", str(dmg)],
+                     ["--fill-cask", str(dmg), "--dmg", str(dmg)]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                release.parse_args(argv)
+        cask = self.install_cask()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(release.main(["--repo", str(self.repo), "--fill-cask", str(dmg)]), 0)
+        self.assertIn("cask filled:", out.getvalue())
+        self.assertIn(f'sha256 "{hashlib.sha256(b"synthetic dmg bytes").hexdigest()}"',
+                      [l.strip() for l in cask.read_text(encoding="utf-8").splitlines()])
 
     def test_cli_requires_app_and_output(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):

@@ -49,8 +49,16 @@ struct Installer {
     var moveItem: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
     var removeItem: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
 
+    /// The real layout under Application Support. Throws under the test tripwire
+    /// without `KEYS_CATALOG` (S6): `uninstall()` removes `bin/`, `Web/` and the
+    /// rest of this root, so no test may ever construct it over the real folder.
     static var live: Installer {
-        Installer(root: Paths.appSupport, agentPlist: LoginItem.agentPlist, label: LoginItem.label, run: LoginItem.run)
+        get throws {
+            Installer(
+                root: try Paths.resolvingAppSupport(), agentPlist: LoginItem.agentPlist,
+                label: LoginItem.label, run: LoginItem.run
+            )
+        }
     }
 
     // Live layout under `root`.

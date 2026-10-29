@@ -125,6 +125,67 @@ automated here:
 4. Only after those pass: tag and publish the GitHub release with the DMG
    under the same name.
 
+## Homebrew cask (unpublished tap)
+
+`packaging/homebrew/keysrs.rb` is the Keysrs cask for our own tap,
+`gshost1/homebrew-keysrs`. The tap is unpublished: no repository exists and
+nothing has been pushed to it — the cask waits in this checkout, and nothing
+in the repo runs brew. It is ready to be copied into the tap whenever that
+repository is created.
+
+The cask installs `Keysrs-arm64.dmg` — the frozen name the site's download
+links and the in-app updater use — from the versioned GitHub release download
+URL of the `gshost1/Keysreallysafe` repo, so a cask upgrade always names the
+`v<version>` tag its checksum was computed from:
+
+```ruby
+url "https://github.com/gshost1/Keysreallysafe/releases/download/v#{version}/Keysrs-arm64.dmg"
+```
+
+It requires macOS 14 or newer (`depends_on macos: ">= :sonoma"`), installs
+`Keysrs.app`, and links the CLI
+(`binary "#{appdir}/Keysrs.app/Contents/MacOS/keys"` — the same one-binary CLI
+the app's own Install Command Line Tool links; a symlinked launch is the
+app's documented CLI path, and its repair logic never touches a link it did
+not create). It declares `auto_updates true` because the app's own updater is
+the canonical update path. Its `zap trash:` list matches the frozen paths in
+CLAUDE.md: the whole `~/Library/Application Support/Keysreallysafe/` tree
+(catalog.db, control.json, menubar.log, relay.lock, imports/, backups/,
+`.previous/` and the retired 0.9.x runtime dirs `bin/`, `Web/`, `Fixtures/`,
+`Plugins/`, `scripts/`), the legacy `com.keysreallysafe.menubar` launchd
+plist, the `~/.local/bin/keys` symlink, the status-item position defaults
+(`com.keysreallysafe.keysrs`), and the updater's
+`.Keysrs.app.incoming`/`.Keysrs.app.previous` leftovers beside the app. Zap
+is trash-only.
+
+The cask's `sha256 :no` is a placeholder. A new step in
+`scripts/prepare-release.py` fills it at release time: after `--dmg` packs
+the DMG it computes the artifact's SHA-256, rewrites the cask's `sha256`
+line (and its `version` line, from the same version constant the bundle was
+verified against), and prints both values — so the tap can never point at a
+checksum nobody computed:
+
+```sh
+python3 scripts/prepare-release.py --app … --output … --dmg <dir>/Keysrs-arm64.dmg
+# … offline release prepared: <dir>
+# … unsigned DMG created: <dir>/Keysrs-arm64.dmg
+# cask filled: <checkout>/packaging/homebrew/keysrs.rb version 0.14.0 sha256 <digest>
+```
+
+The published release normally ships the styled, signed and notarized DMG
+built by `scripts/build-dmg.sh` (the manual flow above), whose bytes differ
+from the plain `--dmg` artifact. The digest the cask carries must name the
+artifact the GitHub release actually holds, so after stapling, re-run the
+same step against the final DMG on its own:
+
+```sh
+python3 scripts/prepare-release.py --fill-cask <dir>/Keysrs-arm64.dmg
+```
+
+The step is offline and deterministic: it reads the DMG, the cask and the
+version source, prints the values and writes that one file. It never runs
+brew, never creates the tap repository and publishes nothing.
+
 ## In-app updates
 
 From 0.11.0 the app can update itself from the latest published release. It

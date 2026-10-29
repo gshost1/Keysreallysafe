@@ -52,6 +52,76 @@ final class AgentSetupTests: XCTestCase {
         XCTAssertTrue(after.contains("base_url = \"http://127.0.0.1:12767/work\""))
     }
 
+    /// The symmetric removal primitive `keys setup mcp --remove` needs for Codex: it
+    /// takes out exactly the named table and its body, leaving every neighbour
+    /// byte-identical, and is a no-op on a file that never had it.
+    func testTOMLRemoveSection() {
+        let before = """
+        model = "gpt-5"
+        startup = "signals"
+
+        [mcp_servers.keysrs]
+        command = "/old/keys"
+        args = ["mcp"]
+
+        [mcp_servers.node_repl]
+        command = "npx"
+        args = ["-y", "mcp-server-node-repl"]
+        startup_timeout_sec = 30
+
+        [mcp_servers.node_repl.env]
+        NODE_ENV = "production"
+
+        [projects.untitled]
+        trust_level = "trusted"
+        """ + "\n"
+        let after = TOMLFile.removeSection(before, header: "mcp_servers.keysrs")
+        XCTAssertFalse(after.contains("[mcp_servers.keysrs]"))
+        XCTAssertFalse(after.contains("/old/keys"))
+        // The bytes before the removed header and from the next header onward are
+        // string-equal to the input.
+        XCTAssertTrue(after.hasPrefix("model = \"gpt-5\"\nstartup = \"signals\"\n\n"))
+        XCTAssertTrue(after.hasSuffix("[projects.untitled]\ntrust_level = \"trusted\"\n"))
+        // No other line changed: the result is the input with exactly the header, its
+        // body and the blank line that closed the body removed.
+        let expected = """
+        model = "gpt-5"
+        startup = "signals"
+
+        [mcp_servers.node_repl]
+        command = "npx"
+        args = ["-y", "mcp-server-node-repl"]
+        startup_timeout_sec = 30
+
+        [mcp_servers.node_repl.env]
+        NODE_ENV = "production"
+
+        [projects.untitled]
+        trust_level = "trusted"
+        """ + "\n"
+        XCTAssertEqual(after, expected)
+
+        // A file without the header is a byte-identical no-op.
+        let noSection = "model = \"gpt-5\"\n\n[ui]\ntheme = \"tokyonight\"\n"
+        XCTAssertEqual(TOMLFile.removeSection(noSection, header: "mcp_servers.keysrs"), noSection)
+
+        // On a file that never had the section, upsertSection then removeSection
+        // returns the ORIGINAL bytes — the separator blank line the append inserts
+        // goes with the table.
+        let original = "model = \"gpt-5\"\n"
+        let upserted = TOMLFile.upsertSection(
+            original, header: "mcp_servers.keysrs",
+            bodyLines: ["command = \"/new/keys\"", "args = [\"mcp\"]"]
+        )
+        XCTAssertEqual(TOMLFile.removeSection(upserted, header: "mcp_servers.keysrs"), original)
+        // And once more through the middle of the file, not just at the end.
+        let midOriginal = "model = \"gpt-5\"\n\n[ui]\ntheme = \"tokyonight\"\n"
+        let midUpserted = TOMLFile.upsertSection(
+            midOriginal, header: "mcp_servers.keysrs", bodyLines: ["command = \"/new/keys\""]
+        )
+        XCTAssertEqual(TOMLFile.removeSection(midUpserted, header: "mcp_servers.keysrs"), midOriginal)
+    }
+
     func testTOMLTopLevelKeyReplacesOrInsertsAboveTheFirstHeader() {
         let before = "model = \"gpt-6-astra\"\n\n[projects.x]\ntrust_level = \"trusted\"\n"
         let replaced = TOMLFile.upsertTopLevelKey(before, line: "model = \"claude-sonnet-4-5\"", key: "model")

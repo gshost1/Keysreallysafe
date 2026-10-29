@@ -49,6 +49,30 @@ func makeDB() throws -> (CatalogDB, URL) {
     return (try CatalogDB(path: path), dir)
 }
 
+/// Owner directive 2026-10-28, binding: a sibling mission's test once reached the real
+/// installed app and wrote to the REAL vault. No test in this mission may ever reach
+/// `/Applications/Keysrs.app`, its `control.json`, the real Keychain or
+/// `~/Library/Application Support/Keysreallysafe` — and the real app is running on this
+/// machine, so a request that slips through would import keys into the real vault or
+/// rewrite real files. Every test that touches a control-channel path (a control file, a
+/// catalog, an app-bound seam built from any URL) calls this with the path under test and
+/// FAILS CLOSED: a path that resolves inside the production location aborts the test
+/// loudly instead of proceeding. Never construct a rig from the production-default seams
+/// (`ControlFile.url()`, `Paths.catalogDB`) without passing the resulting URL through
+/// this guard.
+func assertNotProductionPath(_ path: URL, file: StaticString = #filePath, line: UInt = #line) throws {
+    let resolved = path.resolvingSymlinksInPath().path
+    let production = Paths.appSupport.resolvingSymlinksInPath().path
+    guard resolved != production, !resolved.hasPrefix(production + "/") else {
+        // Thrown, not XCTAssertFalse: the test aborts before whatever it was about to do
+        // against the real app, and the guard's own test can catch this to prove it fires.
+        throw AppError.usage(
+            "test rig points at the real Keysrs location; refusing to run against the installed app — "
+                + "use a temp catalog and a temp control file (owner directive 2026-10-28)"
+        )
+    }
+}
+
 func makeService(db: CatalogDB) -> (KeysService, MemorySecretStore, FakeClipboard) {
     let secrets = MemorySecretStore()
     let clipboard = FakeClipboard()
@@ -127,6 +151,7 @@ final class RequestLog: @unchecked Sendable {
     private var requests: [HTTPRequest] = []
     var count: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
     var last: HTTPRequest? { lock.lock(); defer { lock.unlock() }; return requests.last }
+    var all: [HTTPRequest] { lock.lock(); defer { lock.unlock() }; return requests }
     func record(_ request: HTTPRequest) { lock.lock(); requests.append(request); lock.unlock() }
 }
 
@@ -302,6 +327,69 @@ final class RecordingPresenceGate: PresenceGate, @unchecked Sendable {
     }
 }
 
+/// A presence gate whose `require` records the reason, announces entry, then blocks
+/// until the test releases it — the double that proves a call answered while the
+/// prompt was provably up (VAL-GRANT-001) without any sleeping. Each release hands
+/// the next prompt its outcome: `nil` approves, an `AppError` denies, and a release
+/// that lands before the prompt fires is taken by the next `require` immediately,
+/// so pre-releasing turns the gate into an instant scripted one.
+final class BlockingPresenceGate: PresenceGate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var reasons: [String] = []
+    private var outcomes: [AppError?] = []
+    /// Prompts currently parked inside `require` — what `releaseAll` must unblock.
+    private var parked = 0
+    private let entered = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+
+    /// Every reason a prompt showed, in order.
+    var recordedReasons: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return reasons
+    }
+
+    func require(reason: String) throws {
+        lock.lock()
+        reasons.append(reason)
+        parked += 1
+        lock.unlock()
+        entered.signal()
+        release.wait()
+        lock.lock()
+        parked -= 1
+        let outcome = outcomes.isEmpty ? nil : outcomes.removeFirst()
+        lock.unlock()
+        if let outcome { throw outcome }
+    }
+
+    /// Releases the next prompt (or arms the next one) with `outcome`.
+    func release(_ outcome: AppError? = nil) {
+        lock.lock()
+        outcomes.append(outcome)
+        lock.unlock()
+        release.signal()
+    }
+
+    /// Unblocks every prompt parked right now, so no approval thread outlives the
+    /// test. (`waitPrompts` observations are not spent here — only parked prompts
+    /// count, so an earlier `waitPrompts` cannot swallow a `releaseAll`.)
+    func releaseAll(_ outcome: AppError? = nil) {
+        lock.lock()
+        let count = parked
+        outcomes.append(contentsOf: Array(repeating: outcome, count: count))
+        lock.unlock()
+        for _ in 0..<count { release.signal() }
+    }
+
+    /// Bounded wait until at least `count` prompts have fired.
+    func waitPrompts(_ count: Int, timeout: TimeInterval = 5) -> Bool {
+        for _ in 0..<count where entered.wait(timeout: .now() + timeout) != .success {
+            return false
+        }
+        return true
+    }
+}
+
 extension UsageEvent {
     /// One local usage row; the provider follows from the source.
     static func fixture(
@@ -370,4 +458,127 @@ extension CodexIngest {
         var parser = LineParser(sessionId: sessionIdFromFilename(url.lastPathComponent))
         return text.split(separator: "\n").compactMap { parser.consume(String($0)) }
     }
+}
+
+// MARK: - The launch seams behind AppConnection.connect()
+
+/// The launch-seam fake: one recording object standing in for both the launcher
+/// and the clock, so a test runs the REAL bounded schedule and the REAL retry of
+/// `AppConnection.connect()` and asserts the trace afterwards. `onSleep` is the
+/// hook a rig stands its synthetic site up from — the clock is what the schedule
+/// actually waits on. `failOnOpen` turns any open into a test failure, for the
+/// callers the contract says must never launch.
+final class RecordingAppLaunch: AppLauncher, AppLaunchClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var targets: [String] = []
+    private var slept: [TimeInterval] = []
+    /// Set before the drive; receives the 1-based count of sleeps so far.
+    var onSleep: (@Sendable (Int) -> Void)?
+    /// True once any open reached this fake.
+    private(set) var opened = false
+    /// Whether an open by bundle id is accepted; false simulates a bundle id
+    /// LaunchServices cannot resolve (forcing the installed-path fallback).
+    var openBundleID = true
+    /// What `resolve` answers for the bundle id; nil — LaunchServices has
+    /// nothing registered — is the default. A test that scripts a FOREIGN
+    /// resolution (a mounted disk image's copy, a build output) sets it here,
+    /// and the seam's policy must refuse it before anything opens.
+    var registeredBundleURL: URL?
+    /// Whether an open of the installed path is accepted; false simulates nothing
+    /// being installed.
+    var openInstalledPath = true
+    /// When true, an open is a test failure — for the zero-launch contracts.
+    var failOnOpen = false
+
+    func resolve(bundleID: String) -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return registeredBundleURL
+    }
+
+    func open(bundleID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if failOnOpen { XCTFail("launching \(bundleID): this caller must not launch the app") }
+        opened = true
+        targets.append("bundle:\(bundleID)")
+        return openBundleID
+    }
+
+    func open(installedAt url: URL) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if failOnOpen { XCTFail("launching \(url.path): this caller must not launch the app") }
+        opened = true
+        targets.append("path:\(url.path)")
+        return openInstalledPath
+    }
+
+    func sleep(for interval: TimeInterval) {
+        lock.lock()
+        let count = slept.count + 1
+        slept.append(interval)
+        lock.unlock()
+        onSleep?(count)
+    }
+
+    /// The opens the one seam attempted, in order: "bundle:<id>" / "path:<url>".
+    var launchTargets: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return targets
+    }
+
+    /// The backoff schedule the one seam asked for, in order.
+    var sleeps: [TimeInterval] {
+        lock.lock(); defer { lock.unlock() }
+        return slept
+    }
+
+    var sleepTotal: TimeInterval { sleeps.reduce(0, +) }
+
+    /// The seam `AppConnection.connect(launch:)` runs with.
+    var seam: AppLaunchSeam { AppLaunchSeam(launcher: self, clock: self) }
+}
+
+extension AppLaunchSeam {
+    /// The tests' never-launching default: opens are refused and no wait passes,
+    /// so an app-bound call answers the plain not-running sentence instantly and
+    /// no rig can reach the installed app or the wall clock by forgetting a seam.
+    static var neverLaunching: AppLaunchSeam {
+        AppLaunchSeam(launcher: RecordingAppLaunch(), clock: RecordingAppLaunch())
+    }
+}
+
+/// The show-route spy: the app-side window seam `POST /api/mcp/app/show` drives.
+/// Counts the shows so a test can prove one show and no browser anywhere.
+final class ShowSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func show() { lock.lock(); count += 1; lock.unlock() }
+    var calls: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+/// Counts the authorization asks a notifier makes and never shows a real OS
+/// permission dialog.
+final class RecordingNotificationAuthorizer: NotificationAuthorizing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var granted = true
+    func requestAuthorization() async -> Bool {
+        lock.withLock { count += 1 }
+        return granted
+    }
+    var requests: Int { lock.withLock { count } }
+}
+
+/// Records every delivered notification and never posts to the real notification
+/// center, so a test can assert on the exact payloads.
+final class RecordingNotificationDelivery: NotificationDelivering, @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [AppNotification] = []
+    func deliver(_ notification: AppNotification) async {
+        lock.withLock { stored.append(notification) }
+    }
+    var notifications: [AppNotification] { lock.withLock { stored } }
+    var count: Int { lock.withLock { stored.count } }
 }

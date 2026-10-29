@@ -279,6 +279,35 @@ final class RelayHostTests: XCTestCase {
         XCTAssertFalse(blocker.isHeld, "a relay that is off keeps nothing awake")
     }
 
+    /// A relayed call stamps the moment it opened or closed (H4's quiet-gate
+    /// source): the background update gate reads `lastRelayedCall` so a call
+    /// relayed moments ago holds the install for its recent-use window. The
+    /// relay's own clock is injected, so the stamp is scriptable.
+    func testARelayedCallStampsTheMomentTheUpdateGateReads() async throws {
+        let clock = LockedValue(Date(timeIntervalSince1970: 1_700_000_000))
+        let socket = FakeRelaySocket()
+        let host = RelayHost(
+            log: { _ in },
+            dialer: FakeRelayDialer([.success(socket)]),
+            blocker: FakeSleepBlocker(),
+            now: { clock.get() }
+        )
+        XCTAssertNil(host.lastRelayedCall, "nothing has been relayed yet")
+
+        host.start(origin: origin, secret: secret, gatewayPort: 1, relayLock: try RelayLock(at: try TempDir.make().appendingPathComponent("relay.lock")))
+        defer { host.stop() }
+        try await until("connected") { isConnected(host.status.state) }
+
+        socket.push(RelayFrame(type: .request, id: 1, payload: head()))
+        try await until("one call open") { host.status.state.inflight == 1 }
+        XCTAssertEqual(host.lastRelayedCall, clock.get(), "the call opening stamped the moment")
+
+        clock.set(clock.get().addingTimeInterval(90))
+        socket.push(RelayFrame(type: .cancel, id: 1))
+        try await until("no call open") { host.status.state.inflight == 0 }
+        XCTAssertEqual(host.lastRelayedCall, clock.get(), "the call closing stamps it too — the LAST moment is what the gate reads")
+    }
+
     // MARK: service and API
 
     private func gatedService() throws -> (KeysService, RecordingPresenceGate) {

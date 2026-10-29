@@ -78,13 +78,17 @@ enum AppRuntime {
             .first { $0.processIdentifier != getpid() }
         if let running {
             running.activate(options: [.activateAllWindows])
+            // The running app is headless at rest: activation alone would bring
+            // no window forward, so ask it to show its own window over the same
+            // control channel `keys dashboard` uses, then exit.
+            AppRuntime.requestShowFromRunningInstance()
             return
         }
         let binary = Bundle.main.executableURL!
-        let previous = Installer.live.binary
+        let previous = try Installer.live.binary
         // Reject an identity change before stopping the old process or removing its executable.
         try StableSigning.validate(binary, replacing: FileManager.default.fileExists(atPath: previous.path) ? previous : nil)
-        let root = Paths.appSupport
+        let root = try Paths.resolvingAppSupport()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lock = try AppInstanceLock(root: root)
         defer { lock.close() }
@@ -97,6 +101,11 @@ enum AppRuntime {
         let service = try AppFactory.makeService()
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.
         service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
+        // The app owns notifications: the authorization ask and the local-state poll
+        // both run from the app process, never from a CLI or MCP subprocess.
+        let notifications = AppNotifier(preferences: service.preferences)
+        // The MCP set_analytics_sharing route's one confirmation line, beside the relay's.
+        service.analyticsLog = { logFile.write($0) }
         var startedServer: LoopbackHTTPServer?
         do {
             try LegacyAppMigration(root: root, plist: LoginItem.agentPlist, run: LoginItem.run, log: log).migrate {
@@ -114,21 +123,119 @@ enum AppRuntime {
         }
         let url = URL(string: "http://127.0.0.1:\(server.boundPort)/")!
         runOnMainActor {
-            let app = NSApplication.shared
-            app.setActivationPolicy(.regular)
-            let extra = MenubarExtra(service: service, server: server, url: url)
-            extra.appWindow = AppWindowController(url: url, preferences: service.preferences)
-            extra.appWindow?.installMenu(extra: extra)
-            MenubarRuntime.extra = extra
-            app.delegate = extra
-            IngestScheduler.scheduleRepeating(service: service)
-            OpenRouterScheduler.schedule(service: service)
+            _ = AppRuntime.assembleApp(service: service, server: server, url: url, log: log, notifications: notifications)
+            NSApplication.shared.run()
+        }
+    }
+
+    /// A direct second invocation (a person opening Keysrs.app again, or running
+    /// the binary while the app is up) asks the running app to present its
+    /// window through the same token-gated control channel `keys dashboard`
+    /// uses, then exits. The launch is the app's own show path, so it becomes
+    /// `.regular` while the window is shown; a failure is ignored, because a
+    /// first launch that is still binding its site will show it itself.
+    /// Returns whether a live site was asked.
+    @discardableResult
+    static func requestShowFromRunningInstance(
+        control: URL? = nil,
+        client: (ControlFile.Info) -> ControlClient = { ControlClient(info: $0) }
+    ) -> Bool {
+        // The default control URL resolves inside the body (a Swift default
+        // argument cannot throw): under the test tripwire there is deliberately
+        // no default control file, so a second invocation inside a test process
+        // finds no live app and asks nothing — the fail-closed direction.
+        guard let control = control ?? (try? ControlFile.url()) else { return false }
+        guard let info = ControlFile.live(at: control) else { return false }
+        _ = try? client(info).call(method: "POST", path: "/api/mcp/app/show", expect: 200)
+        return true
+    }
+
+    /// The main-actor half of `run()`: the long-lived app assembled around the
+    /// bound site, split out with injected seams so the headless launch contract
+    /// is testable without a bundle or a window server. Launch applies the
+    /// resting `.accessory` policy, runs the one-time 0.13 preference migration
+    /// before any surface reads a preference, starts no dashboard window and
+    /// raises no welcome — presentation waits for an approved show path — while
+    /// the ingest scheduler, the OpenRouter scheduler and the first ingest pass
+    /// all start, because they are services, not presentation.
+    @MainActor
+    static func assembleApp(
+        service: KeysService,
+        server: LoopbackHTTPServer,
+        url: URL,
+        log: @escaping (String) -> Void = { _ in },
+        activationApplier: @escaping (AppActivation.Policy) -> Void = AppActivation.applyPolicy,
+        window: (any DashboardWindow)? = nil,
+        makeItemController: @escaping () -> MenubarItemController = { MenubarItemController() },
+        scheduleIngest: (KeysService) -> Void = { IngestScheduler.scheduleRepeating(service: $0) },
+        scheduleOpenRouter: (KeysService) -> Void = { OpenRouterScheduler.schedule(service: $0) },
+        ingestInitially: (KeysService) -> Void = { service in
             DispatchQueue.global(qos: .utility).async {
                 _ = try? service.ingest(.all)
                 try? service.pollOpenRouter()
             }
-            app.run()
+        },
+        notifications: AppNotifier? = nil,
+        startNotifications: (AppNotifier, KeysService) -> Void = AppRuntime.startNotificationPoller,
+        latestRelease: (() async throws -> ReleaseInfo)? = nil,
+        background: BackgroundUpdater? = nil
+    ) -> MenubarExtra {
+        do { try service.preferences.applyHeadlessDefaults() }
+        catch { log("headless defaults pending: \(error.localizedDescription)") }
+        let activation = AppActivation(apply: activationApplier)
+        let extra = MenubarExtra(service: service, server: server, url: url, makeItemController: makeItemController)
+        // The scheduled check's install half: the app's own prompt and gateway
+        // counters, the same installer path Update Now runs, and the app's own
+        // quit. Absent only where a rig injects one — the seam is what keeps
+        // every launch test offline. The activity also consults the relay and
+        // recent grant/client-token use (H4): the restart would cut a live relay
+        // session and drop every grant, so the gate holds while a use is fresh.
+        let updater = background ?? BackgroundUpdater(
+            activity: AppUpdateActivity(
+                prompts: service.presencePrompts,
+                pendingGrants: service.mcpPendingGrants,
+                gateway: service.gatewayActivity,
+                recentUse: ServiceRecentUse(service: service)
+            ),
+            notifier: notifications,
+            quit: { [weak extra] in
+                if let extra { extra.quit() } else { NSApp.terminate(nil) }
+            },
+            log: log
+        )
+        extra.appWindow = AppWindowController(
+            url: url,
+            preferences: service.preferences,
+            activation: activation,
+            window: window,
+            latestRelease: latestRelease,
+            background: updater,
+            log: log
+        )
+        extra.appWindow?.installMenu(extra: extra)
+        MenubarRuntime.extra = extra
+        NSApplication.shared.delegate = extra
+        scheduleIngest(service)
+        scheduleOpenRouter(service)
+        ingestInitially(service)
+        // The one startup prompt the headless app may raise: the OS notification
+        // permission request, behind the injected notifier. Absent (every test
+        // rig that does not inject one) it starts nothing and shows no dialog.
+        if let notifications {
+            service.notifications = notifications
+            startNotifications(notifications, service)
         }
+        return extra
+    }
+
+    /// Starts the app's notification poll: the one authorization ask and the
+    /// repeating local-state poll. The poller is retained on the service so its
+    /// timer outlives this launch seam; a local would deallocate and its weak
+    /// handler would go quiet.
+    static func startNotificationPoller(_ notifier: AppNotifier, service: KeysService) {
+        let poller = AppNotificationPoller(notifier: notifier, snapshot: { service.notificationSnapshot() })
+        service.notificationPoller = poller
+        poller.start()
     }
 }
 
@@ -198,6 +305,38 @@ final class UpdateCheck: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+}
+
+extension UpdateCheck {
+    /// The synchronous face of `latestRelease()` for callers on a plain thread —
+    /// the `keys mcp` server serves its whole loop on one thread, so `check_update`
+    /// needs the answer inline. The bridge only waits: the ephemeral session, its
+    /// policies (no cookies, no cache, redirects refused, the 20 s bound) and every
+    /// failure sentence stay in `latestRelease()`, so this can add no wording of
+    /// its own. A read-only check — the installer is never on this path.
+    static func latestReleaseSync() throws -> ReleaseInfo {
+        final class Outcome: @unchecked Sendable {
+            private let lock = NSLock()
+            private var result: Result<ReleaseInfo, any Error>?
+            func store(_ value: Result<ReleaseInfo, any Error>) {
+                lock.lock(); result = value; lock.unlock()
+            }
+            func load() throws -> ReleaseInfo {
+                lock.lock(); defer { lock.unlock() }
+                guard let result else { throw AppError.http("GitHub did not return a release.") }
+                return try result.get()
+            }
+        }
+        let outcome = Outcome()
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            do { outcome.store(.success(try await UpdateCheck.latestRelease())) }
+            catch { outcome.store(.failure(error)) }
+            done.signal()
+        }
+        done.wait()
+        return try outcome.load()
     }
 }
 

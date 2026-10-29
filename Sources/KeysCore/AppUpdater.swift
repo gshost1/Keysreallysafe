@@ -308,6 +308,26 @@ final class UpdateInstaller: @unchecked Sendable {
     var report: ((Phase) -> Void)?
     /// How to quit the app once the swap is done; AppWindow passes the menu's own quit path.
     var quit: (() -> Void)?
+    /// The background path's pre-swap idleness gate (H2): the same activity the
+    /// quiet wait sampled, re-read immediately before the first bundle move. The
+    /// download and verification took minutes, and a Touch ID prompt or gateway
+    /// call that came up in that window must not die to the swap — past this
+    /// point the running bundle starts moving and a relaunch helper is about to
+    /// be pending, so this is the last refusal that costs nothing. The manual
+    /// flow leaves it nil: its modal progress window keeps the person in charge
+    /// of the timing.
+    var idleGate: (any UpdateActivitySource)?
+    /// Whether the swap hands off to the restart helper itself (the manual flow)
+    /// or leaves it pending for the caller (the background path, S2). The
+    /// helper deletes the old bundle and opens the new one 30 s after this
+    /// process is gone at the latest, so it may only start once the caller has
+    /// decided to quit: the background updater re-checks idleness after `run()`
+    /// returns, and a helper spawned before that check would delete the bundle
+    /// out from under an app that stayed up and open a second copy beside it.
+    var defersRelaunch = false
+    /// How the restart helper starts; a test counts calls instead of spawning.
+    var spawn: ([String]) throws -> Void = AppUpdater.spawnRelauncher
+    private var pendingRelaunch: [String]?
     private var download: ReleaseAssetDownload?
     private var cancelled = false
 
@@ -381,6 +401,14 @@ final class UpdateInstaller: @unchecked Sendable {
         // The signature gate comes after staging and before the swap: a different team or
         // requirement would silently cut the app off from every Keychain item it owns.
         try StableSigning.validate(plan.incoming, replacing: plan.app)
+        // The background path's last idleness check, immediately before the first
+        // bundle move (H2): the quiet window that opened before the download says
+        // nothing about the minutes that have since passed, and a prompt or gateway
+        // call that came up in that window must not die to the swap. Nothing has
+        // moved yet, so refusing here is the one point where the install can defer
+        // with no relauncher pending; the background updater answers the thrown
+        // deferral with its deferred line and the next daily check tries again.
+        if let idleGate, idleGate.busy { throw BackgroundInstallBusy() }
         do { try fm.moveItem(at: plan.app, to: plan.previous) }
         catch {
             try? fm.removeItem(at: plan.incoming)
@@ -397,8 +425,26 @@ final class UpdateInstaller: @unchecked Sendable {
         // and the download removed here; on every failure path the defers are the cleanup.
         try? LoginItem.run("/usr/bin/hdiutil", ["detach", mountPath])
         try? fm.removeItem(at: work)
-        try AppUpdater.spawnRelauncher(AppUpdater.relauncher(pid: getpid(), old: plan.previous, new: plan.app))
+        try handOff(AppUpdater.relauncher(pid: getpid(), old: plan.previous, new: plan.app))
+    }
+
+    /// The swap is done: the manual flow starts the restart helper and quits now,
+    /// the background path keeps the helper's arguments until `relaunch()`.
+    func handOff(_ relauncher: [String]) throws {
+        if defersRelaunch {
+            pendingRelaunch = relauncher
+            return
+        }
+        try spawn(relauncher)
         quit?()
+    }
+
+    /// Starts the restart helper the background path held back, immediately
+    /// before its quit. A failed spawn keeps it pending for the next attempt.
+    func relaunch() throws {
+        guard let relauncher = pendingRelaunch else { return }
+        try spawn(relauncher)
+        pendingRelaunch = nil
     }
 
     /// The API's own digest is preferred; a sidecar asset means one more small download.

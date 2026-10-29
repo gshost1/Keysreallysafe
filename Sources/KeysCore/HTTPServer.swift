@@ -112,12 +112,131 @@ final class APIHandler: @unchecked Sendable {
     let service: KeysService
     let webRoot: URL
     let originToken: String
+    /// The app's one "show my window" action, as the MCP `open_app` route drives
+    /// it. The default fronts the running app's own window through its controller
+    /// and does NOTHING when there is no window — it is deliberately not the
+    /// menubar's dashboard opener, which falls back to opening a browser, and an
+    /// agent's open_app must never open a browser. Injectable so a test can watch
+    /// the one invocation.
+    private let showAppWindow: () -> Void
+    /// The app-reaction seams for the persisted preferences and Quit: the store
+    /// is written first, then the running app's surface follows the same choice.
+    /// Defaults front the running app through MenubarRuntime; injectable so
+    /// tests watch the calls without an app.
+    private let setMenubarItem: (Bool) -> Void
+    private let setUpdateChecks: (Bool) -> Void
+    /// The running app's own shutdown action, or nil when no app owns this
+    /// dashboard (the dev `keys dashboard` copy), which must refuse rather than
+    /// exit someone else's process.
+    private let quitApp: () -> (() -> Void)?
+    /// How a successful Quit is handed off: the dashboard's fetch must receive
+    /// its 200 before termination stops the loopback server, so the shutdown is
+    /// scheduled, never run inside the request handler.
+    private let scheduleQuit: (@escaping () -> Void) -> Void
+    /// The app's one "open this feedback URL" action, as the MCP `send_feedback`
+    /// route drives it. This seam is the deliberate, documented exception to the
+    /// no-opening rule `open_app` carries: opening the user's mail client or the
+    /// GitHub issue page IS send_feedback's purpose — the app scrubs the draft
+    /// first, and the user, not Keysrs, reviews and sends what opens. Keysrs
+    /// itself never submits and opens nothing else anywhere on this path.
+    /// Injectable so a test can watch the one invocation without opening anything.
+    private let openFeedbackURL: (URL) -> Void
+    /// The pure scrubber the feedback route runs. A throwing scrub must fail the
+    /// whole call (a 400, nothing opened) — the fail-closed contract — so the
+    /// scrub is a seam a test can make throw without a real uncompilable
+    /// pattern (VAL-F-003).
+    private let scrubFeedback: (FeedbackScrubber.Request) throws -> (scrubbed: String, removed: [String: Int])
 
-    init(service: KeysService, webRoot: URL, originToken: String = OriginToken.generate()) {
+    init(
+        service: KeysService,
+        webRoot: URL,
+        originToken: String = OriginToken.generate(),
+        showAppWindow: @escaping () -> Void = APIHandler.frontKeysrsWindow,
+        setMenubarItem: @escaping (Bool) -> Void = APIHandler.applyMenubarItemPreference,
+        setUpdateChecks: @escaping (Bool) -> Void = APIHandler.applyUpdateChecksPreference,
+        quitApp: @escaping () -> (() -> Void)? = APIHandler.quitKeysrsApp,
+        scheduleQuit: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) },
+        openFeedbackURL: @escaping (URL) -> Void = FeedbackDelivery.openExternally,
+        scrubFeedback: @escaping (FeedbackScrubber.Request) throws -> (scrubbed: String, removed: [String: Int]) = FeedbackScrubber.scrub
+    ) {
         self.service = service
         self.webRoot = webRoot
         self.originToken = originToken
+        self.showAppWindow = showAppWindow
+        self.setMenubarItem = setMenubarItem
+        self.setUpdateChecks = setUpdateChecks
+        self.quitApp = quitApp
+        self.scheduleQuit = scheduleQuit
+        self.openFeedbackURL = openFeedbackURL
+        self.scrubFeedback = scrubFeedback
         service.analytics?.start()
+    }
+
+    /// The real show path: the running app's window controller on the main actor,
+    /// where AppKit lives. No controller (a dashboard-only process, or the app
+    /// before its window exists) means nothing happens — there is no fallback to
+    /// any browser and no LaunchServices call on this path.
+    static func frontKeysrsWindow() {
+        runOnMainActor { MenubarRuntime.extra?.appWindow?.show() }
+    }
+
+    /// The real preference reactions, on the main actor where the surfaces live.
+    /// A site no app owns simply has no surface to update: the store is already
+    /// written, so the answer is still the persisted truth.
+    static func applyMenubarItemPreference(_ on: Bool) {
+        runOnMainActor { MenubarRuntime.extra?.setMenubarItemShown(on) }
+    }
+
+    static func applyUpdateChecksPreference(_ on: Bool) {
+        runOnMainActor { MenubarRuntime.extra?.appWindow?.applyUpdateChecks(on) }
+    }
+
+    /// The app's own Quit, as an action the route can schedule. Reports nil when
+    /// no running app accepted the request, so a dashboard served by something
+    /// else can refuse honestly. The action is not run here: stopping the
+    /// loopback server inside the request handler would drop the dashboard's
+    /// successful fetch.
+    static func quitKeysrsApp() -> (() -> Void)? {
+        var owned = false
+        runOnMainActor { owned = MenubarRuntime.extra != nil }
+        guard owned else { return nil }
+        // The action re-enters the main actor when it runs, so the returned
+        // closure carries no isolation of its own.
+        return { runOnMainActor { MenubarRuntime.extra?.quit() } }
+    }
+
+    /// GET /api/preferences — the persisted choices both surfaces read.
+    private func preferencesStatus() -> HTTPResponse {
+        HTTPResponse.json(200, [
+            "show_usage_meter": service.preferences.showUsageMeter,
+            "menubar_item": service.preferences.menubarItem,
+            "update_checks": service.preferences.updateChecks,
+        ])
+    }
+
+    /// The `{"on": bool}` body every preference write carries; exactly one
+    /// boolean field and nothing else.
+    private func preferenceFlag(_ request: HTTPRequest) throws -> Bool? {
+        let obj = try jsonBody(request)
+        guard obj.count == 1, let on = JSONValue.bool(obj["on"]) else { return nil }
+        return on
+    }
+
+    private func preferenceSet(_ request: HTTPRequest, _ write: (Bool) throws -> Void) throws -> HTTPResponse {
+        guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
+        try write(on)
+        return preferencesStatus()
+    }
+
+    /// POST /api/app/quit — the token-gated Quit behind the Settings button. The
+    /// 200 is built first and the shutdown dispatched afterwards, so the
+    /// dashboard's fetch is not dropped when the loopback server stops.
+    private func appQuit() -> HTTPResponse {
+        guard let terminate = quitApp() else {
+            return HTTPResponse.json(409, ["error": "no app owns this dashboard; stop it in its Terminal instead"])
+        }
+        scheduleQuit(terminate)
+        return HTTPResponse.json(200, ["ok": true])
     }
 
     func handle(_ request: HTTPRequest) -> HTTPResponse {
@@ -146,6 +265,55 @@ final class APIHandler: @unchecked Sendable {
                 return try grantRevoke(p)
             case ("POST", let p) where p.hasPrefix("/api/grants/") && p.hasSuffix("/renew"):
                 return try grantRenew(request, path: p)
+            // The agent-facing MCP surface: exact-path POSTs under /api/, so they
+            // inherit the origin-token gate above. The grants and onboarding
+            // routes join this block; they are POSTs on purpose — a GET status route
+            // would leak a pending state or a token to any local process, and the
+            // house gate only covers mutating methods.
+            case ("POST", "/api/mcp/gateway_info"):
+                return try mcpGatewayInfo()
+            case ("POST", "/api/mcp/app/show"):
+                return mcpAppShow()
+            case ("POST", "/api/mcp/grants"):
+                return try mcpGrantCreate(request)
+            // The poll route's no-id spelling: the status-only listing, never a token.
+            // It must sit above the <id>/status pattern so it is never read as an id.
+            case ("POST", "/api/mcp/grants/status"):
+                return try mcpGrantStatusList(request)
+            case ("POST", let p) where p.hasPrefix("/api/mcp/grants/") && p.hasSuffix("/status"):
+                return try mcpGrantStatus(path: p, request: request)
+            // The onboarding mission's scan comparison: hashes in, key names out.
+            // A POST like the rest — no GET under /api/ ever carries state.
+            case ("POST", "/api/mcp/vault_lookup"):
+                return try mcpVaultLookup(request)
+            // The onboarding mission's import: the MCP request carries names and flags
+            // only (folder, variable names, docker) — the app re-reads the files itself
+            // and answers with per-variable outcomes, never a value or a token.
+            case ("POST", "/api/mcp/import_and_wrap"):
+                return try mcpImportAndWrap(request)
+            // The onboarding mission's confirm-gated provider check: key names and
+            // the confirm flag in, the keys-test result shape plus confirmed out —
+            // nothing is sent to any provider without the caller's confirmed ask.
+            case ("POST", "/api/mcp/test_keys"):
+                return try mcpTestKeys(request)
+            // The feedback route: the scrub runs app-side, by the app, so the
+            // MCP process never holds a vault value (the mcp-core rule).
+            case ("POST", "/api/mcp/feedback"):
+                return try mcpFeedback(request)
+            // The analytics-sharing route: the `set_analytics_sharing` tool records
+            // the onboarding answer here, through `setEnabled`, and the app writes
+            // the one confirmation line. The answer is bounded on purpose.
+            case ("POST", "/api/mcp/analytics/sharing"):
+                return try mcpAnalyticsSharing(request)
+            // The revocation routes: the kill switches the revoke tools and the
+            // CLI's `keys revoke --all` share. One route revokes grants AND
+            // client tokens so the switch is never half-pulled; the dashboard's
+            // own Revoke-all button stays on the grants-only DELETE /api/grants
+            // route on purpose, so its semantics are unchanged.
+            case ("POST", "/api/mcp/revoke_all"):
+                return try mcpRevokeAll(request)
+            case ("POST", "/api/mcp/revoke_project"):
+                return try mcpRevokeProject(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -164,6 +332,20 @@ final class APIHandler: @unchecked Sendable {
                 return try wrapPlan(request)
             case (_, let p) where p.hasPrefix("/api/wrap/"):
                 return try wrapItem(request, path: p)
+            // The onboarding mission's CLI unwrap: `keys unwrap`'s restore-and-revoke
+            // call. POST like /api/wrap so it inherits the origin-token gate above —
+            // the CLI reaches it over the control channel with that token. The body
+            // carries the file path or the caller's project folder, and the answer
+            // names variables, files and counts only — never a value, never a token.
+            case ("POST", "/api/unwrap"):
+                return try unwrapRequest(request)
+            // The onboarding mission's expiry poll, house-level on purpose (NOT
+            // /api/mcp/): the headless mission's notification code polls it, not an
+            // agent. It rides the same origin-token gate as every POST under /api/,
+            // and its answer is key names, labels, hints and dates — never a token
+            // or a path.
+            case ("POST", "/api/expiring_tokens"):
+                return try expiringTokens()
             case ("GET", "/api/providers"):
                 return HTTPResponse.json(200, try service.providersJSONObject())
             case ("POST", "/api/providers"):
@@ -190,6 +372,31 @@ final class APIHandler: @unchecked Sendable {
                 }
                 try service.preferences.setHiddenUsage(list.compactMap { $0 as? String })
                 return HTTPResponse.json(200, ["hidden": service.preferences.hiddenUsage.sorted()])
+            // The persisted app choices one Settings pane and the in-window app menu
+            // both read. GET is open like the other status routes (booleans, nothing
+            // secret); every write rides the house token gate above.
+            case ("GET", "/api/preferences"):
+                return preferencesStatus()
+            case ("POST", "/api/preferences/show-usage-meter"):
+                return try preferenceSet(request) { try service.preferences.setShowUsageMeter($0) }
+            case ("POST", "/api/preferences/menubar-item"):
+                guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
+                try service.preferences.setMenubarItem(on)
+                setMenubarItem(on)
+                return preferencesStatus()
+            case ("POST", "/api/preferences/update-checks"):
+                guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
+                // The store is written here (the site owns it, app or not); the
+                // app seam re-reads it to reschedule its update timer.
+                try service.preferences.setUpdateChecks(on)
+                setUpdateChecks(on)
+                return preferencesStatus()
+            // Quit from the dashboard Settings: the same shutdown path the app
+            // menu's Quit uses. Token-gated like every mutating route; a site no
+            // app owns (the dev `keys dashboard` copy) refuses rather than exiting
+            // someone else's process.
+            case ("POST", "/api/app/quit"):
+                return appQuit()
             case ("GET", "/api/limits"):
                 return try limitsList()
             case ("PUT", let p) where p.hasPrefix("/api/limits/"):
@@ -749,7 +956,10 @@ final class APIHandler: @unchecked Sendable {
                 nameHint: JSONValue.string(o["name_hint"])
             )
         }
-        let plan = try service.wrapPlan(file: JSONValue.string(obj["file"]) ?? "env file", candidates: candidates)
+        let plan = try service.wrapPlan(
+            file: JSONValue.string(obj["file"]) ?? "env file", candidates: candidates,
+            path: JSONValue.string(obj["path"])
+        )
         return HTTPResponse.json(200, plan.jsonObject())
     }
 
@@ -782,6 +992,29 @@ final class APIHandler: @unchecked Sendable {
         guard let id = Int64(raw) else { throw AppError.notFound("client \(raw)") }
         let client = try service.revokeGatewayClient(name: name, id: id, caller: "dashboard")
         return HTTPResponse.json(200, ["client": client.jsonObject()])
+    }
+
+    /// POST /api/unwrap — the body carries either the file path (the file form:
+    /// exactly that file is restored and the tokens it holds revoked) or the caller's
+    /// project folder (the project form: every `wrapped_files` row of that project).
+    /// Presence is the flow's own single prompt inside `KeysService.unwrap`.
+    private func unwrapRequest(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        var file: String?
+        if let raw = obj["file"], !(raw is NSNull) {
+            guard let supplied = raw as? String, !supplied.isEmpty else {
+                throw AppError.usage("file must be a non-empty path")
+            }
+            file = supplied
+        }
+        var folder: String?
+        if let raw = obj["folder"], !(raw is NSNull) {
+            guard let supplied = raw as? String, !supplied.isEmpty else {
+                throw AppError.usage("folder must be a non-empty path")
+            }
+            folder = supplied
+        }
+        return HTTPResponse.json(200, try service.unwrap(file: file, folder: folder))
     }
 
     private func keysGrant(_ request: HTTPRequest, name: String) throws -> HTTPResponse {
@@ -871,6 +1104,434 @@ final class APIHandler: @unchecked Sendable {
         let key = request.query["key"].flatMap { $0.isEmpty ? nil : $0 }
         let touched = service.revokeGrants(key: key, reason: "revoked", caller: "dashboard")
         return HTTPResponse.json(200, ["revoked": touched.map { $0.jsonObject() }])
+    }
+
+    // MARK: - MCP (the agent-facing reads)
+
+    /// POST /api/mcp/gateway_info — the one payload the MCP `gateway_info` tool
+    /// relays. Grants are the live in-memory truth only this process holds, the
+    /// base URL and the docker preference are facts this process's catalog and
+    /// constants define, and the token list is per-key rows read here so the
+    /// caller needs no catalog of its own. Labels only: a project's path never
+    /// enters a response. `now` is injectable so the expiring-soon boundary is
+    /// testable; the route passes the real clock.
+    func mcpGatewayInfo(now: Date = Date()) throws -> HTTPResponse {
+        var projectTokens: [[String: Any]] = []
+        for row in try service.list() {
+            for client in try service.gatewayClients(name: row.name) where client.isActive(now: now) {
+                // Project-bound tokens only; a dangling reference (nil joined
+                // label) is skipped, never an error.
+                guard client.project != nil, let label = client.projectLabel else { continue }
+                projectTokens.append([
+                    "key": row.name,
+                    // Every key the token serves, additive beside "key" (the row's own
+                    // key name, unchanged): a multi-key project token is listed
+                    // completely instead of only under its first member.
+                    "keys": try clientMemberKeys(client),
+                    "label": label,
+                    "expires_at": client.expiresAt,
+                    // Within three days of expiry — the heads-up a person or the
+                    // headless mission's notification poll reads.
+                    "expiring_soon": client.isExpiringSoon(now: now),
+                    // The last four characters of the client token, so a person can
+                    // recognise which capability a row is. Never the token, never
+                    // its hash.
+                    "hint": client.hint,
+                ])
+            }
+        }
+        return HTTPResponse.json(200, [
+            "base_url": "http://127.0.0.1:\(GatewayListener.port)",
+            "docker_access": service.preferences.dockerAccess,
+            // No token: the grant's token exists only in its issue response.
+            "grants": service.listGrants().map { $0.jsonObject() },
+            "project_tokens": projectTokens,
+        ])
+    }
+
+    /// Every key a client token may serve, in name order: its membership rows, or
+    /// its own key name when it carries none — a per-key token predates the
+    /// membership table and has no rows.
+    private func clientMemberKeys(_ client: GatewayClient) throws -> [String] {
+        let members = try service.catalog.gatewayClientKeys(clientID: client.id)
+        return members.isEmpty ? [client.keyName] : members.map(\.keyName)
+    }
+
+    /// POST /api/expiring_tokens — the soon-expiring active client tokens, polled
+    /// by the headless mission's notification code. Only tokens inside
+    /// `GatewayClient.expiringSoonWindow`; revoked and already-expired rows never
+    /// appear. Each entry is {keys, label, project_label, expires_at, hint} —
+    /// project_label is null for a token never bound to a project — never a
+    /// token, a hash or a path.
+    func expiringTokens(now: Date = Date()) throws -> HTTPResponse {
+        var tokens: [[String: Any]] = []
+        for row in try service.list() {
+            for client in try service.gatewayClients(name: row.name) where client.isExpiringSoon(now: now) {
+                tokens.append([
+                    "keys": try clientMemberKeys(client),
+                    "label": client.label,
+                    "project_label": client.projectLabel as Any? ?? NSNull(),
+                    "expires_at": client.expiresAt,
+                    "hint": client.hint,
+                ])
+            }
+        }
+        return HTTPResponse.json(200, ["tokens": tokens])
+    }
+
+    /// POST /api/mcp/app/show — the dedicated show path the `open_app` tool drives.
+    /// Exactly one thing can happen here: the window seam. No window means nothing
+    /// happened, and the answer is still ok — a browser fallback must never sit on
+    /// this path, because an agent must not be able to open one.
+    private func mcpAppShow() -> HTTPResponse {
+        showAppWindow()
+        return HTTPResponse.json(200, ["ok": true])
+    }
+
+    // MARK: - MCP grants (the pending-request flow)
+
+    /// The fields a create body may carry — the keysGrant body's scope fields plus
+    /// the key and the project folder, minus everything a caller must not pick:
+    /// there is no host input (the key's row decides it, and the prompt shows it),
+    /// no label, no caller, no token. Unknown keys in the body are ignored, so a
+    /// decoy a caller plants can never reach a prompt or a row.
+    private func mcpGrantAsk(_ obj: [String: Any]) throws -> (name: String, request: GrantRequest, profile: String?, specified: GrantSpecified, folder: String) {
+        guard let key = JSONValue.string(obj["key"]) else {
+            throw AppError.usage("key is required")
+        }
+        guard let folder = JSONValue.string(obj["folder"]) else {
+            throw AppError.usage("the project folder is required")
+        }
+        var ask = GrantRequest(task: "")
+        if let raw = obj["task"], !(raw is NSNull) {
+            guard raw is String else { throw AppError.usage("task must be a string") }
+            ask.task = raw as! String
+        }
+        var specified = GrantSpecified()
+        if obj.keys.contains("minutes"), !(obj["minutes"] is NSNull) {
+            guard let minutes = JSONValue.int(obj["minutes"]) else {
+                throw AppError.usage("minutes must be between 1 and \(Grant.maxMinutes)")
+            }
+            ask.minutes = minutes
+            specified.minutes = true
+        }
+        if obj.keys.contains("methods"), !(obj["methods"] is NSNull) {
+            guard let raw = obj["methods"] as? [Any], raw.allSatisfy({ $0 is String }) else {
+                throw AppError.usage("methods must be a list of method names")
+            }
+            ask.methods = Set(raw.compactMap { $0 as? String })
+            specified.methods = true
+        }
+        if obj.keys.contains("paths"), !(obj["paths"] is NSNull) {
+            guard let raw = obj["paths"] as? [Any], raw.allSatisfy({ $0 is String }) else {
+                throw AppError.usage("paths must be a list of path scopes")
+            }
+            ask.paths = raw.compactMap { $0 as? String }
+            specified.paths = true
+        }
+        if obj.keys.contains("max_requests"), !(obj["max_requests"] is NSNull) {
+            guard let n = JSONValue.int(obj["max_requests"]) else {
+                throw AppError.usage("max_requests must be an integer")
+            }
+            ask.maxRequests = n
+            specified.maxRequests = true
+        }
+        if obj.keys.contains("max_usd"), !(obj["max_usd"] is NSNull) {
+            guard let d = JSONValue.double(obj["max_usd"]) else {
+                throw AppError.usage("max_usd must be a number")
+            }
+            ask.maxUsd = d
+            specified.maxUsd = true
+        }
+        let profile = JSONValue.string(obj["profile"]).flatMap { $0.isEmpty ? nil : $0 }
+        return (key, ask, profile, specified, folder)
+    }
+
+    /// POST /api/mcp/grants — create a pending grant request. Everything the ask can
+    /// get wrong is refused here, synchronously, before any prompt; the body carries
+    /// the project FOLDER, which the app canonicalizes, derives the label for and
+    /// get-or-creates the row of. The answer is `{status:"pending", id, secret}` and
+    /// no token: the secret is the caller's private proof it created the ask — every
+    /// later poll of the id requires it, and it reaches no listing, log or audit. If
+    /// the user approves the one prompt, the token is delivered on exactly one
+    /// later poll.
+    private func mcpGrantCreate(_ request: HTTPRequest) throws -> HTTPResponse {
+        let ask = try mcpGrantAsk(try jsonBody(request))
+        let created = try service.requestMCPGrant(
+            name: ask.name, request: ask.request, profile: ask.profile,
+            specified: ask.specified, folder: ask.folder
+        )
+        return HTTPResponse.json(200, ["status": "pending", "id": created.id, "secret": created.secret])
+    }
+
+    /// POST /api/mcp/grants/<id>/status — poll one request: pending (tokenless),
+    /// approved (the token and the connection fields, once), approved with
+    /// `delivered: true` (never a token again), denied with its reason, expired
+    /// after the pending TTL, or the house not-found — which is also all a poller
+    /// without the ask's poll secret ever reads, in every state, so the id's
+    /// existence is the one thing it cannot learn.
+    private func mcpGrantStatus(path: String, request: HTTPRequest) throws -> HTTPResponse {
+        let id = String(path.dropFirst("/api/mcp/grants/".count).dropLast("/status".count))
+        let body = jsonProofBody(request)
+        return HTTPResponse.json(
+            200, try service.mcpGrantStatus(id: id, secret: JSONValue.string(body["secret"]) ?? "")
+        )
+    }
+
+    /// POST /api/mcp/grants/status — the no-id form: exactly the asks whose poll
+    /// secrets the body proves, and nothing else for a caller that proves nothing —
+    /// never a token, never a secret, in any state.
+    private func mcpGrantStatusList(_ request: HTTPRequest) throws -> HTTPResponse {
+        let body = jsonProofBody(request)
+        let secrets = (body["secrets"] as? [Any])?.compactMap { $0 as? String } ?? []
+        return HTTPResponse.json(200, ["requests": service.mcpGrantStatuses(secrets: secrets)])
+    }
+
+    /// The body of a proof-carrying route: an empty or malformed body proves
+    /// nothing, so it parses to an empty object instead of a 400 — the poll and
+    /// the no-id listing fail closed on missing proof, never on syntax.
+    private func jsonProofBody(_ request: HTTPRequest) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object) ?? [:]
+    }
+
+    /// POST /api/mcp/vault_lookup — the scan tool's in-vault comparison. The
+    /// caller already holds the values it hashed (they came from the folder it
+    /// scanned), key names are public through list_keys, and the answer carries
+    /// matching key names only — never a value — so this follows the gateway's
+    /// sanctioned no-prompt store read, gated by the origin token like every
+    /// other mutating /api/ route. One entry per requested hash, in request
+    /// order, with the matching key's name or null.
+    private func mcpVaultLookup(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let raw = obj["hashes"], !(raw is NSNull),
+              let hashes = raw as? [Any], hashes.allSatisfy({ $0 is String })
+        else { throw AppError.usage("hashes must be a list of SHA-256 hex strings") }
+        let matches = try service.vaultLookup(hashes: hashes.compactMap { $0 as? String })
+        return HTTPResponse.json(200, [
+            "matches": matches.map { ["hash": $0.hash, "key": $0.key ?? NSNull()] as [String: Any] },
+        ])
+    }
+
+    /// POST /api/mcp/import_and_wrap — the onboarding import. The body carries the
+    /// project folder, optional variable names and the docker flag, and nothing else:
+    /// the app re-reads the env files itself, so no key value ever crosses the wire.
+    /// The answer is the import's result payload (per-variable outcomes, project label,
+    /// expiry, docker_access, base_url_host) — never a value, a token or an absolute
+    /// path. Presence is the flow's own single prompt inside `importAndWrap`.
+    private func mcpImportAndWrap(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        // The folder is required and absolute: without it the import used to fall
+        // back to the app's own working directory (usually `/`), and a relative
+        // spelling would resolve against that same directory. The MCP tool always
+        // sends the session's canonical folder.
+        guard let raw = obj["folder"], !(raw is NSNull) else { throw AppError.usage("folder is required") }
+        guard let folder = raw as? String else { throw AppError.usage("folder must be a string") }
+        guard folder.hasPrefix("/") else { throw AppError.usage("folder must be an absolute path") }
+        var variables: [String]?
+        if let raw = obj["variables"], !(raw is NSNull) {
+            guard let names = raw as? [Any], names.allSatisfy({ $0 is String }) else {
+                throw AppError.usage("variables must be a list of variable names")
+            }
+            variables = names.compactMap { $0 as? String }
+        }
+        var docker = false
+        if let raw = obj["docker"], !(raw is NSNull) {
+            guard let flag = JSONValue.bool(raw) else { throw AppError.usage("docker must be a boolean") }
+            docker = flag
+        }
+        return HTTPResponse.json(200, try service.importAndWrap(folder: folder, variables: variables, docker: docker))
+    }
+
+    /// POST /api/mcp/test_keys — the onboarding mission's confirm-gated provider
+    /// check. The body carries vault key names and the confirm flag, nothing else:
+    /// the app resolves the keys, prompts once for the whole call when confirmed
+    /// and probing, and answers with the existing keys-test result shape per key
+    /// plus the confirmed flag — never a value, never a token. An unconfirmed call
+    /// is answered without a prompt and without a single network request.
+    private func mcpTestKeys(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let names = obj["keys"] as? [Any], !names.isEmpty, names.allSatisfy({ $0 is String }) else {
+            throw AppError.usage("keys must be a non-empty list of key names")
+        }
+        var confirm = false
+        if let raw = obj["confirm"], !(raw is NSNull) {
+            guard let flag = JSONValue.bool(raw) else { throw AppError.usage("confirm must be a boolean") }
+            confirm = flag
+        }
+        return HTTPResponse.json(200, try service.testKeys(keys: names.compactMap { $0 as? String }, confirm: confirm))
+    }
+
+    // MARK: - MCP feedback (the scrubbed send_feedback flow)
+
+    /// POST /api/mcp/feedback — the app side of `send_feedback`. The scrub runs
+    /// here, by the app, because only this process can enumerate the vault's
+    /// values: it reads each catalog row's secret in memory (the `wrapPlan`
+    /// precedent — a row whose Keychain item is gone is skipped, never an
+    /// error), hands the values to the pure scrubber as exact-match needles, and
+    /// discards them. No presence prompt: a value that is compared and
+    /// discarded is removal, not a reveal, and nothing here is logged or
+    /// persisted — the raw draft exists only inside this call's stack and
+    /// the loopback socket that carried it.
+    private func mcpFeedback(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let raw = obj["draft"], !(raw is NSNull) else {
+            throw AppError.usage("draft is required")
+        }
+        guard let draft = raw as? String, !draft.isEmpty else {
+            throw AppError.usage("draft must be a non-empty string")
+        }
+        var destination = "email"
+        if let raw = obj["destination"], !(raw is NSNull) {
+            guard let value = raw as? String, value == "email" || value == "github" else {
+                throw AppError.usage("destination must be email or github")
+            }
+            destination = value
+        }
+        var prompt: String?
+        if let raw = obj["prompt"], !(raw is NSNull) {
+            guard let value = raw as? String else {
+                throw AppError.usage("prompt must be a string")
+            }
+            prompt = value
+        }
+
+        // The exact-match needles, enumerated in memory and never stored: one
+        // pass over the catalog, `try?` per row (the wrapPlan precedent). The
+        // dedupe compares secret to secret, constant-time, the same comparison
+        // wrapPlan makes between a candidate and the vault.
+        let rows = try service.list()
+        var vaultValues: [String] = []
+        var seen: [Data] = []
+        for row in rows {
+            guard let secret = try? service.secrets.get(name: row.name) else { continue }
+            let value = Data(secret.utf8)
+            guard !seen.contains(where: { ConstantTime.equal($0, value) }) else { continue }
+            seen.append(value)
+            vaultValues.append(secret)
+        }
+        // Key names and project labels are the only other forbidden facts; a
+        // provider's key-prefix list comes from the merged provider catalog.
+        let names = rows.map(\.name) + (try service.catalog.projects()).map(\.label)
+        let records = Providers.builtinList() + ((try? service.catalog.listCustomProviders()) ?? [])
+
+        // The scrub can THROW (a pattern that will not compile): fail closed —
+        // the call errors and nothing is opened — rather than send text a rule
+        // silently skipped (VAL-F-003).
+        let scrubbed = try scrubFeedback(.init(
+            draft: draft,
+            prompt: prompt,
+            vaultValues: vaultValues,
+            names: names,
+            records: records
+        ))
+        let footer = FeedbackDelivery.versionFooter()
+        var text = scrubbed.scrubbed + footer
+        var truncated = false
+        let url: URL?
+        // Both URLs are capped near 2,000 characters with the footer always
+        // kept; the answer reports the cut instead of opening a silently short
+        // draft (VAL-F-005, and the GitHub page since I4).
+        let built = destination == "github"
+            ? FeedbackDelivery.githubIssueURL(body: scrubbed.scrubbed, footer: footer)
+            : FeedbackDelivery.mailtoURL(body: scrubbed.scrubbed, footer: footer)
+        text = built.body
+        truncated = built.truncated
+        url = built.url
+        guard let url else {
+            // Unreachable in practice: the query is fully percent-encoded above;
+            // a URL that cannot be built must fail closed, never half-open.
+            throw AppError.usage("the feedback URL could not be built")
+        }
+        openFeedbackURL(url)
+        return HTTPResponse.json(200, [
+            "scrubbed": text,
+            "removed": scrubbed.removed,
+            "destination": destination,
+            "opened": true,
+            "truncated": truncated,
+        ])
+    }
+
+    // MARK: - MCP analytics sharing (the set_analytics_sharing flow)
+
+    /// POST /api/mcp/analytics/sharing — the app side of `set_analytics_sharing`,
+    /// the tool that records the person's answer to the onboarding analytics
+    /// question. The body is exactly `{"enabled": <bool>}`: an explicit JSON
+    /// boolean is required (the `/api/analytics` validation is the reference), so a
+    /// number, a string or a missing field is refused with no state change and no
+    /// log line. Consent goes through `setEnabled` (consent version 2, unchanged),
+    /// never a direct catalog-meta write, and the answer is the bounded
+    /// `{"enabled": <bool>}` — never the status preview, whose unsent-report payload
+    /// must not reach a tool result. Enabling sends nothing: only the dashboard's own
+    /// timer flushes. The one confirmation line goes to the app's log seam, which is
+    /// a no-op in every process but the running app.
+    private func mcpAnalyticsSharing(_ request: HTTPRequest) throws -> HTTPResponse {
+        guard let analytics = service.analytics else {
+            return HTTPResponse.json(503, ["error": "analytics_unavailable"])
+        }
+        let object = try jsonBody(request)
+        guard Set(object.keys) == ["enabled"],
+              let enabled = object["enabled"] as? NSNumber, CFGetTypeID(enabled) == CFBooleanGetTypeID() else {
+            return HTTPResponse.json(400, ["error": "invalid_analytics_sharing"])
+        }
+        // Turning sharing on is consent, and consent is the person's: an agent's
+        // "on" (prompt-injected or careless) changes nothing and is answered as
+        // pending, and the agent asks the person to switch it on in the app — the
+        // dashboard toggle is the confirmation. Turning it off only removes
+        // sharing, so it takes effect at once.
+        if enabled.boolValue {
+            if analytics.isEnabled { return HTTPResponse.json(200, ["enabled": true]) }
+            return HTTPResponse.json(200, ["enabled": false, "status": "pending_user_confirmation"])
+        }
+        try analytics.setEnabled(false, consentVersion: ProductAnalytics.consentVersion)
+        service.analyticsLog("analytics sharing turned off")
+        return HTTPResponse.json(200, ["enabled": false])
+    }
+
+    // MARK: - MCP revocation (the kill switches)
+
+    /// POST /api/mcp/revoke_all — the app side of the `revoke_all` tool and of
+    /// the CLI's `keys revoke --all`. One route revokes grants (this process's
+    /// in-memory table, the only place they live) AND client tokens (catalog
+    /// rows the gateway re-reads per request, so the revoke is honored
+    /// immediately), so a kill switch never needs a second call to be complete.
+    /// The optional `key` scopes both kinds to one vault key. No presence
+    /// prompt: revocation only removes access, exactly like the revoke paths
+    /// that already existed. The body may name a `caller` for the audit rows the
+    /// way the grant-issuing route does (the CLI sends "cli"); without one the
+    /// rows say "mcp", the surface this route exists for. Unknown fields are
+    /// ignored. The dashboard's grants-only DELETE /api/grants is untouched.
+    private func mcpRevokeAll(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        var key: String?
+        if let raw = obj["key"], !(raw is NSNull) {
+            guard let name = raw as? String else {
+                throw AppError.usage("key must be a string")
+            }
+            try KeyName.validate(name)
+            key = name
+        }
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "mcp"
+        let grants = service.revokeGrants(key: key, reason: "revoked", caller: caller)
+        let clients = try service.revokeGatewayClients(key: key, caller: caller)
+        return HTTPResponse.json(200, ["revoked_grants": grants.count, "revoked_clients": clients])
+    }
+
+    /// POST /api/mcp/revoke_project — the app side of the `revoke_project`
+    /// tool: one project's ACTIVE client tokens, resolved by exact label over
+    /// the projects table. Client tokens only — grants carry no project — and
+    /// the unknown-label refusal is the not-found shape revokeGrant gives an
+    /// unknown id, so the CLI and the tool read it back as a plain answer. A
+    /// known label with nothing active answers zero, never an error. No
+    /// presence prompt.
+    private func mcpRevokeProject(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let label = JSONValue.string(obj["label"]), !label.isEmpty else {
+            throw AppError.usage("label is required")
+        }
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "mcp"
+        let clients = try service.revokeProjectClients(label: label, caller: caller)
+        return HTTPResponse.json(200, ["revoked_clients": clients])
     }
 
     // MARK: - Profiles (saved grant bounds)

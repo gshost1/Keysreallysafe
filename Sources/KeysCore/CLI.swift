@@ -42,9 +42,11 @@ public struct KeysCLI: ParsableCommand {
             ClientCommand.self,
             GatewayCommand.self,
             WrapCommand.self,
+            UnwrapCommand.self,
             ProvidersCommand.self,
             ProviderCommand.self,
             AgentCommand.self,
+            McpCommand.self,
             SetupCommand.self,
             TunnelCommand.self,
             RelayCommand.self,
@@ -89,19 +91,46 @@ public enum KeysMain {
 }
 
 struct AddCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "add", abstract: "Store a secret in Keychain.")
+    static let configuration = CommandConfiguration(
+        commandName: "add",
+        abstract: "Store a secret in Keychain.",
+        discussion: "With no name and no --provider, an interactive terminal gets the guided flow: "
+            + "pick a provider, accept or edit the suggested name, then type the secret twice, hidden."
+    )
 
-    @Argument var name: String
-    @Option var provider: String
+    @Argument var name: String?
+    @Option var provider: String?
     @Option var kind: String = "runtime"
     @Option var notes: String = ""
     @Flag var clipboard = false
 
     func run() throws {
-        let secret = try SecretPrompt.read(fromClipboard: clipboard, confirm: true)
+        if let name {
+            // The flagged form is unchanged, including the missing-argument diagnostics.
+            guard let provider else {
+                throw ValidationError("Missing expected argument '--provider <provider>'")
+            }
+            let service = try AppFactory.makeService()
+            try GuidedAdd.validateExplicitProvider(provider)
+            let secret = try SecretPrompt.read(fromClipboard: clipboard, confirm: true)
+            try service.add(name: name, provider: provider, kind: kind, notes: notes, secret: secret, caller: "add")
+            print("added \(name)")
+            return
+        }
+        guard provider == nil else {
+            throw ValidationError("Missing expected argument '<name>'")
+        }
+        // Fail before touching the catalog: a script that forgot the flags gets the
+        // usage error, not a hidden prompt on /dev/tty.
+        guard isatty(STDIN_FILENO) != 0 else { throw AppError.usage(GuidedAdd.nonTTYUsage) }
         let service = try AppFactory.makeService()
-        try service.add(name: name, provider: provider, kind: kind, notes: notes, secret: secret, caller: "add")
-        print("added \(name)")
+        try GuidedAdd.run(
+            service: service,
+            isTTY: true,
+            kind: kind,
+            notes: notes,
+            clipboard: clipboard
+        )
     }
 }
 
@@ -656,9 +685,15 @@ struct GrantCommand: ParsableCommand {
     @Flag(help: "Print the grant as JSON (token included) for a script to read once.")
     var json = false
 
-    func run() throws {
+    func run() throws { try run(launch: .production) }
+
+    /// The grant flow with the app-discovery seam and control file injectable —
+    /// `AppConnection.connect()` owns the launch/wait/retry policy, and tests drive
+    /// this body with recording fakes and a temp catalog so no test path can reach
+    /// the installed app.
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         try KeyName.validate(name)
-        let client = try ControlClient.connect()
+        let client = try AppConnection.connect(control: control, launch: launch).controlClient
         // Minutes ride only when said: with --profile an unset --minutes means the profile's
         // minutes, which only the site knows once the bounds are applied.
         var body: [String: Any] = ["task": task, "caller": "cli"]
@@ -731,8 +766,13 @@ struct GrantsCommand: ParsableCommand {
     /// The table shape; the row seam builds against it, so the columns stay spelled out.
     static let header = "ID\tKEY\tHOST\tTASK\tSTATUS\tEXPIRES\tREQUESTS\tUSD\tPROFILE\tUNATTENDED"
 
-    func run() throws {
-        let client = try ControlClient.connect()
+    func run() throws { try run(launch: .production) }
+
+    /// The listing with the app-discovery seam and control file injectable
+    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
+    /// fakes over a temp catalog).
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        let client = try AppConnection.connect(control: control, launch: launch).controlClient
         let obj = try client.call(method: "GET", path: "/api/grants" + (all ? "?all=1" : ""), expect: 200)
         let grants = (obj["grants"] as? [Any])?.compactMap(JSONValue.object) ?? []
         if json {
@@ -778,23 +818,32 @@ struct RevokeCommand: ParsableCommand {
     @Argument(help: "Grant id from keys grant, or omit with --all.")
     var id: String?
 
-    @Flag(help: "Revoke every active grant.")
+    @Flag(help: "Revoke every active grant and client token (or one key's with --key).")
     var all = false
 
-    @Option(help: "With --all, only grants for this key.")
+    @Option(help: "With --all, only this key's grants and client tokens.")
     var key: String?
 
-    func run() throws {
-        let client = try ControlClient.connect()
+    func run() throws { try run(launch: .production) }
+
+    /// The revoke with the app-discovery seam and control file injectable
+    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
+    /// fakes over a temp catalog).
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        let client = try AppConnection.connect(control: control, launch: launch).controlClient
         if all {
-            var path = "/api/grants"
+            var body: [String: Any] = ["caller": "cli"]
             if let key {
                 try KeyName.validate(key)
-                path += "?key=\(key)"
+                body["key"] = key
             }
-            let obj = try client.call(method: "DELETE", path: path, expect: 200)
-            let n = (obj["revoked"] as? [Any])?.count ?? 0
-            print("revoked \(n) grant\(n == 1 ? "" : "s")")
+            // The combined route: grants live only in the app's memory and client
+            // tokens are catalog rows, so one call ends both kinds at once — the
+            // dashboard's grants-only DELETE /api/grants button stays grants-only.
+            let obj = try client.call(method: "POST", path: "/api/mcp/revoke_all", body: body, expect: 200)
+            let grants = JSONValue.int(obj["revoked_grants"]) ?? 0
+            let clients = JSONValue.int(obj["revoked_clients"]) ?? 0
+            print("revoked \(grants) grant\(grants == 1 ? "" : "s") and \(clients) client token\(clients == 1 ? "" : "s")")
             return
         }
         guard let id, !id.isEmpty else { throw AppError.usage("give a grant id, or --all") }
@@ -821,8 +870,13 @@ struct RenewCommand: ParsableCommand {
     @Flag(help: "Print the renewed grant as JSON.")
     var json = false
 
-    func run() throws {
-        let client = try ControlClient.connect()
+    func run() throws { try run(launch: .production) }
+
+    /// The renewal with the app-discovery seam and control file injectable
+    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
+    /// fakes over a temp catalog).
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        let client = try AppConnection.connect(control: control, launch: launch).controlClient
         fputs("Touch ID in the Keysrs site…\n", stderr)
         let obj = try client.call(method: "POST", path: "/api/grants/\(id)/renew", body: [:], expect: 200)
         if json {
@@ -1065,31 +1119,88 @@ struct ModelsCommand: ParsableCommand {
 struct DashboardCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dashboard",
-        abstract: "Open the local Keysrs site on 127.0.0.1."
+        abstract: "The checkout's dev dashboard on 127.0.0.1; the installed app's window when keys is the app's binary."
     )
 
+    // Accepted for compatibility with scripts that passed them; the dev copy serves
+    // the requested range and the window opens on its own, and the two still
+    // refuse to be combined.
     @Flag var month = false
     @Flag var week = false
 
-    func run() throws {
+    /// Which dashboard owner this binary is: the installed app's bundle serves the
+    /// dashboard in its own window, anything else is a checkout build and serves
+    /// the checkout's Web/ as the dev copy (the build/test recipe documents it).
+    enum Build {
+        case checkout
+        case installedBundle
+
+        static func current(bundle: Bundle = .main) -> Build {
+            AppResources.applicationBundle(in: bundle) == nil ? .checkout : .installedBundle
+        }
+    }
+
+    func run() throws { try run(launch: .production, control: nil, build: Build.current()) }
+
+    /// The command with the app-discovery seam, the control file and the
+    /// checkout/bundle branch injectable (`AppConnection.connect()` owns the
+    /// launch policy; tests pin both halves of the branch — the bundled show path
+    /// over recording launch fakes and a synthetic app site, the checkout dev copy
+    /// over a fake service bind and browser open — always on temp state).
+    func run(
+        launch: AppLaunchSeam,
+        control: URL?,
+        build: Build,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        makeService: () throws -> KeysService = AppFactory.makeService,
+        bind: (KeysService, UInt16) throws -> LoopbackHTTPServer = { service, port in
+            try LoopbackSite.bind(service: service, preferredPort: port)
+        },
+        openBrowser: (URL) -> Void = { NSWorkspace.shared.open($0) },
+        serveLoop: (KeysService) -> Void = { service in
+            DispatchQueue.global(qos: .utility).async {
+                _ = try? service.ingest(.all)
+                try? service.pollOpenRouter()
+            }
+            IngestScheduler.scheduleRepeating(service: service)
+            OpenRouterScheduler.schedule(service: service)
+            RunLoop.main.run()
+        }
+    ) throws {
         if month && week { throw AppError.usage("choose --month or --week") }
-        let range = week ? "week" : "month"
-        let service = try AppFactory.makeService()
-        let server = try LoopbackSite.bind(service: service, preferredPort: LoginItem.dashboardPort)
-        let url = URL(string: "http://127.0.0.1:\(server.boundPort)/?range=\(range)")!
-        let line = "Keysrs  \(url.absoluteString)\n"
-        FileHandle.standardOutput.write(Data(line.utf8))
-        fflush(stdout)
-        if !Paths.noOpenBrowser() {
-            NSWorkspace.shared.open(url)
+        switch build {
+        case .checkout:
+            // The dev copy: this checkout's Web/ on the documented dev port, the
+            // browser open skipped whenever KEYS_NO_OPEN asks for it, then the
+            // ingest pass, the schedulers and the server loop.
+            let service = try makeService()
+            let server = try bind(service, LoginItem.dashboardPort)
+            let range = week ? "week" : "month"
+            let url = URL(string: "http://127.0.0.1:\(server.boundPort)/?range=\(range)")!
+            let line = "Keysrs  \(url.absoluteString)\n"
+            FileHandle.standardOutput.write(Data(line.utf8))
+            fflush(stdout)
+            if !Paths.noOpenBrowser(environment: environment) {
+                openBrowser(url)
+            }
+            serveLoop(service)
+        case .installedBundle:
+            try showAppWindow(launch: launch, control: control)
         }
-        DispatchQueue.global(qos: .utility).async {
-            _ = try? service.ingest(.all)
-            try? service.pollOpenRouter()
-        }
-        IngestScheduler.scheduleRepeating(service: service)
-        OpenRouterScheduler.schedule(service: service)
-        RunLoop.main.run()
+    }
+
+    /// The bundled half: the app owns the dashboard when this binary is its
+    /// bundle's, so the command's whole job here is its window. The shared
+    /// connection launches the app when nothing is up and waits for a healthy
+    /// control endpoint, then the same token-gated show route the MCP `open_app`
+    /// tool and a second app launch use fronts the window. No browser and no
+    /// second site: a second dashboard server would fight the app's own, and a
+    /// failed launch is the plain not-running sentence (exit 6), exactly like
+    /// every eligible caller.
+    private func showAppWindow(launch: AppLaunchSeam, control: URL?) throws {
+        let app = try AppConnection.connect(control: control, launch: launch)
+        _ = try app.call(method: "POST", path: "/api/mcp/app/show", body: [:], expect: 200)
+        print("Keysrs  showing the Keysrs window")
     }
 }
 
@@ -1115,7 +1226,9 @@ struct MenubarCommand: ParsableCommand {
             app.setActivationPolicy(.accessory)
             IngestScheduler.scheduleRepeating(service: service)
             OpenRouterScheduler.schedule(service: service)
-            let extra = MenubarExtra(service: service, server: server, url: url)
+            // The explicit command always creates its requested status item,
+            // independent of the app-mode menu-bar preference (off by default).
+            let extra = MenubarExtra(service: service, server: server, url: url, itemVisible: true)
             MenubarRuntime.extra = extra
             app.delegate = extra
             app.run()
@@ -1129,12 +1242,16 @@ struct AutostartCommand: ParsableCommand {
         abstract: "Remove a legacy login item; configure Start at Login inside Keysrs.app."
     )
 
-    @Flag(name: [.customLong("remove"), .customLong("uninstall")], help: "Unload and delete the login item and its snapshot.")
+    @Flag(name: [.customLong("remove"), .customLong("uninstall")], help: "Unload and delete the login item and its snapshot. Offers to unwrap any recorded wrapped files first.")
     var remove = false
 
     func run() throws {
         if remove {
-            try Installer.live.uninstall()
+            // The offer owns the removal call (UninstallOfferRunner.uninstall is
+            // Installer.live.uninstall live, injected in tests — the real removal
+            // must never run from a test, owner directive 2026-10-28). A yes with
+            // the app down throws the control sentence before anything is removed.
+            try UninstallOfferRunner.live().run()
             print("removed login item \(LoginItem.label)")
             return
         }
@@ -1253,9 +1370,14 @@ struct GatewayCommand: ParsableCommand {
     @Argument(help: "Key name (after cheapest: on or off).") var name: String
     @Argument(help: "After cheapest on|off: the key name.") var key: String?
 
-    func run() throws {
+    func run() throws { try run(launch: .production) }
+
+    /// The toggle with the app-discovery seam and control file injectable
+    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
+    /// fakes over a temp catalog).
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         if state.lowercased() == "cheapest" {
-            try runCheapest()
+            try runCheapest(launch: launch, control: control)
             return
         }
         let enabled: Bool
@@ -1266,7 +1388,7 @@ struct GatewayCommand: ParsableCommand {
         }
         if key != nil { throw AppError.usage("usage: keys gateway on|off <key>") }
         try KeyName.validate(name)
-        let control = try ControlClient.connect()
+        let control = try AppConnection.connect(control: control, launch: launch).controlClient
         if enabled { fputs("Touch ID in Keysrs…\n", stderr) }
         let obj = try control.call(method: "POST", path: "/api/keys/\(name)/gateway", body: ["enabled": enabled], expect: 200)
         if enabled {
@@ -1276,7 +1398,7 @@ struct GatewayCommand: ParsableCommand {
         }
     }
 
-    private func runCheapest() throws {
+    private func runCheapest(launch: AppLaunchSeam, control: URL?) throws {
         let enabled: Bool
         switch name.lowercased() {
         case "on": enabled = true
@@ -1285,7 +1407,7 @@ struct GatewayCommand: ParsableCommand {
         }
         guard let key else { throw AppError.usage("usage: keys gateway cheapest on|off <key>") }
         try KeyName.validate(key)
-        let control = try ControlClient.connect()
+        let control = try AppConnection.connect(control: control, launch: launch).controlClient
         _ = try control.call(method: "POST", path: "/api/keys/\(key)/cheapest", body: ["enabled": enabled], expect: 200)
         print(enabled
             ? "cheapest upstream on for \(key): calls that pick no provider ask for the lowest price"
@@ -1320,7 +1442,14 @@ struct WrapCommand: ParsableCommand {
     @Option(help: "Label for the client tokens. Default: keys wrap <file>.") var label: String = ""
     @Option(help: "Days until the tokens expire (1 to \(GatewayClientToken.maxDays)).") var days: Int = GatewayClientToken.defaultDays
 
-    func run() throws {
+    func run() throws { try run(launch: .production) }
+
+    /// The wrap with the app-discovery seam and control file injectable
+    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
+    /// fakes over a temp catalog). The backend's connect closure is built lazily on
+    /// first use, so a file with nothing to wrap still needs no running app and
+    /// launches nothing.
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         var options = WrapRunner.Options(file: URL(fileURLWithPath: path))
         options.dryRun = dryRun
         options.yes = yes
@@ -1331,7 +1460,7 @@ struct WrapCommand: ParsableCommand {
             throw AppError.usage("keys wrap asks before changing the file; pass --yes when stdin is not a terminal")
         }
         let runner = WrapRunner(
-            backend: ControlWrapBackend(connect: { try ControlClient.connect() }),
+            backend: ControlWrapBackend(connect: { try AppConnection.connect(control: control, launch: launch).controlClient }),
             out: { print($0); fflush(stdout) },
             confirm: {
                 fputs("Apply this plan? [y/N] ", stderr)
@@ -1341,6 +1470,44 @@ struct WrapCommand: ParsableCommand {
             }
         )
         _ = try runner.run(options)
+    }
+}
+
+struct UnwrapCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "unwrap",
+        abstract: "Restore the vault keys a wrap replaced with tokens, and revoke those tokens (one Touch ID).",
+        usage: "keys unwrap [<path-to-env-file>]",
+        discussion: """
+            The inverse of keys wrap and import_and_wrap. With a file, exactly that file is \
+            restored; without one, every wrapped file recorded for the working directory's \
+            project is. Values come from the vault inside the running Keysrs (they are never \
+            printed), the BASE_URL companions the wrap recorded writing are restored from the \
+            wrap-time backup — removed where it appended them or where no backup holds an \
+            original, while a gateway-pointing URL the wrap never recorded is left as written \
+            and reported — and the gateway client tokens the file held are revoked on the spot, \
+            except a token another recorded wrapped file still holds, which is kept and named. \
+            A wrapped line whose vault key is gone is reported and keeps its now-dead token. \
+            Needs the running Keysrs.app, which owns the vault and the tokens; when it is not \
+            running, keys unwrap exits 6 with the same message as keys wrap and never launches \
+            anything itself.
+            """
+    )
+
+    @Argument(help: "The env file to restore. Without it: every wrapped file of this folder's project.")
+    var path: String?
+
+    func run() throws {
+        // The control connection is UnwrapRunner's injectable seam — the same shape as
+        // keys wrap's ControlWrapBackend.connect — so tests point at a temp control
+        // file beside a temp catalog and never at the production one the installed app
+        // owns (owner directive 2026-10-28). This default is keys wrap's: plain
+        // connect, no auto-launch.
+        let runner = UnwrapRunner(
+            connect: { try ControlClient.connect() },
+            out: { print($0); fflush(stdout) }
+        )
+        _ = try runner.run(path: path)
     }
 }
 
@@ -1560,7 +1727,12 @@ struct AgentCommand: ParsableCommand {
         }
     }
 
-    func run() throws {
+    func run() throws { try run(launch: .production) }
+
+    /// The launch with the app-discovery seam and control file injectable —
+    /// `AppConnection.connect()` owns the launch/wait/retry policy for the grant
+    /// half, and tests drive this body with recording fakes over a temp catalog.
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         let agent = try CodingAgent.parse(agent)
         try KeyName.validate(key)
         let service = try AppFactory.makeService()
@@ -1604,16 +1776,11 @@ struct AgentCommand: ParsableCommand {
                 stderr
             )
         } else {
-            let control = try ControlClient.connect()
-            fputs("Touch ID in the Keysrs site…\n", stderr)
-            let obj = try control.call(
-                method: "POST", path: "/api/keys/\(key)/grants",
-                body: Self.grantBody(agent: agent, minutes: minutes, profile: profile),
-                expect: 201
+            let issued = try Self.issueGrant(
+                agent: agent, key: key, minutes: minutes, profile: profile, launch: launch, control: control
             )
-            token = JSONValue.string(obj["token"]) ?? ""
-            grantID = JSONValue.string(obj["id"])
-            guard !token.isEmpty else { throw AppError.usage("the site returned no token") }
+            token = issued.token
+            grantID = issued.id
         }
 
         let env = agent.launchEnv(key: key, port: GatewayListener.port, token: token)
@@ -1641,6 +1808,33 @@ struct AgentCommand: ParsableCommand {
         return try runner.run(argv: argv, extraEnv: env)
     }
 
+    /// The grant half of the launch: one app call that mints the session's grant,
+    /// through the one app-discovery seam (`AppConnection.connect()`, which
+    /// launches and waits when no app is up). Static with the launch seams
+    /// injected — the same testability shape as `launch` and `grantBody` — so the
+    /// caller's routing is drivable without a catalog; the call itself keeps the
+    /// long default timeout because it sits inside one Touch ID prompt.
+    static func issueGrant(
+        agent: CodingAgent,
+        key: String,
+        minutes: Int?,
+        profile: String?,
+        launch: AppLaunchSeam = .production,
+        control: URL? = nil
+    ) throws -> (token: String, id: String) {
+        let control = try AppConnection.connect(control: control, launch: launch).controlClient
+        fputs("Touch ID in the Keysrs site…\n", stderr)
+        let obj = try control.call(
+            method: "POST", path: "/api/keys/\(key)/grants",
+            body: Self.grantBody(agent: agent, minutes: minutes, profile: profile),
+            expect: 201
+        )
+        guard let token = JSONValue.string(obj["token"]), !token.isEmpty else {
+            throw AppError.usage("the site returned no token")
+        }
+        return (token, JSONValue.string(obj["id"]) ?? "")
+    }
+
     /// The grant ask the agent path sends to the site. Methods are the agent's functional
     /// needs (model lists and completions), named explicitly so a profile that lacks them is
     /// refused before the prompt instead of launching an agent whose calls would all fail.
@@ -1658,31 +1852,101 @@ struct AgentCommand: ParsableCommand {
     }
 }
 
+struct McpCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mcp",
+        abstract: "Serve the Keysrs tools to an MCP client over stdio until stdin closes."
+    )
+
+    func run() throws {
+        MCPRun.runStdio()
+    }
+}
+
+/// The stdio wiring of `keys mcp`: real stdin/stdout/stderr and the shutdown
+/// handlers. Everything testable lives in `MCPServer` behind the injected seam;
+/// this holds no logic (the `UsageImportRun.run` precedent).
+enum MCPRun {
+    static func runStdio() -> Never {
+        // Writing to a closed stdout must fail quietly, not kill the process.
+        signal(SIGPIPE, SIG_IGN)
+        // SIGINT and SIGTERM end the session the documented way: exit 0 (the
+        // RelayRunCommand precedent). The handlers fire from their own queue while
+        // the main thread is blocked reading stdin.
+        let signals: [DispatchSourceSignal] = [SIGINT, SIGTERM].map { sig in
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.global())
+            source.setEventHandler { Darwin.exit(0) }
+            source.resume()
+            return source
+        }
+        // `availableData` returns whatever has arrived (empty at EOF); `read(upToCount:)`
+        // would block on a pipe until the full count or EOF, and a live client keeps
+        // stdin open, so the server would never see its lines.
+        var lines = MCPLineSource(read: {
+            let chunk = FileHandle.standardInput.availableData
+            return chunk.isEmpty ? nil : chunk
+        })
+        var server = MCPServer(
+            write: { FileHandle.standardOutput.write($0) },
+            note: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) },
+            registry: MCPToolRegistry.default,
+            outputGuard: .production
+        )
+        withExtendedLifetime(signals) {
+            server.run(next: { lines.next() })
+        }
+        // stdin EOF is the primary graceful shutdown: flush and exit 0.
+        Darwin.exit(0)
+    }
+}
+
 struct SetupCommand: ParsableCommand {
+    /// The one agent argument that is not a gateway agent: `mcp` registers the
+    /// `keys mcp` stdio server instead of wiring a provider key.
+    static let mcpArgument = "mcp"
+
     static let configuration = CommandConfiguration(
         commandName: "setup",
         abstract: "Write a coding agent's config so it runs on a vault key through the local gateway.",
-        usage: "keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]",
+        usage: """
+            keys setup <agent> [--key <name>] [--model <id>] [--display-name <text>] [--wire <kind>] [--set-default] [--json]
+            keys setup mcp [--remove] [--json]
+            """,
         discussion: """
             Writes the agent's own config file, with a backup beside it: the gateway base URL \
             for the key and the name of the environment variable `keys agent` fills with a \
             fresh token at launch. No secret is ever written to a file. Droid gets a customModels \
             entry in ~/.factory/settings.json, Codex a model_providers.keysrs block in \
             ~/.codex/config.toml, Grok a model.keysrs block in ~/.grok/config.toml. Claude Code \
-            reads its base URL and token from the environment, so it needs no file.
+            reads its base URL and token from the environment at launch, so this gateway step \
+            writes it no file; `keys setup mcp` is the step that writes ~/.claude.json and the \
+            other clients' MCP config files, registering the `keys mcp` server with Claude Code, \
+            Codex, Cursor, Droid and Claude Desktop.
             """
     )
 
-    @Argument(help: "claude, codex, grok or droid.") var agent: String
+    @Argument(help: "claude, codex, grok, droid or mcp.") var agent: String
     @Option(help: "Vault key name; defaults to the only key when there is exactly one.") var key: String?
     @Option(help: "Model id the agent requests. Defaults to claude-sonnet-4-5-20250929 for Anthropic keys.") var model: String?
     @Option(name: .customLong("display-name"), help: "Name the agent's model picker shows. Default: Keysrs <key>.") var displayName: String?
     @Option(help: "Wire format override (droid: anthropic|openai|generic-chat-completion-api, codex: chat|responses).") var wire: String?
     @Flag(name: .customLong("set-default"), help: "Codex only: also make keysrs the default provider and set the model.") var setDefault = false
+    @Flag(name: .customLong("remove"), help: "mcp only: unregister the keysrs MCP server from all five clients.") var remove = false
     @Flag(help: "Print one JSON line naming the config written, the token variable and the gateway URL, for a script to read.")
     var json = false
 
     func run() throws {
+        // The MCP registration branch sits above the vault-key resolution on purpose:
+        // registering needs no key, no running site, no Keychain and no Touch ID, and
+        // `mcp` is not a CodingAgent (every gateway agent below resolves a key).
+        if agent.trimmingCharacters(in: .whitespacesAndNewlines) == Self.mcpArgument {
+            try runMCP()
+            return
+        }
+        if remove {
+            throw AppError.usage("--remove is the mcp step only; use it as: keys setup \(Self.mcpArgument) --remove")
+        }
         let agent = try CodingAgent.parse(agent)
         let service = try AppFactory.makeService()
         let rows = try service.list()
@@ -1716,12 +1980,13 @@ struct SetupCommand: ParsableCommand {
                 return
             }
             let base = "http://127.0.0.1:\(GatewayListener.port)/\(row.name)"
-            print("Claude Code needs no config file; it reads two variables at launch.")
+            print("Claude Code needs no gateway config file; it reads two variables at launch.")
             print("Either launch it through the vault (recommended, one Touch ID, no secret in the environment file):")
             print("  keys agent claude \(row.name)")
             print("Or export and run claude yourself with a token from: keys grant \(row.name)")
             print("  export ANTHROPIC_BASE_URL=\(base)")
             print("  export ANTHROPIC_AUTH_TOKEN=<grant or client token>")
+            print("to give Claude Code the Keysrs MCP tools instead: keys setup mcp")
         case .codex:
             let kind = try CodingAgent.codexWire(for: provider, override: wire)
             let home = agent.configHome!
@@ -1778,6 +2043,58 @@ struct SetupCommand: ParsableCommand {
             print(SetupCommand.backupNote(for: url))
             print("launch with: keys agent droid \(row.name) -- droid, then pick \"\(name)\" with /model")
             print("unattended (headless droid exec): keys client issue \(row.name) --label droid --days 90, then export \(CodingAgent.droid.tokenVar!)=…")
+        }
+    }
+
+    /// `keys setup mcp`: write (or, with `--remove`, undo) the `keys mcp` stdio server
+    /// registration in all five agent clients. Each file is a standalone step: a refusal
+    /// (an unparsable file, a wrong-typed entry) names the file and stops the run with
+    /// the files already written left written — re-running after the fix is idempotent.
+    /// Every write keeps a rolling 0600 `.bak` beside the file and holds no secret.
+    private func runMCP() throws {
+        let targets = MCPRegistration.Targets.production
+        let clients = MCPRegistration.Client.allCases
+        if remove {
+            var removedAny = false
+            for client in clients {
+                let url = client.configURL(in: targets)
+                let removed = try client.remove(from: targets)
+                removedAny = removedAny || removed
+                guard !json else { continue }
+                if removed {
+                    print("removed \(MCPRegistration.serverName) from \(client.displayName): \(url.path)")
+                    print(SetupCommand.backupNote(for: url))
+                } else {
+                    print("no \(MCPRegistration.serverName) MCP server in \(url.path)")
+                }
+            }
+            if json {
+                try JSONValue.printLine(MCPRegistration.reportJSON(
+                    action: "remove",
+                    clients: Dictionary(uniqueKeysWithValues: clients.map { ($0.rawValue, $0.configURL(in: targets).path) }),
+                    command: nil))
+            } else if !removedAny {
+                print("nothing to remove; register with: keys setup mcp")
+            }
+            return
+        }
+        // The resolved executable, never a symlink: a registration pointing at
+        // ~/.local/bin/keys dies when that link is removed.
+        let command = try MCPRegistration.resolvedCommand(executable: Bundle.main.executableURL)
+        for client in clients {
+            try client.register(in: targets, command: command)
+            guard !json else { continue }
+            let url = client.configURL(in: targets)
+            print("registered \(MCPRegistration.serverName) with \(client.displayName): \(url.path)")
+            print(SetupCommand.backupNote(for: url))
+        }
+        if json {
+            try JSONValue.printLine(MCPRegistration.reportJSON(
+                action: "register",
+                clients: Dictionary(uniqueKeysWithValues: clients.map { ($0.rawValue, $0.configURL(in: targets).path) }),
+                command: command))
+        } else {
+            print("restart each client to load the server; undo with: keys setup \(Self.mcpArgument) --remove")
         }
     }
 
@@ -1858,11 +2175,20 @@ struct TunnelCommand: ParsableCommand {
     @Flag(help: "Print the ssh command instead of running it.") var printOnly = false
 
     func run() throws {
+        try run(launch: .production, gatewayListening: TunnelCommand.gatewayIsListening)
+    }
+
+    /// The tunnel with the app-discovery seam, the control file and the gateway
+    /// check injectable — `AppConnection.connect()` owns the launch/wait/retry
+    /// policy, and the listening check is a seam so a test drives the
+    /// healthy-app-but-gateway-down outcome without touching the installed app's
+    /// real 127.0.0.1:12767.
+    func run(launch: AppLaunchSeam, control: URL? = nil, gatewayListening: () -> Bool) throws {
         if let key { try KeyName.validate(key) }
         let argv = try Tunnel.argv(
             userHost: userHost, remotePort: remotePort, localPort: Int(GatewayListener.port)
         )
-        try requireGatewayUp()
+        try Self.requireGatewayUp(control: control, launch: launch, gatewayListening: gatewayListening)
         let text = Tunnel.instructions(key: key, userHost: userHost, remotePort: remotePort, localPort: GatewayListener.port)
         if printOnly {
             print(argv.map { $0.contains(" ") ? "\"\($0)\"" : $0 }.joined(separator: " "))
@@ -1874,15 +2200,34 @@ struct TunnelCommand: ParsableCommand {
         try service.runner.run(argv: argv, extraEnv: [:]).exitProcess()
     }
 
-    /// A tunnel to a closed port fails only when the remote side first uses it; refuse here
-    /// instead, with the fix in the message.
-    private func requireGatewayUp() throws {
+    /// The one gate a tunnel and `keys relay run` share: the app-discovery seam
+    /// first — it launches the app and waits for a healthy control endpoint when
+    /// nothing is up — then the gateway check. The seam's failure is the plain
+    /// not-running sentence; a healthy app whose gateway is still not listening
+    /// keeps this command's own `gatewayDown` wording. Static with both seams
+    /// injected, so tests drive every outcome without a catalog or the installed
+    /// app's ports.
+    static func requireGatewayUp(
+        control: URL? = nil,
+        launch: AppLaunchSeam = .production,
+        gatewayListening: () -> Bool = TunnelCommand.gatewayIsListening
+    ) throws {
+        _ = try AppConnection.connect(control: control, launch: launch)
+        if !gatewayListening() {
+            throw Self.gatewayDown()
+        }
+    }
+
+    /// A tunnel to a closed port fails only when the remote side first uses it; refuse
+    /// here instead, with the fix in the message.
+    static func gatewayIsListening() -> Bool {
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(GatewayListener.port)/")!)
         req.timeoutInterval = 3
         do {
             _ = try BlockingHTTP.send(req, timeout: 3)
+            return true
         } catch {
-            throw Self.gatewayDown()
+            return false
         }
     }
 
@@ -2157,15 +2502,18 @@ struct RelayRunCommand: ParsableCommand {
     /// "no running site").
     static func gatewayDown() -> AppError { TunnelCommand.gatewayDown() }
 
-    /// A relay to a closed gateway would only fail on the first agent call; say so here.
-    private func requireGatewayUp() throws {
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(GatewayListener.port)/")!)
-        req.timeoutInterval = 3
-        do {
-            _ = try BlockingHTTP.send(req, timeout: 3)
-        } catch {
-            throw Self.gatewayDown()
-        }
+    /// The same gate as `keys tunnel`, shared with it rather than duplicated: the
+    /// app-discovery seam first (it launches and waits when nothing is up), then
+    /// the gateway check whose failure keeps this command's `gatewayDown` wording.
+    /// A relay to a closed gateway would only fail on the first agent call; say so
+    /// here. The control file and both seams are injectable, so a test drives every
+    /// outcome without the real catalog or the installed app's ports.
+    func requireGatewayUp(
+        control: URL? = nil,
+        launch: AppLaunchSeam = .production,
+        gatewayListening: () -> Bool = TunnelCommand.gatewayIsListening
+    ) throws {
+        try TunnelCommand.requireGatewayUp(control: control, launch: launch, gatewayListening: gatewayListening)
     }
 }
 
@@ -2175,8 +2523,13 @@ struct RelayOnCommand: ParsableCommand {
         abstract: "Run the relay inside the running Keysrs app (one Touch ID there) until off or quit."
     )
 
-    func run() throws {
-        let control = try ControlClient.connect()
+    func run() throws { try run(launch: .production) }
+
+    /// The toggle with the app-discovery seam and control file injectable
+    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
+    /// fakes over a temp catalog).
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        let control = try AppConnection.connect(control: control, launch: launch).controlClient
         fputs("Touch ID in Keysrs…\n", stderr)
         var obj = try control.call(method: "POST", path: "/api/relay", body: ["enabled": true], expect: 200)
         // The first dial says whether the Worker takes the secret; wait for it, briefly.
@@ -2192,8 +2545,13 @@ struct RelayOnCommand: ParsableCommand {
 struct RelayOffCommand: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "off", abstract: "Turn off the relay inside the running Keysrs app.")
 
-    func run() throws {
-        let control = try ControlClient.connect()
+    func run() throws { try run(launch: .production) }
+
+    /// The toggle with the app-discovery seam and control file injectable
+    /// (`AppConnection.connect()` owns the launch policy; tests drive recording
+    /// fakes over a temp catalog).
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        let control = try AppConnection.connect(control: control, launch: launch).controlClient
         _ = try control.call(method: "POST", path: "/api/relay", body: ["enabled": false], expect: 200)
         print("relay off in Keysrs; agents get 503 mac_offline (after the Worker's wait) until it is on again")
     }

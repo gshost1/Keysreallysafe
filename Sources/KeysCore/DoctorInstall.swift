@@ -59,7 +59,7 @@ struct DoctorInstall: Equatable {
     var loginItem: LoginItemState = .notQueried
     var legacyPlist: URL = LoginItem.agentPlist
     var legacyPlistExists: Bool = false
-    var legacyBinary: URL = Installer.live.binary
+    var legacyBinary: URL? = nil
     var legacyBinaryExists: Bool = false
     var legacyBinarySHA256: String? = nil
     var legacyAgentLoaded: Bool? = nil
@@ -103,8 +103,8 @@ struct DoctorInstall: Equatable {
         }
 
         let legacyPlist = LoginItem.agentPlist
-        let legacyBinary = Installer.live.binary
-        let legacyBinaryExists = fm.fileExists(atPath: legacyBinary.path)
+        let legacyBinary = try? Installer.live.binary
+        let legacyBinaryExists = legacyBinary.map { fm.fileExists(atPath: $0.path) } ?? false
 
         return DoctorInstall(
             appBundle: bundle,
@@ -119,7 +119,7 @@ struct DoctorInstall: Equatable {
             legacyPlistExists: fm.fileExists(atPath: legacyPlist.path),
             legacyBinary: legacyBinary,
             legacyBinaryExists: legacyBinaryExists,
-            legacyBinarySHA256: legacyBinaryExists ? Doctor.fileSHA256(legacyBinary) : nil,
+            legacyBinarySHA256: legacyBinaryExists ? legacyBinary.flatMap(Doctor.fileSHA256) : nil,
             legacyAgentLoaded: probeAgent ? legacyAgentLoaded() : nil
         )
     }
