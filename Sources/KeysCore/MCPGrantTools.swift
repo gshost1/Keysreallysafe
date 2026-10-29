@@ -93,11 +93,12 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
             name: "grant_status",
             title: "Poll a grant request",
             description: "Poll one request_grant ask by its id, passing the secret from its create answer: "
-                + "pending, approved (the token, base_url, auth_header and gateway_url — delivered once, on "
-                + "exactly this poll), approved with delivered:true after that, denied with a reason "
-                + "(cancelled, failed, unavailable), expired, or not_found. With no id, send every secret "
-                + "you hold in secrets and the answer lists exactly the asks they prove — a status-only "
-                + "listing that never carries a token or a secret in any state.",
+                + "pending, approved (the token, base_url, auth_header, gateway_url and response_source, "
+                + "delivered once, on exactly this poll), approved with delivered:true after that, denied "
+                + "with a reason (cancelled, failed, unavailable), expired, or not_found. With no id, send "
+                + "every secret you hold in secrets for a status-only listing of exactly the asks they "
+                + "prove, never a token or a secret. Gateway responses carry X-Keysrs-Source: gateway is a "
+                + "Keysrs refusal, upstream is the provider's own answer.",
             inputSchema: [
                 "type": "object",
                 "properties": [

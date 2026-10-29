@@ -52,15 +52,13 @@ struct MCPAnalyticsTools: MCPToolGroup, @unchecked Sendable {
         MCPTool(
             name: "set_analytics_sharing",
             title: "Set analytics sharing",
-            description: "Record the user's answer to the Keysrs analytics question: share daily aggregate "
-                + "usage totals and compare, or keep them local. enabled false turns sharing off at once and "
-                + "answers {\"enabled\": false}. enabled true does not turn it on: it answers "
-                + "{\"enabled\": false, \"status\": \"pending_user_confirmation\"} (or {\"enabled\": true} "
-                + "when it is already on), and you then ask the user to turn on sharing themselves in the Keysrs "
-                + "app, whose own switch is the confirmation. Requires the app and changes nothing else: it "
-                + "never sends a report (only the dashboard's own timer uploads), never reveals the pending "
-                + "report preview, and asks for no Touch ID. Only call this after the user has explicitly "
-                + "answered the analytics question; never enable sharing on your own.",
+            description: "Record the user's answer to the analytics question: share daily aggregate usage totals "
+                + "to compare, or keep them local (the default). Ask it once, after a successful import or "
+                + "when the user brings it up. enabled false turns sharing off. enabled true does not turn "
+                + "it on: it answers status pending_user_confirmation, and the user then turns sharing on "
+                + "in the Keysrs app, whose switch is the confirmation. Never sends a report and asks for "
+                + "no Touch ID. Only call this after the user has explicitly answered; never enable sharing "
+                + "on your own.",
             inputSchema: [
                 "type": "object",
                 "properties": ["enabled": ["type": "boolean"]] as [String: Any],

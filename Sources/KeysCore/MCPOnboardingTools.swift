@@ -88,16 +88,12 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         MCPTool(
             name: "scan_project",
             title: "Scan a project",
-            description: "Scan a project folder for credential-shaped environment variables without reading "
-                + "the files yourself: each one's name, relative file, likely provider, category "
-                + "(provider_key, aws_pair, credential_url, wrapped), a last-4 hint, whether the value is "
-                + "already in the vault, whether the gateway could proxy it, plus the env files read and the "
-                + "docker files at the root. Never returns a key value: at most the last 4 characters. The "
-                + "folder is optional and defaults to this process's working directory; a folder that does not "
-                + "exist is a plain error, and a folder outside the working directory's subtree is refused, "
-                + "as is a working directory of / or the home folder. "
-                + "in_vault needs the Keysrs app (a hash-only vault comparison); "
-                + "without the app the scan still answers and in_vault is null.",
+            description: "Scan a project folder for credential-shaped env variables without reading the files "
+                + "yourself: each one's name, relative file, likely provider, category (provider_key, "
+                + "aws_pair, credential_url, wrapped), a last-4 hint, whether it is already in the vault "
+                + "and whether the gateway could proxy it, plus the env files read and the docker_files at "
+                + "the root. Never returns a key value. in_vault needs the Keysrs app; without it the scan "
+                + "still answers and in_vault is null.",
             inputSchema: [
                 "type": "object",
                 "properties": [
@@ -112,17 +108,11 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         MCPTool(
             name: "check_exposure",
             title: "Check git exposure",
-            description: "Check which env files in a project folder git has ever seen, without reading "
-                + "the files yourself: for each one the scan finds, reports whether it is gitignored, "
-                + "tracked in the index, or present anywhere in history. Never returns file contents or "
-                + "diffs — only those three booleans per file, the relative file paths, and a "
-                + "rotate-the-keys recommendation for any file that was ever committed. When the folder "
-                + "is not a git repository, or git is not installed, every file reports null booleans "
-                + "and the git field says so plainly. The folder is optional and defaults to this "
-                + "process's working directory; a folder that does not exist is a plain error, and a "
-                + "folder outside the working directory's subtree is refused, as is a working directory "
-                + "of / or the home folder. Needs "
-                + "no app, no vault and no network.",
+            description: "Use this instead of running git yourself to check which env files in a project folder "
+                + "git has seen: per file, whether it is gitignored, tracked, or anywhere in history, plus "
+                + "a rotate-the-keys recommendation for any file ever committed. Never returns file "
+                + "contents or diffs. Outside a git repository, or without git, the booleans are null and "
+                + "the git field says why. Needs no app, vault or network.",
             inputSchema: [
                 "type": "object",
                 "properties": [
@@ -137,24 +127,16 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         MCPTool(
             name: "import_and_wrap",
             title: "Import and wrap a project",
-            description: "Import the credential-shaped variables in a project folder into the Keysrs "
-                + "vault and rewrite each one to a single 30-day project gateway token, all inside "
-                + "the app under one Touch ID prompt that names the keys and the project. Ask the "
-                + "user first in the same call. Only names and flags cross the wire: the app re-reads "
-                + "the files itself, so never put a value in the request; the result carries "
-                + "per-variable outcomes (wrapped, imported_not_wrapped, skipped, not_found with "
-                + "reasons), the project label, the token's expiry, whether docker containers may "
-                + "reach the gateway, the base-URL host, and whether a backup of the original "
-                + "values was kept outside the project — never a key value, a token or an "
-                + "absolute path. Values the gateway cannot proxy (AWS SigV4 pairs, credential URLs) "
-                + "import but keep their lines; values with no recognized provider and no vault match "
-                + "are not imported. docker true only with the user's explicit yes: it also lets "
-                + "Docker containers reach the gateway through host.docker.internal base URLs. The "
-                + "folder is optional and defaults to this process's working directory, and is "
-                + "refused when it is outside that working directory's subtree or when the working "
-                + "directory is / or the home folder; variables "
-                + "restricts the import to those names. Without the app running the whole call fails "
-                + "with one sentence.",
+            description: "Import a project folder's credential-shaped variables into the vault and rewrite each to "
+                + "one 30-day project gateway token, inside the app under one Touch ID prompt naming the "
+                + "keys and the project. Ask the user first. If scan_project listed docker_files, also ask "
+                + "whether Docker containers should reach the gateway: docker true only with the user's "
+                + "explicit yes, otherwise leave it out. Only names and flags are sent and the app re-reads "
+                + "the files, so never put a value in the request. The result gives per-variable outcomes, "
+                + "never a key value, token or absolute path. AWS SigV4 pairs and credential URLs import "
+                + "but keep their lines; values with no known provider and no vault match are not imported. "
+                + "variables limits the import to those names. Needs the app. After a successful import, "
+                + "ask the analytics question once (set_analytics_sharing).",
             inputSchema: [
                 "type": "object",
                 "properties": [
@@ -171,17 +153,12 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         MCPTool(
             name: "test_keys",
             title: "Test vault keys",
-            description: "Test whether named vault keys still work, read-only: each key's provider gets one GET "
-                + "to its model-list endpoint and the answer is the keys-test shape per key (outcome, summary, "
-                + "model list) plus a confirmed flag — never a key value. Confirmation is the user's alone, "
-                + "every time: ask the user in this same call and pass confirm true only after they say yes; "
-                + "never remember an earlier yes, never treat one approval as covering a later call. With "
-                + "confirm absent or false nothing is sent to any provider, no prompt appears, and the result "
-                + "says so per key. With confirm true the Keysrs app shows one Touch ID prompt naming the "
-                + "keys, then checks each probeable key; a provider with no read-only check endpoint reports "
-                + "no_check_endpoint with nothing sent, and a call with no probeable key prompts no one. "
-                + "keys is a required list of vault key names; an unknown name is refused. Without the app "
-                + "running the whole call fails with one sentence.",
+            description: "Test whether named vault keys still work, read-only: one GET to each provider's "
+                + "model-list endpoint, answered per key (outcome, summary, model list) plus a confirmed "
+                + "flag, never a key value. Confirmation is the user's alone: ask the user in this same "
+                + "call and pass confirm true only after they say yes; never remember an earlier yes. "
+                + "Without confirm nothing is sent and no prompt appears; with it the app shows one Touch "
+                + "ID prompt naming the keys. Unknown key names are refused. Needs the app.",
             inputSchema: [
                 "type": "object",
                 "properties": [

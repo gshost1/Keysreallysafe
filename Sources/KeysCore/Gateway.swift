@@ -22,6 +22,11 @@ final class GatewayListener: @unchecked Sendable {
     static let resourceTimeout: TimeInterval = 900
     static let maxConcurrent = 32
     static let ioTimeoutSeconds = 30
+    /// Says who wrote a response: `gateway` for Keysrs's own refusals and errors,
+    /// `upstream` for the provider's answer passed through. An agent in the 0.14
+    /// test read a provider's 401 (a bad stored key) as the gateway refusing its
+    /// grant; the status code alone cannot tell the two apart.
+    static let sourceHeader = "X-Keysrs-Source"
 
     let listener: LoopbackListener
     private let service: KeysService
@@ -368,7 +373,10 @@ final class GatewayListener: @unchecked Sendable {
 
     @discardableResult
     static func writeJSON(fd: Int32, status: Int, object: [String: Any], extraHeaders: [String: String] = [:]) -> Bool {
-        var headers = ["Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"]
+        var headers = [
+            "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store",
+            sourceHeader: "gateway",
+        ]
         if status == 401 { headers["WWW-Authenticate"] = "Bearer realm=\"keysreallysafe-gateway\"" }
         headers.merge(extraHeaders) { _, new in new }
         let body = (try? JSONValue.data(object)) ?? Data("{}".utf8)
@@ -495,6 +503,8 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
             for (key, value) in http.allHeaderFields {
                 let name = String(describing: key)
                 let lower = name.lowercased()
+                // A provider cannot claim to be the gateway.
+                if lower == GatewayListener.sourceHeader.lowercased() { continue }
                 if Self.dropOutgoing.contains(lower) {
                     if lower == "transfer-encoding", String(describing: value).lowercased().contains("chunked") {
                         skipContentLength = true
@@ -510,6 +520,7 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
         if skipContentLength {
             headers.removeAll { $0.0.lowercased() == "content-length" }
         }
+        headers.append((GatewayListener.sourceHeader, http == nil ? "gateway" : "upstream"))
         headers.append(("Connection", "close"))
         var head = "HTTP/1.1 \(status) \(HTTPFrame.reason(status))\r\n"
         for (k, v) in headers {

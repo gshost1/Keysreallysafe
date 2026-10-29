@@ -87,7 +87,7 @@ Probe with the cheapest call first. `keys version --json` needs no running
 site and no Touch ID:
 
 ```sh
-keys version --json      # {"version":"0.14.0"} — one line, exit 0
+keys version --json      # {"version":"0.14.1"} — one line, exit 0
 ```
 
 An install old enough to answer exit 64 here does not know this surface yet;

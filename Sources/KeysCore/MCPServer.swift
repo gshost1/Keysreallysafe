@@ -19,8 +19,10 @@ struct MCPServer {
     /// The server name MCP clients see, the same constant the registration writes.
     static let serverName = "keysrs"
     /// The frozen `instructions` string (VAL-MCP-INSTRUCTIONS-002 pins it byte for
-    /// byte): the preamble line plus the seven rules, LF-joined, no trailing newline.
-    /// It names tools later missions add; that is deliberate.
+    /// byte): the preamble line plus the twelve rules, LF-joined, no trailing newline.
+    /// Rules 8-12 came from the 0.14 hands-on test (an agent ran git itself, skipped
+    /// the Docker and analytics questions, and blamed a grant for a provider's 401);
+    /// rule 11 holds the folder scoping the folder tools' descriptions used to repeat.
     static let instructions = """
 Keysrs is the local API-key vault on this Mac. When using its tools, follow these rules:
 1. Never open or read .env files yourself; use the scan_project tool instead.
@@ -30,6 +32,11 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
 5. After a failure, offer send_feedback but never send it.
 6. Never print tokens back to the user unless they ask.
 7. Only call set_analytics_sharing after the user has explicitly answered the analytics question; never enable sharing on your own.
+8. To see which env files git has seen, call check_exposure; never run git on env files yourself.
+9. Before import_and_wrap, if the scan found docker files, ask whether Docker containers may reach the gateway; the default is no.
+10. After a successful import, ask the analytics question once and record only the user's answer.
+11. Folder tools take an optional folder inside the working directory, which is the default; anything outside it, or a working directory of root or home, is refused.
+12. The X-Keysrs-Source response header tells refusals apart: gateway means Keysrs refused; upstream means the provider answered, so an upstream 401 is the provider rejecting the stored key, not the grant.
 """
 
     private let writeBytes: (Data) -> Void
