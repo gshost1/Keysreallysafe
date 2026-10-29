@@ -11,11 +11,14 @@ import Foundation
 /// The rules, in the order they run (the order is the contract: exact matches
 /// first, the cap LAST — scrub-then-cap, because a cut landing inside an
 /// echoed secret would leave a prefix the whole-secret match no longer finds,
-/// the `ProviderCheck` rule):
+/// the `ProviderCheck` rule). Before any rule runs the draft is normalized:
+/// zero-width characters are stripped, so a value or token carrying them is
+/// matched in its plain form.
 ///
-/// 1. `vault_value` — exact-substring removal of every vault value, the
-///    `Redact.scrub` loop including its 4-character floor (a 3-character needle
-///    is not evidence).
+/// 1. `vault_value` — every vault value, the `Redact.scrub` loop including its
+///    4-character floor (a 3-character needle is not evidence), plus the
+///    value's percent-encoded and base64 forms as literal needles and the
+///    whitespace-inserted form matched through the whitespace.
 /// 2. `prompt_text` — the exact text of the `prompt` argument, whatever the
 ///    agent marked with it. This runs IMMEDIATELY after vault_value and before
 ///    every rewriting rule: once a rewriting rule has masked a part of the
@@ -103,11 +106,19 @@ struct FeedbackScrubber {
             removed[category, default: 0] += count
         }
 
-        var text = request.draft
+        // 0. normalize — zero-width characters are invisible and never part of
+        //    a real value, so they are stripped before any rule runs; a value
+        //    or token carrying them is then matched in its plain form (F4).
+        var text = stripZeroWidth(request.draft)
 
-        // 1. vault_value — the Redact loop, exact and whole, 4-character floor.
+        // 1. vault_value — the exact value, its percent-encoded and base64
+        //    forms as literal needles, and the whitespace-inserted form matched
+        //    through the whitespace (F4).
         for value in request.vaultValues where value.count >= 4 {
-            bump(vaultValue, by: replaceLiteral(&text, value))
+            for needle in vaultNeedles(value) {
+                bump(vaultValue, by: replaceLiteral(&text, needle))
+            }
+            bump(vaultValue, by: try replaceRegex(&text, separatedPattern(value), with: Redact.mask))
         }
 
         // 2. prompt_text — the marked text, exact and whole, BEFORE any
@@ -117,7 +128,9 @@ struct FeedbackScrubber {
             bump(promptText, by: replaceLiteral(&text, prompt))
         }
 
-        // 3. token — every Keysrs family's runs, full shape to bare prefix.
+        // 3. token — every Keysrs family's runs, full shape to bare prefix, and
+        //    a token split across a line break (F4).
+        bump(token, by: try replaceRegex(&text, splitTokenPattern, with: Redact.mask))
         bump(token, by: try replaceRegex(&text, tokenRunPattern, with: Redact.mask))
 
         // 4. key_shape, header forms — prefix kept, value masked (Redact's two).
@@ -193,6 +206,54 @@ struct FeedbackScrubber {
     ]
     .map { NSRegularExpression.escapedPattern(for: $0) + "[A-Za-z0-9_\\-]*" }
     .joined(separator: "|")
+
+    /// The split-token pattern: a Keysrs family prefix followed by a long token
+    /// run (8+ characters on each side) joined across a line break or any
+    /// whitespace. It is tried BEFORE `tokenRunPattern` so a token split across
+    /// a line break is claimed in one match; a short run or a bare prefix falls
+    /// through to `tokenRunPattern` unchanged (the bare prefixes must stay
+    /// separate matches), and a 16-character shape floor keeps ordinary prose
+    /// from being read as a token (F4).
+    private static let splitTokenPattern: String = {
+        let prefixes = [RelayPairing.prefix, GatewayClientToken.prefix, GrantToken.prefix, RelaySecret.prefix]
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        return "(?:\(prefixes))(?:[A-Za-z0-9_\\-]{8,}\\s+[A-Za-z0-9_\\-]{8,})+"
+    }()
+
+    /// Normalization: zero-width characters are invisible, are never part of a
+    /// real value, and are only ever inserted to break a needle, so they are
+    /// removed before any rule runs — a value or token carrying them is then
+    /// matched in its plain form (F4).
+    private static func stripZeroWidth(_ text: String) -> String {
+        let zeroWidth: Set<Character> = [
+            "\u{200B}", "\u{200C}", "\u{200D}", "\u{2060}", "\u{FEFF}", "\u{180E}",
+        ]
+        return String(text.filter { !zeroWidth.contains($0) })
+    }
+
+    /// The literal needles one vault value is matched as: the value itself, its
+    /// percent-encoded form and its base64 form — the shapes an agent can paste
+    /// into a draft without the plain value ever appearing (F4). A form equal
+    /// to the value is dropped so nothing is counted twice.
+    private static func vaultNeedles(_ value: String) -> [String] {
+        var needles = [value]
+        for variant in [FeedbackDelivery.queryValue(value), Data(value.utf8).base64EncodedString()]
+        where variant != value && !variant.isEmpty {
+            needles.append(variant)
+        }
+        return needles
+    }
+
+    /// The whitespace-inserted form of a value: each of the value's
+    /// non-whitespace characters, with any run of whitespace allowed between
+    /// them. The value's own characters anchor both ends, so ordinary prose
+    /// cannot match it, and the zero-width forms were already stripped (F4).
+    private static func separatedPattern(_ value: String) -> String {
+        value.filter { !$0.isWhitespace }
+            .map { NSRegularExpression.escapedPattern(for: String($0)) }
+            .joined(separator: "\\s*")
+    }
 
     /// The explicit `file:` URL form. `file:///Users/x` has no boundary the
     /// general path pattern can use (its slashes follow `:` and `/`), so it is

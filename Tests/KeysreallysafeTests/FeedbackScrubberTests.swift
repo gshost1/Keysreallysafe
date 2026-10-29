@@ -59,6 +59,49 @@ final class FeedbackScrubberTests: XCTestCase {
         XCTAssertNil(out.removed[FeedbackScrubber.keyShape], "no shape rule touched the prose")
     }
 
+    /// VAL-F-004. Obfuscated vault values and split tokens are caught: a value
+    /// with whitespace or zero-width characters inserted, its percent-encoded
+    /// form, its base64 form and a Keysrs token split across a line break are
+    /// all removed — zero-width characters are normalized away before matching,
+    /// the encoded variants are enumerated as needles, and a split token is
+    /// matched through the break. Every obfuscated form is shaped so the
+    /// key-shape rule cannot backstop it (each piece is under its 16-character
+    /// floor), so each one leaks unless the vault/token rules handle it.
+    func testObfuscatedVaultValuesAndSplitTokensRemoved() throws {
+        let fakeVault = "fake vault " + String(repeating: "s3", count: 5)
+        let inserted = "fake  vault " + String(repeating: "s3", count: 5)
+        let zeroWidth = "fake\u{200B}vault\u{200B}" + String(repeating: "s3", count: 5)
+        let percentEncoded = FeedbackDelivery.queryValue(fakeVault)
+        let base64 = Data(fakeVault.utf8).base64EncodedString()
+        XCTAssertNotEqual(percentEncoded, fakeVault, "the value must actually percent-encode")
+
+        // A real token split so the tail is under the shape rule's floor.
+        let token = GatewayClientToken.generate()
+        let head = String(token.prefix(40))
+        let tail = String(token.dropFirst(40))
+        XCTAssertLessThan(tail.count, 16, "the second half is under the shape rule's floor")
+
+        let draft = [
+            "plain \(fakeVault)",
+            "spaced \(inserted)",
+            "zero \(zeroWidth)",
+            "encoded \(percentEncoded)",
+            "b64 \(base64)",
+            "split \(head)\n\(tail)",
+        ].joined(separator: " ")
+        let out = try scrub(draft, vaultValues: [fakeVault])
+        XCTAssertFalse(out.scrubbed.contains(fakeVault), "the plain value is gone")
+        XCTAssertFalse(out.scrubbed.contains(inserted),
+                       "the whitespace-inserted value is gone: \(out.scrubbed)")
+        XCTAssertFalse(out.scrubbed.contains(zeroWidth),
+                       "the zero-width value is gone: \(out.scrubbed)")
+        XCTAssertFalse(out.scrubbed.contains(percentEncoded), "the percent-encoded value is gone")
+        XCTAssertFalse(out.scrubbed.contains(base64), "the base64 value is gone")
+        XCTAssertFalse(out.scrubbed.contains(tail), "the split token's tail is gone: \(out.scrubbed)")
+        XCTAssertEqual(out.removed[FeedbackScrubber.vaultValue], 5,
+                       "the plain, inserted, zero-width, percent-encoded and base64 forms are all vault_value")
+    }
+
     // MARK: - token (VAL-FB-003)
 
     /// Full Keysrs token shapes, prefix-bearing short runs and the bare prefixes
