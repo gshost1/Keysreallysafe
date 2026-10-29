@@ -65,8 +65,18 @@
 <p>It never contains prompts, responses, key values or key names, project, session or agent names, file paths, account IDs, dollar amounts, exact times or any persistent device or user identifier. A provider outside the app's published list is sent as "other", and a model name that is not a public one (for example a fine-tune or deployment name) is sent as "unknown".</p>
 <p>In return the dashboard shows a Compare line: how your typical day compares with the days others have shared. For that, the app downloads a table of shared totals from the same server at most once a day; that request carries nothing about you. The server keeps reports for 30 days and does not store IP addresses or request logs. Cloudflare, which carries the connection, necessarily sees the connecting IP address. Reports are not anonymous in a strict sense and are not end-to-end encrypted. The full schema is in the <a href="https://github.com/gshost1/Keysreallysafe/blob/main/docs/product-analytics.md">source repository</a>.</p>
 
-<h2>This website</h2>
-<p>This site uses PostHog for page-view counts and one click event (the download button), tagged with the <code>?ref=</code> label of the link you arrived by, if it had one. It runs without cookies or browser storage, so it cannot recognise you on a return visit, and it records no session replays, no form input and no identity. IP addresses are used by PostHog to derive a coarse location and are not stored with the event. Fonts load from Google Fonts. There are no other third-party scripts. It is served by Cloudflare, which logs requests for security and operational purposes under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.</p>
+<h2 id="website">This website</h2>
+<p>Everything above is about the Mac app. This website, keysrs.com, works differently: it uses PostHog (US cloud) for analytics, and what it collects depends on your answer to the banner it shows on your first visit.</p>
+<p><strong>Before you answer, or if you say no:</strong> page views and one click event (the download button), tagged with the <code>?ref=</code> label of the link you arrived by, if it had one. No cookie and no identity are stored, so each page load counts on its own and you are not recognised on a return visit. Nothing is recorded. The only thing the site keeps in your browser is your answer itself (<code>keysrs-analytics-consent</code> in localStorage), so the banner doesn't ask again.</p>
+<p><strong>If you say OK:</strong></p>
+<ul>
+  <li>PostHog stores a random visitor ID in a first-party cookie and in localStorage, so a returning visitor counts once and visits can be linked to each other. No name, email or account is attached to it.</li>
+  <li>Your visit is recorded as a session replay: page structure, scrolling, clicks and mouse movement. All text on the page and everything typed into inputs is masked before it leaves your browser, so a replay shows boxes, not words.</li>
+  <li>Page-speed measurements (web vitals) and clicks that did nothing or were repeated in frustration ("dead" and "rage" clicks).</li>
+  <li>Page views and the download click as above.</li>
+</ul>
+<p>There is no autocapture of every click and no surveys. You can change your answer at any time: <a href="#" data-consent-reset>change my choice</a>. Saying no after OK clears the visitor ID and stops recording.</p>
+<p>IP addresses are used by PostHog to derive a coarse location and are not stored with events. We are on PostHog's free plan, which keeps session replays for at most 30 days and other events for one year, then deletes them. Fonts load from Google Fonts. There are no other third-party scripts. The site is served by Cloudflare, which logs requests for security and operational purposes under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.</p>
 
 <h2>Contact</h2>
 <p>Questions about privacy: <a href="mailto:support@keysrs.com">support@keysrs.com</a>.</p>

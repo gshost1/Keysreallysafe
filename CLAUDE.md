@@ -39,8 +39,12 @@ Cloudflare Worker with static assets (`wrangler.jsonc`, name `keysrs`,
 custom domains keysrs.com and www.keysrs.com); deploy with `npx wrangler
 deploy` after `wrangler login`. Support mail is support@keysrs.com via
 Cloudflare Email Routing. PostHog (US cloud, project key in `Site/posthog.js`, a
-public client token) counts page views and download clicks, cookieless,
-no session replay; privacy.html describes exactly that and must stay true.
+public client token) is consent-gated (decided 2026-10-28: the app stays
+private, the website need not be): before a visitor's OK in the banner it is
+cookieless page views and download clicks only; after OK it keeps a
+cookie/localStorage visitor ID and records sessions with all text and inputs
+masked, plus web vitals and dead/rage clicks. No autocapture, no surveys.
+privacy.html describes exactly that and must stay true.
 Download links point at the latest GitHub release's `Keysrs-arm64.dmg`.
 
 ## Build and test
