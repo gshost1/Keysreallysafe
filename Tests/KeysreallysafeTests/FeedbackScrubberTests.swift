@@ -278,6 +278,18 @@ final class FeedbackScrubberTests: XCTestCase {
         XCTAssertEqual(out.removed[FeedbackScrubber.email], 2)
     }
 
+    /// VAL-F-006. An email using the fullwidth `＠` (U+FF20) is redacted like an
+    /// ASCII one — the ASCII-only pattern missed it and the shape rule rejected
+    /// the non-ASCII scalar — while `support@keysrs.com` stays exempt.
+    func testFullwidthAtEmailsRemoved() throws {
+        let draft = "write to user\u{FF20}example.com or support@keysrs.com please"
+        let out = try scrub(draft)
+        XCTAssertFalse(out.scrubbed.contains("user\u{FF20}example.com"),
+                       "the fullwidth-＠ email is gone: \(out.scrubbed)")
+        XCTAssertTrue(out.scrubbed.contains("support@keysrs.com"), "the support address survives")
+        XCTAssertEqual(out.removed[FeedbackScrubber.email], 1)
+    }
+
     // MARK: - prompt_text (VAL-FB-007)
 
     /// The prompt argument's exact text is removed and counted; without the

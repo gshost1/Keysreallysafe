@@ -150,9 +150,10 @@ struct FeedbackScrubber {
         bump(path, by: try replaceRegex(&text, fileURLPattern, with: Redact.mask))
         bump(path, by: try replaceRegex(&text, pathPattern, with: "$1" + Redact.mask))
 
-        // 6. email — every email-shaped string except the support address.
+        // 6. email — every email-shaped string except the support address; the
+        //    fullwidth ＠ (U+FF20) counts as an @ too (F6).
         bump(email, by: try replaceRegex(
-            &text, #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#, with: Redact.mask,
+            &text, #"[A-Za-z0-9._%+\-]+[@＠][A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#, with: Redact.mask,
             except: supportAddress
         ))
 
@@ -162,7 +163,8 @@ struct FeedbackScrubber {
         //    stays), so the shape scan judges only what is left.
         let records = request.records
         bump(keyShape, by: scrubTokens(&text) { token in
-            guard !token.hasPrefix("/"), !token.hasPrefix("~"), !token.contains("@") else { return false }
+            guard !token.hasPrefix("/"), !token.hasPrefix("~"),
+                  !token.contains("@"), !token.contains("＠") else { return false }
             if let byPrefix = WrapDetect.providerFromPrefix(token, records: records), byPrefix.length >= 4 {
                 return true
             }
