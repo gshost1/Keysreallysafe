@@ -14,6 +14,9 @@ final class KeysService: @unchecked Sendable {
     var codexHome: URL
     var grokBotHome: URL
     var droidHome: URL
+    /// The optional Claude plan snapshot `liveStatus` reads; nil under the test
+    /// tripwire, so no test reads the owner's real one (S6).
+    var claudePlanFile: URL? = Paths.claudePlanFile
     /// Serialises ingest passes only. A five-minute log scan must never hold up a gateway lookup.
     private let ingestLock = NSLock()
     /// Guards `gatewayCache` and `gatewayListener`; held for dictionary access only.
@@ -2215,7 +2218,7 @@ final class KeysService: @unchecked Sendable {
             grokHome: grokHome,
             claudeHome: claudeHome,
             grokWeekUsd: grokWeek.totals.grokUsd,
-            claudePlan: Paths.appSupport.appendingPathComponent("claude-plan.json"),
+            claudePlan: claudePlanFile,
             openaiWeekTokens: openaiWeek.totals.openaiTokens,
             openaiWeekUsdEstimate: openaiWeek.totals.openaiUsdEstimate,
             codexHome: codexHome,

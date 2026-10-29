@@ -65,7 +65,7 @@ final class AppConnectionIsolationGuardTests: XCTestCase {
         let forbidden: [(label: String, control: URL)] = [
             ("the default control URL's shape",
              ControlFile.url(beside: Paths.appSupport.appendingPathComponent("catalog.db"))),
-            ("the default beside the installed catalog", ControlFile.url(beside: Paths.catalogDB)),
+            ("the default beside the installed catalog", ControlFile.url(beside: Paths.appSupport.appendingPathComponent("catalog.db"))),
             ("the production control file itself", Paths.appSupport.appendingPathComponent("control.json")),
             ("a path beneath the production app-support directory",
              Paths.appSupport.appendingPathComponent("definitely-not-there").appendingPathComponent("control.json")),

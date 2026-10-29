@@ -61,7 +61,7 @@ enum Doctor {
         let grokLog = service.grokHome.appendingPathComponent("logs/unified.jsonl")
         let claudeProjects = service.claudeHome.appendingPathComponent("projects", isDirectory: true)
         let claudeHud = service.claudeHome.appendingPathComponent("plugins/claude-hud/usage.json")
-        let claudePlan = Paths.appSupport.appendingPathComponent("claude-plan.json")
+        let claudePlan = service.claudePlanFile
         let codexSessions = service.codexHome.appendingPathComponent("sessions", isDirectory: true)
 
         var sources: [DoctorSource] = []
@@ -97,7 +97,7 @@ enum Doctor {
                     : "missing file"
             )
         )
-        let hudPath = FileManager.default.isReadableFile(atPath: claudeHud.path) ? claudeHud : claudePlan
+        let hudPath = FileManager.default.isReadableFile(atPath: claudeHud.path) ? claudeHud : (claudePlan ?? claudeHud)
         let hudStatus = LiveStatus.readClaudePlan(home: service.claudeHome, extra: claudePlan)
         sources.append(
             source(

@@ -1214,7 +1214,7 @@ final class ImportAndWrapTests: XCTestCase {
     func testGuardFailsClosedOnProductionPaths() throws {
         let productionControl = Paths.appSupport.appendingPathComponent("control.json")
         XCTAssertThrowsError(try assertNotProductionPath(Paths.appSupport))
-        XCTAssertThrowsError(try assertNotProductionPath(Paths.catalogDB), "the production-default catalog seam")
+        XCTAssertThrowsError(try assertNotProductionPath(Paths.appSupport.appendingPathComponent("catalog.db")), "the production-default catalog seam")
         XCTAssertThrowsError(try assertNotProductionPath(productionControl), "the production-default control seam")
         XCTAssertThrowsError(try AppConnectionIsolationGuard.assertIsolated(control: productionControl),
                              "the shared guard rejects the production control shape too")

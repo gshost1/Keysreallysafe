@@ -40,6 +40,51 @@ final class ProductionTripwireTests: XCTestCase {
         XCTAssertTrue(TestIsolation.armed, "this suite runs under a test harness, so the process is armed")
     }
 
+    // MARK: - S6: the Application Support root itself
+
+    /// The Application Support root, the installer that removes beneath it and
+    /// the claude-plan.json snapshot all refuse the real folder under the
+    /// tripwire. Failed pre-fix: `Paths.appSupport` was the only resolver, it
+    /// never threw, and `Installer.live` and `liveStatus()` rooted the real
+    /// folder from a test process.
+    func testTheApplicationSupportRootRefusesUnderTestIsolation() throws {
+        try XCTSkipIf(Paths.env("KEYS_CATALOG") != nil, "KEYS_CATALOG is the sanctioned override")
+        XCTAssertThrowsError(try Paths.resolvingAppSupport()) { error in
+            guard case AppError.usage(let message) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(message.contains("test isolation"), message)
+        }
+        XCTAssertThrowsError(try Installer.live, "the destructive uninstall root is never built over the real folder")
+        XCTAssertNil(Paths.claudePlanFile, "no real claude-plan.json is named")
+        let (db, _) = try makeDB()
+        let (service, _) = makeGatedService(db: db)
+        XCTAssertNil(service.claudePlanFile, "a test service reads no real plan snapshot")
+    }
+
+    /// Structural belt: Sources asks Foundation for Application Support in one
+    /// place, and `Paths.appSupport` (the production shape) is read only inside
+    /// `Paths` itself — every consumer goes through a guarded resolver.
+    func testSourcesRootNoStateInApplicationSupportDirectly() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+        var foundation: [String] = []
+        var direct: [String] = []
+        let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
+        while let url = files?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            let text = try String(contentsOf: url, encoding: .utf8)
+            for (number, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let code = line.trimmingCharacters(in: .whitespaces)
+                if code.hasPrefix("//") { continue }
+                if code.contains("applicationSupportDirectory") { foundation.append("\(url.lastPathComponent):\(number + 1)") }
+                if code.contains("Paths.appSupport") { direct.append("\(url.lastPathComponent):\(number + 1)") }
+            }
+        }
+        XCTAssertEqual(foundation.count, 1, "only Paths.userApplicationSupport asks Foundation: \(foundation)")
+        XCTAssertTrue(foundation.allSatisfy { $0.hasPrefix("Support.swift:") }, "\(foundation)")
+        XCTAssertEqual(direct, [], "no consumer roots state in Paths.appSupport directly")
+    }
+
     /// `AppConnection.connect()` with no arguments resolves the default control
     /// URL inside its body — the first thing it does — so under the tripwire the
     /// whole app-bound surface (every eligible CLI command, every app-bound MCP

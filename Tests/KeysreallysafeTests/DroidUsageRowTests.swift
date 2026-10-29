@@ -134,6 +134,8 @@ final class DroidUsageRowTests: XCTestCase {
     func testServiceAndRouteSetClearAndRefuseBadLimits() throws {
         let (db, dir) = try makeDB()
         let (service, _, _) = makeService(db: db)
+        // A temp plan snapshot, never the owner's real Application Support one (S6).
+        service.claudePlanFile = try TempDir.make().appendingPathComponent("claude-plan.json")
         let handler = APIHandler(service: service, webRoot: dir)
         let catalogPath = dir.appendingPathComponent("catalog.db")
 

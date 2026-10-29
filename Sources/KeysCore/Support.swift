@@ -200,16 +200,42 @@ enum Paths {
         return URL(fileURLWithPath: value)
     }
 
-    static var appSupport: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("Keysreallysafe", isDirectory: true)
+    /// The user's own `~/Library/Application Support`, the one place Sources asks
+    /// Foundation for it; the Keysrs folder and other apps' folders derive from it.
+    static var userApplicationSupport: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
     }
 
-    /// The catalog location as a non-throwing constant, for code that only needs
-    /// the shape of the path (the test guards compare against it). Opening state
-    /// goes through `resolvingCatalog()`; nothing in Sources reads this var to
-    /// open a catalog anymore.
-    static var catalogDB: URL { env("KEYS_CATALOG") ?? appSupport.appendingPathComponent("catalog.db") }
+    /// The production `Application Support/Keysreallysafe` folder, as a shape only:
+    /// the test guards compare against it and the two resolvers below return it.
+    /// Nothing outside this enum roots a file in it directly — state is opened
+    /// through `resolvingAppSupport()` or `resolvingCatalog()`, which the
+    /// tripwire guards (S6).
+    static var appSupport: URL {
+        userApplicationSupport.appendingPathComponent("Keysreallysafe", isDirectory: true)
+    }
+
+    /// The Application Support root for state that is not the catalog (the
+    /// installer's layout, the app's lock and log, claude-plan.json). Under the
+    /// test tripwire it never names the real folder: an armed process with
+    /// `KEYS_CATALOG` gets that catalog's directory as its isolated root, and one
+    /// without it throws. A production process always gets the real folder, even
+    /// with `KEYS_CATALOG` set, so a custom catalog never moves the uninstall's
+    /// removal root beside it.
+    static func resolvingAppSupport() throws -> URL {
+        guard TestIsolation.armed else { return appSupport }
+        if let override = env("KEYS_CATALOG") { return override.deletingLastPathComponent() }
+        throw AppError.usage(
+            "test isolation refused the real Keysrs Application Support folder (XCTest or KEYS_TEST_ISOLATION "
+                + "is set and KEYS_CATALOG is not); point test state at a temporary catalog"
+        )
+    }
+
+    /// The optional Claude plan snapshot beside the catalog, or nil where the
+    /// tripwire refuses the real folder: a test process reads no real plan.
+    static var claudePlanFile: URL? {
+        try? resolvingAppSupport().appendingPathComponent("claude-plan.json")
+    }
 
     /// The catalog a caller with no explicit world of its own resolves:
     /// `KEYS_CATALOG` when set (the sanctioned override — catalog-sibling paths
@@ -235,8 +261,7 @@ enum Paths {
 
     /// The Grok Bot desktop app's Electron data folder.
     static var grokBotHome: URL {
-        env("GROK_BOT_HOME") ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!.appendingPathComponent("Grok Bot", isDirectory: true)
+        env("GROK_BOT_HOME") ?? userApplicationSupport.appendingPathComponent("Grok Bot", isDirectory: true)
     }
 
     static var claudeHome: URL {
@@ -269,8 +294,7 @@ enum Paths {
     /// is ours, so a test or shell check confines the desktop registration to a temp home.
     static var claudeDesktopHome: URL {
         env("KEYS_CLAUDE_DESKTOP_HOME")
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-                .first!.appendingPathComponent("Claude", isDirectory: true)
+            ?? userApplicationSupport.appendingPathComponent("Claude", isDirectory: true)
     }
 
     /// Tests and validators start the dashboard themselves, so `KEYS_NO_OPEN` keeps
@@ -296,7 +320,9 @@ enum FixturePath {
         if let web = try? WebRoot.find() {
             roots += [web, web.deletingLastPathComponent().appendingPathComponent("Fixtures")]
         }
-        roots += [Paths.appSupport.appendingPathComponent("Web"), Paths.appSupport.appendingPathComponent("Fixtures")]
+        if let installed = try? Paths.resolvingAppSupport() {
+            roots += [installed.appendingPathComponent("Web"), installed.appendingPathComponent("Fixtures")]
+        }
         return roots.map { $0.appendingPathComponent(fileName) }
             .first { FileManager.default.isReadableFile(atPath: $0.path) }
     }

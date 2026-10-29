@@ -85,10 +85,10 @@ enum AppRuntime {
             return
         }
         let binary = Bundle.main.executableURL!
-        let previous = Installer.live.binary
+        let previous = try Installer.live.binary
         // Reject an identity change before stopping the old process or removing its executable.
         try StableSigning.validate(binary, replacing: FileManager.default.fileExists(atPath: previous.path) ? previous : nil)
-        let root = Paths.appSupport
+        let root = try Paths.resolvingAppSupport()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let lock = try AppInstanceLock(root: root)
         defer { lock.close() }
