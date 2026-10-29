@@ -180,6 +180,7 @@ extension KeysService {
                 let rewritten = try Self.rewriteWrappedFiles(
                     decisions: decisions, fresh: fresh, token: token, docker: docker, now: now,
                     conflicted: conflicted,
+                    root: report.root,
                     backupRoot: EnvFileWriter.backupsRoot(beside: catalog.path)
                 ) { path, companions in
                     try recordWrappedFile(path: path, project: project.id, now: now, companions: companions)
@@ -406,18 +407,31 @@ extension KeysService {
 
     // MARK: - The file rewrite
 
-    /// One file read fresh at apply time. The parsed copy is what gets rewritten; the
-    /// bytes are the originals `EnvFileWriter.rewrite` refuses to overwrite.
+    /// One file read fresh at apply time, through its realpath-resolved form
+    /// (VAL-O-009): the report's spelling can traverse a directory symlink that was
+    /// swapped since the scan, so the resolved path is proven inside the project
+    /// root before a single byte is read. The unresolved spelling is kept as the
+    /// identity the rewrite re-resolves right before writing. The parsed copy is
+    /// what gets rewritten; the bytes are the originals `EnvFileWriter.rewrite`
+    /// refuses to overwrite.
     private final class FreshRead {
+        /// The report's spelling, unresolved: re-resolved at every use point, so a
+        /// symlinked directory swapped in any window between them is caught before
+        /// it can redirect a read or a write.
+        let spelling: URL
+        /// The realpath-resolved file, proven inside the project root at read time.
         let url: URL
         let data: Data
         var parsed: EnvFile
         var claimed: Set<Int> = []
 
-        init?(url: URL) {
-            guard let data = FileManager.default.contents(atPath: url.path),
+        init?(spelling: URL, root: String) {
+            guard let resolved = EnvScan.resolve(spelling.path),
+                  EnvScan.isInside(resolved, root: root),
+                  let data = FileManager.default.contents(atPath: resolved),
                   let text = String(data: data, encoding: .utf8) else { return nil }
-            self.url = url
+            self.spelling = spelling
+            self.url = URL(fileURLWithPath: resolved)
             self.data = data
             self.parsed = EnvFile.parse(text)
         }
@@ -426,7 +440,11 @@ extension KeysService {
     /// Reads every file a wrapped line will land in and proves each wrapped variable's
     /// value is still on its line (name and value both, claimed in order so a duplicated
     /// line answers its own candidate). Called BEFORE any mutation, so a file edited
-    /// while the prompt was up refuses the whole import with nothing changed.
+    /// while the prompt was up refuses the whole import with nothing changed. Each
+    /// file is resolved through POSIX realpath and proven still inside the project
+    /// root first (VAL-O-009): the walk-time containment proved the scan's reads, and
+    /// this proves the apply-time reads the same way — a symlinked directory swapped
+    /// under the parked prompt is refused here, before any value is read or stored.
     private static func verifyWrappedFiles(
         decisions: [Decision], report: EnvScan.Report
     ) throws -> [String: FreshRead] {
@@ -434,7 +452,7 @@ extension KeysService {
         for decision in decisions {
             guard case .wrap = decision, let file = decision.file,
                   fresh[file] == nil else { continue }
-            guard let read = FreshRead(url: report.absolute(file)) else {
+            guard let read = FreshRead(spelling: report.absolute(file), root: report.root) else {
                 throw AppError.usage("a file in the project could not be read; nothing was imported")
             }
             fresh[file] = read
@@ -458,6 +476,14 @@ extension KeysService {
     /// (VAL-O-002). Files whose every wrap was conflicted away are left untouched —
     /// nothing in them was ever rewritten. Answers the number of files rewritten, so
     /// the result can state honestly whether a backup was kept at all.
+    ///
+    /// The write goes through the file's realpath-resolved form with the containment
+    /// re-checked immediately before it (VAL-O-009): the verify pass resolved and
+    /// proved the file, but the mint and everything since happened after, so the
+    /// report's spelling is resolved again here and refused unless it still lands
+    /// inside the project root — and the resolved path is what gets rewritten and
+    /// recorded, so no window between the check and the rename can traverse a
+    /// symlink out of the project.
     private static func rewriteWrappedFiles(
         decisions: [Decision],
         fresh: [String: FreshRead],
@@ -465,6 +491,7 @@ extension KeysService {
         docker: Bool,
         now: Date,
         conflicted: Set<String>,
+        root: String,
         backupRoot: URL,
         record: (String, [String]) throws -> Void
     ) throws -> Int {
@@ -491,10 +518,15 @@ extension KeysService {
             for (name, value) in companions.sorted(by: { $0.key < $1.key }) {
                 read.parsed.upsert(name: name, value: value)
             }
+            guard let resolved = EnvScan.resolve(read.spelling.path),
+                  EnvScan.isInside(resolved, root: root) else {
+                throw AppError.usage("a file in the project could not be read; nothing was imported")
+            }
             _ = try EnvFileWriter.rewrite(
-                read.url, original: read.data, text: read.parsed.render(), now: now, backupRoot: backupRoot
+                URL(fileURLWithPath: resolved), original: read.data, text: read.parsed.render(),
+                now: now, backupRoot: backupRoot
             )
-            try record(read.url.path, companions.keys.sorted())
+            try record(resolved, companions.keys.sorted())
             rewritten += 1
         }
         return rewritten

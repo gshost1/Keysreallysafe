@@ -203,15 +203,18 @@ enum EnvScan {
 
     /// POSIX `realpath`, the same resolution the root uses. Foundation's
     /// `resolvingSymlinksInPath` leaves `/var` alone, so a walk must not mix spellings.
-    private static func resolve(_ path: String) -> String? {
+    /// Internal so the import's apply-time re-resolution (VAL-O-009) uses the exact
+    /// primitive the walk's containment used at scan time.
+    static func resolve(_ path: String) -> String? {
         guard let resolved = realpath(path, nil) else { return nil }
         defer { free(resolved) }
         return String(cString: resolved)
     }
 
     /// True when `path` is the canonical root itself or below it. This is the whole
-    /// containment rule: anything else is never followed and never read.
-    private static func isInside(_ path: String, root: String) -> Bool {
+    /// containment rule: anything else is never followed and never read. Internal
+    /// for the same reason `resolve` is — the apply-time re-check shares it.
+    static func isInside(_ path: String, root: String) -> Bool {
         if path == root { return true }
         return path.hasPrefix(root == "/" ? "/" : root + "/")
     }

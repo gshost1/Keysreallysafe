@@ -318,6 +318,85 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8), "the file was not rewritten")
     }
 
+    // MARK: - VAL-O-009 (a symlinked directory swapped under the prompt is refused)
+
+    /// The scan resolves every entry before reading it, but the apply-time pass used
+    /// the report's UNRESOLVED spelling — so a directory symlink swapped during the
+    /// parked Touch ID window made the import read, back up and wrap a file OUTSIDE
+    /// the project root under the one approval. The verify pass and the pre-write
+    /// re-check both resolve the file through POSIX realpath and prove it is still
+    /// inside the project root; the swapped symlink is refused with the path-free
+    /// nothing-was-imported error, nothing is stored, and the outside target is
+    /// untouched. Failed pre-fix: the import succeeded — the outside file was read
+    /// as the original, its backup landed in the outside tree, and the value was
+    /// stored and recorded.
+    func testASymlinkedDirectorySwappedUnderThePromptIsRefused() throws {
+        let (db, dir) = try makeDB()
+        try assertNotProductionPath(db.path)
+        let gate = BlockingPresenceGate()
+        let service = KeysService(
+            catalog: db,
+            secrets: MemorySecretStore(),
+            presence: gate,
+            clipboard: FakeClipboard(),
+            grokHome: Fixtures.grokHome,
+            claudeHome: Fixtures.claudeHome,
+            codexHome: Fixtures.codexHome,
+            droidHome: Fixtures.droidHome,
+            runner: SpawnCommandRunner(restoresHandlers: true),
+            openRouter: OpenRouterHTTP(),
+            relaySecrets: MemorySecretStore()
+        )
+        let project = try makeProject(in: dir)
+        // The env file lives in realdir; `ali` is a directory symlink to it that
+        // sorts BEFORE `realdir`, so the scan reports the file through `ali` — the
+        // spelling a swap can redirect.
+        let original = "OPENAI_API_KEY=\(plainValue)\n"
+        _ = try write(original, to: "realdir/.env", under: project)
+        try fm.createSymbolicLink(
+            atPath: project.appendingPathComponent("ali").path,
+            withDestinationPath: project.appendingPathComponent("realdir").path
+        )
+        // The outside target: the same variable and value, so nothing but the
+        // resolved-path containment check can tell the two apart.
+        let outside = try TempDir.make()
+        let outsideEnv = try write(original, to: "inside/.env", under: outside)
+        let outsideData = try Data(contentsOf: outsideEnv)
+
+        // The prompt parks; the symlink is swapped to the outside tree; release.
+        let alias = project.appendingPathComponent("ali")
+        let outsideDir = outsideEnv.deletingLastPathComponent()
+        let fileManager = FileManager.default
+        let swapped = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            _ = gate.waitPrompts(1, timeout: 10)
+            try? fileManager.removeItem(atPath: alias.path)
+            try? fileManager.createSymbolicLink(atPath: alias.path, withDestinationPath: outsideDir.path)
+            swapped.signal()
+            gate.release()
+        }
+
+        XCTAssertThrowsError(
+            try service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        ) { error in
+            guard case let AppError.usage(message) = error else {
+                return XCTFail("a usage refusal, not \(error)")
+            }
+            XCTAssertEqual(message, "a file in the project could not be read; nothing was imported",
+                           "the path-free refusal, before anything was stored or written")
+        }
+        XCTAssertEqual(swapped.wait(timeout: .now() + 10), .success)
+
+        // The outside target is untouched: same bytes, no backup landed in its tree,
+        // and the import stored nothing and recorded nothing anywhere.
+        XCTAssertEqual(try Data(contentsOf: outsideEnv), outsideData, "the outside file is untouched")
+        XCTAssertTrue(try backupFiles(under: outside).isEmpty,
+                      "no keysrs-backup landed in the outside tree")
+        XCTAssertEqual(try service.list(), [], "the value was never stored from the outside file")
+        XCTAssertTrue(try db.listWrappedFiles().isEmpty, "no record was written")
+        XCTAssertTrue(try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }.isEmpty)
+    }
+
     // MARK: - VAL-IMW-002 (the app reads the values; nothing crosses the MCP surface)
 
     /// The MCP request carries the folder, names and flags only; the request log proves
