@@ -151,6 +151,17 @@ final class ImportAndWrapTests: XCTestCase {
         }
     }
 
+    /// Every `keysrs-backup` file anywhere under `dir` — after VAL-O-002 the only
+    /// place one exists is the catalog's own backups tree; the project holds none.
+    private func backupFiles(under dir: URL) -> [URL] {
+        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        var out: [URL] = []
+        while let url = files?.nextObject() as? URL {
+            if url.lastPathComponent.contains("keysrs-backup") { out.append(url) }
+        }
+        return out
+    }
+
     // MARK: - VAL-IMW-001 (one prompt, naming keys and project label)
 
     /// The whole import happens under exactly one presence call whose reason names the
@@ -214,6 +225,55 @@ final class ImportAndWrapTests: XCTestCase {
                        "the preference is set once the rewrite succeeded")
     }
 
+    // MARK: - VAL-O-002 (backups are kept outside the project, under the catalog)
+
+    /// The wrap-time backup holds the original secret values, so it must not sit in
+    /// the project the agent works in — one `git add -A` away from the repo, one
+    /// `git clean` away from gone. The import keeps it under the catalog's own
+    /// backups tree instead (the file's hashed folder, 0700 directory, 0600 file),
+    /// the result states it without a path, nothing backup-shaped exists under the
+    /// project, and unwrap restores from the new location. The inverted
+    /// backup-beside-the-file pins are the pre-fix evidence; this is the new
+    /// location's white box.
+    func testBackupsLiveOutsideTheProjectUnderTheCatalog() throws {
+        let site = try makeSite()
+        let project = try makeProject("keptbackups", in: site.dir)
+        let original = "OPENAI_API_KEY=\(plainValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\n"
+        let env = try write(original, to: "sub/.env", under: project)
+
+        let result = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+
+        XCTAssertTrue(
+            try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }.isEmpty,
+            "no backup file exists under the project"
+        )
+        let root = EnvFileWriter.backupsRoot(beside: site.db.path)
+        XCTAssertEqual(
+            root.path, site.db.path.deletingLastPathComponent().appendingPathComponent("backups").path,
+            "the backups tree is a sibling of the catalog, like control.json and relay.lock"
+        )
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: root))
+        let names = try fm.contentsOfDirectory(atPath: dir.path)
+        XCTAssertEqual(names.count, 1, "one backup in the file's hashed folder")
+        XCTAssertTrue(names[0].hasPrefix(".env.keysrs-backup-"), "the backup keeps the wrapped file's name")
+        let backup = dir.appendingPathComponent(names[0])
+        XCTAssertEqual(try Data(contentsOf: backup), Data(original.utf8), "the backup holds the original bytes")
+        XCTAssertEqual(try EnvFileWriter.currentMode(backup), 0o600)
+        XCTAssertEqual(try EnvFileWriter.currentMode(dir), 0o700, "the hashed folder is 0700")
+        XCTAssertEqual(try EnvFileWriter.currentMode(root), 0o700, "the backups root is 0700")
+        XCTAssertEqual(result["backup_kept_outside_project"] as? Bool, true)
+        let wire = try wire(result)
+        XCTAssertFalse(wire.contains(site.dir.path), "no absolute path in the result")
+        XCTAssertFalse(wire.contains(root.path), "the backup location is not spelled out")
+
+        // unwrap restores from the new location: the replaced companion comes back
+        // with its original value, byte-for-byte — proof the restore read the
+        // outside-the-project backup (the fallback would have removed the line).
+        _ = try site.service.unwrap(file: env.path, folder: nil)
+        XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8),
+                       "unwrap restores byte-for-byte from the backup kept outside the project")
+    }
+
     // MARK: - VAL-IMW-002 (the app reads the values; nothing crosses the MCP surface)
 
     /// The MCP request carries the folder, names and flags only; the request log proves
@@ -253,10 +313,15 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertTrue(rewritten.contains("ksfc_"), "the one token is in the file")
         XCTAssertTrue(rewritten.contains("export OPENAI_API_KEY=\"ksfc_"), "export and quotes kept")
 
-        // And nothing value-shaped landed anywhere else on disk.
-        let backups = try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }
-        XCTAssertEqual(backups.count, 1, "the 0600 backup holds the original values")
-        assertNoSentinel(fakeBody, in: site.dir, skipping: [env, project.appendingPathComponent(backups[0])])
+        // And nothing value-shaped landed anywhere else on disk. The backup never
+        // lands inside the project (VAL-O-002): the original values are kept under
+        // the catalog's own backups tree instead, and that file is the one place a
+        // value legitimately lives outside the env file.
+        XCTAssertTrue(
+            try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }.isEmpty,
+            "no backup file exists under the project"
+        )
+        assertNoSentinel(fakeBody, in: site.dir, skipping: [env] + backupFiles(under: site.dir))
     }
 
     // MARK: - VAL-IMW-003 (dedupe by value)
@@ -413,11 +478,21 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertTrue(text.hasSuffix("\n"), "the file ends with a newline")
         XCTAssertFalse(text.contains(fakeBody), "the raw value is gone")
 
-        let backups = try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }
-        XCTAssertEqual(backups.count, 1, "one 0600 backup beside the file")
-        let backup = project.appendingPathComponent(backups[0])
+        // The backup is kept outside the project (VAL-O-002), under the catalog's
+        // own backups tree: the original bytes, 0600, inside a 0700 folder.
+        XCTAssertTrue(
+            try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }.isEmpty,
+            "no backup beside the file"
+        )
+        let backups = try backupFiles(under: vault.dir)
+        XCTAssertEqual(backups.count, 1, "one backup under the catalog's backups tree")
+        let backup = try XCTUnwrap(backups.first)
         XCTAssertEqual(try Data(contentsOf: backup), Data(original.utf8), "the backup holds the original bytes")
         XCTAssertEqual(try EnvFileWriter.currentMode(backup), 0o600)
+        XCTAssertEqual(
+            try EnvFileWriter.currentMode(URL(fileURLWithPath: backup.deletingLastPathComponent().path)), 0o700,
+            "the backup's folder is 0700"
+        )
         XCTAssertEqual(try EnvFileWriter.currentMode(env), 0o640, "the rewritten file keeps its mode")
     }
 
@@ -465,6 +540,9 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8), "the file is byte-identical")
         XCTAssertTrue(try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }.isEmpty,
                       "no backup: nothing was rewritten")
+        XCTAssertTrue(try backupFiles(under: vault.dir).isEmpty, "no backup anywhere: nothing was rewritten")
+        XCTAssertEqual(result["backup_kept_outside_project"] as? Bool, false,
+                       "the result states honestly that no backup was kept")
         XCTAssertTrue(result["expires_at"] is NSNull, "no token was minted")
     }
 
@@ -545,10 +623,13 @@ final class ImportAndWrapTests: XCTestCase {
 
         let result = try vault.service.importAndWrap(folder: project.path, variables: nil, docker: false)
 
-        XCTAssertEqual(Set(result.keys), ["project_label", "expires_at", "docker_access", "base_url_host", "variables"],
-                       "exactly the five top-level keys")
+        XCTAssertEqual(Set(result.keys),
+                       ["project_label", "expires_at", "docker_access", "base_url_host", "backup_kept_outside_project", "variables"],
+                       "exactly the six top-level keys")
         XCTAssertEqual(result["project_label"] as? String, "acme")
         XCTAssertTrue(result["expires_at"] is String)
+        XCTAssertEqual(result["backup_kept_outside_project"] as? Bool, true,
+                       "the result states a backup was kept outside the project")
         let outcomes = result["variables"] as! [[String: Any]]
         XCTAssertEqual(outcomes.map { $0["variable"] as? String },
                        ["OPENAI_API_KEY", "ROUTER_API_KEY", "DATABASE_URL", "STRIPE_SECRET_KEY", "ALREADY_WRAPPED"])
@@ -708,7 +789,9 @@ final class ImportAndWrapTests: XCTestCase {
         let wrapDir = try makeProject("wrapproj", in: vault.dir)
         let env = try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: wrapDir)
         let runner = WrapRunner(backend: ServiceWrapBackend(service: vault.service), out: { _ in }, confirm: { true })
-        _ = try runner.run(.init(file: env))
+        var wrapOptions = WrapRunner.Options(file: env)
+        wrapOptions.backupRoot = EnvFileWriter.backupsRoot(beside: vault.db.path)
+        _ = try runner.run(wrapOptions)
 
         let after = try vault.db.listWrappedFiles()
         XCTAssertEqual(after.count, 2, "both paths recorded")
@@ -774,6 +857,7 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(try service.list(), [], "nothing was imported")
         XCTAssertEqual(try String(contentsOf: env, encoding: .utf8), edited, "the file kept the edit")
         XCTAssertTrue(try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }.isEmpty)
+        XCTAssertTrue(try backupFiles(under: dir).isEmpty, "the refusal left no backup anywhere")
     }
 
     // MARK: - the route
@@ -795,7 +879,8 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(ok.status, 200)
         let payload = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
         XCTAssertEqual(payload["project_label"] as? String, "acme", "the route relays the flow's payload")
-        XCTAssertEqual(Set(payload.keys), ["project_label", "expires_at", "docker_access", "base_url_host", "variables"])
+        XCTAssertEqual(Set(payload.keys),
+                       ["project_label", "expires_at", "docker_access", "base_url_host", "backup_kept_outside_project", "variables"])
 
         for (label, bad) in [
             ("folder not a string", ["folder": 42] as [String: Any]),

@@ -219,8 +219,10 @@ The tools the server offers:
   only — never a value; the app re-reads the files itself. The result is
   per-variable outcomes (`wrapped`, `imported_not_wrapped`, `skipped`,
   `not_found`, each with its reason), the project label, the token's
-  expiry, the docker setting and the base-URL host — never a value, a token
-  or an absolute path. Values the gateway cannot proxy (AWS SigV4 pairs,
+  expiry, the docker setting, the base-URL host, and whether a backup of
+  the original values was kept outside the project (backups live beside
+  the catalog, never inside the project) — never a value, a
+  token or an absolute path. Values the gateway cannot proxy (AWS SigV4 pairs,
   credential URLs) import but keep their lines; a value with no recognized
   provider and no vault match is not imported. Requires the app; without it
   the whole call fails with the not-running sentence.
@@ -345,11 +347,14 @@ real value from the vault and revokes that file's gateway client tokens,
 so the token left in the file dies immediately — except a token another
 recorded wrapped file still holds, which is kept (the report names the
 file that still uses it) until the last of its files unwraps. An unedited
-file comes back byte-for-byte — the wrap-time `<file>.keysrs-backup-<time>`
-is the restore source for the BASE_URL companions (restored where the wrap
-replaced one, removed where it appended one or where no backup holds an
-original), and only the companions the wrap recorded writing are removed:
-a gateway-pointing URL the wrap never wrote is left as written and
+file comes back byte-for-byte — the wrap-time backup is the restore
+source for the BASE_URL companions (restored where the wrap replaced one,
+removed where it appended one or where no backup holds an original).
+Backups live outside the project, in Keysrs' own backups folder beside
+its catalog (owner-only folders, 0600 files); a backup a wrap wrote beside
+the file before that move is still read. Only the companions the wrap
+recorded writing are removed: a gateway-pointing URL the wrap never wrote
+is left as written and
 reported, while files wrapped before that record existed keep the
 blanket removal as the documented fallback. With no argument,
 `keys unwrap` restores every wrapped file recorded for the working

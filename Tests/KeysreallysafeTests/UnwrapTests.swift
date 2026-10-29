@@ -101,11 +101,23 @@ final class UnwrapTests: XCTestCase {
         return EnvFile.parse(text).value(of: name)
     }
 
-    /// The wrap-time backups beside a file (`<file>.keysrs-backup-<ts>`).
+    /// The wrap-time backups beside a file (`<file>.keysrs-backup-<ts>`) — the
+    /// pre-VAL-O-002 location, still restored from when one exists.
     private func backups(beside file: URL) throws -> [URL] {
         let names = try fm.contentsOfDirectory(atPath: file.deletingLastPathComponent().path)
         return names.filter { $0.hasPrefix(file.lastPathComponent + ".keysrs-backup-") }
             .map { file.deletingLastPathComponent().appendingPathComponent($0) }
+    }
+
+    /// Every `keysrs-backup` file anywhere under `dir` — after VAL-O-02 the only
+    /// place one exists is the catalog's own backups tree; the project holds none.
+    private func backupFiles(under dir: URL) -> [URL] {
+        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        var out: [URL] = []
+        while let url = files?.nextObject() as? URL {
+            if url.lastPathComponent.contains("keysrs-backup") { out.append(url) }
+        }
+        return out
     }
 
     /// One import_and_wrap call over the site's own service (its single prompt is
@@ -195,7 +207,8 @@ final class UnwrapTests: XCTestCase {
         let wrappedText = String(decoding: wrappedData, as: UTF8.self)
         XCTAssertTrue(wrappedText.contains("ksfc_"), "the wrapped file holds the token")
         XCTAssertFalse(wrappedText.contains(openaiValue), "the raw value is gone from the wrapped file")
-        XCTAssertEqual(try backups(beside: env).count, 1, "the wrap wrote one backup")
+        XCTAssertTrue(try backups(beside: env).isEmpty, "the backup is kept outside the project, not beside the file (VAL-O-002)")
+        XCTAssertEqual(try backupFiles(under: site.dir).count, 1, "one backup under the catalog's backups tree")
         XCTAssertEqual(try site.db.listWrappedFiles().count, 1, "the import recorded the file")
         let promptsBefore = site.gate.reasons.count
 
@@ -224,6 +237,40 @@ final class UnwrapTests: XCTestCase {
         let wire = String(decoding: try JSONValue.data(result), as: UTF8.self)
         XCTAssertFalse(wire.contains(fakeBody))
         XCTAssertFalse(wire.contains("ksfc_"))
+    }
+
+    // MARK: - VAL-O-002 (a backup kept outside the project is still the restore source)
+
+    /// A backup at the new location — the file's hashed folder under the catalog's
+    /// backups tree — is the restore source exactly like a legacy beside-file one:
+    /// the replaced companion comes back with its original value, byte-for-byte.
+    /// The wrap's own backup is moved there first, so the test drives the reader
+    /// whichever side of the location change wrote it.
+    func testARestoreReadsTheBackupKeptOutsideTheProject() throws {
+        let site = try makeSite()
+        let project = try makeProject("outsidebackup", in: site.dir)
+        let original = "OPENAI_API_KEY=\(openaiValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\n"
+        let env = try write(original, to: ".env", under: project)
+        _ = try wrapByImport(site, folder: project)
+
+        // The wrap's backup, wherever it landed, is replaced by one at the new
+        // location's exact shape: the file's hashed folder under the catalog's
+        // backups tree, holding the original bytes, and nothing beside the file.
+        let root = EnvFileWriter.backupsRoot(beside: site.db.path)
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: root))
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        for backup in try backupFiles(under: site.dir) { try fm.removeItem(at: backup) }
+        XCTAssertTrue(try backupFiles(under: site.dir).isEmpty, "only the planted backup will exist")
+        XCTAssertTrue(try backups(beside: env).isEmpty, "no legacy backup beside the file")
+        try Data(original.utf8).write(to: dir.appendingPathComponent(".env.keysrs-backup-19990101-000000"))
+
+        let result = try site.service.unwrap(file: env.path, folder: nil)
+
+        XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8),
+                       "the file comes back byte-for-byte from the outside-the-project backup")
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files[0]["companions_restored"] as? [String], ["OPENAI_BASE_URL"],
+                       "the replaced companion is restored from the new-location backup, not removed by the fallback")
     }
 
     // MARK: - VAL-UNWRAP-002 (tokens revoked, dead immediately)
@@ -317,7 +364,10 @@ final class UnwrapTests: XCTestCase {
             wrapped.setValue(at: slot.index, tokens[item.key ?? ""] ?? "")
         }
         wrapped.upsert(name: "OPENAI_BASE_URL", value: "http://127.0.0.1:12767/\(issued[0].key)")
-        _ = try EnvFileWriter.rewrite(env, original: originalData, text: wrapped.render())
+        _ = try EnvFileWriter.rewrite(
+            env, original: originalData, text: wrapped.render(),
+            backupRoot: EnvFileWriter.backupsRoot(beside: vault.db.path)
+        )
         XCTAssertEqual(try vault.db.listWrappedFiles().count, 1, "the wrap apply point recorded the file")
 
         let promptsBefore = vault.gate.reasons.count
@@ -358,7 +408,10 @@ final class UnwrapTests: XCTestCase {
             ["ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"],
             "the import records the companions it wrote, sorted"
         )
-        for backup in try backups(beside: env) { try fm.removeItem(at: backup) }
+        // No backup exists anywhere (VAL-O-002 moved them out of the project, so
+        // both locations must be cleared to reach the no-backup state).
+        for backup in try backupFiles(under: site.dir) { try fm.removeItem(at: backup) }
+        XCTAssertTrue(try backupFiles(under: site.dir).isEmpty)
         XCTAssertTrue(try backups(beside: env).isEmpty)
 
         let result = try site.service.unwrap(file: env.path, folder: nil)
@@ -393,8 +446,8 @@ final class UnwrapTests: XCTestCase {
         try handle.seekToEnd()
         try handle.write(contentsOf: Data("GROQ_BASE_URL=http://127.0.0.1:12767/manual\n".utf8))
         try handle.close()
-        for backup in try backups(beside: env) { try fm.removeItem(at: backup) }
-        XCTAssertTrue(try backups(beside: env).isEmpty)
+        for backup in try backupFiles(under: site.dir) { try fm.removeItem(at: backup) }
+        XCTAssertTrue(try backupFiles(under: site.dir).isEmpty)
 
         let result = try site.service.unwrap(file: env.path, folder: nil)
 
@@ -426,7 +479,7 @@ final class UnwrapTests: XCTestCase {
         try handle.close()
         // The row as a pre-record wrap wrote it: no companions list at all.
         XCTAssertEqual(rawExec(site.db.path, "UPDATE wrapped_files SET companions = NULL;"), SQLITE_OK)
-        for backup in try backups(beside: env) { try fm.removeItem(at: backup) }
+        for backup in try backupFiles(under: site.dir) { try fm.removeItem(at: backup) }
 
         let result = try site.service.unwrap(file: env.path, folder: nil)
 

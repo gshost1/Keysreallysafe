@@ -68,7 +68,8 @@ extension KeysService {
                 notFound: Self.notFoundOutcomes(requested: variables, candidates: report.candidates, wanted: wanted)
             )
             return Self.payload(
-                project: project, outcomes: outcomes, expiresAt: nil, docker: docker, preferences: preferences
+                project: project, outcomes: outcomes, expiresAt: nil, docker: docker, preferences: preferences,
+                backupsKeptOutsideProject: false
             )
         }
         guard imports.count <= WrapPlan.maxCandidates else {
@@ -171,13 +172,18 @@ extension KeysService {
         // and the SDK's BASE_URL companion is set to the gateway URL for its key. The
         // fresh bytes from the verify pass are the originals, so EnvFileWriter's
         // refuse-if-changed still guards the window between that read and this write.
+        // Each rewrite keeps a backup under the catalog's own backups tree — never
+        // inside the project (VAL-O-002) — and the result says so without a path.
+        var backupsKeptOutsideProject = false
         if let token {
-            try Self.rewriteWrappedFiles(
+            let rewritten = try Self.rewriteWrappedFiles(
                 decisions: decisions, fresh: fresh, token: token, docker: docker, now: now,
-                conflicted: conflicted
+                conflicted: conflicted,
+                backupRoot: EnvFileWriter.backupsRoot(beside: catalog.path)
             ) { path, companions in
                 try recordWrappedFile(path: path, project: project.id, now: now, companions: companions)
             }
+            backupsKeptOutsideProject = rewritten > 0
         }
 
         // The docker flag only acts when true: it turns the global setting on (the
@@ -195,7 +201,8 @@ extension KeysService {
             conflicted: conflicted
         )
         return Self.payload(
-            project: project, outcomes: outcomes, expiresAt: expiresAt, docker: docker, preferences: preferences
+            project: project, outcomes: outcomes, expiresAt: expiresAt, docker: docker, preferences: preferences,
+            backupsKeptOutsideProject: backupsKeptOutsideProject
         )
     }
 
@@ -431,8 +438,11 @@ extension KeysService {
     /// token, the BASE_URL companions for the three wrap-detected SDK variables are set
     /// to the gateway URL for their key, and the rewritten file is recorded in
     /// `wrapped_files` through `record` — together with the companion names it wrote,
-    /// so unwrap later removes exactly those. Files whose every wrap was conflicted
-    /// away are left untouched — nothing in them was ever rewritten.
+    /// so unwrap later removes exactly those. Each rewrite keeps its pre-wrap backup
+    /// under `backupRoot` — the catalog-sibling backups tree, never beside the file
+    /// (VAL-O-002). Files whose every wrap was conflicted away are left untouched —
+    /// nothing in them was ever rewritten. Answers the number of files rewritten, so
+    /// the result can state honestly whether a backup was kept at all.
     private static func rewriteWrappedFiles(
         decisions: [Decision],
         fresh: [String: FreshRead],
@@ -440,9 +450,11 @@ extension KeysService {
         docker: Bool,
         now: Date,
         conflicted: Set<String>,
+        backupRoot: URL,
         record: (String, [String]) throws -> Void
-    ) throws {
+    ) throws -> Int {
         let host = baseURLHost(docker: docker)
+        var rewritten = 0
         for file in fresh.keys.sorted() {
             guard let read = fresh[file] else { continue }
             guard decisions.contains(where: {
@@ -464,9 +476,13 @@ extension KeysService {
             for (name, value) in companions.sorted(by: { $0.key < $1.key }) {
                 read.parsed.upsert(name: name, value: value)
             }
-            _ = try EnvFileWriter.rewrite(read.url, original: read.data, text: read.parsed.render(), now: now)
+            _ = try EnvFileWriter.rewrite(
+                read.url, original: read.data, text: read.parsed.render(), now: now, backupRoot: backupRoot
+            )
             try record(read.url.path, companions.keys.sorted())
+            rewritten += 1
         }
+        return rewritten
     }
 
     /// The line index of one candidate's assignment, claimed in order: the name AND the
@@ -598,19 +614,24 @@ extension KeysService {
 
     /// The result payload: per-variable outcomes, the project label, the token's expiry
     /// (null when nothing was wrapped), the docker setting's live value, and the host
-    /// this import's base URLs point at. Names, relative paths and dates only.
+    /// this import's base URLs point at. Names, relative paths and dates only — the
+    /// backup statement is a bare boolean, so no absolute path ever rides along
+    /// (VAL-O-002): the agent learns a restore source exists outside the project
+    /// without learning where on disk Keysrs keeps it.
     private static func payload(
         project: CatalogDB.ProjectRow,
         outcomes: [Outcome],
         expiresAt: String?,
         docker: Bool,
-        preferences: AppPreferences
+        preferences: AppPreferences,
+        backupsKeptOutsideProject: Bool
     ) -> [String: Any] {
         [
             "project_label": project.label,
             "expires_at": expiresAt ?? NSNull(),
             "docker_access": preferences.dockerAccess,
             "base_url_host": baseURLHost(docker: docker),
+            "backup_kept_outside_project": backupsKeptOutsideProject,
             "variables": outcomes.map { $0.jsonObject() },
         ]
     }

@@ -768,6 +768,17 @@ final class MCPClientFlowTests: XCTestCase {
         }
     }
 
+    /// Every `keysrs-backup` file anywhere under `dir` — after VAL-O-002 the only
+    /// place one exists is the catalog's own backups tree; the project holds none.
+    private func backupFiles(under dir: URL) -> [URL] {
+        let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)
+        var out: [URL] = []
+        while let url = files?.nextObject() as? URL {
+            if url.lastPathComponent.contains("keysrs-backup") { out.append(url) }
+        }
+        return out
+    }
+
     // MARK: - The onboarding done-criterion flow (VAL-CROSS-001, VAL-CROSS-002)
 
     /// The mission's done criterion over real pipes: a REAL `keys mcp` subprocess
@@ -880,6 +891,8 @@ final class MCPClientFlowTests: XCTestCase {
         XCTAssertNotNil(imported["expires_at"] as? String, "the one token's 30-day expiry")
         XCTAssertEqual(imported["docker_access"] as? Bool, false)
         XCTAssertEqual(imported["base_url_host"] as? String, "127.0.0.1")
+        XCTAssertEqual(imported["backup_kept_outside_project"] as? Bool, true,
+                       "the answer states a backup was kept outside the project, without a path")
         let outcomes = try XCTUnwrap(imported["variables"] as? [[String: Any]])
         XCTAssertEqual(outcomes.map { $0["variable"] as? String }, ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"])
         XCTAssertEqual(outcomes.map { $0["status"] as? String }, ["wrapped", "wrapped"])
@@ -891,7 +904,8 @@ final class MCPClientFlowTests: XCTestCase {
         XCTAssertEqual(keyB, "anthropic")
 
         // The env file was rewritten by the app: one ksfc token on both lines,
-        // the per-key gateway base URLs, no raw value, the 0600 backup beside it.
+        // the per-key gateway base URLs, no raw value, and no backup inside the
+        // project — the original values live in the catalog's own backups tree.
         let wrappedText = try String(contentsOf: rig.env, encoding: .utf8)
         XCTAssertFalse(wrappedText.contains(fakeBody), "the raw values are gone from the file")
         let wrappedFile = EnvFile.parse(wrappedText)
@@ -903,10 +917,14 @@ final class MCPClientFlowTests: XCTestCase {
         XCTAssertEqual(wrappedFile.value(of: "ANTHROPIC_BASE_URL"), "http://127.0.0.1:12767/\(keyB)")
         XCTAssertTrue(wrappedText.contains("export OPENAI_API_KEY=\"\(token)\""),
                       "export, quotes and the comment survive the rewrite")
-        let backupNames = try fm.contentsOfDirectory(atPath: rig.project.path)
-            .filter { $0.hasPrefix(".env.keysrs-backup-") }
-        XCTAssertEqual(backupNames.count, 1, "the wrap wrote exactly one backup")
-        let backup = rig.project.appendingPathComponent(backupNames[0])
+        XCTAssertTrue(
+            try fm.contentsOfDirectory(atPath: rig.project.path)
+                .filter { $0.hasPrefix(".env.keysrs-backup-") }.isEmpty,
+            "no backup file exists under the project (VAL-O-002)"
+        )
+        let backups = backupFiles(under: rig.dir)
+        XCTAssertEqual(backups.count, 1, "the wrap wrote exactly one backup, under the catalog's backups tree")
+        let backup = try XCTUnwrap(backups.first)
         XCTAssertEqual(try Data(contentsOf: backup), originalData, "the backup holds the pre-wrap bytes")
         let backupMode = try fm.attributesOfItem(atPath: backup.path)[.posixPermissions] as? Int
         XCTAssertEqual(backupMode, 0o600, "the backup is owner-only — it still holds the values")

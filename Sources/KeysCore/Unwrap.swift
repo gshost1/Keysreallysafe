@@ -157,10 +157,12 @@ extension KeysService {
             return outcome
         }
 
-        // The wrap-time backup: the newest `.keysrs-backup-` sibling, the only source
-        // for companion lines the wrap replaced (byte-for-byte restoration when the
-        // file is unedited since wrap). No backup → the documented fallback below.
-        let backup = Self.newestBackup(of: canonical)
+        // The wrap-time backup, from either location (VAL-O-002): the newest
+        // `.keysrs-backup-` beside the file (wraps written before backups moved out
+        // of the project) or the file's hashed folder under the catalog-sibling
+        // backups tree (every wrap since) — the only source for companion lines the
+        // wrap replaced. No backup → the documented fallback below.
+        let backup = Self.newestBackup(of: canonical, under: EnvFileWriter.backupsRoot(beside: catalog.path))
         outcome.backup = backup?.path
         var backupParsed: EnvFile?
         if let backup,
@@ -354,15 +356,28 @@ extension KeysService {
         return (try? KeyName.validate(key)) != nil ? key : nil
     }
 
-    /// The newest wrap-time backup beside the file. The `yyyyMMdd-HHmmss` timestamp
-    /// sorts lexically and the `-2`/`-3` collision suffixes sort after their base, so
-    /// the lexical maximum is the most recent wrap.
-    static func newestBackup(of path: String) -> URL? {
+    /// The newest wrap-time backup of the file, from either location (VAL-O-002):
+    /// the legacy `<file>.keysrs-backup-<ts>` beside the file — wraps written before
+    /// backups moved out of the project — and the current location, the file's own
+    /// hashed folder under the catalog-sibling backups tree. The `yyyyMMdd-HHmmss`
+    /// timestamp sorts lexically and the `-2`/`-3` collision suffixes sort after
+    /// their base, so the lexical maximum across both places is the most recent
+    /// wrap, whichever location holds it.
+    static func newestBackup(of path: String, under backupsRoot: URL) -> URL? {
         let url = URL(fileURLWithPath: path)
         let prefix = url.lastPathComponent + ".keysrs-backup-"
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? []
-        return names.filter { $0.hasPrefix(prefix) }.max()
-            .map { url.deletingLastPathComponent().appendingPathComponent($0) }
+        var found: [(name: String, url: URL)] = []
+        let legacyNames = (try? FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? []
+        for name in legacyNames where name.hasPrefix(prefix) {
+            found.append((name, url.deletingLastPathComponent().appendingPathComponent(name)))
+        }
+        if let dir = EnvFileWriter.backupDirectory(for: url, under: backupsRoot),
+           let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
+            for name in names where name.hasPrefix(prefix) {
+                found.append((name, dir.appendingPathComponent(name)))
+            }
+        }
+        return found.max { $0.name < $1.name }?.url
     }
 
     // MARK: - The result rows
