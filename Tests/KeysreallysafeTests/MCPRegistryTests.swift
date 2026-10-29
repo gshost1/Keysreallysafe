@@ -131,6 +131,77 @@ final class MCPRegistryTests: XCTestCase {
         }
     }
 
+    // MARK: - REGISTRY-004: the default state seams fail closed under test isolation
+
+    /// VAL-G-003: the production roster constructs offline (nothing resolves at
+    /// init, so building `MCPToolRegistry.default` under the tripwire proves the
+    /// offline-safe construction seam), but its DEFAULT state paths must refuse
+    /// when reached: the catalog the read and activity groups would open and the
+    /// control file the app-bound groups would connect through resolve through
+    /// the tripwire-checked seams, so under XCTest with no `KEYS_CATALOG` (the
+    /// CI environment) every state-bound default answers the isolation refusal —
+    /// never the real catalog's rows, never the installed app. Pre-fix this row
+    /// was deliberately not run: the old eager defaults would have opened the
+    /// real catalog and read the real control.json with the owner's app live;
+    /// the captured pre-fix evidence for the same resolution lives in
+    /// ProductionTripwireTests.
+    func testDefaultRegistryStateSeamsFailClosedUnderTestIsolation() throws {
+        // Construction stays offline-safe: the default roster builds under the
+        // tripwire, and the offline version tool answers normally.
+        let registry = MCPToolRegistry.default
+        XCTAssertTrue(registry.tools.contains { $0.name == "version" }, "the default roster still constructs")
+
+        let (frames, stderr) = try MCPSession.run([
+            MCPSession.initialize(),
+            #"{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{"name":"version"}}"#,
+            #"{"jsonrpc":"2.0","id":"k","method":"tools/call","params":{"name":"list_keys"}}"#,
+            #"{"jsonrpc":"2.0","id":"g","method":"tools/call","params":{"name":"gateway_info"}}"#,
+        ], registry: registry)
+        XCTAssertTrue(stderr.isEmpty, "the production roster registers cleanly")
+        let responses = Array(frames.dropLast())
+
+        let version = try MCPSession.assertResult(responses[1], id: "v")
+        XCTAssertNotEqual(version["isError"] as? Bool, true, "version needs no state")
+
+        // The state-bound defaults refuse with the isolation rule: the catalog
+        // path and the control path both fail closed, before any file is read
+        // or anything launched — so the refusal is never the not-running
+        // sentence and never carries a production location.
+        for (index, id, name) in [(2, "k", "list_keys"), (3, "g", "gateway_info")] {
+            let result = try MCPSession.assertResult(responses[index], id: id)
+            XCTAssertEqual(result["isError"] as? Bool, true, "\(name) refuses under the tripwire")
+            let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+            XCTAssertTrue(text.contains("test isolation"),
+                          "\(name)'s refusal names the isolation rule: \(text)")
+            XCTAssertNotEqual(text, AppConnection.notRunningMessage,
+                              "\(name) refused before any launch, not after one")
+            XCTAssertFalse(text.contains("/Users/"), "\(name)'s refusal names no production location")
+        }
+    }
+
+    /// VAL-G-003's session half: `MCPSession.run`'s DEFAULT roster is the
+    /// guarded test world, never the production default — so a scripted session
+    /// that never passes a registry still runs over a fresh temp catalog (the
+    /// empty answer below), and the isolation guard has run inside the roster
+    /// builder before any group was constructed. Pre-fix the default was
+    /// `MCPToolRegistry.default`, whose eager defaults resolved the production
+    /// paths as values even for an offline session; this row was deliberately
+    /// not run pre-fix (list_keys would have opened the real catalog).
+    func testSessionDefaultRosterIsTheGuardedTestWorld() throws {
+        let (frames, stderr) = try MCPSession.run([
+            MCPSession.initialize(),
+            #"{"jsonrpc":"2.0","id":"k","method":"tools/call","params":{"name":"list_keys"}}"#,
+        ])
+        XCTAssertTrue(stderr.isEmpty, "the guarded roster registers cleanly")
+        let responses = Array(frames.dropLast())
+        let result = try MCPSession.assertResult(responses[1], id: "k")
+        XCTAssertNotEqual(result["isError"] as? Bool, true,
+                          "the default roster answers from a temp catalog, not the real one")
+        let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        let decoded = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        XCTAssertEqual((decoded?["keys"] as? [Any])?.count, 0, "the guarded world's catalog is empty")
+    }
+
     // MARK: - REGISTRY-002
 
     /// A tool group defined in the TEST target — its own file, registered by one

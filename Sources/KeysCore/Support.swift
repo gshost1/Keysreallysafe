@@ -152,6 +152,45 @@ enum KeyKind {
     }
 }
 
+/// The production-side test-isolation tripwire (VAL-G-003, VAL-H-001). The
+/// test-side guards (`assertNotProductionPath`, `AppConnectionIsolationGuard`)
+/// only run where a rig remembers to call them; the 2026-10-28 incident — a rig
+/// that forgot, reaching the really-running installed app and the real vault —
+/// is why the production seams also refuse on their own. A process carrying one
+/// of these signals must never resolve the real
+/// `~/Library/Application Support/Keysreallysafe` state by accident: the
+/// no-argument state seams throw instead of naming the path. `KEYS_CATALOG`
+/// stays the sanctioned override (every catalog-sibling path follows it), so a
+/// test that points it at a temp catalog is isolated by construction and the
+/// tripwire never fires for it.
+enum TestIsolation {
+    /// Whether this process runs under a test harness or has opted into the
+    /// same isolation explicitly. `KEYS_CATALOG` stays the sanctioned override:
+    /// an armed process with a catalog override is isolated by construction.
+    static var armed: Bool {
+        if armed(environment: ProcessInfo.processInfo.environment) { return true }
+        // The classic harness sets `XCTestConfigurationFilePath`; SwiftPM's own
+        // in-process runner loads the XCTest framework WITHOUT the variable
+        // (verified on this toolchain: the merged tree's `swift test` runs
+        // every XCTest case with the variable unset), so the linked framework
+        // is the signal that covers it. The shipped binary links no test
+        // framework, so this stays false in every production process.
+        return NSClassFromString("XCTestCase") != nil
+    }
+
+    /// The environment-sourced signals alone, so the rule itself is testable
+    /// without mutating a live process's environment: xctest's
+    /// `XCTestConfigurationFilePath` and our `KEYS_TEST_ISOLATION` opt-in for
+    /// a non-XCTest process (a script, a manual probe). `Paths.env`'s
+    /// empty-means-unset convention applies, mirroring the `KEYS_TEST_NO_LAUNCH`
+    /// precedent in `AppLaunchSeam`.
+    static func armed(environment: [String: String]) -> Bool {
+        if let configuration = environment["XCTestConfigurationFilePath"], !configuration.isEmpty { return true }
+        if let flag = environment["KEYS_TEST_ISOLATION"], !flag.isEmpty { return true }
+        return false
+    }
+}
+
 enum Paths {
     /// A non-empty path from the environment, or nil.
     static func env(_ key: String) -> URL? {
@@ -164,7 +203,29 @@ enum Paths {
         return base.appendingPathComponent("Keysreallysafe", isDirectory: true)
     }
 
+    /// The catalog location as a non-throwing constant, for code that only needs
+    /// the shape of the path (the test guards compare against it). Opening state
+    /// goes through `resolvingCatalog()`; nothing in Sources reads this var to
+    /// open a catalog anymore.
     static var catalogDB: URL { env("KEYS_CATALOG") ?? appSupport.appendingPathComponent("catalog.db") }
+
+    /// The catalog a caller with no explicit world of its own resolves:
+    /// `KEYS_CATALOG` when set (the sanctioned override — catalog-sibling paths
+    /// follow it), the real Application Support catalog otherwise — except
+    /// under the test tripwire, where an armed process with no `KEYS_CATALOG`
+    /// must never resolve the real state, so this throws instead of naming the
+    /// path. A Swift default argument cannot throw, so every no-argument state
+    /// seam resolves through this inside its own body.
+    static func resolvingCatalog() throws -> URL {
+        if let override = env("KEYS_CATALOG") { return override }
+        guard !TestIsolation.armed else {
+            throw AppError.usage(
+                "test isolation refused the real Keysrs catalog (XCTest or KEYS_TEST_ISOLATION is set "
+                    + "and KEYS_CATALOG is not); point test state at a temporary catalog"
+            )
+        }
+        return appSupport.appendingPathComponent("catalog.db")
+    }
 
     static var grokHome: URL {
         env("GROK_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")

@@ -7,6 +7,24 @@ import XCTest
 /// never the real stdout, plus the assertions every response shares.
 enum MCPSession {
 
+    /// The roster a session with no explicit registry runs: the guarded
+    /// test-world roster, never `MCPToolRegistry.default` — the production
+    /// default's no-argument state seams refuse under the test tripwire
+    /// (VAL-G-003), and a scripted session that never asked for production must
+    /// never be handed its paths, not even as values. Built per call in a fresh
+    /// guarded world: the offline tools answer from a temp catalog, the
+    /// app-bound ones answer their not-running sentence against an unwritten
+    /// temp control file, and the isolation guard has run before any group is
+    /// constructed.
+    static func defaultRig() throws -> MCPToolRegistry {
+        let world = try AppConnectionIsolationGuard.makeWorld()
+        return try MCPRoster.registry(
+            catalog: { try CatalogDB(path: world.catalog) },
+            control: world.control,
+            fetchLatestRelease: { MCPSweepRig.fetchedRelease }
+        )
+    }
+
     /// One scripted session: feed `lines`, capture the stdout frames and stderr prose.
     /// The output guard defaults to the production one — a session is what ships —
     /// and a test that wants a planted value, a throwing provider or no guard at all
@@ -14,13 +32,19 @@ enum MCPSession {
     @discardableResult
     static func run(
         _ lines: [String],
-        registry: MCPToolRegistry = .default,
+        registry: MCPToolRegistry? = nil,
         outputGuard: MCPOutputGuard? = MCPOutputGuard.production,
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> (frames: [String], stderr: [String]) {
         var iterator = lines.makeIterator()
-        return try run(next: { iterator.next() }, registry: registry, outputGuard: outputGuard, file: file, line: line)
+        return try run(
+            next: { iterator.next() },
+            registry: try registry ?? MCPSession.defaultRig(),
+            outputGuard: outputGuard,
+            file: file,
+            line: line
+        )
     }
 
     /// The byte-level variant, exactly as stdin delivers it: CRLF, blank lines, an
@@ -28,13 +52,19 @@ enum MCPSession {
     @discardableResult
     static func run(
         bytes: Data,
-        registry: MCPToolRegistry = .default,
+        registry: MCPToolRegistry? = nil,
         outputGuard: MCPOutputGuard? = MCPOutputGuard.production,
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> (frames: [String], stderr: [String]) {
         var source = MCPLineSource(data: bytes)
-        return try run(next: { source.next() }, registry: registry, outputGuard: outputGuard, file: file, line: line)
+        return try run(
+            next: { source.next() },
+            registry: try registry ?? MCPSession.defaultRig(),
+            outputGuard: outputGuard,
+            file: file,
+            line: line
+        )
     }
 
     private static func run(

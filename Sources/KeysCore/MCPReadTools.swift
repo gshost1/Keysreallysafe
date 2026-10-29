@@ -27,11 +27,17 @@ struct MCPReadTools: MCPToolGroup, @unchecked Sendable {
 
     /// Opens the local catalog — `list_keys` works with the app closed, exactly
     /// like `keys list`, because the catalog rows and the client-token rows are
-    /// on-disk facts both processes can read.
+    /// on-disk facts both processes can read. The default resolves at CALL time
+    /// through the tripwire-checked resolver, so under test isolation with no
+    /// `KEYS_CATALOG` the tool refuses instead of opening the real catalog
+    /// (VAL-G-003).
     private let openCatalog: () throws -> CatalogDB
-    /// The control file the app-bound tools connect through. `AppConnection` is the
+    /// The control file the app-bound tools connect through, or nil to resolve
+    /// the default inside `AppConnection.connect()` at call time — a Swift
+    /// default argument cannot throw, so construction stays offline-safe and
+    /// the tripwire-checked resolution happens per call. `AppConnection` is the
     /// only seam — nothing here touches the raw control client.
-    private let control: URL
+    private let control: URL?
     /// The read-only release fetch behind `check_update`: no network session is
     /// constructed here, and the production wiring is the existing check itself.
     private let fetchLatestRelease: () throws -> ReleaseInfo
@@ -41,8 +47,8 @@ struct MCPReadTools: MCPToolGroup, @unchecked Sendable {
     private let launch: AppLaunchSeam
 
     init(
-        catalog: @escaping () throws -> CatalogDB = { try CatalogDB(path: Paths.catalogDB) },
-        control: URL = ControlFile.url(),
+        catalog: @escaping () throws -> CatalogDB = { try CatalogDB(path: try Paths.resolvingCatalog()) },
+        control: URL? = nil,
         fetchLatestRelease: @escaping () throws -> ReleaseInfo = { try UpdateCheck.latestReleaseSync() },
         launch: AppLaunchSeam = .production
     ) {

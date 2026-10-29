@@ -410,10 +410,15 @@ enum EnvFileWriter {
     }
 
     /// The root for a caller with no catalog in hand: this process's own catalog
-    /// location (`keys wrap` in a Terminal; the app's catalog IS the default).
-    /// Injectable through the `rewrite` parameter so tests point at their temp
-    /// catalog and never at the real Application Support.
-    static var defaultBackupsRoot: URL { backupsRoot(beside: Paths.catalogDB) }
+    /// location (`keys wrap` in a Terminal; the app's catalog IS the default),
+    /// resolved at CALL time through the tripwire-checked resolver — a test that
+    /// forgets to inject a `backupRoot` fails closed instead of writing into
+    /// the real Application Support (VAL-H-001). Injectable through the
+    /// `rewrite` parameter so tests point at their temp catalog and never at the
+    /// real Application Support.
+    static func defaultBackupsRoot() throws -> URL {
+        backupsRoot(beside: try Paths.resolvingCatalog())
+    }
 
     /// The per-file folder inside the backups root, keyed by the SHA-256 of the
     /// file's canonical (POSIX realpath) PARENT directory — the one key both sides
@@ -446,8 +451,12 @@ enum EnvFileWriter {
     /// absolute path: the refusal is user-facing (a tool result, a Terminal line).
     static func rewrite(
         _ url: URL, original: Data, text: String, now: Date = Date(),
-        backupRoot: URL = EnvFileWriter.defaultBackupsRoot
+        backupRoot: URL? = nil
     ) throws -> Result {
+        // The default root resolves first, inside the body (a Swift default
+        // argument cannot throw), so the tripwire's refusal comes before any
+        // read or write — a forgotten injection fails closed with nothing done.
+        let backupRoot = try backupRoot ?? EnvFileWriter.defaultBackupsRoot()
         let mode = try currentMode(url)
         guard let dir = backupDirectory(for: url, under: backupRoot) else {
             throw AppError.usage("cannot decide where to keep the backup for \(url.lastPathComponent); nothing was rewritten")
@@ -730,7 +739,7 @@ struct WrapRunner {
         }
         let result = try EnvFileWriter.rewrite(
             url, original: original, text: file.render(), now: options.now,
-            backupRoot: options.backupRoot ?? EnvFileWriter.defaultBackupsRoot
+            backupRoot: try options.backupRoot ?? EnvFileWriter.defaultBackupsRoot()
         )
         out("wrapped \(wrapped.count) variable\(wrapped.count == 1 ? "" : "s") in \(display):")
         for item in wrapped {

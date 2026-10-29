@@ -2273,18 +2273,24 @@ final class KeysService: @unchecked Sendable {
 }
 
 enum AppFactory {
+    /// The no-argument production service. The catalog and the Keychain stores
+    /// resolve INSIDE the body through the tripwire-checked resolver
+    /// (VAL-G-003/VAL-H-001): under XCTest or `KEYS_TEST_ISOLATION` with no
+    /// `KEYS_CATALOG`, this throws before the real catalog is opened or the
+    /// production Keychain store is built — a test process constructs a service
+    /// over an explicit temp catalog with injected fakes, never this way.
     static func makeService() throws -> KeysService {
-        let db = try CatalogDB(path: Paths.catalogDB)
+        let db = try CatalogDB(path: try Paths.resolvingCatalog())
         // The production gate is wrapped so the app can see when a Touch ID
         // ask is up: the background updater waits prompts out before it
         // installs. The wrapped gate changes no answer a gate gives.
         let prompts = InFlightWork()
         let service = KeysService(
             catalog: db,
-            secrets: KeychainStore(),
+            secrets: try KeychainStore(),
             presence: CountingPresenceGate(inner: LocalPresenceGate(), activity: prompts),
             clipboard: AppKitClipboard(),
-            relaySecrets: KeychainStore(service: KeysService.relayKeychainService),
+            relaySecrets: try KeychainStore(service: KeysService.relayKeychainService),
             presencePrompts: prompts
         )
         service.observeScreenLock()

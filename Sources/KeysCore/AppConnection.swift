@@ -82,10 +82,19 @@ struct AppConnection {
     /// the launch: open, bounded wait for health, one retry, and after the retry
     /// the plain sentence is the answer — a tool result on MCP, exit 6 on the CLI,
     /// never any caller's own wording.
+    ///
+    /// The default control URL resolves INSIDE the body (a Swift default
+    /// argument cannot throw), through the tripwire-checked resolver: under
+    /// XCTest or `KEYS_TEST_ISOLATION` with no `KEYS_CATALOG`, the no-argument
+    /// form throws the isolation refusal before any file is read or anything
+    /// launched — a test process can never reach the installed app through this
+    /// seam by accident (VAL-G-003/VAL-H-001). An explicit control URL keeps
+    /// today's behavior, and production is unchanged.
     static func connect(
-        control: URL = ControlFile.url(),
+        control: URL? = nil,
         launch: AppLaunchSeam = .production
     ) throws -> AppConnection {
+        let control = try control ?? ControlFile.url()
         // The fast path: the file's owner is the truth, exactly as before this
         // seam grew a launch; a hung site stays the app-call timeout's problem.
         if let client = try? ControlClient.connect(control: control) {

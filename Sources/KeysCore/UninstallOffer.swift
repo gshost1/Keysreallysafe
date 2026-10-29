@@ -88,7 +88,7 @@ struct UninstallOfferRunner {
     /// auto-launch, exit 6 with the control sentence when the app is down.
     static func live(out: @escaping (String) -> Void = { print($0); fflush(stdout) }) -> UninstallOfferRunner {
         UninstallOfferRunner(
-            wrappedFiles: { try recordedWrappedFiles(catalog: Paths.catalogDB) },
+            wrappedFiles: { try recordedWrappedFiles(catalog: Paths.resolvingCatalog()) },
             isInteractive: { isatty(STDIN_FILENO) != 0 },
             confirm: {
                 fputs(question, stderr)
@@ -104,7 +104,7 @@ struct UninstallOfferRunner {
                 // id with no row (possible only through raw SQL) cannot be unwrapped,
                 // and refusing is the safe direction: the removal must not leave files
                 // behind that nothing can restore.
-                guard let row = try CatalogDB(path: Paths.catalogDB).project(id: project) else {
+                guard let row = try CatalogDB(path: Paths.resolvingCatalog()).project(id: project) else {
                     throw AppError.notFound("project \(project)")
                 }
                 let runner = UnwrapRunner(

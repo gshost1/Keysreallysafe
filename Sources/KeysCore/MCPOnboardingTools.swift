@@ -39,9 +39,13 @@ import Foundation
 struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     static let groupName = "onboarding"
 
-    /// The control file the app-bound lookups connect through. `AppConnection` is
-    /// the only seam — nothing here touches the raw control client.
-    private let control: URL
+    /// The control file the app-bound lookups connect through, or nil to resolve
+    /// the default inside `AppConnection.connect()` at call time — a Swift
+    /// default argument cannot throw, so construction stays offline-safe and
+    /// the tripwire-checked resolution (VAL-G-003) happens per call.
+    /// `AppConnection` is the only seam — nothing here touches the raw control
+    /// client.
+    private let control: URL?
     /// The MCP process's own project folder — the server's working directory by
     /// default — the folder a call with no `folder` argument scans. Injectable so
     /// a test names a folder it built; production never overrides it.
@@ -57,7 +61,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     private let launch: AppLaunchSeam
 
     init(
-        control: URL = ControlFile.url(),
+        control: URL? = nil,
         projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
         gitExecutable: @escaping () -> String? = { MCPOnboardingTools.gitOnPATH() },
         launch: AppLaunchSeam = .production

@@ -691,7 +691,7 @@ struct GrantCommand: ParsableCommand {
     /// `AppConnection.connect()` owns the launch/wait/retry policy, and tests drive
     /// this body with recording fakes and a temp catalog so no test path can reach
     /// the installed app.
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         try KeyName.validate(name)
         let client = try AppConnection.connect(control: control, launch: launch).controlClient
         // Minutes ride only when said: with --profile an unset --minutes means the profile's
@@ -771,7 +771,7 @@ struct GrantsCommand: ParsableCommand {
     /// The listing with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         let client = try AppConnection.connect(control: control, launch: launch).controlClient
         let obj = try client.call(method: "GET", path: "/api/grants" + (all ? "?all=1" : ""), expect: 200)
         let grants = (obj["grants"] as? [Any])?.compactMap(JSONValue.object) ?? []
@@ -829,7 +829,7 @@ struct RevokeCommand: ParsableCommand {
     /// The revoke with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         let client = try AppConnection.connect(control: control, launch: launch).controlClient
         if all {
             var body: [String: Any] = ["caller": "cli"]
@@ -875,7 +875,7 @@ struct RenewCommand: ParsableCommand {
     /// The renewal with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         let client = try AppConnection.connect(control: control, launch: launch).controlClient
         fputs("Touch ID in the Keysrs site…\n", stderr)
         let obj = try client.call(method: "POST", path: "/api/grants/\(id)/renew", body: [:], expect: 200)
@@ -1132,7 +1132,7 @@ struct DashboardCommand: ParsableCommand {
     /// The show with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         if month && week { throw AppError.usage("choose --month or --week") }
         // The app owns the dashboard now: this command's whole job is its window.
         // The shared connection launches the app when nothing is up and waits for
@@ -1318,7 +1318,7 @@ struct GatewayCommand: ParsableCommand {
     /// The toggle with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         if state.lowercased() == "cheapest" {
             try runCheapest(launch: launch, control: control)
             return
@@ -1341,7 +1341,7 @@ struct GatewayCommand: ParsableCommand {
         }
     }
 
-    private func runCheapest(launch: AppLaunchSeam, control: URL) throws {
+    private func runCheapest(launch: AppLaunchSeam, control: URL?) throws {
         let enabled: Bool
         switch name.lowercased() {
         case "on": enabled = true
@@ -1392,7 +1392,7 @@ struct WrapCommand: ParsableCommand {
     /// fakes over a temp catalog). The backend's connect closure is built lazily on
     /// first use, so a file with nothing to wrap still needs no running app and
     /// launches nothing.
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         var options = WrapRunner.Options(file: URL(fileURLWithPath: path))
         options.dryRun = dryRun
         options.yes = yes
@@ -1675,7 +1675,7 @@ struct AgentCommand: ParsableCommand {
     /// The launch with the app-discovery seam and control file injectable —
     /// `AppConnection.connect()` owns the launch/wait/retry policy for the grant
     /// half, and tests drive this body with recording fakes over a temp catalog.
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         let agent = try CodingAgent.parse(agent)
         try KeyName.validate(key)
         let service = try AppFactory.makeService()
@@ -1763,7 +1763,7 @@ struct AgentCommand: ParsableCommand {
         minutes: Int?,
         profile: String?,
         launch: AppLaunchSeam = .production,
-        control: URL = ControlFile.url()
+        control: URL? = nil
     ) throws -> (token: String, id: String) {
         let control = try AppConnection.connect(control: control, launch: launch).controlClient
         fputs("Touch ID in the Keysrs site…\n", stderr)
@@ -2126,7 +2126,7 @@ struct TunnelCommand: ParsableCommand {
     /// policy, and the listening check is a seam so a test drives the
     /// healthy-app-but-gateway-down outcome without touching the installed app's
     /// real 127.0.0.1:12767.
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url(), gatewayListening: () -> Bool) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil, gatewayListening: () -> Bool) throws {
         if let key { try KeyName.validate(key) }
         let argv = try Tunnel.argv(
             userHost: userHost, remotePort: remotePort, localPort: Int(GatewayListener.port)
@@ -2151,7 +2151,7 @@ struct TunnelCommand: ParsableCommand {
     /// injected, so tests drive every outcome without a catalog or the installed
     /// app's ports.
     static func requireGatewayUp(
-        control: URL = ControlFile.url(),
+        control: URL? = nil,
         launch: AppLaunchSeam = .production,
         gatewayListening: () -> Bool = TunnelCommand.gatewayIsListening
     ) throws {
@@ -2452,7 +2452,7 @@ struct RelayRunCommand: ParsableCommand {
     /// here. The control file and both seams are injectable, so a test drives every
     /// outcome without the real catalog or the installed app's ports.
     func requireGatewayUp(
-        control: URL = ControlFile.url(),
+        control: URL? = nil,
         launch: AppLaunchSeam = .production,
         gatewayListening: () -> Bool = TunnelCommand.gatewayIsListening
     ) throws {
@@ -2471,7 +2471,7 @@ struct RelayOnCommand: ParsableCommand {
     /// The toggle with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         let control = try AppConnection.connect(control: control, launch: launch).controlClient
         fputs("Touch ID in Keysrs…\n", stderr)
         var obj = try control.call(method: "POST", path: "/api/relay", body: ["enabled": true], expect: 200)
@@ -2493,7 +2493,7 @@ struct RelayOffCommand: ParsableCommand {
     /// The toggle with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
-    func run(launch: AppLaunchSeam, control: URL = ControlFile.url()) throws {
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
         let control = try AppConnection.connect(control: control, launch: launch).controlClient
         _ = try control.call(method: "POST", path: "/api/relay", body: ["enabled": false], expect: 200)
         print("relay off in Keysrs; agents get 503 mac_offline (after the Worker's wait) until it is on again")

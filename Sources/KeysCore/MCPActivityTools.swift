@@ -30,14 +30,17 @@ struct MCPActivityTools: MCPToolGroup, @unchecked Sendable {
 
     /// Opens the local catalog. `activity` works with the app closed, exactly like
     /// `keys list`, because the usage rows, the refusal rows and the client-token
-    /// rows are on-disk facts both processes can read.
+    /// rows are on-disk facts both processes can read. The default resolves at
+    /// CALL time through the tripwire-checked resolver, so under test isolation
+    /// with no `KEYS_CATALOG` the tool refuses instead of opening the real
+    /// catalog (VAL-G-003).
     private let openCatalog: () throws -> CatalogDB
     /// The clock the rolling window is measured from. Injected so a test can pin
     /// its boundaries precisely.
     private let now: () -> Date
 
     init(
-        catalog: @escaping () throws -> CatalogDB = { try CatalogDB(path: Paths.catalogDB) },
+        catalog: @escaping () throws -> CatalogDB = { try CatalogDB(path: try Paths.resolvingCatalog()) },
         now: @escaping () -> Date = { Date() }
     ) {
         self.openCatalog = catalog

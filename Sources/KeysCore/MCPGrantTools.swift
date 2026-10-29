@@ -22,7 +22,12 @@ import Foundation
 struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
     static let groupName = "grants"
 
-    private let control: URL
+    /// The control file the app is reached through, or nil to resolve the
+    /// default inside `AppConnection.connect()` at call time — a Swift default
+    /// argument cannot throw, so construction stays offline-safe and the
+    /// tripwire-checked resolution (VAL-G-003) happens per call. `AppConnection`
+    /// is the only seam.
+    private let control: URL?
     /// The MCP process's own project folder — the server's working directory by
     /// default — as the create body carries it. Injectable so a test names a folder
     /// it built; production never overrides it.
@@ -33,7 +38,7 @@ struct MCPGrantTools: MCPToolGroup, @unchecked Sendable {
     private let launch: AppLaunchSeam
 
     init(
-        control: URL = ControlFile.url(),
+        control: URL? = nil,
         projectFolder: @escaping () -> String = { FileManager.default.currentDirectoryPath },
         launch: AppLaunchSeam = .production
     ) {

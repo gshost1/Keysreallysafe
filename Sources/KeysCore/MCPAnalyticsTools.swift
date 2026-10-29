@@ -21,15 +21,18 @@ import Foundation
 struct MCPAnalyticsTools: MCPToolGroup, @unchecked Sendable {
     static let groupName = "analytics"
 
-    /// The control file the app is reached through. `AppConnection` is the only
-    /// seam — the same one every app-bound tool routes through.
-    private let control: URL
+    /// The control file the app is reached through, or nil to resolve the
+    /// default inside `AppConnection.connect()` at call time — a Swift default
+    /// argument cannot throw, so construction stays offline-safe and the
+    /// tripwire-checked resolution (VAL-G-003) happens per call. `AppConnection`
+    /// is the only seam — the same one every app-bound tool routes through.
+    private let control: URL?
     /// The launch seams behind `AppConnection.connect()`: the app-bound tool
     /// auto-launches the installed app when no live one exists, and tests wire
     /// recording fakes so no test path ever opens the real app or sleeps.
     private let launch: AppLaunchSeam
 
-    init(control: URL = ControlFile.url(), launch: AppLaunchSeam = .production) {
+    init(control: URL? = nil, launch: AppLaunchSeam = .production) {
         self.control = control
         self.launch = launch
     }

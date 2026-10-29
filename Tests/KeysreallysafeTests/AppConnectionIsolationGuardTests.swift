@@ -54,14 +54,17 @@ final class AppConnectionIsolationGuardTests: XCTestCase {
     // MARK: - Negative: production paths fail closed before any side effect
 
     /// Every production-shaped control configuration is rejected by comparison
-    /// alone — the default control URL (which is the installed catalog's
-    /// sibling when no explicit catalog is injected), anything at or beneath
-    /// the production app-support directory, and anything beneath the installed
-    /// app bundle — including paths that do not exist, because the guard never
-    /// asks the filesystem whether the rejection is deserved.
+    /// alone — the default control URL's shape (the installed catalog's sibling,
+    /// built here beside the production catalog constant rather than through
+    /// the throwing resolver, which refuses under the tripwire this very suite
+    /// runs under), anything at or beneath the production app-support
+    /// directory, and anything beneath the installed app bundle — including
+    /// paths that do not exist, because the guard never asks the filesystem
+    /// whether the rejection is deserved.
     func testProductionControlPathsFailClosed() throws {
         let forbidden: [(label: String, control: URL)] = [
-            ("the implicit default control URL", ControlFile.url()),
+            ("the default control URL's shape",
+             ControlFile.url(beside: Paths.appSupport.appendingPathComponent("catalog.db"))),
             ("the default beside the installed catalog", ControlFile.url(beside: Paths.catalogDB)),
             ("the production control file itself", Paths.appSupport.appendingPathComponent("control.json")),
             ("a path beneath the production app-support directory",
@@ -130,9 +133,18 @@ final class AppConnectionIsolationGuardTests: XCTestCase {
             control: control,
             launch: AppLaunchSeam(launcher: LaunchServicesAppLauncher(), clock: RecordingAppLaunch())
         ), "the production launcher half must fail closed on its own")
-        XCTAssertThrowsError(try AppConnectionIsolationGuard.assertIsolated(
-            control: control, launch: .neverLaunching, secrets: KeychainStore()
-        ), "the production Keychain store must fail closed")
+        // The production Keychain store now fails closed one step EARLIER than
+        // the guard's configuration check: under the tripwire (VAL-H-001) its
+        // construction refuses outright, so a rig cannot even hold one to be
+        // rejected. The intent — no test runs wired to the real Keychain — is
+        // preserved, stricter than before.
+        XCTAssertThrowsError(try KeychainStore(), "the production Keychain store must fail closed") { error in
+            guard case AppError.usage(let message) = error else {
+                return XCTFail("expected a usage refusal, got \(error)")
+            }
+            XCTAssertTrue(message.contains("test isolation"),
+                          "the refusal names the isolation rule: \(message)")
+        }
     }
 
     // MARK: - The guard never inspects the real control file
@@ -219,9 +231,13 @@ final class AppConnectionIsolationGuardTests: XCTestCase {
     func testEveryAppConnectionRigPassesTheGuard() throws {
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         // The population: every suite that exercises auto-launch or
-        // AppConnection today, plus the shared support they build rigs in.
-        // Deliberately not scanned: this file (it constructs forbidden
-        // configurations to prove the rejections) and the guard's own file.
+        // AppConnection today, plus the shared support they build rigs in — and,
+        // since the 0.14 merge, the onboarding and feedback mission suites that
+        // build the same control-channel rigs (their sites, dead controls and
+        // tool rosters all configure control URLs). Deliberately not scanned:
+        // this file and the guard's own file (they construct forbidden
+        // configurations to prove the rejections), and ProductionTripwireTests
+        // (the production-side tripwire's own proof file, same reason).
         let files = [
             "MCPAppConnectionTests.swift", "AppLaunchSeamTests.swift", "DashboardCommandTests.swift",
             "ReadToolsTests.swift", "GrantMCPTests.swift", "MCPClientFlowTests.swift",
