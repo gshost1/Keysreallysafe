@@ -39,9 +39,10 @@
     <a class="brand" href="/"><img src="icon.svg" alt="" width="28" height="28">Keysrs</a>
     <nav>
       <a href="#setup">MCP server</a>
+      <a href="#relay">Cloud VMs</a>
       <a href="#tools">Tools</a>
       <a href="#grants">Grants</a>
-      <a href="#relay">Cloud VMs</a>
+      
       <a href="#privacy">Privacy</a>
       <a href="#faq">FAQ</a>
       <a href="https://github.com/gshost1/Keysreallysafe">★ Star</a>
@@ -53,9 +54,9 @@
 <main>
 <div class="hero">
   <div class="wrap">
-    <div class="badge"><b>New in 0.14</b>The Keysrs MCP server: your agent sets up a repo's keys with one Touch ID</div>
+    <div class="badge"><b>New in 0.14</b>A stdio MCP server with sixteen tools and Touch ID on every write</div>
     <h1>Agents get access. <span class="g">Never your keys.</span></h1>
-    <p class="lead">Keysrs is an MCP server for your API keys. Tell Claude Code, Codex or Cursor “set up my keys for this project.” One Touch ID moves the keys into your Mac's Keychain, and the repo gets a token for that project that expires in 30 days. Your agent never sees a key, and neither does your git history.</p>
+    <p class="lead">Keysrs is an MCP server and a loopback gateway for API keys. Your agent calls <code>scan_project</code> and <code>import_and_wrap</code>; secrets move into the macOS Keychain behind one Touch ID, and the env file is rewritten to <code>http://127.0.0.1:12767/&lt;key&gt;</code> plus a project-scoped <code>ksfc_</code> token with a 30-day expiry. Off the Mac, the same token works through a relay Worker in your own Cloudflare account. No key value crosses the agent, the transcript or git.</p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8m-3.5-3.5L8 10l3.5-3.5M2.5 13.5h11"/></svg>
@@ -120,8 +121,8 @@
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">The MCP server</p>
-      <h2 class="sh">One sentence to your agent.<br>Nothing to paste.</h2>
-      <p class="sp"><code>keys setup mcp</code> adds the Keysrs MCP server to Claude Code, Codex, Cursor, Droid and Claude Desktop, and nothing else: the config gets a path to <code>keys</code>, never a secret. From then on your agent has tools that work with names and last-4 hints, never values.</p>
+      <h2 class="sh">Register once.<br>Every tool returns names, never values.</h2>
+      <p class="sp"><code>keys setup mcp</code> writes a <code>keysrs</code> server entry (<code>keys mcp</code> over stdio) into Claude Code, Codex, Cursor, Droid and Claude Desktop, merging around each config's other entries and leaving a <code>.bak</code>. The entry holds the binary's path, never a secret; <code>--remove</code> undoes all five. Tools answer with variable names, providers and last-4 hints; anything that stores a key, issues a token or calls a provider blocks on Touch ID in the app.</p>
     </div>
 
     <div class="tools">
@@ -150,7 +151,47 @@ token expires in 30 days</pre>
   </div>
 </section>
 
-<section id="tools">
+<section id="relay">
+  <div class="wrap">
+    <div class="head">
+      <p class="eyebrow">Cloud VMs</p>
+      <h2 class="sh">Remote agents hold a token.<br>The key stays on loopback.</h2>
+      <p class="sp">A VM, a GitHub Actions runner or a cloud coding session can't reach <code>127.0.0.1</code>. You deploy the relay Worker into your own Cloudflare account; the Mac dials out <code>wss://&lt;worker&gt;/connect</code> with a relay secret, and the Worker pins that one socket in a Durable Object. <code>keys wrap --relay</code> points the env file's base URL at the Worker. Nothing on the Mac listens on a new port.</p>
+    </div>
+
+    <div class="ask">
+      <ol class="steps">
+        <li><b>Wrap.</b><span>One Touch ID. Secrets go to the Keychain; the env file gets <code>ksfc_</code> tokens and <code>https://&lt;worker&gt;/&lt;key&gt;</code> base URLs.</span></li>
+        <li><b>Ship.</b><span>Copy the file to the VM, the Actions secret or the cloud session. The token is useless without your Mac's gateway: it never authenticates to a provider.</span></li>
+        <li><b>Relay.</b><span>The Worker frames each request onto the socket and checks nothing. The Mac replays it to <code>127.0.0.1:12767</code>, where the gateway validates the token and scope, injects the Keychain secret and streams the response back, SSE included.</span></li>
+      </ol>
+      <div class="askvis">
+        <div class="win chat wrapdemo">
+          <div class="tb"><i></i><i></i><i></i><span>ssh — ubuntu@vm</span></div>
+<pre><span class="cu">$ cat .env</span>
+OPENAI_API_KEY=ksfc_8f1c…4b2e
+OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
+
+<span class="cu">$ python run_evals.py</span>
+48 prompts · via keysrs-relay.you.workers.dev
+<span class="ok">48/48 ok</span>
+
+<span class="cu">$ grep -c sk- .env</span>
+0<span class="cur"></span></pre>
+        </div>
+        <div class="touch t2">
+          <div class="tid"><img class="fp" src="touchid.png" alt="" width="54" height="54"><img src="icon.svg" alt="" width="26" height="26"></div>
+          <b>Keysrs</b>
+          <p>Keysrs is trying to connect the relay to keysrs-relay.you.workers.dev.</p>
+          <p>Touch ID or enter your password to allow this.</p>
+          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="tools" class="gray">
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">Tools</p>
@@ -181,7 +222,7 @@ token expires in 30 days</pre>
   </div>
 </section>
 
-<section id="grants" class="gray">
+<section id="grants">
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">Grants</p>
@@ -217,7 +258,7 @@ token expires in 30 days</pre>
   </div>
 </section>
 
-<section id="safety">
+<section id="safety" class="gray">
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">What an agent can't do</p>
@@ -231,46 +272,6 @@ token expires in 30 days</pre>
       <div><s>call a provider quietly</s><span><code>test_keys</code> makes a live call only when you confirm that call.</span></div>
       <div><s>file a report for you</s><span><code>send_feedback</code> scrubs keys, tokens, paths and names, then opens an email or a GitHub issue. You send it.</span></div>
       <div><s>leave you stuck</s><span><code>keys unwrap</code> puts the original env files back, and uninstalling offers it first.</span></div>
-    </div>
-  </div>
-</section>
-
-<section id="relay" class="gray">
-  <div class="wrap">
-    <div class="head">
-      <p class="eyebrow">Cloud VMs</p>
-      <h2 class="sh">Your VMs get a dummy key.<br>The real one never leaves.</h2>
-      <p class="sp">A VM, a GitHub Actions job or a cloud coding session can't reach your Mac's loopback. Deploy the small relay Worker into your own Cloudflare account and it can. <code>keys wrap --relay</code> points a project's <code>.env</code> at your Worker instead.</p>
-    </div>
-
-    <div class="ask">
-      <ol class="steps">
-        <li><b>Wrap the env file.</b><span>One Touch ID. The real keys go into the Keychain; the file gets dummy tokens and your Worker's URL.</span></li>
-        <li><b>Ship the file.</b><span>Copy it to the VM, the Actions secret, the cloud session. Nothing in it works without your Mac.</span></li>
-        <li><b>Calls come home.</b><span>Each call reaches your Worker, rides one WebSocket your Mac opened, gets the real key swapped in on loopback and goes to the provider.</span></li>
-      </ol>
-      <div class="askvis">
-        <div class="win chat wrapdemo">
-          <div class="tb"><i></i><i></i><i></i><span>ssh — ubuntu@vm</span></div>
-<pre><span class="cu">$ cat .env</span>
-OPENAI_API_KEY=ksfc_8f1c…4b2e
-OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
-
-<span class="cu">$ python run_evals.py</span>
-48 prompts · via keysrs-relay.you.workers.dev
-<span class="ok">48/48 ok</span>
-
-<span class="cu">$ grep -c sk- .env</span>
-0<span class="cur"></span></pre>
-        </div>
-        <div class="touch t2">
-          <div class="tid"><img class="fp" src="touchid.png" alt="" width="54" height="54"><img src="icon.svg" alt="" width="26" height="26"></div>
-          <b>Keysrs</b>
-          <p>Keysrs is trying to connect the relay to keysrs-relay.you.workers.dev.</p>
-          <p>Touch ID or enter your password to allow this.</p>
-          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
-        </div>
-      </div>
     </div>
   </div>
 </section>
