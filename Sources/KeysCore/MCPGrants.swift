@@ -410,7 +410,9 @@ extension KeysService {
                     // the grant this thread just minted would live out its window on
                     // the gateway with no caller left who may collect it. The house
                     // revoke path ends it — audited, and idempotent if it is gone.
-                    try? self.revokeGrant(id: issued.grant.id, caller: "mcp")
+                    // `_ =` discards the revoke's Grant result; the `try?` keeps an
+                    // already-gone grant from crashing the approval thread.
+                    _ = try? self.revokeGrant(id: issued.grant.id, caller: "mcp")
                 }
             } catch {
                 // An expired (or already-resolved) request keeps its honest state:
