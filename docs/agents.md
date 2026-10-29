@@ -336,11 +336,17 @@ and [relay.md](relay.md).
 
 `keys unwrap path/to/.env` is the inverse of `keys wrap` and
 `import_and_wrap`: under one Touch ID the app restores each wrapped line's
-real value from the vault and revokes that file's gateway client tokens, so
-the token left in the file dies immediately. An unedited file comes back
-byte-for-byte — the wrap-time `<file>.keysrs-backup-<time>` is the restore
-source for the BASE_URL companions (restored where the wrap replaced one,
-removed where it appended one or where no backup exists). With no argument,
+real value from the vault and revokes that file's gateway client tokens,
+so the token left in the file dies immediately — except a token another
+recorded wrapped file still holds, which is kept (the report names the
+file that still uses it) until the last of its files unwraps. An unedited
+file comes back byte-for-byte — the wrap-time `<file>.keysrs-backup-<time>`
+is the restore source for the BASE_URL companions (restored where the wrap
+replaced one, removed where it appended one or where no backup holds an
+original), and only the companions the wrap recorded writing are removed:
+a gateway-pointing URL the wrap never wrote is left as written and
+reported, while files wrapped before that record existed keep the
+blanket removal as the documented fallback. With no argument,
 `keys unwrap` restores every wrapped file recorded for the working
 directory's project. It writes no new backup, prints no value, and a token
 already revoked is a no-op, not a failure.

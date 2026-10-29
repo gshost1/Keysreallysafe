@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import KeysCore
 
@@ -138,6 +139,35 @@ final class UnwrapTests: XCTestCase {
             return
         }
         XCTAssertEqual(reason, expected, "the decision reason for \(name)", file: file, line: line)
+    }
+
+    /// Raw sqlite for schema-level assertions, the ProjectClientTokenTests rig: the
+    /// companions record's migration and its legacy-NULL simulation both need it.
+    @discardableResult
+    private func rawExec(_ dbPath: URL, _ sql: String) -> Int32 {
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbPath.path, &raw), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        var err: UnsafeMutablePointer<CChar>?
+        let rc = sqlite3_exec(raw, sql, nil, nil, &err)
+        if let err { sqlite3_free(err) }
+        return rc
+    }
+
+    private func rawRows(_ dbPath: URL, _ sql: String) throws -> [[String]] {
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbPath.path, &raw), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        var stmt: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(raw, sql, -1, &stmt, nil), SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+        var out: [[String]] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            out.append((0..<Int(sqlite3_column_count(stmt))).map {
+                sqlite3_column_text(stmt, Int32($0)).map { String(cString: $0) } ?? ""
+            })
+        }
+        return out
     }
 
     // MARK: - VAL-UNWRAP-001 (one prompt; byte-for-byte restoration)
@@ -310,10 +340,12 @@ final class UnwrapTests: XCTestCase {
 
     // MARK: - VAL-UNWRAP-003 (BASE_URL companions)
 
-    /// Without a backup, the documented fallback: gateway-pointing URL lines are
-    /// removed (both the replaced and the appended one), while the wrapped values are
-    /// still restored from the vault.
-    func testNoBackupRemovesGatewayPointingCompanions() throws {
+    /// Without a backup, the documented fallback for the companions the WRAP
+    /// RECORDED writing: gateway-pointing URL lines are removed (both the replaced and
+    /// the appended one), while the wrapped values are still restored from the vault.
+    /// The record itself is asserted first — the import writes exactly the two
+    /// companion names its rewrite wrote (VAL-O-008's writer half).
+    func testNoBackupRemovesTheCompanionsTheWrapRecorded() throws {
         let site = try makeSite()
         let project = try makeProject("nobackup", in: site.dir)
         let env = try write(
@@ -321,6 +353,11 @@ final class UnwrapTests: XCTestCase {
             to: ".env", under: project
         )
         _ = try wrapByImport(site, folder: project)
+        XCTAssertEqual(
+            try site.db.recordedCompanions(path: KeysService.canonicalPath(env.path) ?? env.path),
+            ["ANTHROPIC_BASE_URL", "OPENAI_BASE_URL"],
+            "the import records the companions it wrote, sorted"
+        )
         for backup in try backups(beside: env) { try fm.removeItem(at: backup) }
         XCTAssertTrue(try backups(beside: env).isEmpty)
 
@@ -337,6 +374,100 @@ final class UnwrapTests: XCTestCase {
                        ["OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"])
         XCTAssertEqual((files[0]["companions_restored"] as? [Any])?.count, 0)
         XCTAssertEqual((files[0]["backup"] as? String) ?? "", "", "no backup was found")
+    }
+
+    // MARK: - VAL-O-008 (only companions Keysrs recorded writing are removed)
+
+    /// A gateway-pointing BASE_URL the wrap never wrote is the user's own line: with
+    /// no backup holding an original for it, unwrap leaves it as written and says so —
+    /// only the companions Keysrs recorded writing are removed. Failed pre-fix: the
+    /// fallback removed the hand-written line too, and nothing reported it.
+    func testNoBackupLeavesAHandWrittenCompanionAndReportsIt() throws {
+        let site = try makeSite()
+        let project = try makeProject("handwritten", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(openaiValue)\n", to: ".env", under: project)
+        _ = try wrapByImport(site, folder: project)
+        // A companion the user wrote themselves AFTER the wrap: the gateway's URL
+        // shape, a key name of their own, and nothing the wrap recorded.
+        let handle = try FileHandle(forWritingTo: env)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("GROQ_BASE_URL=http://127.0.0.1:12767/manual\n".utf8))
+        try handle.close()
+        for backup in try backups(beside: env) { try fm.removeItem(at: backup) }
+        XCTAssertTrue(try backups(beside: env).isEmpty)
+
+        let result = try site.service.unwrap(file: env.path, folder: nil)
+
+        let restored = try String(contentsOf: env, encoding: .utf8)
+        XCTAssertTrue(restored.contains(openaiValue), "the wrapped value is restored")
+        XCTAssertTrue(restored.contains("GROQ_BASE_URL=http://127.0.0.1:12767/manual"),
+                      "the hand-written companion is left as the user wrote it")
+        XCTAssertFalse(restored.contains("OPENAI_BASE_URL"),
+                       "the companion the wrap recorded writing is removed")
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files[0]["companions_removed"] as? [String], ["OPENAI_BASE_URL"],
+                       "only the recorded companion is removed")
+        XCTAssertEqual(files[0]["companions_left"] as? [String] ?? [], ["GROQ_BASE_URL"],
+                       "the hand-written companion is reported as left alone")
+    }
+
+    /// A row written before the companion record existed has no list to consult, so it
+    /// keeps today's documented removal fallback — pinned deliberately (decision
+    /// 2026-10-28): every gateway-pointing companion without a backup original is
+    /// removed, hand-written or not, exactly as those rows always unwrapped.
+    func testLegacyRowsKeepTheRemovalFallback() throws {
+        let site = try makeSite()
+        let project = try makeProject("legacy", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(openaiValue)\n", to: ".env", under: project)
+        _ = try wrapByImport(site, folder: project)
+        let handle = try FileHandle(forWritingTo: env)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("GROQ_BASE_URL=http://127.0.0.1:12767/manual\n".utf8))
+        try handle.close()
+        // The row as a pre-record wrap wrote it: no companions list at all.
+        XCTAssertEqual(rawExec(site.db.path, "UPDATE wrapped_files SET companions = NULL;"), SQLITE_OK)
+        for backup in try backups(beside: env) { try fm.removeItem(at: backup) }
+
+        let result = try site.service.unwrap(file: env.path, folder: nil)
+
+        let restored = try String(contentsOf: env, encoding: .utf8)
+        XCTAssertFalse(restored.contains("GROQ_BASE_URL"),
+                       "a legacy row keeps the removal fallback: the hand-written line goes too")
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files[0]["companions_removed"] as? [String],
+                       ["OPENAI_BASE_URL", "GROQ_BASE_URL"], "both companions fall to the fallback")
+        XCTAssertEqual(files[0]["companions_left"] as? [String] ?? [], [],
+                       "nothing is reported as left: the fallback removed everything")
+    }
+
+    /// A catalog written before the companions record existed gains the column in
+    /// place (the tableHasColumn + ALTER TABLE pattern), its legacy rows keep NULL —
+    /// no record, so the removal fallback keeps applying — and new records carry the
+    /// list. Raw sqlite, the testOpeningPre010CatalogAddsGatewayStatusColumn rig.
+    func testOpeningAnOlderCatalogAddsTheCompanionsColumn() throws {
+        let dir = try TempDir.make()
+        let path = dir.appendingPathComponent("catalog.db")
+        XCTAssertEqual(rawExec(path, """
+            CREATE TABLE wrapped_files (
+              path TEXT PRIMARY KEY,
+              project TEXT NOT NULL,
+              wrapped_at TEXT NOT NULL
+            );
+            INSERT INTO wrapped_files (path, project, wrapped_at) VALUES ('/x/.env', 'p', '2026-01-01T00:00:00Z');
+            """), SQLITE_OK)
+
+        let db = try CatalogDB(path: path)
+
+        XCTAssertEqual(
+            try rawRows(path, "SELECT name FROM pragma_table_info('wrapped_files') WHERE name = 'companions';").count,
+            1, "the guarded ALTER added the column in place"
+        )
+        XCTAssertNil(try db.recordedCompanions(path: "/x/.env"),
+                     "a legacy row reads as no record: the removal fallback keeps applying")
+        try db.recordWrappedFile(path: "/y/.env", project: "p", at: "2026-10-28T00:00:00Z",
+                                 companions: ["OPENAI_BASE_URL"])
+        XCTAssertEqual(try db.recordedCompanions(path: "/y/.env"), ["OPENAI_BASE_URL"],
+                       "new records carry the list")
     }
 
     // MARK: - VAL-O-001 (an edited companion never writes another key's value)

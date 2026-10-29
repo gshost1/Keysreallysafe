@@ -1228,13 +1228,20 @@ final class KeysService: @unchecked Sendable {
         // file's absolute path (the CLI's wrap does) records it, so `keys unwrap` and the
         // uninstall offer find every file this build ever wrapped. The project is the
         // file's own folder — the folder whose slug named the keys — resolved the same
-        // way the import path resolves its scan root.
+        // way the import path resolves its scan root. The companions are derived from
+        // the plan exactly as WrapRunner derives its base URLs (one per wrapped
+        // variable whose SDK reads one), so the record says what Keysrs wrote and
+        // unwrap leaves anything else alone.
         if let path = pending.path, !issued.isEmpty {
             let canonical = Self.canonicalPath(path) ?? path
             let folder = try resolveProject(
                 folder: URL(fileURLWithPath: canonical).deletingLastPathComponent().path, now: now
             )
-            try recordWrappedFile(path: canonical, project: folder.id, now: now)
+            let companions = Set(pending.plan.items.compactMap { item -> String? in
+                guard item.skip == nil, item.key != nil else { return nil }
+                return WrapDetect.baseURLVariables[item.variable]
+            }).sorted()
+            try recordWrappedFile(path: canonical, project: folder.id, now: now, companions: companions)
         }
         return issued
     }
@@ -1246,9 +1253,13 @@ final class KeysService: @unchecked Sendable {
     /// Records one file a wrap rewrote, by canonical path, in the `wrapped_files` table.
     /// Both wrap paths land here — `wrapApply` for `keys wrap`, the import flow for its
     /// own files — so every rewritten file is findable later with no guessing from
-    /// backups. The path stays in this Mac's catalog; no tool result ever carries it.
-    func recordWrappedFile(path: String, project: String, now: Date = Date()) throws {
-        try catalog.recordWrappedFile(path: Self.canonicalPath(path) ?? path, project: project, at: UTC.iso(now))
+    /// backups. `companions` are the BASE_URL variables the wrap wrote into THIS file;
+    /// unwrap removes exactly those. The path stays in this Mac's catalog; no tool
+    /// result ever carries it.
+    func recordWrappedFile(path: String, project: String, now: Date = Date(), companions: [String] = []) throws {
+        try catalog.recordWrappedFile(
+            path: Self.canonicalPath(path) ?? path, project: project, at: UTC.iso(now), companions: companions
+        )
     }
 
     /// POSIX `realpath`, the `Project.canonicalFolder` discipline, for a file. The same

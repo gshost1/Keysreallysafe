@@ -171,8 +171,8 @@ extension KeysService {
             try Self.rewriteWrappedFiles(
                 decisions: decisions, fresh: fresh, token: token, docker: docker, now: now,
                 conflicted: conflicted
-            ) { path in
-                try recordWrappedFile(path: path, project: project.id, now: now)
+            ) { path, companions in
+                try recordWrappedFile(path: path, project: project.id, now: now, companions: companions)
             }
         }
 
@@ -426,8 +426,9 @@ extension KeysService {
     /// Rewrites each file holding a wrapped line: the value span becomes the one project
     /// token, the BASE_URL companions for the three wrap-detected SDK variables are set
     /// to the gateway URL for their key, and the rewritten file is recorded in
-    /// `wrapped_files` through `record`. Files whose every wrap was conflicted away are
-    /// left untouched — nothing in them was ever rewritten.
+    /// `wrapped_files` through `record` — together with the companion names it wrote,
+    /// so unwrap later removes exactly those. Files whose every wrap was conflicted
+    /// away are left untouched — nothing in them was ever rewritten.
     private static func rewriteWrappedFiles(
         decisions: [Decision],
         fresh: [String: FreshRead],
@@ -435,7 +436,7 @@ extension KeysService {
         docker: Bool,
         now: Date,
         conflicted: Set<String>,
-        record: (String) throws -> Void
+        record: (String, [String]) throws -> Void
     ) throws {
         let host = baseURLHost(docker: docker)
         for file in fresh.keys.sorted() {
@@ -460,7 +461,7 @@ extension KeysService {
                 read.parsed.upsert(name: name, value: value)
             }
             _ = try EnvFileWriter.rewrite(read.url, original: read.data, text: read.parsed.render(), now: now)
-            try record(read.url.path)
+            try record(read.url.path, companions.keys.sorted())
         }
     }
 

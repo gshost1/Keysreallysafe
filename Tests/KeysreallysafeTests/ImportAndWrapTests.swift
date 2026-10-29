@@ -656,8 +656,9 @@ final class ImportAndWrapTests: XCTestCase {
     // MARK: - VAL-IMW-013 (wrapped files are recorded for both paths)
 
     /// Every file the import rewrote is recorded in wrapped_files (canonical path +
-    /// project); the existing keys wrap apply path records its files too; a file whose
-    /// values were only imported-not-wrapped is never recorded.
+    /// project, and the BASE_URL companions its rewrite wrote); the existing keys wrap
+    /// apply path records its files and companions too; a file whose values were only
+    /// imported-not-wrapped is never recorded.
     func testWrappedFilesRecordedForBothPaths() throws {
         let vault = try makeVault()
         let project = try makeProject(in: vault.dir)
@@ -690,6 +691,14 @@ final class ImportAndWrapTests: XCTestCase {
         )
         XCTAssertEqual(wrapRow.project, try vault.service.resolveProject(folder: wrapDir.path).id,
                        "keys wrap records the file under its own folder's project")
+
+        // The companions each path wrote ride the record (VAL-O-008): the import's
+        // sub/.env wrote only the OpenAI companion, and keys wrap derives the
+        // ANTHROPIC companion from the plan exactly as WrapRunner does.
+        XCTAssertEqual(try vault.db.recordedCompanions(path: recorded[0].path), ["OPENAI_BASE_URL"],
+                       "the import records the companion its rewrite wrote")
+        XCTAssertEqual(try vault.db.recordedCompanions(path: wrapRow.path), ["ANTHROPIC_BASE_URL"],
+                       "keys wrap records the companion its plan wrote")
     }
 
     // MARK: - the changed-file refusal

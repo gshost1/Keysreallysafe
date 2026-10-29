@@ -193,19 +193,27 @@ extension KeysService {
         }
 
         // The companion lines: restored from the backup when it holds the variable,
-        // removed when the wrap appended it (or when no backup exists). Only lines
-        // pointing at this gateway are touched — a companion the user already repointed
-        // elsewhere, or a relay URL from `keys wrap --relay`, is left as the user set
-        // it. Removals are collected first and applied in one pass, because line
-        // indices shift under a removal loop.
+        // removed when the wrap wrote them and no backup holds an original. Only
+        // lines pointing at this gateway are touched — a companion the user already
+        // repointed elsewhere, or a relay URL from `keys wrap --relay`, is left as the
+        // user set it. Removal, too, is limited to what Keysrs recorded writing: the
+        // wrap's own record names its companions, and a gateway-pointing URL the user
+        // wrote themselves stays as written and is reported. A record from before the
+        // companion list existed (or no record at all) keeps today's documented
+        // removal fallback — nil means "unknown", not "none". Removals are collected
+        // first and applied in one pass, because line indices shift under a removal
+        // loop.
+        let recordedCompanions = try catalog.recordedCompanions(path: canonical)
         var removedIndices: Set<Int> = []
         for (name, index) in companions {
             if let original = backupParsed?.value(of: name) {
                 parsed.setValue(at: index, original)
                 if !outcome.companionsRestored.contains(name) { outcome.companionsRestored.append(name) }
-            } else {
+            } else if recordedCompanions?.contains(name) ?? true {
                 removedIndices.insert(index)
                 if !outcome.companionsRemoved.contains(name) { outcome.companionsRemoved.append(name) }
+            } else if !outcome.companionsLeft.contains(name) {
+                outcome.companionsLeft.append(name)
             }
         }
         if !removedIndices.isEmpty {
@@ -366,6 +374,9 @@ extension KeysService {
         var failed: [(variable: String, reason: String)] = []
         var companionsRestored: [String] = []
         var companionsRemoved: [String] = []
+        /// Gateway-pointing companions the wrap never recorded writing — the user's
+        /// own lines, left as written and reported.
+        var companionsLeft: [String] = []
         /// Other recorded wrapped files still holding one of this file's tokens —
         /// why those tokens were kept instead of revoked.
         var stillUsedBy: [String] = []
@@ -385,6 +396,7 @@ extension KeysService {
                 "failed": failed.map { ["variable": $0.variable, "reason": $0.reason] },
                 "companions_restored": companionsRestored,
                 "companions_removed": companionsRemoved,
+                "companions_left": companionsLeft,
                 "still_used_by": stillUsedBy,
                 "revoked": revoked,
                 "backup": backup ?? NSNull(),
@@ -469,6 +481,10 @@ struct UnwrapRunner {
             let companionsRemoved = (file["companions_removed"] as? [Any])?.compactMap { $0 as? String } ?? []
             if !companionsRemoved.isEmpty {
                 out("  \(companionsRemoved.joined(separator: ", ")) removed (the wrap-time backup holds no original for it)")
+            }
+            let companionsLeft = (file["companions_left"] as? [Any])?.compactMap { $0 as? String } ?? []
+            if !companionsLeft.isEmpty {
+                out("  \(companionsLeft.joined(separator: ", ")) left as written (not one of the companions this wrap recorded)")
             }
             let stillUsedBy = (file["still_used_by"] as? [Any])?.compactMap { $0 as? String } ?? []
             if !stillUsedBy.isEmpty {

@@ -1425,13 +1425,15 @@ struct UnwrapCommand: ParsableCommand {
             The inverse of keys wrap and import_and_wrap. With a file, exactly that file is \
             restored; without one, every wrapped file recorded for the working directory's \
             project is. Values come from the vault inside the running Keysrs (they are never \
-            printed), the BASE_URL companions the wrap wrote are restored from the wrap-time \
-            backup — removed when the wrap appended them or when no backup exists — and the \
-            gateway client tokens the file held are revoked on the spot, so nothing wrapped \
-            keeps working. A wrapped line whose vault key is gone is reported and keeps its \
-            now-dead token. Needs the running Keysrs.app, which owns the vault and the tokens; \
-            when it is not running, keys unwrap exits 6 with the same message as keys wrap and \
-            never launches anything itself.
+            printed), the BASE_URL companions the wrap recorded writing are restored from the \
+            wrap-time backup — removed where it appended them or where no backup holds an \
+            original, while a gateway-pointing URL the wrap never recorded is left as written \
+            and reported — and the gateway client tokens the file held are revoked on the spot, \
+            except a token another recorded wrapped file still holds, which is kept and named. \
+            A wrapped line whose vault key is gone is reported and keeps its now-dead token. \
+            Needs the running Keysrs.app, which owns the vault and the tokens; when it is not \
+            running, keys unwrap exits 6 with the same message as keys wrap and never launches \
+            anything itself.
             """
     )
 

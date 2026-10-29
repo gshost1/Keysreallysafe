@@ -319,6 +319,13 @@ final class CatalogDB: @unchecked Sendable {
               wrapped_at TEXT NOT NULL
             );
             """)
+        // Which companion BASE_URL variables each wrap wrote into the file, as a JSON
+        // array — so unwrap removes exactly those and leaves a hand-written gateway URL
+        // alone. Rows from before the column existed keep NULL: no record means the
+        // documented removal fallback (decision, 2026-10-28).
+        if try !tableHasColumn("wrapped_files", "companions") {
+            try exec("ALTER TABLE wrapped_files ADD COLUMN companions TEXT;")
+        }
         // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
         // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
         // the main file nor the WAL keeps the old page images. The vacuum is best effort.
@@ -891,12 +898,37 @@ final class CatalogDB: @unchecked Sendable {
 
     /// Records one file a wrap rewrote, by canonical path. A rewrap refreshes the row
     /// (INSERT OR REPLACE on the path primary key), so the record always reflects the
-    /// latest wrap, and unwrapping clears it per file.
-    func recordWrappedFile(path: String, project: String, at iso: String) throws {
+    /// latest wrap, and unwrapping clears it per file. `companions` are the BASE_URL
+    /// variable names this wrap wrote into the file — the exact list unwrap removes
+    /// from, never a blanket rule over every gateway-pointing line.
+    func recordWrappedFile(path: String, project: String, at iso: String, companions: [String] = []) throws {
         try run(
-            "INSERT OR REPLACE INTO wrapped_files (path, project, wrapped_at) VALUES (?, ?, ?);",
-            path, project, iso
+            "INSERT OR REPLACE INTO wrapped_files (path, project, wrapped_at, companions) VALUES (?, ?, ?, ?);",
+            path, project, iso, try Self.encodeCompanions(companions)
         )
+    }
+
+    /// Companion names are env-variable names, but the array lives as JSON like
+    /// grant_profiles.paths so a corrupted row fails loudly instead of silently losing
+    /// half a list.
+    private static func encodeCompanions(_ names: [String]) throws -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: names, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else {
+            throw AppError.sqlite("wrapped_files companions could not be encoded")
+        }
+        return json
+    }
+
+    /// The companions a wrap recorded writing for one file, or nil when there is no
+    /// record to consult — no row at all, a row from before the record existed, or a
+    /// column that does not parse. Nil is the documented removal fallback; an empty
+    /// array is a real record of a wrap that wrote none.
+    func recordedCompanions(path: String) throws -> [String]? {
+        guard let json = try one(
+            "SELECT companions FROM wrapped_files WHERE path = ?;", path, row: { columnText($0, 0) ?? "" }
+        ), let data = json.data(using: .utf8),
+              let names = (try? JSONSerialization.jsonObject(with: data)) as? [String] else { return nil }
+        return names
     }
 
     /// Every recorded wrapped file, in path order — the base `keys unwrap` and the
