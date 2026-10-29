@@ -141,6 +141,11 @@ final class APIHandler: @unchecked Sendable {
     /// itself never submits and opens nothing else anywhere on this path.
     /// Injectable so a test can watch the one invocation without opening anything.
     private let openFeedbackURL: (URL) -> Void
+    /// The pure scrubber the feedback route runs. A throwing scrub must fail the
+    /// whole call (a 400, nothing opened) — the fail-closed contract — so the
+    /// scrub is a seam a test can make throw without a real uncompilable
+    /// pattern (VAL-F-003).
+    private let scrubFeedback: (FeedbackScrubber.Request) throws -> (scrubbed: String, removed: [String: Int])
 
     init(
         service: KeysService,
@@ -151,7 +156,8 @@ final class APIHandler: @unchecked Sendable {
         setUpdateChecks: @escaping (Bool) -> Void = APIHandler.applyUpdateChecksPreference,
         quitApp: @escaping () -> (() -> Void)? = APIHandler.quitKeysrsApp,
         scheduleQuit: @escaping (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) },
-        openFeedbackURL: @escaping (URL) -> Void = FeedbackDelivery.openExternally
+        openFeedbackURL: @escaping (URL) -> Void = FeedbackDelivery.openExternally,
+        scrubFeedback: @escaping (FeedbackScrubber.Request) throws -> (scrubbed: String, removed: [String: Int]) = FeedbackScrubber.scrub
     ) {
         self.service = service
         self.webRoot = webRoot
@@ -162,6 +168,7 @@ final class APIHandler: @unchecked Sendable {
         self.quitApp = quitApp
         self.scheduleQuit = scheduleQuit
         self.openFeedbackURL = openFeedbackURL
+        self.scrubFeedback = scrubFeedback
         service.analytics?.start()
     }
 
@@ -1388,7 +1395,10 @@ final class APIHandler: @unchecked Sendable {
         let names = rows.map(\.name) + (try service.catalog.projects()).map(\.label)
         let records = Providers.builtinList() + ((try? service.catalog.listCustomProviders()) ?? [])
 
-        let scrubbed = FeedbackScrubber.scrub(.init(
+        // The scrub can THROW (a pattern that will not compile): fail closed —
+        // the call errors and nothing is opened — rather than send text a rule
+        // silently skipped (VAL-F-003).
+        let scrubbed = try scrubFeedback(.init(
             draft: draft,
             prompt: prompt,
             vaultValues: vaultValues,

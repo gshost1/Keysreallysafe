@@ -96,7 +96,7 @@ struct FeedbackScrubber {
         }
     }
 
-    static func scrub(_ request: Request) -> (scrubbed: String, removed: [String: Int]) {
+    static func scrub(_ request: Request) throws -> (scrubbed: String, removed: [String: Int]) {
         var removed: [String: Int] = [:]
         func bump(_ category: String, by count: Int) {
             guard count > 0 else { return }
@@ -118,13 +118,13 @@ struct FeedbackScrubber {
         }
 
         // 3. token — every Keysrs family's runs, full shape to bare prefix.
-        bump(token, by: replaceRegex(&text, tokenRunPattern, with: Redact.mask))
+        bump(token, by: try replaceRegex(&text, tokenRunPattern, with: Redact.mask))
 
         // 4. key_shape, header forms — prefix kept, value masked (Redact's two).
-        bump(keyShape, by: replaceRegex(
+        bump(keyShape, by: try replaceRegex(
             &text, #"(?i)(bearer\s+)[A-Za-z0-9._\-~+/=]{8,}"#, with: "$1" + Redact.mask
         ))
-        bump(keyShape, by: replaceRegex(
+        bump(keyShape, by: try replaceRegex(
             &text, #"(?i)(x-api-key|x-goog-api-key|api-key|authorization)(\s*[:=]\s*)\S+"#,
             with: "$1$2" + Redact.mask
         ))
@@ -134,11 +134,11 @@ struct FeedbackScrubber {
         //    `cwd:`-prefixed, `path=`-prefixed and the explicit `file://` form
         //    all match, while http(s) URLs survive (their colon is followed by
         //    `//`, which the boundary guard rejects).
-        bump(path, by: replaceRegex(&text, fileURLPattern, with: Redact.mask))
-        bump(path, by: replaceRegex(&text, pathPattern, with: "$1" + Redact.mask))
+        bump(path, by: try replaceRegex(&text, fileURLPattern, with: Redact.mask))
+        bump(path, by: try replaceRegex(&text, pathPattern, with: "$1" + Redact.mask))
 
         // 6. email — every email-shaped string except the support address.
-        bump(email, by: replaceRegex(
+        bump(email, by: try replaceRegex(
             &text, #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#, with: Redact.mask,
             except: supportAddress
         ))
@@ -159,10 +159,16 @@ struct FeedbackScrubber {
             return WrapDetect.valueLooksLikeKey(token)
         })
 
-        // 8. name — key names and project labels, whole words only.
+        // 8. name — key names and project labels, whole words only,
+        //    case-insensitive, and escaped: a name or label is data, never a
+        //    pattern (a label containing `\E` used to invalidate the `\Q…\E`
+        //    form and the rule was silently skipped).
         for needle in request.names where !needle.isEmpty {
-            bump(name, by: replaceRegex(
-                &text, #"(?<![A-Za-z0-9])\Q"# + needle + #"\E(?![A-Za-z0-9])"#, with: Redact.mask
+            bump(name, by: try replaceRegex(
+                &text,
+                "(?i)(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: needle)
+                    + "(?![A-Za-z0-9])",
+                with: Redact.mask
             ))
         }
 
@@ -225,13 +231,20 @@ struct FeedbackScrubber {
     /// back-to-front, so earlier ranges stay valid and no match is ever
     /// re-scanned. `except` spares one exact match, case-insensitive (the
     /// support address).
-    private static func replaceRegex(
+    ///
+    /// A pattern that cannot be compiled THROWS: the scrub fails CLOSED — the
+    /// whole `send_feedback` call errors and nothing is opened — instead of the
+    /// old silent `try?` that skipped the rule and let its needles through
+    /// (VAL-F-003).
+    static func replaceRegex(
         _ text: inout String,
         _ pattern: String,
         with template: String,
         except spared: String? = nil
-    ) -> Int {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return 0 }
+    ) throws -> Int {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            throw AppError.usage("the feedback scrubber pattern could not be compiled")
+        }
         let source = text
         let matches = regex.matches(in: source, range: NSRange(source.startIndex..., in: source))
         var replaced = 0

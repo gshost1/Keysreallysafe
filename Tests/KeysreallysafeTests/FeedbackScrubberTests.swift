@@ -28,7 +28,7 @@ final class FeedbackScrubberTests: XCTestCase {
         records: [Providers.Record]? = nil,
         cap: Int = FeedbackScrubber.defaultCap
     ) throws -> (scrubbed: String, removed: [String: Int]) {
-        FeedbackScrubber.scrub(.init(
+        try FeedbackScrubber.scrub(.init(
             draft: draft,
             prompt: prompt,
             vaultValues: vaultValues,
@@ -187,6 +187,40 @@ final class FeedbackScrubberTests: XCTestCase {
         XCTAssertFalse(out.scrubbed.contains("work-anthropic"))
         XCTAssertTrue(out.scrubbed.contains("demographic"), "word boundaries keep embedded text")
         XCTAssertEqual(out.removed[FeedbackScrubber.name], 3)
+    }
+
+    /// VAL-F-003. Key names and project labels match case-insensitively, and a
+    /// label is escaped data, never a pattern. The old `\Q…\E` form was
+    /// terminated by a literal `\E` inside a label, which made the pattern
+    /// invalid and the whole rule was silently skipped (the `try?`), so both
+    /// names leaked; a name in the wrong case leaked too because the match was
+    /// case-sensitive.
+    func testNamesAndLabelsRemovedCaseInsensitivelyAndEscaped() throws {
+        let label = "proj" + "\\Eevil"
+        let draft = "the DEMO key in the \(label) project"
+        let out = try scrub(draft, names: ["demo", label])
+        XCTAssertFalse(out.scrubbed.contains("DEMO"), "case-insensitive: \(out.scrubbed)")
+        XCTAssertFalse(out.scrubbed.contains(label),
+                       "the \\E label is escaped, not a pattern: \(out.scrubbed)")
+        XCTAssertEqual(out.removed[FeedbackScrubber.name], 2)
+    }
+
+    // MARK: - fail closed (VAL-F-003)
+
+    /// VAL-F-003. `replaceRegex` fails CLOSED on a pattern that will not
+    /// compile: it throws rather than the old `try?` that silently returned 0
+    /// and skipped the whole rule. The text is left untouched, so the caller
+    /// (the feedback route) sees the error and opens nothing instead of sending
+    /// text a rule never ran on.
+    func testReplaceRegexFailsClosedOnInvalidPattern() throws {
+        var text = "the DEMO key survives"
+        XCTAssertThrowsError(
+            try FeedbackScrubber.replaceRegex(&text, "(unterminated", with: Redact.mask)
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("pattern"),
+                          "the refusal names the pattern: \(error)")
+        }
+        XCTAssertEqual(text, "the DEMO key survives", "a failed compile leaves the text untouched")
     }
 
     // MARK: - email (VAL-FB-006)

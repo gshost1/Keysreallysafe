@@ -250,6 +250,33 @@ final class FeedbackToolsTests: XCTestCase {
         XCTAssertEqual(site.open.count, 0, "no refusal ever opened anything")
     }
 
+    /// VAL-F-003. A scrub that throws (a pattern that will not compile) fails
+    /// the whole route closed: the answer is an error, nothing is opened, and no
+    /// partially-scrubbed draft can ever leave. The scrub seam stands in for the
+    /// uncompilable pattern the fix makes fail-closed.
+    func testScrubFailureFailsClosedAndOpensNothing() throws {
+        let plantedSecret = "fake-vault-" + String(repeating: "s3", count: 8)
+        let (db, dir) = try makeDB()
+        let (service, _) = makeGatedService(db: db)
+        try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: plantedSecret)
+        let open = OpenSpy()
+        let web = dir.appendingPathComponent("Web", isDirectory: true)
+        try fm.createDirectory(at: web, withIntermediateDirectories: true)
+        let handler = APIHandler(
+            service: service, webRoot: web,
+            openFeedbackURL: { open.open($0) },
+            scrubFeedback: { _ in
+                throw AppError.usage("the feedback scrubber pattern could not be compiled")
+            }
+        )
+        let response = handle(handler, method: "POST", path: "/api/mcp/feedback",
+                              body: try body(["draft": "the \(plantedSecret) leaked"]))
+        XCTAssertNotEqual(response.status, 200, "a failed scrub is not a success")
+        let answer = try JSONSerialization.jsonObject(with: response.body) as! [String: Any]
+        XCTAssertNotNil(answer["error"], "the refusal is a named error")
+        XCTAssertEqual(open.count, 0, "nothing is opened when the scrub fails")
+    }
+
     // MARK: - The tool (VAL-FB-010, 011, 013)
 
     /// The tool relays the app's whole answer over the control channel and the
