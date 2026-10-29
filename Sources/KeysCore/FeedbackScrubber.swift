@@ -6,7 +6,8 @@ import Foundation
 /// hands it the forbidden values it enumerated in memory (the vault values, the
 /// catalog key names, the project labels, the provider records) and the marked
 /// prompt text, and gets back `(scrubbed, removed)`. The mask is `Redact.mask`
-/// (`[redacted]`) everywhere.
+/// (`[redacted]`) everywhere. A pattern that cannot be compiled makes `scrub`
+/// THROW — the whole call fails closed — so a rule is never silently skipped.
 ///
 /// The rules, in the order they run (the order is the contract: exact matches
 /// first, the cap LAST — scrub-then-cap, because a cut landing inside an
