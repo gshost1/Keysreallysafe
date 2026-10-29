@@ -154,6 +154,27 @@ final class FeedbackScrubberTests: XCTestCase {
         XCTAssertNil(out.removed[FeedbackScrubber.keyShape], "URLs are not key-shaped")
     }
 
+    /// VAL-F-002. A path is caught anywhere in the text, not only as a
+    /// whitespace-delimited token starting with `/` or `~`: quoted,
+    /// parenthesised, backticked, `cwd:`-prefixed, `path=`-prefixed and
+    /// `file://` forms all leak under the old whole-token rule because none of
+    /// them is a bare token starting with the slash. The pinned http(s) URL
+    /// survivors still survive.
+    func testPathsRemovedInEveryQuotedContext() throws {
+        let draft = #"see "/Users/planted/quoted" and (/Users/planted/paren) "#
+            + "and `~/planted/backtick` and cwd:/Users/planted/cwd and "
+            + "file:///Users/planted/file and path=/Users/planted/eq and \"/x\", "
+            + "then https://github.com/gshost1/Keysreallysafe/issues stays"
+        let out = try scrub(draft)
+        for planted in ["/Users/planted/quoted", "/Users/planted/paren", "~/planted/backtick",
+                        "/Users/planted/cwd", "/Users/planted/file", "/Users/planted/eq", "/x"] {
+            XCTAssertFalse(out.scrubbed.contains(planted), "\(planted) survived: \(out.scrubbed)")
+        }
+        XCTAssertTrue(out.scrubbed.contains("https://github.com/gshost1/Keysreallysafe/issues"),
+                      "the pinned http(s) survivor stays")
+        XCTAssertEqual(out.removed[FeedbackScrubber.path], 7, "one count per path form")
+    }
+
     // MARK: - name (VAL-FB-005)
 
     /// Catalog key names and project labels are removed as whole words; an

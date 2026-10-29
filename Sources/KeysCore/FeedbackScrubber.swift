@@ -129,8 +129,13 @@ struct FeedbackScrubber {
             with: "$1$2" + Redact.mask
         ))
 
-        // 5. path — tokens starting / or ~, removed whole without corroboration.
-        bump(path, by: scrubTokens(&text) { $0.hasPrefix("/") || $0.hasPrefix("~") })
+        // 5. path — a path anywhere in the text, not only as a whitespace token
+        //    starting with `/` or `~`: quoted, parenthesised, backticked,
+        //    `cwd:`-prefixed, `path=`-prefixed and the explicit `file://` form
+        //    all match, while http(s) URLs survive (their colon is followed by
+        //    `//`, which the boundary guard rejects).
+        bump(path, by: replaceRegex(&text, fileURLPattern, with: Redact.mask))
+        bump(path, by: replaceRegex(&text, pathPattern, with: "$1" + Redact.mask))
 
         // 6. email — every email-shaped string except the support address.
         bump(email, by: replaceRegex(
@@ -182,6 +187,19 @@ struct FeedbackScrubber {
     ]
     .map { NSRegularExpression.escapedPattern(for: $0) + "[A-Za-z0-9_\\-]*" }
     .joined(separator: "|")
+
+    /// The explicit `file:` URL form. `file:///Users/x` has no boundary the
+    /// general path pattern can use (its slashes follow `:` and `/`), so it is
+    /// matched whole, scheme and all, and removed like any other path.
+    private static let fileURLPattern = #"(?i)file://[\w.\-/~]*"#
+
+    /// A path anywhere in the text. The leading boundary is the string start,
+    /// any character that is not a word character, `/` or `:`, or a `:` that is
+    /// NOT the colon of a `scheme://` URL; it is captured and kept in the
+    /// replacement so the boundary itself survives. http(s) URLs therefore
+    /// never match: their colon is followed by `//` (the guard rejects it) and
+    /// every later slash follows a slash.
+    private static let pathPattern = #"(^|[^\w:/]|:(?=/[^/]))([/~][\w.\-/~]*)"#
 
     /// Replaces every non-overlapping literal occurrence of `needle` with the
     /// mask and returns how many it replaced. The search resumes after each
