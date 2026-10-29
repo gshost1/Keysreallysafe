@@ -18,6 +18,15 @@ enum BackgroundUpdatePolicy {
     /// "A few seconds": no Touch ID prompt is up, no gateway request is in
     /// flight, and neither has run within this interval.
     static let quietInterval: TimeInterval = 5
+    /// "The last few minutes": how recently the relay, an active grant or a
+    /// client token must have run to count as work the install must wait out.
+    /// Agent traffic comes in bursts with gaps far longer than the quiet
+    /// interval, and the restart the install performs would cut the relay's
+    /// socket and drop every grant and the in-memory token cache — so a use
+    /// this fresh holds the gate, and an older stamp is stale and frees it.
+    /// Deliberately its own constant, not the 5-second window: that one is
+    /// about a call in flight, this one about a session still being mid-run.
+    static let recentUseInterval: TimeInterval = 5 * 60
     /// How often the quiet gate samples activity. Sampling repeatedly is what
     /// keeps the gate from inferring idle from one instantaneous reading.
     static let sampleInterval: TimeInterval = 0.5
@@ -101,18 +110,90 @@ protocol UpdateActivitySource: Sendable {
 
 /// The app's own state as the quiet gate reads it: the presence-prompt counter
 /// fed by the wrapped production gate, the pending grant asks (a restart drops
-/// the store and any undelivered token with it), and the gateway's counter.
+/// the store and any undelivered token with it), the gateway's counter, and —
+/// H4 — the relay and recent grant/client-token use below.
 struct AppUpdateActivity: UpdateActivitySource {
     let prompts: InFlightWork
     let pendingGrants: MCPPendingGrants
     let gateway: InFlightWork
+    /// The relay and recent token use; nil where nothing runs one (a rig that
+    /// builds only the prompt and gateway counters).
+    let recentUse: (any RecentUseSource)?
+    let now: @Sendable () -> Date
+
+    init(
+        prompts: InFlightWork,
+        pendingGrants: MCPPendingGrants,
+        gateway: InFlightWork,
+        recentUse: (any RecentUseSource)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
+        self.prompts = prompts
+        self.pendingGrants = pendingGrants
+        self.gateway = gateway
+        self.recentUse = recentUse
+        self.now = now
+    }
 
     var busy: Bool {
         prompts.count > 0 || pendingGrants.anyUnsettled() || gateway.count > 0
+            || recentUse?.relayOn == true
+            || recentUseIsFresh
     }
 
     var lastBusy: Date? {
-        [prompts.lastTouched, gateway.lastTouched].compactMap { $0 }.max()
+        var stamps = [prompts.lastTouched, gateway.lastTouched]
+        if recentUseIsFresh, let last = recentUse?.lastUse { stamps.append(last) }
+        return stamps.compactMap { $0 }.max()
+    }
+
+    /// Whether the relay or token use ran within the recent-use window (H4). A
+    /// stamp older than the window is stale — the session it belonged to is
+    /// over, and the install may proceed.
+    private var recentUseIsFresh: Bool {
+        guard let last = recentUse?.lastUse else { return false }
+        return now().timeIntervalSince(last) < BackgroundUpdatePolicy.recentUseInterval
+    }
+}
+
+/// The relay and recent token use the quiet gate also consults (H4): whether the
+/// relay is on, and when the relay, an active grant or a client token last ran.
+/// The install's restart would cut the relay's socket and drop every grant and
+/// the in-memory token cache, and an agent mid-burst would lose its session to
+/// it — so the gate holds while a use is within the recent-use window, and the
+/// relay being on holds it outright, whatever the stamps say.
+protocol RecentUseSource: Sendable {
+    /// The relay socket is up: agents may be connected right now.
+    var relayOn: Bool { get }
+    /// When the relay, an active grant or a client token was last used; nil
+    /// when none ever was. The newest stamp is what the gate reads.
+    var lastUse: Date? { get }
+}
+
+/// The app's own relay, grant store and client tokens as the quiet gate reads
+/// them: the running relay host, the in-memory grants the gateway's authorize
+/// path stamps, and the client tokens' persisted `last_used_at`.
+struct ServiceRecentUse: RecentUseSource {
+    let service: KeysService
+    let now: @Sendable () -> Date
+
+    init(service: KeysService, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.service = service
+        self.now = now
+    }
+
+    var relayOn: Bool { service.relayHost.isOn }
+
+    var lastUse: Date? {
+        var stamps: [Date] = []
+        if let relayed = service.relayHost.lastRelayedCall { stamps.append(relayed) }
+        // Active grants only: a revoked or expired grant can no longer run, so
+        // its last use is not a session the restart would cut off.
+        stamps += service.grants.list(now: now()).compactMap(\.lastUsedAt)
+        if let clientUse = try? service.catalog.latestActiveClientTokenUse() {
+            stamps.append(clientUse)
+        }
+        return stamps.max()
     }
 }
 

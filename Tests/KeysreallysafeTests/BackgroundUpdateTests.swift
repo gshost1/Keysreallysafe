@@ -486,6 +486,180 @@ extension AppUpdaterTests {
         )
     }
 
+    // MARK: - VAL-H-004: the relay and recent token use
+
+    /// The relay source of VAL-H-004: the relay being on is work the install
+    /// must wait out — the swap would cut every connected agent's pipe — so the
+    /// scheduled install defers while it runs and completes once it is off. The
+    /// host is the real one over a fake dialer, started offline beside the rig
+    /// catalog's own lock.
+    @MainActor
+    func testTheRelayBeingOnHoldsTheInstallUntilItIsOff() async throws {
+        let (db, _) = try makeDB()
+        let (service, _) = try makeGatedService(db: db)
+        service.relayHost = RelayHost(
+            log: { _ in },
+            dialer: FakeRelayDialer([.success(FakeRelaySocket())]),
+            blocker: FakeSleepBlocker()
+        )
+        service.relayHost.start(
+            origin: URL(string: "https://keysrs-relay.me.workers.dev")!,
+            secret: "ksfr_" + String(repeating: "b", count: 48),
+            gatewayPort: 1,
+            relayLock: try RelayLock(at: RelayLock.url(beside: db.path))
+        )
+        defer { service.relayHost.stop() }
+        XCTAssertTrue(service.relayHost.isOn, "the rig's relay is on")
+
+        let clock = FakeClock()
+        let gate = AppUpdateActivity(
+            prompts: InFlightWork(),
+            pendingGrants: MCPPendingGrants(),
+            gateway: InFlightWork(),
+            recentUse: ServiceRecentUse(service: service, now: { clock.now }),
+            now: { clock.now }
+        )
+        XCTAssertTrue(gate.busy, "a relay that is on is activity the install must wait out")
+
+        let rig = try makeUpdateRig(release: { self.newerRelease() }, waitLimit: 12, activity: gate)
+
+        rig.controller.didLaunch()
+        await drain(until: rig.logs.all.contains { $0.contains("deferred") })
+
+        XCTAssertEqual(rig.installer.installCalls, 0, "the install never begins while the relay is on")
+        XCTAssertEqual(rig.quits.calls, 0, "nothing quits while the relay is on")
+
+        // The relay goes off and the next daily check finds the Mac quiet: the
+        // install completes, relaunch and all.
+        service.relayHost.stop()
+        XCTAssertFalse(service.relayHost.isOn, "the rig's relay is off")
+
+        rig.controller.didLaunch()
+        await drain(until: rig.quits.calls == 1)
+
+        XCTAssertEqual(rig.installer.installCalls, 1, "the install completes once the relay is off")
+        XCTAssertEqual(rig.order.all, ["install", "notify", "quit"], "install, notify, quit in the usual order")
+    }
+
+    /// The grant source of VAL-H-004: a grant used moments ago is a session the
+    /// install's restart would cut off — grants live only in the running app's
+    /// memory — so a use inside the recent-use window holds the gate and the
+    /// install defers; once the stamp ages out with no new call, the next daily
+    /// check installs and relaunches. The authorize path stamps `lastUsedAt`
+    /// exactly as the gateway does for a real call.
+    @MainActor
+    func testAGrantUsedMomentsAgoHoldsTheInstallUntilTheWindowPasses() async throws {
+        let (db, _) = try makeDB()
+        let (service, _) = try makeGatedService(db: db)
+        let clock = FakeClock()
+        let gate = AppUpdateActivity(
+            prompts: InFlightWork(),
+            pendingGrants: MCPPendingGrants(),
+            gateway: InFlightWork(),
+            recentUse: ServiceRecentUse(service: service, now: { clock.now }),
+            now: { clock.now }
+        )
+
+        let (grant, token) = service.grants.issue(
+            key: "demo", provider: "openai", host: "api.openai.com", request: GrantRequest(task: "rig")
+        )
+        guard case .success = service.grants.authorize(
+            token: token, key: "demo", host: "api.openai.com", method: "POST",
+            rest: "v1/messages", providerPrefix: "", now: clock.now
+        ) else {
+            return XCTFail("the rig's grant must authorize")
+        }
+        XCTAssertEqual(
+            service.grants.grant(id: grant.id)?.lastUsedAt, clock.now,
+            "the authorize path stamps the grant's last use"
+        )
+
+        XCTAssertTrue(gate.busy, "a grant used moments ago is activity the install must wait out")
+        XCTAssertEqual(gate.lastBusy, clock.now, "the stamp the quiet gate reads is the grant's last use")
+
+        let rig = try makeUpdateRig(release: { self.newerRelease() }, waitLimit: 12, activity: gate)
+
+        rig.controller.didLaunch()
+        await drain(until: rig.logs.all.contains { $0.contains("deferred") })
+
+        XCTAssertEqual(rig.installer.installCalls, 0, "the install defers while the grant's use is inside the window")
+        XCTAssertEqual(rig.quits.calls, 0, "nothing quits while the grant's use is inside the window")
+
+        clock.advance(BackgroundUpdatePolicy.recentUseInterval + 1)
+        XCTAssertFalse(gate.busy, "a stamp older than the recent-use window no longer holds the gate")
+
+        rig.controller.didLaunch()
+        await drain(until: rig.quits.calls == 1)
+        XCTAssertEqual(rig.installer.installCalls, 1, "the next daily check installs once the use has aged out")
+    }
+
+    /// The client-token source of VAL-H-004: a client token whose last forwarded
+    /// call ran moments ago is a session the restart would cut off (the
+    /// in-memory gateway targets die with the process), so a persisted
+    /// `last_used_at` inside the recent-use window holds the gate; aged out
+    /// with no new call, the install completes.
+    @MainActor
+    func testAClientTokenUsedMomentsAgoHoldsTheInstallUntilTheWindowPasses() async throws {
+        let (db, _) = try makeDB()
+        let (service, _) = try makeGatedService(db: db)
+        let clock = FakeClock()
+        let gate = AppUpdateActivity(
+            prompts: InFlightWork(),
+            pendingGrants: MCPPendingGrants(),
+            gateway: InFlightWork(),
+            recentUse: ServiceRecentUse(service: service, now: { clock.now }),
+            now: { clock.now }
+        )
+
+        // An active client token whose row the gateway's use path just stamped,
+        // exactly as a forwarded call does. The token is built at runtime.
+        let token = GatewayClientToken.generate()
+        let client = try db.insertGatewayClient(
+            keyName: "demo",
+            label: "rig",
+            tokenHash: GatewayClientToken.hash(token),
+            hint: GatewayClientToken.hint(token),
+            methods: ["POST"],
+            pathPrefix: nil,
+            host: "api.openai.com",
+            createdAt: UTC.iso(clock.now),
+            expiresAt: UTC.iso(clock.date(at: 86_400))
+        )
+        try db.touchGatewayClient(id: client.id, at: UTC.iso(clock.now))
+
+        XCTAssertTrue(gate.busy, "a client token used moments ago is activity the install must wait out")
+        XCTAssertEqual(gate.lastBusy, clock.now, "the stamp the quiet gate reads is the token's last use")
+
+        let rig = try makeUpdateRig(release: { self.newerRelease() }, waitLimit: 12, activity: gate)
+
+        rig.controller.didLaunch()
+        await drain(until: rig.logs.all.contains { $0.contains("deferred") })
+
+        XCTAssertEqual(rig.installer.installCalls, 0, "the install defers while the token's use is inside the window")
+        XCTAssertEqual(rig.quits.calls, 0, "nothing quits while the token's use is inside the window")
+
+        clock.advance(BackgroundUpdatePolicy.recentUseInterval + 1)
+        XCTAssertFalse(gate.busy, "a stamp older than the recent-use window no longer holds the gate")
+
+        rig.controller.didLaunch()
+        await drain(until: rig.quits.calls == 1)
+        XCTAssertEqual(rig.installer.installCalls, 1, "the next daily check installs once the use has aged out")
+    }
+
+    /// VAL-H-004's wiring, pinned on the source: the app's assembled activity
+    /// is built with the relay-and-recent-use source over the service. The
+    /// assembled `BackgroundUpdater` is not reachable from a rig (`assembleApp`
+    /// builds it internally), so the wiring is pinned where it lives.
+    func testTheAssembledAppConsultsTheRelayAndRecentTokenUse() throws {
+        let source = try String(
+            contentsOf: Self.repoRoot.appendingPathComponent("Sources/KeysCore/AppRuntime.swift"), encoding: .utf8
+        )
+        XCTAssertTrue(
+            source.contains("recentUse: ServiceRecentUse(service: service)"),
+            "AppRuntime.assembleApp hands the app's own relay, grants and client tokens to the quiet gate"
+        )
+    }
+
     // MARK: - fixtures
 
     private func newerRelease() -> ReleaseInfo {
@@ -525,13 +699,14 @@ extension AppUpdaterTests {
         release: @escaping () throws -> ReleaseInfo,
         script: [UpdateChoice] = [],
         updateChecks: Bool = true,
-        waitLimit: TimeInterval = BackgroundUpdatePolicy.waitLimit
+        waitLimit: TimeInterval = BackgroundUpdatePolicy.waitLimit,
+        activity: (any UpdateActivitySource)? = nil
     ) throws -> UpdateRig {
         let (db, dir) = try makeDB()
         let preferences = AppPreferences(catalog: db)
         try preferences.setUpdateChecks(updateChecks)
         let clock = FakeClock()
-        let activity = ScriptedUpdateActivity(clock: clock)
+        let scripted = ScriptedUpdateActivity(clock: clock)
         let order = EventOrder()
         let installer = RecordingUpdateInstaller(clock: clock, order: order)
         let delivery = OrderRecordingDelivery(order: order)
@@ -549,7 +724,7 @@ extension AppUpdaterTests {
             delivery: delivery
         )
         let background = BackgroundUpdater(
-            activity: activity,
+            activity: activity ?? scripted,
             makeInstaller: installer.factory,
             appURL: { dir.appendingPathComponent("Keysrs.app") },
             notifier: notifier,
@@ -584,7 +759,7 @@ extension AppUpdaterTests {
             dir: dir,
             preferences: preferences,
             clock: clock,
-            activity: activity,
+            activity: scripted,
             installer: installer,
             delivery: delivery,
             order: order,

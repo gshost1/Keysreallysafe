@@ -852,6 +852,22 @@ final class CatalogDB: @unchecked Sendable {
         try run("UPDATE gateway_clients SET last_used_at = ? WHERE id = ?;", iso, id)
     }
 
+    /// The newest `last_used_at` among the unrevoked client tokens — when a
+    /// token last carried an upstream call, for the background updater's
+    /// recent-use window (H4). "Active" matches `activeGatewayClients`: revoked
+    /// rows are out. Reads only the timestamp column, never a token or hash.
+    func latestActiveClientTokenUse() throws -> Date? {
+        try one(
+            "SELECT MAX(last_used_at) FROM gateway_clients WHERE revoked_at IS NULL AND last_used_at IS NOT NULL;",
+            row: { statement -> Date in
+                guard let text = columnText(statement, 0), let date = UTC.parse(text) else {
+                    throw AppError.sqlite("gateway_clients last_used_at is unreadable")
+                }
+                return date
+            }
+        )
+    }
+
     /// One key a project client token may serve, with the host the user approved for it.
     struct GatewayClientKey: Equatable {
         var clientID: Int64

@@ -187,12 +187,15 @@ enum AppRuntime {
         // The scheduled check's install half: the app's own prompt and gateway
         // counters, the same installer path Update Now runs, and the app's own
         // quit. Absent only where a rig injects one — the seam is what keeps
-        // every launch test offline.
+        // every launch test offline. The activity also consults the relay and
+        // recent grant/client-token use (H4): the restart would cut a live relay
+        // session and drop every grant, so the gate holds while a use is fresh.
         let updater = background ?? BackgroundUpdater(
             activity: AppUpdateActivity(
                 prompts: service.presencePrompts,
                 pendingGrants: service.mcpPendingGrants,
-                gateway: service.gatewayActivity
+                gateway: service.gatewayActivity,
+                recentUse: ServiceRecentUse(service: service)
             ),
             notifier: notifications,
             quit: { [weak extra] in
