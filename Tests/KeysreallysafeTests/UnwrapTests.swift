@@ -273,6 +273,28 @@ final class UnwrapTests: XCTestCase {
                        "the replaced companion is restored from the new-location backup, not removed by the fallback")
     }
 
+    /// A backup a wrap wrote BESIDE the file (the pre-0.14 spelling) is still the
+    /// restore source after backups moved out of the project: the reader takes the
+    /// newest from either location, so existing projects keep unwrapping exactly as
+    /// they did (VAL-O-002's reader half).
+    func testALegacyBesideFileBackupStillRestores() throws {
+        let site = try makeSite()
+        let project = try makeProject("legacybackup", in: site.dir)
+        let original = "OPENAI_API_KEY=\(openaiValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\n"
+        let env = try write(original, to: ".env", under: project)
+        _ = try wrapByImport(site, folder: project)
+
+        // A pre-0.14 wrap's shape: the only backup that exists is beside the file.
+        for backup in try backupFiles(under: site.dir) { try fm.removeItem(at: backup) }
+        try Data(original.utf8).write(
+            to: env.deletingLastPathComponent().appendingPathComponent(".env.keysrs-backup-19990101-000000"))
+
+        _ = try site.service.unwrap(file: env.path, folder: nil)
+
+        XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8),
+                       "the legacy beside-file backup is still the restore source")
+    }
+
     // MARK: - VAL-UNWRAP-002 (tokens revoked, dead immediately)
 
     /// The file form revokes exactly the tokens found in that file, found by hashing
