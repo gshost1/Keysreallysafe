@@ -1419,8 +1419,11 @@ test("the grants box sits below the list and its Revoke button revokes", async (
   await page.waitForFunction(() => document.getElementById("status").textContent === "Grant aa11bb22 revoked.");
   // The reload reads the mutated state: the kill stays on the list as a revoked row that
   // offers nothing, so the count breaks out revoked instead of calling the box empty.
+  // The status line is set as soon as the DELETE answers, before that reload redraws the box,
+  // so the active row can still be on screen here; the wait is for the redrawn one.
+  await page.waitForFunction(() => [...document.querySelectorAll("#grants-list li")]
+    .some((li) => li.textContent.includes("fixture task") && li.querySelector(".badge")?.textContent === "revoked"));
   const row = page.locator("#grants-list li", { hasText: "fixture task" });
-  await row.waitFor();
   assert.deepEqual(await row.locator(".badge").allTextContents(), ["revoked"], "the row shows its revoked fate");
   assert.equal(await row.locator('[aria-label="Revoke grant aa11bb22"]').count(), 0, "a revoked row offers no Revoke button");
   assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.");
@@ -3123,8 +3126,16 @@ test("the Keys figures follow the Chart's unit at 390 px and stay inside the row
   assert.equal(await gatewayText(page, "alpha"), "3 requests");
   await page.getByRole("tab", { name: "Chart" }).click();
   await chooseUsd(page);
+  // The unit switch redraws the hidden Keys rows at once, so a "$" is on screen before the pane's
+  // own /api/keys answer lands and replaces every row. Measuring or focusing the figure in that
+  // gap holds a node about to be detached (a null box, or Enter pressed on <body>), so the wait
+  // is for a row drawn after the Keys tab was opened.
+  await page.locator('#keys-body .key-row[data-name="alpha"]').evaluate((row) => { row.dataset.stale = "1"; });
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.waitForFunction(() => /\$/.test(document.querySelector('#keys-body .key-row[data-name="alpha"] .key-gateway').textContent));
+  await page.waitForFunction(() => {
+    const row = document.querySelector('#keys-body .key-row[data-name="alpha"]');
+    return row && !row.dataset.stale && /\$/.test(row.querySelector(".key-gateway").textContent);
+  });
   const box = await rowCell(page, "alpha", "gateway").boundingBox();
   assert.ok(box.width > 0 && box.x >= 0 && box.x + box.width <= 390, `the figure leaves the viewport: ${JSON.stringify(box)}`);
   // Reachable by keyboard: it is a button of the selected row, and Enter opens the chart.

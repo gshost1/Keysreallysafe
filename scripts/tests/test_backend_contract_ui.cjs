@@ -439,6 +439,12 @@ test("a profile bounds a real grant end to end and removes cleanly", async (page
   assert.equal(saved.data.name, "contract-evals");
   assert.equal(saved.data.unattended, true, "a profile answers with bounds only");
 
+  // The page reads /api/profiles once per key load, and the grant dialog fills its picker from
+  // that read. Saved over the API while the first load was still out, the profile can land after
+  // the page has read the table, and the picker never offers it. A fresh load starts after the
+  // save, and the profile's own row in the page shows the read has answered.
+  await openKeys(page);
+  await page.locator('#profiles-list [aria-label="Remove profile contract-evals"]').waitFor();
   await rowAct(page, "contract-alpha", "grant");
   await waitDialog(page, "dlg-grant", true);
   const sel = page.locator("#grant-form [name=profile]");
