@@ -277,26 +277,83 @@ final class UnwrapTests: XCTestCase {
                        "the replaced companion is restored from the new-location backup, not removed by the fallback")
     }
 
-    /// A backup a wrap wrote BESIDE the file (the pre-0.14 spelling) is still the
-    /// restore source after backups moved out of the project: the reader takes the
-    /// newest from either location, so existing projects keep unwrapping exactly as
-    /// they did (VAL-O-002's reader half).
-    func testALegacyBesideFileBackupStillRestores() throws {
+    /// A backup a wrap wrote BESIDE the file (the pre-0.14 spelling) is still read
+    /// when no App Support backup exists, so existing projects keep unwrapping
+    /// (VAL-O-002's reader half) — but since S7 it never decides a base URL line:
+    /// the current line stays and is reported, and the in-project backup is
+    /// deleted once the restore succeeded. Failed pre-fix: the backup's base URL
+    /// was written back and the backup stayed in the project.
+    func testALegacyBesideFileBackupStillRestoresButNeverItsBaseURL() throws {
         let site = try makeSite()
         let project = try makeProject("legacybackup", in: site.dir)
         let original = "OPENAI_API_KEY=\(openaiValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\n"
         let env = try write(original, to: ".env", under: project)
         _ = try wrapByImport(site, folder: project)
+        let wrappedBaseURL = try XCTUnwrap(try value("OPENAI_BASE_URL", in: env))
 
-        // A pre-0.14 wrap's shape: the only backup that exists is beside the file.
+        // A pre-0.14 wrap's shape: the only backup that exists is beside the file,
+        // here carrying a base URL a cloned repo could have committed.
         for backup in try backupFiles(under: site.dir) { try fm.removeItem(at: backup) }
-        try Data(original.utf8).write(
+        let planted = "OPENAI_API_KEY=\(openaiValue)\nOPENAI_BASE_URL=https://attacker.invalid/v1\n"
+        try Data(planted.utf8).write(
             to: env.deletingLastPathComponent().appendingPathComponent(".env.keysrs-backup-19990101-000000"))
+
+        let result = try site.service.unwrap(file: env.path, folder: nil)
+
+        XCTAssertEqual(try value("OPENAI_API_KEY", in: env), openaiValue, "the key line is restored from the vault")
+        XCTAssertEqual(try value("OPENAI_BASE_URL", in: env), wrappedBaseURL,
+                       "the base URL keeps the current file's value, never the in-project backup's")
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files[0]["companions_left"] as? [String], ["OPENAI_BASE_URL"], "and is reported")
+        XCTAssertTrue(try backups(beside: env).isEmpty, "the in-project backup is deleted after the restore")
+    }
+
+    /// S7: a planted, future-dated backup beside the file loses to the App Support
+    /// backup the wrap wrote: the file comes back byte-for-byte from the latter.
+    /// Failed pre-fix: the lexically newest name won across both locations, so the
+    /// planted `99999999` backup's base URL was written beside the real key.
+    func testAPlantedInProjectBackupLosesToTheAppSupportOne() throws {
+        let site = try makeSite()
+        let project = try makeProject("planted", in: site.dir)
+        let original = "OPENAI_API_KEY=\(openaiValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\n"
+        let env = try write(original, to: ".env", under: project)
+        _ = try wrapByImport(site, folder: project)
+        XCTAssertEqual(try backupFiles(under: site.dir).filter { !$0.path.hasPrefix(project.path) }.count, 1,
+                       "the wrap's own backup is in the App Support tree")
+        try Data("OPENAI_API_KEY=x\nOPENAI_BASE_URL=https://attacker.invalid/v1\n".utf8).write(
+            to: project.appendingPathComponent(".env.keysrs-backup-99999999-999999"))
 
         _ = try site.service.unwrap(file: env.path, folder: nil)
 
         XCTAssertEqual(try Data(contentsOf: env), Data(original.utf8),
-                       "the legacy beside-file backup is still the restore source")
+                       "the App Support backup decided the restore")
+    }
+
+    /// S7: a recorded file whose parent folder was swapped for a symlink since the
+    /// wrap is refused: nothing is written where the link points. Failed pre-fix:
+    /// the project-form unwrap followed the link and wrote the real key there.
+    func testASymlinkSwappedParentIsRefused() throws {
+        let site = try makeSite()
+        let project = try makeProject("swapped", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(openaiValue)\n", to: "sub/.env", under: project)
+        _ = try wrapByImport(site, folder: project)
+        let wrapped = try Data(contentsOf: env)
+
+        let outside = try TempDir.make()
+        try fm.createDirectory(at: outside.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        let outsideEnv = outside.appendingPathComponent("sub/.env")
+        try wrapped.write(to: outsideEnv)
+        try fm.removeItem(at: project.appendingPathComponent("sub"))
+        try fm.createSymbolicLink(at: project.appendingPathComponent("sub"),
+                                  withDestinationURL: outside.appendingPathComponent("sub"))
+
+        let result = try site.service.unwrap(file: nil, folder: project.path)
+
+        XCTAssertEqual(try Data(contentsOf: outsideEnv), wrapped, "nothing was written through the link")
+        XCTAssertNil(try String(contentsOf: outsideEnv, encoding: .utf8).range(of: openaiValue))
+        let files = try XCTUnwrap(result["files"] as? [[String: Any]])
+        XCTAssertEqual(files.first?["restored"] as? [String], [], "no line was restored")
+        XCTAssertNotNil(files.first?["message"] as? String, "the refusal is stated")
     }
 
     // MARK: - VAL-UNWRAP-002 (tokens revoked, dead immediately)

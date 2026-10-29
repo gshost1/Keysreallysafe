@@ -164,6 +164,14 @@ extension KeysService {
     private func restoreFile(canonical: String, caller: String, now: Date) throws -> FileOutcome {
         var outcome = FileOutcome(path: canonical)
         let display = URL(fileURLWithPath: canonical).lastPathComponent
+        // The recorded path is canonical as of the wrap. A parent folder swapped
+        // for a symlink since then would make the restore write real key values
+        // wherever that link points, so the file must still resolve to exactly
+        // where it was recorded (the import's own apply-time re-check, S7).
+        guard Self.stillAtRecordedPath(canonical) else {
+            outcome.message = "\(display) no longer resolves to the recorded location; nothing was restored for it"
+            return outcome
+        }
         guard let data = FileManager.default.contents(atPath: canonical),
               let text = String(data: data, encoding: .utf8) else {
             outcome.message = "could not read \(display); nothing was restored for it"
@@ -183,14 +191,22 @@ extension KeysService {
         // of the project) or the file's hashed folder under the catalog-sibling
         // backups tree (every wrap since) — the only source for companion lines the
         // wrap replaced. No backup → the documented fallback below.
+        //
+        // The App Support tree wins whenever it holds a backup for this file: a
+        // legacy backup beside the file sits in the project, where anyone who can
+        // commit to the repo can plant one, so it is read only when no App Support
+        // backup exists, and it never decides a gateway base URL line (S7) — a
+        // planted `OPENAI_BASE_URL=https://attacker/v1` beside the real key would
+        // send the key there.
         let backup = Self.newestBackup(of: canonical, under: EnvFileWriter.backupsRoot(beside: catalog.path))
-        outcome.backup = backup?.path
+        outcome.backup = backup?.url.path
         var backupParsed: EnvFile?
         if let backup,
-           let backupData = FileManager.default.contents(atPath: backup.path),
+           let backupData = FileManager.default.contents(atPath: backup.url.path),
            let backupText = String(data: backupData, encoding: .utf8) {
             backupParsed = EnvFile.parse(backupText)
         }
+        let backupIsLegacy = backup?.legacy ?? false
 
         // Restore each wrapped line from the vault. Resolution order per line: the
         // gateway base URL companion beside it (the only per-line signal when one
@@ -229,7 +245,11 @@ extension KeysService {
         let recordedCompanions = try catalog.recordedCompanions(path: canonical)
         var removedIndices: Set<Int> = []
         for (name, index) in companions {
-            if let original = backupParsed?.value(of: name) {
+            if backupIsLegacy, name.hasSuffix("_BASE_URL") {
+                // The in-project backup is not trusted for base URLs: the current
+                // line stays as it is and is reported.
+                if !outcome.companionsLeft.contains(name) { outcome.companionsLeft.append(name) }
+            } else if let original = backupParsed?.value(of: name) {
                 parsed.setValue(at: index, original)
                 if !outcome.companionsRestored.contains(name) { outcome.companionsRestored.append(name) }
             } else if recordedCompanions?.contains(name) ?? true {
@@ -250,7 +270,17 @@ extension KeysService {
         // with nothing half-applied — the same refusal keys wrap gives.
         if !outcome.restored.isEmpty
             || !outcome.companionsRestored.isEmpty || !removedIndices.isEmpty {
+            guard Self.stillAtRecordedPath(canonical) else {
+                throw AppError.usage("\(display) no longer resolves to the recorded location; nothing rewritten")
+            }
             try EnvFileWriter.swap(URL(fileURLWithPath: canonical), original: data, text: parsed.render())
+        }
+        // A legacy backup beside the file holds the pre-wrap values inside the
+        // project, where git can pick it up; once every line came back it has no
+        // further use, so it goes (every one of this file's, not only the newest).
+        if backupIsLegacy, outcome.failed.isEmpty {
+            for legacy in Self.legacyBackups(of: canonical) { try? FileManager.default.removeItem(at: legacy) }
+            outcome.backup = nil
         }
 
         // Revoke exactly the tokens this file held, found by hashing each wrapped
@@ -384,21 +414,30 @@ extension KeysService {
     /// timestamp sorts lexically and the `-2`/`-3` collision suffixes sort after
     /// their base, so the lexical maximum across both places is the most recent
     /// wrap, whichever location holds it.
-    static func newestBackup(of path: String, under backupsRoot: URL) -> URL? {
+    static func newestBackup(of path: String, under backupsRoot: URL) -> (url: URL, legacy: Bool)? {
         let url = URL(fileURLWithPath: path)
         let prefix = url.lastPathComponent + ".keysrs-backup-"
-        var found: [(name: String, url: URL)] = []
-        let legacyNames = (try? FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? []
-        for name in legacyNames where name.hasPrefix(prefix) {
-            found.append((name, url.deletingLastPathComponent().appendingPathComponent(name)))
-        }
         if let dir = EnvFileWriter.backupDirectory(for: url, under: backupsRoot),
-           let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) {
-            for name in names where name.hasPrefix(prefix) {
-                found.append((name, dir.appendingPathComponent(name)))
-            }
+           let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
+           let newest = names.filter({ $0.hasPrefix(prefix) }).max() {
+            return (dir.appendingPathComponent(newest), false)
         }
-        return found.max { $0.name < $1.name }?.url
+        return legacyBackups(of: path).max { $0.lastPathComponent < $1.lastPathComponent }.map { ($0, true) }
+    }
+
+    /// The pre-0.14 backups a wrap wrote beside the file itself.
+    static func legacyBackups(of path: String) -> [URL] {
+        let url = URL(fileURLWithPath: path)
+        let folder = url.deletingLastPathComponent()
+        let prefix = url.lastPathComponent + ".keysrs-backup-"
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return names.filter { $0.hasPrefix(prefix) }.map { folder.appendingPathComponent($0) }
+    }
+
+    /// True when the recorded canonical path still resolves to itself: no folder
+    /// on the way was swapped for a symlink since the wrap recorded it.
+    static func stillAtRecordedPath(_ canonical: String) -> Bool {
+        EnvScan.resolve(canonical) == canonical
     }
 
     // MARK: - The result rows
