@@ -59,9 +59,27 @@ extension KeysService {
             return ["files": [Self.staleRow(path: canonical)], "revoked": 0]
         }
         let display = URL(fileURLWithPath: canonical).lastPathComponent
-        try presence.require(reason: "unwrap \(display) and revoke its gateway client tokens")
+        try presence.require(reason: "unwrap \(display)" + (try revocationClause(for: canonical)))
         let outcome = try restoreFile(canonical: canonical, caller: caller, now: now)
         return ["files": [outcome.payload()], "revoked": outcome.revoked]
+    }
+
+    /// What the file form's prompt promises about tokens, matching what
+    /// `restoreFile` will do: a token another recorded wrapped file still holds
+    /// is kept (one import token serves several files), so the prompt says it is
+    /// revoked only when no other file uses it.
+    private func revocationClause(for canonical: String) throws -> String {
+        guard let data = FileManager.default.contents(atPath: canonical),
+              let text = String(data: data, encoding: .utf8) else { return "" }
+        let held = Set(Self.wrappedLines(in: EnvFile.parse(text)).map(\.entry.value))
+        guard !held.isEmpty else { return "" }
+        let others = try catalog.listWrappedFiles().map(\.path).filter { $0 != canonical }
+        let shared = held.filter { token in others.contains { Self.fileHoldsToken($0, token: token) } }
+        if shared.isEmpty { return " and revoke its gateway client tokens" }
+        if shared.count == held.count {
+            return "; its gateway client token stays active because another wrapped file still uses it"
+        }
+        return " and revoke the gateway client tokens no other wrapped file still uses"
     }
 
     // MARK: - The project form

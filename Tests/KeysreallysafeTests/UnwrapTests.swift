@@ -308,6 +308,26 @@ final class UnwrapTests: XCTestCase {
         XCTAssertTrue(try backups(beside: env).isEmpty, "the in-project backup is deleted after the restore")
     }
 
+    /// I3: the file form's prompt promises a revocation only when it will happen. One
+    /// import token serves both files of a project, so unwrapping the first keeps the
+    /// token and the prompt says so; the last file's prompt then names the revocation.
+    /// Failed pre-fix: both prompts said "and revoke its gateway client tokens".
+    func testTheFilePromptSaysASharedTokenStays() throws {
+        let site = try makeSite()
+        let project = try makeProject("shared", in: site.dir)
+        let first = try write("OPENAI_API_KEY=\(openaiValue)\n", to: ".env", under: project)
+        let second = try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env.local", under: project)
+        _ = try wrapByImport(site, folder: project)
+
+        _ = try site.service.unwrap(file: first.path, folder: nil)
+        let firstReason = try XCTUnwrap(site.gate.reasons.last)
+        XCTAssertFalse(firstReason.contains("revoke"), firstReason)
+        XCTAssertTrue(firstReason.contains("stays active because another wrapped file still uses it"), firstReason)
+
+        _ = try site.service.unwrap(file: second.path, folder: nil)
+        XCTAssertEqual(site.gate.reasons.last, "unwrap .env.local and revoke its gateway client tokens")
+    }
+
     /// S7: a planted, future-dated backup beside the file loses to the App Support
     /// backup the wrap wrote: the file comes back byte-for-byte from the latter.
     /// Failed pre-fix: the lexically newest name won across both locations, so the
