@@ -2426,6 +2426,23 @@ test("the grant dialog offers only this key's profiles, and picking one prefills
   assert.equal("profile" in plain.body, false, "no profile picked means no profile sent");
 });
 
+// The page reads the profile table with each key load; a profile saved after that read (from a
+// Terminal, with the dashboard open) must still reach the picker when the dialog opens.
+test("the grant dialog offers a profile saved after the page loaded", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await openKeys(page, origin);
+  await settleKeys(page);
+  assert.equal(await page.locator("#profiles-list li").count(), 0);
+  profiles = [
+    { id: "ab12cd34", name: "evals", keys: ["alpha"], methods: ["GET", "POST"], paths: ["/v1/messages"], minutes: 480, max_requests: 500, max_usd: 2.5, unattended: true },
+  ];
+  await rowAct(page, "alpha", "grant");
+  await waitDialog(page, "dlg-grant", true);
+  await page.waitForFunction(() => document.querySelector('#grant-form [name="profile"]').options.length > 1);
+  assert.deepEqual(await page.locator("#grant-form [name=profile] option").evaluateAll((os) => os.map((o) => o.value)), ["", "evals"]);
+  await page.locator('#profiles-list [aria-label="Remove profile evals"]').waitFor();
+});
+
 test("grant rows show the profile and the unattended badge, and unpriced spend never reads $0", async (page, origin) => {
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
   const soon = new Date(Date.now() + 3600_000).toISOString();

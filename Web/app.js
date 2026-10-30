@@ -2751,6 +2751,23 @@
     $("grant-target").textContent = `${providerName(k.provider)} at ${k.host}. Requests to any other host are refused and redirects are never followed.`;
     dlg.showModal();
     $("grant-form").elements.task.focus();
+    refreshGrantProfiles(name);
+  }
+  // The profile table is read once per key load, so a profile saved since then (keys profile
+  // add in a Terminal, say) would be missing from the picker. The dialog opens on what is in
+  // hand and re-reads the table at once; a choice already made survives if it still applies.
+  async function refreshGrantProfiles(name) {
+    try {
+      const p = await api("/api/profiles");
+      state.profiles = (p && p.profiles) || [];
+    } catch { return; }
+    renderGrants();
+    const dlg = $("dlg-grant");
+    if (!dlg.open || dlg.dataset.name !== name || $("grant-form").hidden) return;
+    const sel = $("grant-form").elements.profile;
+    const kept = sel.value;
+    fillGrantProfileOptions(name);
+    if ([...sel.options].some((o) => o.value === kept)) sel.value = kept;
   }
   // A prefill adds choices the shipped dialog lacks (an 8-hour span, a GET,PUT method set);
   // the next open must start from the shipped ones, so they are captured at boot and
