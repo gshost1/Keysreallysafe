@@ -1506,6 +1506,9 @@ test("a cancelled Touch ID leaves reveal usable and says why", async (page, orig
 test("copy reports the wipe deadline and refreshes the row afterwards", async (page, origin) => {
   await page.clock.install();
   await openKeys(page, origin);
+  // The Keys tab's own load would otherwise replace the row while the copy is in flight, and
+  // the button's "Touch ID…" and "Copied" would be written to the row it replaced.
+  await settleKeys(page);
   // The secret goes to the clipboard on the server; the page never touches it.
   await page.evaluate(() => { window.__clip = 0; navigator.clipboard.writeText = async () => { window.__clip += 1; }; });
   delays.set(rule("POST", "/api/keys/bravo/copy"), 300);
@@ -2340,7 +2343,8 @@ test("the grant dialog issues a grant, and a client needs a method", async (page
   assert.equal(await page.locator("#gr-id").textContent(), "g1");
   assert.equal(await page.locator("#gr-scope").textContent(), "GET, POST · any path");
   assert.equal(await status(page), "Grant g1 issued for alpha.");
-  assert.equal(await page.locator("#grant-submit").isDisabled(), false);
+  // The result shows before the handler reloads the keys; the button comes back after that.
+  await page.waitForFunction(() => !document.getElementById("grant-submit").disabled);
   await page.keyboard.press("Escape");
   await waitDialog(page, "dlg-grant", false);
 
@@ -3836,8 +3840,14 @@ test("a theme switch keeps the vault's filter, search and menu, and a reload kee
 
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.locator("#theme-switch").click();
+  // Back on Keys the old rows are still there while the pane's own load is out, and its redraw
+  // closes a More menu opened in the meantime; the wait is for the redrawn row.
+  await page.locator('#keys-body .key-row[data-name="bravo"]').evaluate((row) => { row.dataset.stale = "1"; });
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body .key-row[data-name="bravo"]').waitFor();
+  await page.waitForFunction(() => {
+    const row = document.querySelector('#keys-body .key-row[data-name="bravo"]');
+    return row && !row.dataset.stale;
+  });
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light");
   assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), "rgb(245, 245, 247)");
   assert.equal(await page.inputValue("#keys-provider"), "anthropic", "the filter survives the theme switch");
@@ -5074,6 +5084,8 @@ test("the key History drawer names every audited action and caller in words", as
     { ts: "2026-09-20T12:00:00Z", action: "client_issue", caller: "cli", detail: "#3 my script 30d POST" },
   ];
   await openKeys(page, origin);
+  // A later redraw of the rows rebuilds the drawer as "Loading history…".
+  await settleKeys(page);
   await rowAct(page, "alpha", "history");
   await page.locator("#keys-body .key-events li").first().waitFor();
   assert.deepEqual(await page.locator("#keys-body .key-events .ev-action").allTextContents(),

@@ -89,10 +89,19 @@ function request(page, method, url, body, headers) {
 
 const get = (page, url) => request(page, "GET", url, undefined, {});
 
+// The startup key load and the Keys tab's own load each draw the rows. A case that starts on
+// the startup rows can have them replaced mid-action (a copy's "Just now", an open history
+// drawer), so the startup rows are marked and the wait is for the tab's redraw.
 async function openKeys(page) {
   await page.goto(base, { waitUntil: "domcontentloaded" });
+  const alpha = '#keys-body .key-row[data-name="contract-alpha"]';
+  await page.locator(alpha).waitFor({ state: "attached" });
+  await page.locator("#keys-body .key-row").evaluateAll((rows) => rows.forEach((row) => { row.dataset.stale = "1"; }));
   await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body .key-row[data-name="contract-alpha"]').waitFor();
+  await page.waitForFunction((sel) => {
+    const row = document.querySelector(sel);
+    return row && !row.dataset.stale;
+  }, alpha);
 }
 
 const checks = [];
