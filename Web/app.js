@@ -1615,14 +1615,19 @@
     if (!keys.some((k) => k.name === state.selected)) state.selected = keys[0] ? keys[0].name : null;
 
     // A background refresh replaces the rows; if a row had focus, it would fall to <body> and the
-    // next arrow key would be spent refocusing instead of moving.
-    const hadFocus = body.contains(document.activeElement) && document.activeElement.classList.contains("key-row");
+    // next arrow key would be spent refocusing instead of moving. A row's own button (the
+    // gateway figure, Copy, More) is put back too, or Enter pressed on it would go nowhere.
+    const active = document.activeElement;
+    const focusedRow = body.contains(active) ? active.closest(".key-row") : null;
+    const focusedAct = focusedRow && active !== focusedRow ? active.dataset.act : null;
     if (keyMenuFor) closeKeyMenu({ restoreFocus: false });
     body.replaceChildren(...keys.map(keyRow).flat());
     if (state.eventsOpen) loadEvents(state.eventsOpen);
-    if ((opts.focus || hadFocus) && state.selected) {
+    if ((opts.focus || focusedRow) && state.selected) {
       const row = rowFor(state.selected);
-      if (row) row.focus();
+      const btn = focusedAct && focusedRow.dataset.name === state.selected ? btnFor(state.selected, focusedAct) : null;
+      if (btn) btn.focus();
+      else if (row) row.focus();
     }
   }
 

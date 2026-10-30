@@ -1133,6 +1133,21 @@ test("a background key refresh closes the More menu without leaving detached foc
   assert.equal(await page.evaluate(() => document.activeElement === document.body || document.activeElement.isConnected), true);
 });
 
+test("a background key refresh keeps focus on the row's own button, and Enter still acts", async (page, origin) => {
+  await page.clock.install();
+  await openKeys(page, origin);
+  await settleKeys(page);
+  await rowCell(page, "alpha", "gateway").focus();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').evaluate((row) => { row.dataset.stale = "1"; });
+  catalogVersion += 1;
+  await page.clock.runFor(16000);
+  await page.waitForFunction(() => !document.querySelector('#keys-body .key-row[data-name="alpha"]').dataset.stale);
+  assert.equal(await page.evaluate(() => document.activeElement.matches('#keys-body .key-row[data-name="alpha"] .key-gateway')
+    && document.activeElement.isConnected), true, "focus is on the redrawn row's gateway figure, not <body>");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "alpha");
+});
+
 test("deleting from the More menu updates rows, count and the provider filter", async (page, origin) => {
   await openKeys(page, origin);
   await settleKeys(page);
