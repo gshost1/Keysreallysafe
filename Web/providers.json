@@ -751,6 +751,13 @@
       "group": "routers",
       "api": "openai",
       "note": "Your own LiteLLM proxy; set the host per key (commonly 127.0.0.1:4000)."
+    },
+    {
+      "id": "other",
+      "name": "Other secret (no gateway)",
+      "group": "non-chat",
+      "gateway": false,
+      "note": "Any secret no provider row fits, such as a machine-identity client ID or a service password. Stored in Keychain for keys copy and keys get; never proxied."
     }
   ]
 }

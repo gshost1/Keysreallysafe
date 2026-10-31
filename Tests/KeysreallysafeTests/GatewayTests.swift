@@ -13,12 +13,13 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(Providers.provider(id: "bedrock")?.gateway, false)
         XCTAssertEqual(Providers.provider(id: "inception")?.host, "api.inceptionlabs.ai")
         XCTAssertEqual(Providers.provider(id: "boxd")?.gateway, false)
+        XCTAssertEqual(Providers.provider(id: "other")?.gateway, false)
         let root = try JSONSerialization.jsonObject(with: Providers.rawJSON()) as! [String: Any]
         let list = root["providers"] as! [Any]
-        XCTAssertEqual(list.count, 86)
+        XCTAssertEqual(list.count, 87)
         // Removed from the Add dialog, but still resolvable so existing keys keep working.
         XCTAssertEqual(Providers.provider(id: "openai")?.hidden, true)
-        XCTAssertEqual(Providers.builtinList().filter { !$0.hidden }.count, 85)
+        XCTAssertEqual(Providers.builtinList().filter { !$0.hidden }.count, 86)
         XCTAssertEqual(Providers.provider(id: "typesafe")?.host, "api.typesafe.ai")
         XCTAssertEqual(Providers.provider(id: "typesafe")?.pathPrefix, "")
     }
