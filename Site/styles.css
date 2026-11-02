@@ -11,6 +11,8 @@
   --blue: #0071e3;
   --blue-2: #0077ed;
   --blue-tint: #eef5ff;
+  --surface-mid: #ebebf0; /* the button hover grey: the command box fill */
+  --edge-strong: #c7c7cc; /* the dashed-node grey: the command box border */
   --blue-ink: #0066cc; /* --blue as text fails 4.5:1 on the tinted and grey backgrounds */
   --green: #28a745;
   --orange: #ff9500;
@@ -58,16 +60,37 @@ p { margin: 0; }
 .hero h1 { font-size: clamp(34px, 4vw, 52px); line-height: 1.05; letter-spacing: -0.04em; }
 .hero .lead { font-size: clamp(17px, 1.6vw, 19px); color: var(--ink-2); margin-top: 16px; line-height: 1.45; max-width: 44ch; }
 .get { margin-top: 28px; }
-.brew { display: flex; align-items: center; gap: 10px; max-width: 520px; padding: 8px 8px 8px 18px; border-radius: 14px; background: #1d1d1f; color: #f5f5f7; font: 15px/1.4 var(--mono); }
-.brew code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; background: none; padding: 0; border-radius: 0; font-size: inherit; color: inherit; }
-.brew code::before { content: "$ "; color: #8e8e93; user-select: none; -webkit-user-select: none; }
-.brew button { flex: none; min-width: 82px; height: 38px; padding: 0 16px; border: 0; border-radius: 9px; background: var(--blue); color: #fff; font: 500 14px var(--sans); cursor: pointer; }
-.brew button:hover { background: var(--blue-2); }
+/* The install box: tabs above a light, terminal-like command box (brew | curl | DMG).
+   Neutral greys only; the one accent on the first screen stays the Download button. */
+.install { max-width: 520px; }
+.itabs { display: flex; gap: 22px; margin-bottom: 10px; }
+.itab { padding: 6px 2px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--ink-3); font: 500 15px var(--sans); letter-spacing: -0.01em; cursor: pointer; }
+.itab:hover, .itab[aria-selected="true"] { color: var(--ink); }
+.itab[aria-selected="true"] { border-bottom-color: var(--ink); }
+.irow { position: relative; display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 8px 8px 8px 18px; border: 1px solid var(--edge-strong); border-radius: 14px; background: var(--surface-mid); color: var(--ink); font: 15px/1.4 var(--mono); }
+.irow code { flex: 1; min-width: 0; overflow-wrap: anywhere; background: none; padding: 0; border-radius: 0; font-size: inherit; font-weight: 500; color: inherit; }
+.irow code::before { content: "$ "; color: var(--ink-3); user-select: none; -webkit-user-select: none; }
+.icopy { position: relative; flex: none; width: 40px; height: 40px; display: grid; place-items: center; border: 0; border-radius: 10px; background: transparent; color: var(--ink-2); cursor: pointer; }
+.icopy:hover { background: rgba(0,0,0,.06); color: var(--ink); }
+.icopy .i-ok { display: none; }
+.icopy.copied { color: var(--ink); }
+.icopy.copied .i-copy { display: none; }
+.icopy.copied .i-ok { display: block; }
+/* the confirmation sits above the button so it never covers the command */
+.icopy.copied::after { content: attr(data-tip); position: absolute; right: 2px; bottom: calc(100% + 2px); z-index: 2; padding: 3px 8px; border-radius: 6px; background: var(--ink); color: var(--bg); font: 500 12px var(--sans); white-space: nowrap; pointer-events: none; }
+.idl { flex: 1; display: flex; align-items: center; gap: 10px; align-self: stretch; min-height: 38px; color: var(--ink); font: 500 15px var(--sans); }
+.idl b { font: 600 14px var(--mono); }
+.idl svg { flex: none; color: var(--ink-2); }
+.idl:hover span { text-decoration: underline; }
+.inote { margin-top: 8px; min-height: 20px; font-size: 13px; color: var(--ink-3); }
+.inote a { color: var(--ink-2); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
+.inote a:hover { color: var(--ink); }
+.install [hidden] { display: none; }
 .alt { display: flex; flex-wrap: wrap; gap: 4px 0; margin-top: 14px; font-size: 14.5px; color: var(--ink-3); }
 .alt > * + *::before { content: "·"; padding: 0 7px; color: var(--ink-3); }
-.alt a { color: var(--blue-ink); font-weight: 500; }
-.alt a:hover { text-decoration: underline; }
-.adopt, .ost, .on-phone { margin-top: 8px; font-size: 13px; color: var(--ink-3); }
+.alt a { color: var(--ink-3); }
+.alt a:hover { color: var(--ink); text-decoration: underline; }
+.ost, .on-phone { margin-top: 8px; font-size: 13px; color: var(--ink-3); }
 .on-phone, .not-mac { display: none; }
 .mo { font-size: 19px; font-weight: 600; margin-bottom: 14px; }
 .notify { display: flex; gap: 8px; max-width: 460px; }
@@ -115,9 +138,11 @@ p { margin: 0; }
 @media (max-width: 680px) {
   .hero h1 { font-size: 34px; }
   .get { margin-top: 22px; }
-  .brew { padding-left: 12px; font-size: 13px; }
-  .brew code { white-space: normal; }
-  .brew button { min-width: 70px; padding: 0 12px; }
+  .irow { padding-left: 14px; font-size: 13px; }
+  .idl { font-size: 14px; } .idl b { font-size: 12.5px; }
+  .inote { min-height: 40px; }
+  .install .alt { flex-direction: column; gap: 2px; }
+  .install .alt > * + *::before { content: none; }
   .clip { height: 250px; padding: 14px 14px 0; font-size: 12.5px; }
   .clip .you, .clip .tl { max-width: none; }
   .clip .t2 { display: none; }

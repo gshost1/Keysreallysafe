@@ -7,7 +7,7 @@ const files = new Set(fs.readdirSync(root));
 http.createServer((req, res) => {
   const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
   let name = pathname === '/' ? 'index.html' : pathname.slice(1);
-  if (!path.extname(name)) name += '.html';
+  if (!path.extname(name) && files.has(name + '.html')) name += '.html';
   if (!files.has(name)) { res.writeHead(404); return res.end('not found'); }
   if (name === 'posthog.js') { res.writeHead(200, { 'Content-Type': 'application/javascript' }); return res.end(''); }
   const ext = path.extname(name);
