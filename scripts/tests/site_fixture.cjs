@@ -11,7 +11,7 @@ http.createServer((req, res) => {
   if (!files.has(name)) { res.writeHead(404); return res.end('not found'); }
   if (name === 'posthog.js') { res.writeHead(200, { 'Content-Type': 'application/javascript' }); return res.end(''); }
   const ext = path.extname(name);
-  const type = { '.html': 'text/html', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' }[ext] || 'text/plain';
+  const type = { '.html': 'text/html', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.js': 'application/javascript' }[ext] || 'text/plain';
   let body = fs.readFileSync(path.join(root, name));
   if (ext === '.html') body = Buffer.from(body.toString().replace(/<link[^>]+href="https:\/\/fonts[^>]+>/g, ''));
   res.writeHead(200, { 'Content-Type': type }); res.end(body);

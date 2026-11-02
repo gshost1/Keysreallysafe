@@ -23,6 +23,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap">
 <link rel="stylesheet" href="styles.css">
+<script src="site.js"></script>
 <script src="posthog.js" defer></script>
 </head>
 <body>
@@ -45,8 +46,8 @@
       
       <a href="#privacy">Privacy</a>
       <a href="#faq">FAQ</a>
-      <a href="https://github.com/gshost1/Keysreallysafe">★ Star</a>
-      <a class="btn primary" href="#pricing">Download</a>
+      <a href="https://github.com/gshost1/Keysreallysafe" data-event="star_click">★ Star</a>
+      <a class="btn primary" href="#install">Download</a>
     </nav>
   </div>
 </header>
@@ -54,17 +55,44 @@
 <main>
 <div class="hero">
   <div class="wrap">
-    <div class="badge"><b>New in 0.14</b>A stdio MCP server with sixteen tools and Touch ID on every write</div>
-    <h1>Agents get access. <span class="g">Never your keys.</span></h1>
-    <p class="lead">Keysrs is an MCP server and a loopback gateway for API keys. Your agent calls <code>scan_project</code> and <code>import_and_wrap</code>; secrets move into the macOS Keychain behind one Touch ID, and the env file is rewritten to <code>http://127.0.0.1:12767/&lt;key&gt;</code> plus a project-scoped <code>ksfc_</code> token with a 30-day expiry. Off the Mac, the same token works through a relay Worker in your own Cloudflare account. No key value crosses the agent, the transcript or git.</p>
-    <div class="cta">
-      <a class="btn primary" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8m-3.5-3.5L8 10l3.5-3.5M2.5 13.5h11"/></svg>
-        Download for Mac
-      </a>
-      <a class="btn star" href="https://github.com/gshost1/Keysreallysafe"><svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2.2l2.4 4.9 5.4.8-3.9 3.8.9 5.4L10 14.6l-4.8 2.5.9-5.4L2.2 7.9l5.4-.8L10 2.2z"/></svg>Star on GitHub</a>
+    <div class="first">
+      <div class="pitch">
+        <!-- PLACEHOLDER COPY: headline and sub-line are stand-ins until the final wording is written. -->
+        <h1>API keys for your agents, locked behind Touch ID.</h1>
+        <p class="lead">Your agent gets a scoped, expiring token. The key never leaves your Mac's Keychain.</p>
+        <div class="get" id="install">
+          <div class="for-mac">
+            <div class="brew"><code id="brew-cmd">brew install --cask gshost1/keysrs/keysrs</code><button type="button" data-copy="brew-cmd">Copy</button></div>
+            <p class="on-phone">Paste it into Terminal on your Mac.</p>
+            <p class="alt"><a href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download the DMG</a><span>macOS 14+, Apple Silicon</span><span>Free, MIT</span><a class="star" href="https://github.com/gshost1/Keysreallysafe" data-event="star_click">★ Star on GitHub</a></p>
+            <p class="adopt">Keysrs.app already in Applications? Add <code>--adopt</code> the first time.</p>
+          </div>
+          <div class="not-mac">
+            <p class="mo">Keysrs is Mac-only for now.</p>
+            <form class="notify" id="notify" novalidate>
+              <label class="vh" for="notify-email">Email</label>
+              <input id="notify-email" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com" required>
+              <input class="hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
+              <button type="submit">Notify me</button>
+            </form>
+            <p class="ost" id="notify-msg" role="status">One email when Keysrs lands on Linux or Windows. Nothing else, and then your address is deleted. <a href="/privacy#notify">Details</a></p>
+          </div>
+        </div>
+      </div>
+      <div class="clip" role="img" aria-label="Your agent asks Keysrs to set up the project's keys, macOS asks for Touch ID, and the two keys move into the Keychain.">
+        <div class="you">set up my keys for this project</div>
+        <p class="tl t1">Used <b>keysrs: scan_project</b> · 2 keys found</p>
+        <p class="tl t2">Using <b>keysrs: import_and_wrap</b>…</p>
+        <p class="tl t3">✓ 2 keys moved to the Keychain. The repo holds a 30-day token.</p>
+        <div class="touch">
+          <div class="tid"><img class="fp" src="touchid.png" alt="" width="54" height="54"><img src="icon.svg" alt="" width="26" height="26"></div>
+          <b>Keysrs</b>
+          <p>Keysrs is trying to import and wrap 2 keys for project evals: openai, anthropic.</p>
+          <p>Touch ID or enter your password to allow this.</p>
+          <div class="bts"><span class="def">Use Password…</span><span>Cancel</span></div>
+        </div>
+      </div>
     </div>
-    <p class="sub-cta"><b>Free and MIT licensed.</b> No account. macOS 14+ on Apple Silicon. Then run <code>keys setup mcp</code> once.</p>
   </div>
 
   <div class="wrap">
