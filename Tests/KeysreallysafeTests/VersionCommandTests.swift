@@ -20,18 +20,18 @@ final class VersionCommandTests: XCTestCase {
     func testRootConfigurationArmsTheVersionFlag() {
         // swift-argument-parser prints this string and exits 0 when `--version`
         // appears, so it must hold the single version constant, not a copy.
-        XCTAssertEqual(KeysCLI.configuration.version, ProductAnalyticsConfiguration.appVersion)
+        XCTAssertEqual(KeysCLI.configuration.version, AppVersion.current)
     }
 
     func testHumanLineNamesKeysrsAndTheVersion() {
-        XCTAssertEqual(VersionCommand.humanLine(), "Keysrs \(ProductAnalyticsConfiguration.appVersion)")
+        XCTAssertEqual(VersionCommand.humanLine(), "Keysrs \(AppVersion.current)")
     }
 
     func testJSONIsOneLineWithSortedKeys() throws {
         let line = String(decoding: try JSONValue.data(VersionCommand.jsonObject()), as: UTF8.self)
         XCTAssertFalse(line.contains("\n"), "one line, the shape every --json flag prints")
-        XCTAssertEqual(line, "{\"version\":\"\(ProductAnalyticsConfiguration.appVersion)\"}")
+        XCTAssertEqual(line, "{\"version\":\"\(AppVersion.current)\"}")
         let object = try XCTUnwrap(try JSONValue.line(line))
-        XCTAssertEqual(object["version"] as? String, ProductAnalyticsConfiguration.appVersion)
+        XCTAssertEqual(object["version"] as? String, AppVersion.current)
     }
 }

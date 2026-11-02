@@ -294,7 +294,7 @@ final class CatalogDB: @unchecked Sendable {
         // A project is a folder an agent works in, held by its canonical symlink-resolved
         // path (UNIQUE, so two processes can never manufacture two ids for one folder)
         // and shown by a display label only: the path never leaves the Mac, so it never
-        // enters a tool result, a log line or an analytics report. Labels are recomputed
+        // enters a tool result or a log line. Labels are recomputed
         // across this (small) table on every insert, so no stored label goes stale.
         try exec("""
             CREATE TABLE IF NOT EXISTS projects (

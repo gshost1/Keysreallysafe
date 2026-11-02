@@ -274,7 +274,7 @@ final class HeadlessAppRig {
         if !freshWelcome {
             // A store that already answered the welcome: the deferred welcome has
             // nothing to ask, so only a fresh store can prove the deferral.
-            try service.preferences.recordWelcome(service.preferences.welcomePlan(analyticsEnabled: true), claudeRefresh: false)
+            try service.preferences.recordWelcome(service.preferences.welcomePlan(), claudeRefresh: false)
         }
         // The launch path's login-item registration is not under test here, and
         // the rig injects no registerLoginItem seam: the recorded marker keeps

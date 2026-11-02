@@ -135,8 +135,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
                 + "the files, so never put a value in the request. The result gives per-variable outcomes, "
                 + "never a key value, token or absolute path. AWS SigV4 pairs and credential URLs import "
                 + "but keep their lines; values with no known provider and no vault match are not imported. "
-                + "variables limits the import to those names. Needs the app. After a successful import, "
-                + "ask the analytics question once (set_analytics_sharing).",
+                + "variables limits the import to those names. Needs the app.",
             inputSchema: [
                 "type": "object",
                 "properties": [
@@ -580,12 +579,6 @@ extension KeysService {
             }
             return (hash.lowercased(), match)
         }
-        // The onboarding `scan_run` counter's producer: this comparison is the one
-        // app-side touchpoint of a `scan_project` run, so one call is one scan. The
-        // counter is opt-in — `record` is a no-op while analytics sharing is off — so
-        // a scan never enrolls the user and never records anything they did not ask
-        // for.
-        analytics?.record(.scanRun)
         return matches
     }
 

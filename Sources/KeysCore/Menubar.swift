@@ -344,7 +344,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Keysrs",
-            .applicationVersion: ProductAnalyticsConfiguration.appVersion,
+            .applicationVersion: AppVersion.current,
             .version: "local vault + usage · loopback only",
             .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. MIT licensed."),
         ])
@@ -456,20 +456,16 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.runModal()
     }
 
-    /// First launch, and once per new analytics consent version: one window, every
-    /// box unticked, one Continue button. Continuing with nothing ticked is a full
-    /// answer and is never asked again.
+    /// First launch only: one window, every box unticked, one Continue button.
+    /// Continuing with nothing ticked is a full answer and is never asked again.
     private func showWelcomeIfNeeded() {
-        // Without an analytics service there is nothing to ask about.
-        let plan = service.preferences.welcomePlan(analyticsEnabled: service.analytics?.isEnabled ?? true)
+        let plan = service.preferences.welcomePlan()
         guard !plan.isEmpty else { return }
 
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = plan.firstRun ? "Welcome to Keysrs" : "A quick question from Keysrs"
-        alert.informativeText = plan.firstRun
-            ? "Keysrs keeps running when you close its window. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain. Nothing is ticked below; choose what you are comfortable with. You can change it later."
-            : "This version can compare your usage with other Keysrs users who share theirs. It is off unless you tick the box."
+        alert.messageText = "Welcome to Keysrs"
+        alert.informativeText = "Keysrs keeps running when you close its window. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain. Nothing is ticked below; choose what you are comfortable with. You can change it later."
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -481,36 +477,20 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
             label.preferredMaxLayoutWidth = 320
             return label
         }
-        var claudeBox: NSButton?
-        if plan.firstRun {
-            let box = NSButton(checkboxWithTitle: "Keep Claude plan limits fresh", target: nil, action: nil)
-            box.state = .off
-            stack.addArrangedSubview(box)
-            stack.addArrangedSubview(note("Every 5 minutes, Keysrs runs Claude Code's own /usage command in the background with your existing login. No model request is made. If this is off, Claude limits appear when Claude Code has refreshed them recently, or when you choose Refresh."))
-            claudeBox = box
-        }
-        var analyticsBox: NSButton?
-        if plan.askAnalytics {
-            if plan.firstRun { stack.setCustomSpacing(14, after: stack.arrangedSubviews.last!) }
-            let box = NSButton(checkboxWithTitle: "Share daily usage totals and compare", target: nil, action: nil)
-            box.state = .off
-            stack.addArrangedSubview(box)
-            stack.addArrangedSubview(note("Once a day: token totals per tool and public model name, how high your plan limits got, and which features you used. In return, the dashboard shows how your usage compares. Never your keys, prompts, projects, file names, spend or anything from before you tick this. See exactly what would be sent, or turn it off, under Privacy in the dashboard."))
-            analyticsBox = box
-        }
+        let claudeBox = NSButton(checkboxWithTitle: "Keep Claude plan limits fresh", target: nil, action: nil)
+        claudeBox.state = .off
+        stack.addArrangedSubview(claudeBox)
+        stack.addArrangedSubview(note("Every 5 minutes, Keysrs runs Claude Code's own /usage command in the background with your existing login. No model request is made. If this is off, Claude limits appear when Claude Code has refreshed them recently, or when you choose Refresh."))
         stack.layoutSubtreeIfNeeded()
         stack.frame = NSRect(origin: .zero, size: NSSize(width: 340, height: stack.fittingSize.height))
         alert.accessoryView = stack
         alert.addButton(withTitle: "Continue")
-        if plan.firstRun { alert.addButton(withTitle: "Continue and Open Keysrs") }
+        alert.addButton(withTitle: "Continue and Open Keysrs")
 
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
-        let claudeOn = claudeBox?.state == .on
+        let claudeOn = claudeBox.state == .on
         try? service.preferences.recordWelcome(plan, claudeRefresh: claudeOn)
-        if analyticsBox?.state == .on {
-            try? service.analytics?.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
-        }
         claudeRefreshItem?.state = service.preferences.claudeUsageRefresh ? .on : .off
         if claudeOn { refresh() }
         if response == .alertSecondButtonReturn { openDashboard() }

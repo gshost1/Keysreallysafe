@@ -27,9 +27,7 @@ Then call its tools: `list_keys`, `gateway_info`, `version`, `open_app`,
 returns pending; the user approves it with Touch ID in the Keysrs app; the poll
 returns the scoped token once), `send_feedback` (the app scrubs the draft
 — key values, tokens, paths, names, emails — opens the prefilled mail or
-GitHub issue page, and never submits), `set_analytics_sharing` (records
-the user's own answer to the analytics question, and only after they give it),
-and the revoke pair `revoke_all` / `revoke_project` (the kill switches:
+GitHub issue page, and never submits), and the revoke pair `revoke_all` / `revoke_project` (the kill switches:
 every grant and client token at once, one key's, or one project's client
 tokens by label — each needs the running app and asks for no Touch ID),
 and `activity` (recent gateway use from the local catalog — per-key requests,

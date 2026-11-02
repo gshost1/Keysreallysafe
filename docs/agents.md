@@ -248,16 +248,6 @@ The tools the server offers:
   app; no Touch ID — scrubbing removes secrets, it never reads one out.
   Returns the scrubbed text and per-category removal counts. Keysrs never
   submits the feedback: the user reviews and sends what opens.
-- `set_analytics_sharing` — record the user's answer to the analytics
-  question: `enabled` false keeps it local and turns sharing off at once.
-  `enabled` true does not turn it on: the answer is
-  `{"enabled": false, "status": "pending_user_confirmation"}`, and the agent
-  asks the user to switch sharing on in the Keysrs app, where that switch is
-  the confirmation. Requires the app, and it changes nothing
-  else — no report is sent (only the dashboard's own timer uploads), the
-  pending report preview is never returned, and no Touch ID is asked. Off
-  unless set. Call it only after the user has explicitly answered the
-  analytics question; never enable sharing on your own.
 - `revoke_all` — the kill switch: revoke every active grant and client token
   at once, or only one vault key's with `key`. Requires the app; no Touch ID,
   because revocation only removes access. Answers `{revoked_grants,
@@ -289,9 +279,7 @@ log, a file or a message.
 
 Everything the server does stays on this Mac: it reads the catalog locally,
 reaches the app over the same loopback control channel the CLI uses, and adds
-no outbound endpoint. It sends no product analytics itself —
-`set_analytics_sharing` only records the user's own answer in the app, and only
-the dashboard's timer ever uploads a report.
+no outbound endpoint.
 
 ## Scoped access for one task
 

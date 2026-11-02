@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Product analytics is gone.** The opt-in "share to compare" reports had no users, and keeping them meant a collector to run, a consent flow in the welcome window, a Privacy dialog, an MCP tool (`set_analytics_sharing`) and two MCP instructions asking agents to raise the question. All of it is removed, along with the `Analytics/` collector and the Compare line. On first launch the app deletes the consent, any unsent reports and the downloaded comparison table from its catalog. The app now sends nothing except the GitHub update check and, if you turn it on, your own relay. The version string moved to `Sources/KeysCore/AppVersion.swift`.
+
 ## 0.14.1 — 2026-10-30
 
 - **Every gateway response says who wrote it.** In the 0.14 hands-on test a provider answered 401 to a deliberately fake stored key, and the agent told the user the gateway had rejected its grant: the gateway's own refusals and a provider's answers share status codes, so nothing in the response told them apart, although the gateway log already recorded `upstream_status`. Responses now carry `X-Keysrs-Source: gateway` when Keysrs refused or failed the call (every JSON error it writes, including `upstream_error` when the provider could not be reached) and `X-Keysrs-Source: upstream` when the provider's answer is passed through; a provider's own copy of the header is dropped, so it cannot pass for the gateway. The approved `grant_status` poll carries a one-sentence `response_source` note explaining it, and an upstream 401 or 403 is described as the provider rejecting the stored key.

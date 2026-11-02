@@ -7,7 +7,7 @@ import XCTest
 /// row in `projects`, and a display label. These tests pin the one resolution function,
 /// the fresh and migrated schema, the label rules, the client-token round trip, the
 /// readers' tolerance of a dangling reference, and the line the path never crosses:
-/// no result, no log file and no analytics report carries it (labels only).
+/// no result and no log file carries it (labels only).
 final class ProjectIdentityTests: XCTestCase {
     private let fm = FileManager.default
 
@@ -495,21 +495,12 @@ final class ProjectIdentityTests: XCTestCase {
     func testPathNeverLeaves() throws {
         let (service, db, dir) = try makeService()
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        let clock = ProductAnalyticsTests.Clock(), transport = ProductAnalyticsTests.Transport()
-        let analytics = ProductAnalytics(
-            catalog: db, endpoint: URL(string: "https://analytics.example/v1/reports")!,
-            transport: transport, now: { clock.date() }
-        )
-        try analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
-
         // A sentinel-named folder, resolved and bound to a client token, then read.
         let sentinel = "sentinel-proj-dir-\(UUID().uuidString)"
         let folder = try makeFolder(dir, sentinel)
         let project = try service.resolveProject(folder: folder.path)
         XCTAssertEqual(project.label, sentinel)
         _ = try service.issueGatewayClient(name: "demo", label: "agent", project: project.id)
-        analytics.record(.clientCreate)
-        analytics.record(.viewKeys)
 
         // The payloads the read surfaces serialize: the clients listing and the
         // in-use labels a key listing shows.
@@ -520,19 +511,6 @@ final class ProjectIdentityTests: XCTestCase {
         scanned.append(try JSONSerialization.data(
             withJSONObject: ["projects": try service.projectLabelsInUse(name: "demo")]
         ))
-
-        // The analytics report, sealed and handed to the transport: aggregate counters
-        // from the closed vocabulary only — no path, and no project_* counter key.
-        clock.advance(86_400)
-        analytics.flushCompletedReports()
-        let report = try XCTUnwrap(transport.calls.first?.data)
-        scanned.append(report)
-        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: report) as? [String: Any])
-        let vocabulary = Set(ProductAnalyticsEvent.allCases.map(\.rawValue))
-        let counts = try XCTUnwrap(sent["counts"] as? [String: Any])
-        XCTAssertTrue(counts.keys.allSatisfy { vocabulary.contains($0) }, "\(counts.keys)")
-        XCTAssertFalse(counts.keys.contains { $0.hasPrefix("project") }, "no project_* counter key")
-        XCTAssertFalse(String(decoding: report, as: UTF8.self).contains(sentinel), "not even the label enters")
 
         // Every file under the support directory except the catalog DB family — the one
         // sanctioned holder of the path — so no log or side file carries it either.

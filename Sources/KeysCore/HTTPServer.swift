@@ -169,7 +169,6 @@ final class APIHandler: @unchecked Sendable {
         self.scheduleQuit = scheduleQuit
         self.openFeedbackURL = openFeedbackURL
         self.scrubFeedback = scrubFeedback
-        service.analytics?.start()
     }
 
     /// The real show path: the running app's window controller on the main actor,
@@ -249,10 +248,6 @@ final class APIHandler: @unchecked Sendable {
         }
         do {
             switch (request.method, path) {
-            case ("GET", "/api/analytics"):
-                return try analyticsStatus()
-            case ("POST", "/api/analytics"), ("POST", "/api/analytics/event"):
-                return try analyticsRequest(request, path: path)
             case ("GET", "/api/spend"):
                 return try spend(request)
             case ("GET", "/api/status"):
@@ -300,11 +295,6 @@ final class APIHandler: @unchecked Sendable {
             // MCP process never holds a vault value (the mcp-core rule).
             case ("POST", "/api/mcp/feedback"):
                 return try mcpFeedback(request)
-            // The analytics-sharing route: the `set_analytics_sharing` tool records
-            // the onboarding answer here, through `setEnabled`, and the app writes
-            // the one confirmation line. The answer is bounded on purpose.
-            case ("POST", "/api/mcp/analytics/sharing"):
-                return try mcpAnalyticsSharing(request)
             // The revocation routes: the kill switches the revoke tools and the
             // CLI's `keys revoke --all` share. One route revokes grants AND
             // client tokens so the switch is never half-pulled; the dashboard's
@@ -443,44 +433,6 @@ final class APIHandler: @unchecked Sendable {
         // PUT is only the limits route today, but it mutates the same way POST does, so it
         // rides the same token gate instead of growing into a hole.
         method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
-    }
-
-    private func analyticsStatus() throws -> HTTPResponse {
-        guard let analytics = service.analytics else {
-            return HTTPResponse.json(503, ["error": "analytics_unavailable"])
-        }
-        return HTTPResponse.json(200, try analytics.status())
-    }
-
-    private func analyticsRequest(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
-        guard let analytics = service.analytics else {
-            return HTTPResponse.json(503, ["error": "analytics_unavailable"])
-        }
-        guard request.body.count <= 1_024,
-              let object = try JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
-            return HTTPResponse.json(400, ["error": "invalid_analytics_request"])
-        }
-        switch path {
-        case "/api/analytics":
-            guard Set(object.keys) == ["enabled", "consent_version"],
-                  let enabled = object["enabled"] as? NSNumber, CFGetTypeID(enabled) == CFBooleanGetTypeID(),
-                  let version = object["consent_version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(),
-                  version.doubleValue == Double(ProductAnalytics.consentVersion) else {
-                return HTTPResponse.json(400, ["error": "invalid_analytics_consent"])
-            }
-            try analytics.setEnabled(enabled.boolValue, consentVersion: version.intValue)
-        case "/api/analytics/event":
-            guard Set(object.keys) == ["event"], let value = object["event"] as? String,
-                  ["view_usage", "view_chart", "view_keys"].contains(value),
-                  let event = ProductAnalyticsEvent(rawValue: value) else {
-                return HTTPResponse.json(400, ["error": "invalid_analytics_event"])
-            }
-            analytics.record(event)
-            return HTTPResponse.json(200, ["ok": true])
-        default:
-            return HTTPResponse.json(404, ["error": "not_found"])
-        }
-        return try analyticsStatus()
     }
 
     private func tokenOK(_ request: HTTPRequest) -> Bool {
@@ -1450,42 +1402,6 @@ final class APIHandler: @unchecked Sendable {
             "opened": true,
             "truncated": truncated,
         ])
-    }
-
-    // MARK: - MCP analytics sharing (the set_analytics_sharing flow)
-
-    /// POST /api/mcp/analytics/sharing — the app side of `set_analytics_sharing`,
-    /// the tool that records the person's answer to the onboarding analytics
-    /// question. The body is exactly `{"enabled": <bool>}`: an explicit JSON
-    /// boolean is required (the `/api/analytics` validation is the reference), so a
-    /// number, a string or a missing field is refused with no state change and no
-    /// log line. Consent goes through `setEnabled` (consent version 2, unchanged),
-    /// never a direct catalog-meta write, and the answer is the bounded
-    /// `{"enabled": <bool>}` — never the status preview, whose unsent-report payload
-    /// must not reach a tool result. Enabling sends nothing: only the dashboard's own
-    /// timer flushes. The one confirmation line goes to the app's log seam, which is
-    /// a no-op in every process but the running app.
-    private func mcpAnalyticsSharing(_ request: HTTPRequest) throws -> HTTPResponse {
-        guard let analytics = service.analytics else {
-            return HTTPResponse.json(503, ["error": "analytics_unavailable"])
-        }
-        let object = try jsonBody(request)
-        guard Set(object.keys) == ["enabled"],
-              let enabled = object["enabled"] as? NSNumber, CFGetTypeID(enabled) == CFBooleanGetTypeID() else {
-            return HTTPResponse.json(400, ["error": "invalid_analytics_sharing"])
-        }
-        // Turning sharing on is consent, and consent is the person's: an agent's
-        // "on" (prompt-injected or careless) changes nothing and is answered as
-        // pending, and the agent asks the person to switch it on in the app — the
-        // dashboard toggle is the confirmation. Turning it off only removes
-        // sharing, so it takes effect at once.
-        if enabled.boolValue {
-            if analytics.isEnabled { return HTTPResponse.json(200, ["enabled": true]) }
-            return HTTPResponse.json(200, ["enabled": false, "status": "pending_user_confirmation"])
-        }
-        try analytics.setEnabled(false, consentVersion: ProductAnalytics.consentVersion)
-        service.analyticsLog("analytics sharing turned off")
-        return HTTPResponse.json(200, ["enabled": false])
     }
 
     // MARK: - MCP revocation (the kill switches)

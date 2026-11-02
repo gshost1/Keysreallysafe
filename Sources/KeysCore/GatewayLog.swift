@@ -95,7 +95,7 @@ struct GatewayLogEntry: Equatable {
 enum GatewayLogFilter {
     case all
     /// `keys log --failed`: refusals, non-2xx answers, gateway-side failures, and calls too old
-    /// to have a status (product analytics counts those as failed too).
+    /// to have a status.
     case failed
     /// What `keys doctor` lists: calls that ended for a gateway-side reason and the refusals in
     /// `gatewaySideRefusals`. Token refusals are left out (`keys log --failed` has them): anyone

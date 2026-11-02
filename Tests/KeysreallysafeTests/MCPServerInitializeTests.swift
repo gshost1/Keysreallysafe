@@ -27,7 +27,7 @@ final class MCPServerInitializeTests: XCTestCase {
         XCTAssertEqual(Array((serverInfo ?? [:]).keys).sorted(), ["name", "version"])
         XCTAssertEqual(serverInfo?["name"] as? String, "keysrs")
         // Never a literal: the pin survives the 0.14.0 version bump.
-        XCTAssertEqual(serverInfo?["version"] as? String, ProductAnalyticsConfiguration.appVersion)
+        XCTAssertEqual(serverInfo?["version"] as? String, AppVersion.current)
 
         // Client capabilities and clientInfo are ignored: the second initialize,
         // rich on the client side, produces the identical result.

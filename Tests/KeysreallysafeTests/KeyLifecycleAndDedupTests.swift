@@ -43,8 +43,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
     /// VAL-SECRET-004: the catalog is not a secret store. After an add the secret may live
     /// only in the SecretStore — the raw catalog files on disk (the main DB and its WAL) and
     /// the key_events rows the dashboard's History reads must hold no trace of it. The
-    /// sentinel is invented; the analytics side of this boundary is pinned by
-    /// ProductAnalyticsTests, which stays the evidence for it.
+    /// sentinel is invented.
     func testAddLeavesNoSecretInCatalogFilesOrKeyEvents() throws {
         let (db, dir) = try makeDB()
         let (service, _, _) = makeService(db: db)

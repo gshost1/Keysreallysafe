@@ -93,7 +93,7 @@ enum FeedbackDelivery {
     /// worth more than a clamped range.
     static func versionFooter() -> String {
         let version = ProcessInfo.processInfo.operatingSystemVersion
-        return "\n\nKeysrs \(ProductAnalyticsConfiguration.appVersion) on macOS "
+        return "\n\nKeysrs \(AppVersion.current) on macOS "
             + "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
     }
 

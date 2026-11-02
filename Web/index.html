@@ -56,8 +56,6 @@
         <p class="guide-note">This stays available under <button type="button" class="link" id="onboard-help">?&nbsp;help</button>.</p>
       </section>
       <div id="usage-totals" class="usage-totals"></div>
-      <!-- Only for people who share usage, and only once the collector publishes enough reports. -->
-      <p id="usage-compare" class="usage-totals usage-compare" hidden></p>
     </section>
 
     <section id="pane-chart" role="tabpanel" aria-labelledby="nav-chart" hidden>
@@ -218,7 +216,7 @@
         </div>
       </section>
       <section class="settings-group" aria-labelledby="set-agents">
-        <h2 id="set-agents">Agents and privacy</h2>
+        <h2 id="set-agents">Agents</h2>
         <div class="setting">
           <span class="setting-label">Getting started<span class="setting-hint">The command line, a key, an agent, tokens and the relay, step by step.</span></span>
           <button type="button" id="btn-guide" class="btn-quiet" aria-haspopup="dialog" title="Open the guide (also under ?)">Guide</button>
@@ -226,10 +224,6 @@
         <div class="setting">
           <span class="setting-label">Coding agents<span class="setting-hint">Wire Claude Code, Codex, Grok or Droid to the vault.</span></span>
           <button type="button" id="btn-agents" class="btn-quiet" title="Wire a coding agent (Claude Code, Codex, Grok, Droid) to the vault">Agents</button>
-        </div>
-        <div class="setting">
-          <span class="setting-label">Product analytics<span class="setting-hint">Opt-in aggregate sharing.</span></span>
-          <button type="button" id="btn-privacy" class="btn-quiet" aria-haspopup="dialog" title="Product analytics privacy settings">Privacy</button>
         </div>
       </section>
       <section class="settings-group" aria-labelledby="set-app">
@@ -766,33 +760,6 @@ keys relay on</code><button type="button" class="btn-row" data-copy-cmd aria-lab
     </div>
   </dialog>
 
-  <dialog id="dlg-privacy" class="dlg dlg-wide" aria-labelledby="privacy-title" aria-describedby="privacy-description">
-    <section class="privacy-dialog">
-      <h2 id="privacy-title">Product analytics</h2>
-      <p id="privacy-description" class="privacy-copy">Share this Mac's daily usage totals and get a Compare line on the Usage page: how your typical day stacks up against everyone who shares. A daily report contains feature-use counts; tokens and prompt counts per tool (Claude Code, Codex, Grok), provider and public model name; gateway request and token totals per provider; and how high each plan window got. It also includes the app version, macOS major version, architecture, the UTC date and a random report ID. It never includes prompts, responses, keys or key names, project or session names, file paths, account IDs, dollar amounts or exact times. A model or provider name that is not a public one is sent as "unknown" or "other".</p>
-      <p class="privacy-copy">Reports send only after you enable this setting, and never include usage from before you did. While it is on, Keys also downloads the shared comparison table once a day from the same server; that request carries nothing about you. Daily summaries are sent after their UTC day ends while the app is running. Failed uploads retry, with up to seven unsent days retained. The collector retains received reports for 30 days. Keys has no persistent device or user ID. Previously sent reports cannot be recalled; turning off discards unsent reports, though a report already in flight may already be received.</p>
-      <p id="analytics-destination" class="privacy-destination" aria-live="polite">Checking analytics configuration…</p>
-
-      <label class="privacy-choice"><input id="analytics-enabled" type="checkbox"> Enable product analytics</label>
-      <p id="analytics-state" class="hint" role="status" aria-live="polite"></p>
-
-      <div class="privacy-facts" aria-label="Pending analytics reports">
-        <span>Pending events</span><strong id="analytics-pending">—</strong>
-        <span>Last result</span><strong id="analytics-last-result">—</strong>
-      </div>
-      <div class="privacy-preview-head"><h3>Unsent report preview</h3><button type="button" id="analytics-download" class="btn-row" disabled>Download unsent reports</button></div>
-      <pre id="analytics-preview" class="privacy-preview">No unsent reports available.</pre>
-
-      <p id="analytics-error" class="err" role="alert"></p>
-      <div class="actions">
-        <button type="button" id="analytics-disable-discard" class="btn btn-danger" hidden>Turn off and discard unsent reports</button>
-        <button type="button" class="btn" data-close>Close</button>
-        <button type="button" id="analytics-save" class="btn btn-primary">Save preference</button>
-      </div>
-    </section>
-  </dialog>
-
   <script src="/app.js"></script>
-  <script src="/analytics.js"></script>
 </body>
 </html>

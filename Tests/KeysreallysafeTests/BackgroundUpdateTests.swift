@@ -167,7 +167,7 @@ extension AppUpdaterTests {
     @MainActor
     func testNoNewerReleaseNeverInstallsOrShowsAnything() async throws {
         let current = ReleaseInfo(
-            version: ProductAnalyticsConfiguration.appVersion,
+            version: AppVersion.current,
             dmg: URL(string: "https://github.com/example/Keysrs-arm64.dmg")!,
             checksum: .digest(String(repeating: "a", count: 64)),
             expectedBytes: 1,
@@ -1061,8 +1061,8 @@ private final class RelaunchReleasePlan: @unchecked Sendable {
         calls += 1
         if delivered {
             return ReleaseInfo(
-                version: ProductAnalyticsConfiguration.appVersion,
-                dmg: URL(string: "https://github.com/gshost1/Keysreallysafe/releases/download/v\(ProductAnalyticsConfiguration.appVersion)/Keysrs-arm64.dmg")!,
+                version: AppVersion.current,
+                dmg: URL(string: "https://github.com/gshost1/Keysreallysafe/releases/download/v\(AppVersion.current)/Keysrs-arm64.dmg")!,
                 checksum: .digest(String(repeating: "a", count: 64)),
                 expectedBytes: 1,
                 notes: nil

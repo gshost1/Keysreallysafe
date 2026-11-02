@@ -5,7 +5,7 @@ import Foundation
 /// One folder on this Mac, as the MCP surface names it: a canonical, symlink-resolved
 /// absolute path held in the catalog, and a display label that is the only thing that
 /// ever leaves the process. The path is the project's identity and its secret: no tool
-/// result, no log line and no analytics report carries it.
+/// result and no log line carries it.
 enum Project {
     /// 8 hex characters, the text-keyed-row convention (`GrantToken.newID()`'s shape).
     static func newID() -> String {

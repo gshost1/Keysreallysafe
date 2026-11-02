@@ -373,7 +373,7 @@ final class MCPOutputGuardTests: XCTestCase {
         XCTAssertNotEqual(versionResult["isError"] as? Bool, true, "no poisoned state after the fault")
         let decoded = try JSONSerialization.jsonObject(
             with: Data(Self.resultText(versionResult).utf8)) as? [String: Any]
-        XCTAssertEqual(decoded?["version"] as? String, ProductAnalyticsConfiguration.appVersion,
+        XCTAssertEqual(decoded?["version"] as? String, AppVersion.current,
                        "the real version result is served again")
     }
 

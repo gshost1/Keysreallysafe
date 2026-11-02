@@ -82,10 +82,7 @@ Details: [the full guide](docs/guide.md), [agents and MCP](docs/agents.md),
 - Keysrs reads only the usage files your AI tools already write. It never
   reads `~/.codex/auth.json`, `~/.grok/auth.json`, browser cookies or provider
   websites.
-- Analytics ("share to compare") is off until you turn it on in the app, and
-  then sends only aggregate daily counts: no prompts, key or project names,
-  paths, dollar amounts or identifiers. See
-  [product analytics](docs/product-analytics.md).
+- The app sends no analytics or telemetry.
 - Update checks are one cookieless request to GitHub's release API.
 
 ## Build from source

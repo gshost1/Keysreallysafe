@@ -40,7 +40,7 @@ def make_repo(directory: Path, version: str = "0.10.0") -> Path:
         target.write_text(f"licence {name}", encoding="utf-8")
     source = repo / build_app.VERSION_SOURCE
     source.parent.mkdir(parents=True)
-    source.write_text(f'enum ProductAnalytics {{\n    static let appVersion = "{version}"\n}}\n', encoding="utf-8")
+    source.write_text(f'enum AppVersion {{\n    static let current = "{version}"\n}}\n', encoding="utf-8")
     icns = repo / "Assets" / "Keysrs.icns"
     icns.parent.mkdir(parents=True)
     icns.write_bytes(b"icns fixture")
@@ -272,7 +272,7 @@ class BuildAppTests(unittest.TestCase):
                 self.build()
         self.assertEqual(list(self.output.iterdir()), [])
 
-    def test_reads_version_from_product_analytics(self):
+    def test_reads_version_from_app_version(self):
         self.assertEqual(build_app.read_version(self.repo), "0.10.0")
 
     @unittest.skipUnless(Path("/usr/bin/iconutil").exists() and Path("/usr/bin/sips").exists(),

@@ -27,7 +27,7 @@ Keysrs.app/Contents/
   _CodeSignature/CodeResources
 ```
 
-The bundle version comes from `ProductAnalytics.appVersion`. The code-signing
+The bundle version comes from `AppVersion.current` (`Sources/KeysCore/AppVersion.swift`). The code-signing
 identifier is `keysreallysafe`, not the bundle identifier: Keychain items
 trust the designated requirement
 `identifier "keysreallysafe" and certificate leaf[subject.OU] = "<team>" and anchor apple generic and (...)`,

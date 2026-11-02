@@ -248,9 +248,6 @@
       default: return code || `Request failed (${status}).`;
     }
   }
-  // analytics.js loads after this file and reuses its fetch wrapper and token format. Published
-  // before the rest of startup so a later failure here cannot take the Privacy dialog down too.
-  window.KeysUI = Object.freeze({ api, fmtTokens });
   // Each loader reports its last result in its own pane, so one loader's recovery can never
   // take down, or be hidden by, the other's failure, and the status line is left to transient
   // messages. An outage belongs to the banner alone: a pane never keeps a "Can't reach" that
@@ -263,8 +260,6 @@
   const panes = { usage: $("pane-usage"), chart: $("pane-chart"), keys: $("pane-keys"), settings: $("pane-settings") };
   const tabs = { usage: $("nav-usage"), chart: $("nav-chart"), keys: $("nav-keys"), settings: $("nav-settings") };
   const PANE_ORDER = ["usage", "chart", "keys", "settings"];
-  // The analytics vocabulary (server allowlist and collector) knows these three views only.
-  const COUNTED_VIEWS = new Set(["usage", "chart", "keys"]);
 
   function leaveHiddenPaneFocus(next) {
     const active = document.activeElement;
@@ -282,7 +277,6 @@
     const changed = state.pane !== name;
     if (name !== "keys") closeKeyMenu({ restoreFocus: false });
     state.pane = name;
-    if (changed && COUNTED_VIEWS.has(name)) window.KeysAnalytics?.event(`view_${name}`);
     document.body.dataset.pane = name;
     for (const key of Object.keys(panes)) {
       const on = key === name;
@@ -3970,7 +3964,6 @@
   syncScopeChips();
   loadModels();
   showPane("usage", { keyboard: true });
-  document.addEventListener("DOMContentLoaded", () => window.KeysAnalytics?.event("view_usage"), { once: true });
   loadUsageTotals();
   loadKeys({ quiet: true });
   // The meter's own preference arrives with the first status, so the Usage pane

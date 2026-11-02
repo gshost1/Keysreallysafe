@@ -169,7 +169,7 @@ struct MCPReadTools: MCPToolGroup, @unchecked Sendable {
     /// release page, nothing is written, and the app is left running.
     private func serveCheckUpdate() throws -> MCPToolResult {
         let latest = try fetchLatestRelease()
-        let current = ProductAnalyticsConfiguration.appVersion
+        let current = AppVersion.current
         return try MCPToolResult.json([
             "current": current,
             "latest": latest.version,

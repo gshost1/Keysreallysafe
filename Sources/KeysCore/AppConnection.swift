@@ -29,7 +29,7 @@ import Foundation
 ///   or construction, and no connection is cached, so the server starts and answers
 ///   `initialize`/`tools/list` with no app present and a site that disappears
 ///   mid-session is seen on the very next call.
-/// - **No analytics** — this path reads one local file and talks to loopback only.
+/// - **Loopback only** — this path reads one local file and talks to loopback only.
 struct AppConnection {
     /// The exact sentence every app-not-running failure becomes on the MCP surface,
     /// byte-for-byte as the contract pins it.

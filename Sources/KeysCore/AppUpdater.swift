@@ -392,7 +392,7 @@ final class UpdateInstaller: @unchecked Sendable {
               let dictionary = try? PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any] else {
             throw AppError.http("The update's Info.plist could not be read. Nothing was installed.")
         }
-        _ = try AppUpdater.candidateVersion(infoDictionary: dictionary, release: release.version, current: ProductAnalyticsConfiguration.appVersion)
+        _ = try AppUpdater.candidateVersion(infoDictionary: dictionary, release: release.version, current: AppVersion.current)
 
         report?(.installing)
         try? fm.removeItem(at: plan.incoming)

@@ -645,7 +645,7 @@ final class ReadToolsTests: XCTestCase {
         let opened = try MCPSession.assertResult(responses[0], id: "init")
         XCTAssertEqual(
             (opened["serverInfo"] as? [String: Any])?["version"] as? String,
-            ProductAnalyticsConfiguration.appVersion, "serverInfo carries the same constant"
+            AppVersion.current, "serverInfo carries the same constant"
         )
 
         let result = try MCPSession.assertResult(responses[1], id: 1)
@@ -654,7 +654,7 @@ final class ReadToolsTests: XCTestCase {
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         XCTAssertEqual(Set(decoded.keys), ["version"], "exactly {version: \"<X.Y.Z>\"}")
         XCTAssertEqual(
-            decoded["version"] as? String, ProductAnalyticsConfiguration.appVersion,
+            decoded["version"] as? String, AppVersion.current,
             "the constant, asserted against it at runtime — never a literal"
         )
 
@@ -760,11 +760,11 @@ final class ReadToolsTests: XCTestCase {
         }
 
         let newer = try check(latest: "999.0.0")
-        XCTAssertEqual(newer.current, ProductAnalyticsConfiguration.appVersion, "the current version is the constant")
+        XCTAssertEqual(newer.current, AppVersion.current, "the current version is the constant")
         XCTAssertEqual(newer.latest, "999.0.0")
         XCTAssertEqual(newer.available, true, "a newer release reports true")
 
-        let equal = try check(latest: ProductAnalyticsConfiguration.appVersion)
+        let equal = try check(latest: AppVersion.current)
         XCTAssertEqual(equal.available, false, "an equal release reports false")
 
         // Never installs: nothing keysrs-named appeared in the temporary directory.

@@ -18,8 +18,8 @@ test('marketing navigation, release links, privacy and terms', async ({ app, bro
   await expect(browser.locator('.touch p:first-of-type').nth(2)).toHaveText(relayPrompt);
   await expect(browser.locator('#relay')).toBeVisible();
   await expect(browser.locator('body')).not.toContainText('is trying to Grant');
-  // The tool table lists the server's sixteen tools; none of them reads or copies a key.
-  await expect(browser.locator('#tools tr')).toHaveCount(17);
+  // The tool table lists the server's fifteen tools; none of them reads or copies a key.
+  await expect(browser.locator('#tools tr')).toHaveCount(16);
   await expect(browser.locator('#tools table')).not.toContainText('reveal');
   await expect(browser.locator('a.btn.star').first()).toHaveAttribute('href', 'https://github.com/gshost1/Keysreallysafe');
   const download = browser.locator('a[href$="Keysrs-arm64.dmg"]');

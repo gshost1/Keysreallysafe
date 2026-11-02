@@ -442,35 +442,6 @@ final class RemoteImportHardeningTests: XCTestCase {
 
     // MARK: F12 places remote rows never reach
 
-    func testRemoteRowsNeverEnterTheShareToCompareSummaries() throws {
-        let (db, _) = try tempCatalog()
-        let clock = ProductAnalyticsTests.Clock(), transport = ProductAnalyticsTests.Transport()
-        let analytics = ProductAnalytics(catalog: db, endpoint: URL(string: "https://analytics.example/v1/reports")!,
-                                         transport: transport, now: { clock.date() })   // 2026-05-19T04:00Z
-        try analytics.setEnabled(true, consentVersion: 2)
-        for (source, model) in [("droid-remote", "kimi-k3"), ("claude-remote", "claude-opus-5-5"),
-                                ("droid-remote", "unattributed")] {
-            _ = try db.insertUsage(UsageEvent(source: source, sessionId: "remote-session-secret", promptId: UUID().uuidString,
-                model: model, occurredAt: "2026-05-19T05:00:00Z", provider: "anthropic", cwd: "/home/user/repo",
-                inputTokens: 777_001, outputTokens: 5, cachedReadTokens: 1, cacheCreationTokens: 1, reasoningTokens: 1))
-        }
-        _ = try db.insertUsage(UsageEvent(source: "claude-local", sessionId: "s", promptId: "local", model: "claude-fable-5-1",
-            occurredAt: "2026-05-19T06:00:00Z", provider: "anthropic", inputTokens: 100, outputTokens: 0))
-        analytics.record(.viewUsage)
-        clock.advance(86_400)
-        analytics.flushCompletedReports()
-        let data = try XCTUnwrap(transport.calls.first?.data)
-        let text = String(decoding: data, as: UTF8.self)
-        for banned in ["remote", "777001", "unattributed", "kimi-k3", "claude-opus-5-5", "/home/user"] {
-            XCTAssertFalse(text.contains(banned), banned)
-        }
-        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let usage = try XCTUnwrap(sent["usage"] as? [[String: Any]])
-        XCTAssertEqual(usage.count, 1)
-        XCTAssertEqual(usage.first?["source"] as? String, "claude_code")
-        XCTAssertEqual(usage.first?["input_tokens"] as? Int, 100)
-    }
-
     func testDroidPlanWindowsIgnoreRemoteRows() throws {
         let (db, _) = try tempCatalog()
         let now = Date()

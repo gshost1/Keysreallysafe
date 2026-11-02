@@ -223,7 +223,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">Tools</p>
-      <h2 class="sh">Sixteen tools.<br>None of them returns a key.</h2>
+      <h2 class="sh">Fifteen tools.<br>None of them returns a key.</h2>
       <p class="sp">Everything your agent can ask Keysrs for. Anything that stores a key, hands out access or calls a provider waits for Touch ID; reveal, copy, rotate and delete are not tools at all.</p>
     </div>
     <div class="tooltable">
@@ -241,7 +241,6 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
           <tr><td><code>revoke_project</code></td><td>Ends one project's tokens now.</td><td></td></tr>
           <tr><td><code>revoke_all</code></td><td>Ends every grant and token now. It only takes access away.</td><td></td></tr>
           <tr><td><code>send_feedback</code></td><td>Scrubs a bug report of keys, tokens, paths and names, then opens an email or issue for you to send.</td><td></td></tr>
-          <tr><td><code>set_analytics_sharing</code></td><td>Records your answer to the opt-in question about aggregate stats. An agent's "on" waits for your own switch in the app.</td><td></td></tr>
           <tr><td><code>open_app</code></td><td>Shows the Keysrs window.</td><td></td></tr>
           <tr><td><code>check_update</code></td><td>Current and latest version.</td><td></td></tr>
           <tr><td><code>version</code></td><td>The app version.</td><td></td></tr>
@@ -363,11 +362,6 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
       </div>
       <div class="out">
         <div class="node">
-          <b>analytics.keysrs.com</b>
-          <span>Share to compare, only if you say yes</span>
-          <p>Asked once, off unless you agree. Daily totals, never keys, names, paths or prompts.</p>
-        </div>
-        <div class="node">
           <b>Your Worker</b>
           <span>The relay, only if you turn it on</span>
           <p>One WebSocket from your Mac to a Worker in your own Cloudflare account. Never a key.</p>
@@ -378,7 +372,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
     <div class="never">Never touches:
       <s>provider websites</s><s>browser cookies</s><s>other tools' auth files</s><s>your prompts</s>
     </div>
-    <p class="fineprint">That is the app. This website is different: it counts visits, and with your OK it remembers you and records masked sessions. Every detail, including the app's exact analytics schema, is in the <a class="link" href="https://github.com/gshost1/Keysreallysafe">source</a> and the <a class="link" href="/privacy">privacy page</a>.</p>
+    <p class="fineprint">That is the app. This website is different: it counts visits, and with your OK it remembers you and records masked sessions. Every detail is in the <a class="link" href="https://github.com/gshost1/Keysreallysafe">source</a> and the <a class="link" href="/privacy">privacy page</a>.</p>
   </div>
 </section>
 
@@ -404,7 +398,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
       </div>
       <div class="r">
         <ul class="checks">
-          <li><svg><use href="#check"/></svg><span><b>MCP server</b> with sixteen tools, for Claude Code, Codex, Cursor, Droid and Claude Desktop</span></li>
+          <li><svg><use href="#check"/></svg><span><b>MCP server</b> with fifteen tools, for Claude Code, Codex, Cursor, Droid and Claude Desktop</span></li>
           <li><svg><use href="#check"/></svg><span><b>Project tokens</b> that expire, instead of keys in <code>.env</code></span></li>
           <li><svg><use href="#check"/></svg><span><b>Key vault</b> in the Keychain, behind Touch ID</span></li>
           <li><svg><use href="#check"/></svg><span><b>Relay Worker</b> for VMs and cloud agents, in your own Cloudflare account</span></li>
