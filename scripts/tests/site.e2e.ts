@@ -3,13 +3,19 @@ import { expect } from 'e2e';
 
 test('marketing navigation, release links, privacy and terms', async ({ app, browser, screen }) => {
   await app.open('/');
-  await expect(screen.getByRole('heading', /Agents get access/)).toBeVisible();
+  // The headline wording is still placeholder copy, so check the place, not the words.
+  await expect(browser.locator('.hero h1')).toBeVisible();
+  // The main action is the tap that exists, and the command copies as shown.
+  await expect(browser.locator('#brew-cmd')).toHaveText('brew install --cask gshost1/keysrs/keysrs');
+  await expect(browser.locator('[data-copy="brew-cmd"]')).toBeVisible();
+  await expect(browser.locator('html')).toHaveAttribute('data-platform', /^(mac|windows|linux|ios|android|other)$/);
   // The mock prompts read exactly as macOS shows the app's Touch ID reasons.
   const importPrompt = 'Keysrs is trying to import and wrap 2 keys for project evals: openai, anthropic.';
   const relayPrompt = 'Keysrs is trying to connect the relay to keysrs-relay.you.workers.dev.';
-  await expect(browser.locator('.touch p:first-of-type')).toHaveCount(2);
+  await expect(browser.locator('.touch p:first-of-type')).toHaveCount(3);
   await expect(browser.locator('.touch p:first-of-type').nth(0)).toHaveText(importPrompt);
-  await expect(browser.locator('.touch p:first-of-type').nth(1)).toHaveText(relayPrompt);
+  await expect(browser.locator('.touch p:first-of-type').nth(1)).toHaveText(importPrompt);
+  await expect(browser.locator('.touch p:first-of-type').nth(2)).toHaveText(relayPrompt);
   await expect(browser.locator('#relay')).toBeVisible();
   await expect(browser.locator('body')).not.toContainText('is trying to Grant');
   // The tool table lists the server's sixteen tools; none of them reads or copies a key.
@@ -31,5 +37,5 @@ test('marketing navigation, release links, privacy and terms', async ({ app, bro
   await browser.locator('footer a[href="/terms"]').click();
   await expect(screen.getByRole('heading', 'Terms', { exact: true })).toBeVisible();
   await browser.locator('footer a[href="/"]').click();
-  await expect(screen.getByRole('heading', /Agents get access/)).toBeVisible();
+  await expect(browser.locator('#brew-cmd')).toBeVisible();
 });
