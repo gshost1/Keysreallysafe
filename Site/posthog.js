@@ -105,8 +105,15 @@
     for (var k in extra) p[k] = extra[k];
     posthog.capture(name, p);
   }
+  // Copying an install command: brew_copy as before for brew, and install_copy
+  // for either, naming only which of the two ("brew" or "curl").
+  function trackCopy(method, via) {
+    if (method === "brew") track("brew_copy", { via: via });
+    track("install_copy", { method: method, via: via });
+  }
   document.addEventListener("click", function (e) {
-    if (e.target.closest("[data-copy=brew-cmd]")) return track("brew_copy", { via: "button" });
+    var cp = e.target.closest("[data-copy]");
+    if (cp) return trackCopy(cp.getAttribute("data-copy") === "curl-cmd" ? "curl" : "brew", "button");
     var a = e.target.closest("a[href]"); if (!a) return;
     var h = a.getAttribute("href") || "";
     var named = a.getAttribute("data-event");
@@ -120,6 +127,7 @@
   // Selecting the command and pressing ⌘C counts as much as the button.
   document.addEventListener("copy", function (e) {
     var n = getSelection().anchorNode;
-    if (n && (n.nodeType === 1 ? n : n.parentElement).closest(".brew")) track("brew_copy", { via: "select" });
+    var code = n && (n.nodeType === 1 ? n : n.parentElement).closest(".irow code");
+    if (code) trackCopy(code.id === "curl-cmd" ? "curl" : "brew", "select");
   });
 })();

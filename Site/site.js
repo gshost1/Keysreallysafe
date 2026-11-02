@@ -27,11 +27,46 @@ document.documentElement.setAttribute("data-platform", platform);
   } catch (e) {}
 })();
 
+// The install box: tabs (brew | curl | DMG) with roving tabindex, arrow keys
+// wrapping, Home/End. Delegated, because this script loads before the markup.
+function selectTab(tab, focus) {
+  var tabs = [].slice.call(tab.parentNode.querySelectorAll("[role=tab]"));
+  tabs.forEach(function (t) {
+    var on = t === tab;
+    t.setAttribute("aria-selected", on ? "true" : "false");
+    t.tabIndex = on ? 0 : -1;
+    document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+  });
+  if (focus) tab.focus();
+}
+document.addEventListener("click", function (e) {
+  var t = e.target.closest("[role=tab]"); if (t) selectTab(t, false);
+});
+document.addEventListener("keydown", function (e) {
+  var t = e.target.closest && e.target.closest("[role=tab]"); if (!t) return;
+  var tabs = [].slice.call(t.parentNode.querySelectorAll("[role=tab]"));
+  var i = tabs.indexOf(t);
+  var n = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+  if (n === undefined) return;
+  e.preventDefault();
+  selectTab(tabs[(n + tabs.length) % tabs.length], true);
+});
+
+// The copy icon swaps to a check and a short tag for 1.6 s; a status line
+// says it for screen readers.
 document.addEventListener("click", function (e) {
   var b = e.target.closest("[data-copy]"); if (!b) return;
   var el = document.getElementById(b.getAttribute("data-copy")); if (!el) return;
   var text = el.textContent;
-  function done(label) { b.textContent = label; setTimeout(function () { b.textContent = "Copy"; }, 1600); }
+  var status = document.getElementById("copy-status");
+  function done(label) {
+    b.classList.add("copied"); b.setAttribute("data-tip", label); b.setAttribute("aria-label", label);
+    if (status) status.textContent = label;
+    setTimeout(function () {
+      b.classList.remove("copied"); b.removeAttribute("data-tip"); b.setAttribute("aria-label", "Copy command");
+      if (status) status.textContent = "";
+    }, 1600);
+  }
   // Without the clipboard API (old browsers, insecure origins) select the
   // text so one more keystroke copies it.
   function select() {
