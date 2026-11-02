@@ -69,9 +69,13 @@
           </div>
           <div class="not-mac">
             <p class="mo">Keysrs is Mac-only for now.</p>
-            <!-- NOTIFY FORM: the "notify me when Linux or Windows lands" form goes here once its storage is approved. -->
-            <a class="btn" href="https://github.com/gshost1/Keysreallysafe" data-event="notify_click">Watch releases on GitHub</a>
-            <p class="ost">On GitHub, choose Watch, then Custom, then Releases, and you'll hear when Linux or Windows lands.</p>
+            <form class="notify" id="notify" novalidate>
+              <label class="vh" for="notify-email">Email</label>
+              <input id="notify-email" name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@example.com" required>
+              <input class="hp" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true">
+              <button type="submit">Notify me</button>
+            </form>
+            <p class="ost" id="notify-msg" role="status">One email when Keysrs lands on Linux or Windows. Nothing else, and then your address is deleted. <a href="/privacy#notify">Details</a></p>
           </div>
         </div>
       </div>

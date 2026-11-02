@@ -68,16 +68,20 @@
 
 <h2 id="website">This website</h2>
 <p>Everything above is about the Mac app. This website, keysrs.com, works differently: it uses PostHog (US cloud) for analytics, and what it collects depends on your answer to the banner it shows on your first visit.</p>
-<p><strong>Before you answer, or if you say no:</strong> page views and five named clicks: copying the install command, the download link, the GitHub and star links, and the link to watch releases. Each click carries the kind of device you are on (Mac, Windows, Linux, iPhone or iPad, Android or other), which the page works out in your browser from its user agent, and the <code>?ref=</code> label of the link you arrived by, if it had one. No cookie and no identity are stored, so each page load counts on its own and you are not recognised on a return visit. Nothing is recorded. The only thing the site keeps in your browser is your answer itself (<code>keysrs-analytics-consent</code> in localStorage), so the banner doesn't ask again. (Our own browsers also hold <code>keysrs-internal</code>, which a private link sets so our visits aren't counted; a visitor never gets it.)</p>
+<p><strong>Before you answer, or if you say no:</strong> page views and a few named events: copying the install command, the download link, the GitHub and star links, and a sign-up on the notify form (that one happened, never the address). Each event carries the kind of device you are on (Mac, Windows, Linux, iPhone or iPad, Android or other), which the page works out in your browser from its user agent, and the <code>?ref=</code> label of the link you arrived by, if it had one. No cookie and no identity are stored, so each page load counts on its own and you are not recognised on a return visit. Nothing is recorded. The only thing the site keeps in your browser is your answer itself (<code>keysrs-analytics-consent</code> in localStorage), so the banner doesn't ask again. (Our own browsers also hold <code>keysrs-internal</code>, which a private link sets so our visits aren't counted; a visitor never gets it.)</p>
 <p><strong>If you say OK:</strong></p>
 <ul>
   <li>PostHog stores a random visitor ID in a first-party cookie and in localStorage, so a returning visitor counts once and visits can be linked to each other. No name, email or account is attached to it.</li>
   <li>Your visit is recorded as a session replay: page structure, scrolling, clicks and mouse movement. All text on the page and everything typed into inputs is masked before it leaves your browser, so a replay shows boxes, not words.</li>
   <li>Page-speed measurements (web vitals) and clicks that did nothing or were repeated in frustration ("dead" and "rage" clicks).</li>
-  <li>Page views and the named clicks as above.</li>
+  <li>Page views and the named events as above.</li>
 </ul>
 <p>There is no autocapture of every click and no surveys. You can change your answer at any time: <a href="#" data-consent-reset>change my choice</a>. Saying no after OK clears the visitor ID and stops recording.</p>
 <p>IP addresses are used by PostHog to derive a coarse location and are not stored with events. We are on PostHog's free plan, which keeps session replays for at most 30 days and other events for one year, then deletes them. Fonts load from Google Fonts. There are no other third-party scripts. The site is served by Cloudflare, which logs requests for security and operational purposes under <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.</p>
+
+<h2 id="notify">Notify-me sign-ups</h2>
+<p>Keysrs is Mac-only for now, so visitors on other systems can leave an email address to hear when a Linux or Windows version lands. The address, the kind of device you were on and the day you signed up are stored in Cloudflare Workers KV, in our own Cloudflare account. We use the address for one thing: a single email when that version is available. After it goes out, every address is deleted. No newsletter, no other mail, and it is never shared or sold, and it never goes to PostHog.</p>
+<p>Your IP address is used only to limit how many sign-ups one connection can send in a minute, and is not stored. To have your address removed sooner, write to <a href="mailto:support@keysrs.com">support@keysrs.com</a>.</p>
 
 <h2>Contact</h2>
 <p>Questions about privacy: <a href="mailto:support@keysrs.com">support@keysrs.com</a>.</p>

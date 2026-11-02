@@ -70,6 +70,17 @@ p { margin: 0; }
 .adopt, .ost, .on-phone { margin-top: 8px; font-size: 13px; color: var(--ink-3); }
 .on-phone, .not-mac { display: none; }
 .mo { font-size: 19px; font-weight: 600; margin-bottom: 14px; }
+.notify { display: flex; gap: 8px; max-width: 460px; }
+.notify input { flex: 1; min-width: 0; height: 46px; padding: 0 14px; border: 1px solid #d2d2d7; border-radius: 12px; background: #fff; color: var(--ink); font: 16px var(--sans); }
+.notify input:focus { outline: 3px solid rgba(0,113,227,.35); outline-offset: 0; border-color: var(--blue); }
+.notify button { flex: none; height: 46px; padding: 0 20px; border: 0; border-radius: 12px; background: var(--blue); color: #fff; font: 500 15px var(--sans); cursor: pointer; }
+.notify button:hover { background: var(--blue-2); }
+.notify button:disabled { opacity: .6; cursor: default; }
+.notify .hp { position: absolute; left: -9999px; width: 1px; height: 1px; }
+.ost a { color: var(--blue-ink); }
+.ost.err { color: #c9302c; }
+.ost.done { color: #1a7f37; font-size: 15px; font-weight: 500; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* site.js sets data-platform from the user agent before first paint; without
    it (no JS, unknown agent) the page stays the Mac page. */
 [data-platform="windows"] .for-mac, [data-platform="linux"] .for-mac, [data-platform="android"] .for-mac { display: none; }

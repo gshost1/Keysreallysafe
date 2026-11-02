@@ -114,6 +114,9 @@
     else if (/Keysrs-arm64\.dmg$/.test(h)) track("dmg_download");
     else if (h.indexOf("https://github.com/gshost1/") === 0) track(a.classList.contains("star") ? "star_click" : "github_click");
   });
+  // site.js fires this after the Worker stored an address; the address
+  // itself never reaches PostHog.
+  document.addEventListener("keysrs:notify", function () { track("notify_submit"); });
   // Selecting the command and pressing ⌘C counts as much as the button.
   document.addEventListener("copy", function (e) {
     var n = getSelection().anchorNode;

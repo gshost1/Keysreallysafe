@@ -1,4 +1,5 @@
-// keysrs.com's own script: no network, no storage beyond the opt-out flag below.
+// keysrs.com's own script. Its one request is the notify form's POST to
+// /api/notify; its one storage item is the opt-out flag below.
 // Loaded without defer so the platform is known before first paint and a
 // Windows visitor never sees the Mac install box flash.
 
@@ -40,4 +41,34 @@ document.addEventListener("click", function (e) {
   }
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done("Copied"); }, select);
   else select();
+});
+
+// The notify form posts JSON to the site's Worker (SiteWorker/src/worker.js).
+// The address goes only there; posthog.js hears that a sign-up happened,
+// never what was typed.
+document.addEventListener("submit", function (e) {
+  var form = e.target.closest("#notify"); if (!form) return;
+  e.preventDefault();
+  var msg = document.getElementById("notify-msg");
+  var email = form.elements.email.value.trim();
+  function say(text, cls) { msg.textContent = text; msg.className = "ost" + (cls ? " " + cls : ""); }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { say("Please check the address.", "err"); form.elements.email.focus(); return; }
+  var button = form.querySelector("button"); button.disabled = true;
+  fetch("/api/notify", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: email, platform: platform, website: form.elements.website.value })
+  }).then(function (r) {
+    if (r.ok) {
+      form.remove();
+      say("Thanks. You'll get one email when it lands.", "done");
+      document.dispatchEvent(new CustomEvent("keysrs:notify"));
+      return;
+    }
+    button.disabled = false;
+    say(r.status === 429 ? "Too many tries. Please wait a minute." : r.status === 400 ? "Please check the address." : "That didn't work. Please try again later.", "err");
+  }, function () {
+    button.disabled = false;
+    say("That didn't work. Please try again later.", "err");
+  });
 });

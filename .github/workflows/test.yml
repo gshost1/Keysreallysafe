@@ -26,6 +26,7 @@ jobs:
           cache-dependency-path: |
             scripts/tests/package-lock.json
             Relay/package-lock.json
+            SiteWorker/package-lock.json
       - name: Install the pinned browser test dependencies
         working-directory: scripts/tests
         run: npm ci
@@ -35,6 +36,13 @@ jobs:
       # Runs inside workerd with a throwaway secret: no Cloudflare account, no network.
       - name: Check the relay Worker offline
         working-directory: Relay
+        run: npm test
+      - name: Install the site Worker's pinned tooling
+        working-directory: SiteWorker
+        run: npm ci
+      # The keysrs.com notify form, in workerd with simulated KV and rate limit.
+      - name: Check the site Worker offline
+        working-directory: SiteWorker
         run: npm test
       - name: Check release packaging scripts (no credentials)
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
