@@ -2737,7 +2737,7 @@ struct ShareRevokeCommand: ParsableCommand {
     func run() throws {
         let share: [String: Any]
         if let control = try? ControlClient.connect() {
-            let obj = try control.call(method: "DELETE", path: "/api/shares", body: ["label": label], expect: 200)
+            let obj = try control.call(method: "DELETE", path: "/api/shares", body: ["label": label, "caller": "cli"], expect: 200)
             share = JSONValue.object(obj["share"]) ?? [:]
         } else {
             let service = try AppFactory.makeService()

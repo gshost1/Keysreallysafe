@@ -32,8 +32,17 @@ enum Share {
         guard !label.isEmpty else { throw AppError.usage("a share needs a label, e.g. the machine's name") }
         // The stored pairing label is capped at 80 with the prefix included.
         guard label.count <= 80 - labelPrefix.count else { throw AppError.usage("a share label is at most \(80 - labelPrefix.count) characters") }
-        guard !label.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-            throw AppError.usage("a share label cannot contain control characters")
+        // The label reaches the Touch ID prompt and the printed revoke command, so it holds no
+        // control, format (bidi overrides) or line/paragraph separator characters, and none a
+        // shell would expand inside the quoted command.
+        let refused = label.unicodeScalars.contains { scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator: return true
+            default: return "\"$`\\".unicodeScalars.contains(scalar)
+            }
+        }
+        guard !refused else {
+            throw AppError.usage("a share label cannot contain control characters or any of \" $ ` \\")
         }
         return label
     }
@@ -169,18 +178,28 @@ extension KeysService {
             }
         }
         let credential = RelayPairing.generate()
-        let pairing = try catalog.insertRelayPairing(
-            label: pairingLabel,
-            tokenHash: RelayPairing.hash(credential),
-            hint: RelayPairing.hint(credential),
-            keys: members.map(\.name),
-            createdAt: UTC.iso(now),
-            expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
-        )
-        let issued = try mintProjectGatewayClient(
-            members: members, label: pairingLabel, days: ttlDays, methods: allowed, pathPrefix: nil,
-            project: Share.project(pairingID: pairing.id), caller: caller, now: now
-        )
+        // One transaction: a mint that fails must not leave a live pairing without its token,
+        // which no share list would show and whose label would block the next share. The
+        // label is checked again inside it, because a second share of the same name may have
+        // been approved while this prompt was up.
+        let (pairing, issued) = try catalog.withTransaction {
+            if try catalog.relayPairings().contains(where: { $0.label == pairingLabel && $0.revokedAt == nil }) {
+                throw AppError.alreadyExists("a live share named \(label) already exists; revoke it first: keys share revoke \"\(label)\"")
+            }
+            let pairing = try catalog.insertRelayPairing(
+                label: pairingLabel,
+                tokenHash: RelayPairing.hash(credential),
+                hint: RelayPairing.hint(credential),
+                keys: members.map(\.name),
+                createdAt: UTC.iso(now),
+                expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400))
+            )
+            let issued = try mintProjectGatewayClient(
+                members: members, label: pairingLabel, days: ttlDays, methods: allowed, pathPrefix: nil,
+                project: Share.project(pairingID: pairing.id), caller: caller, now: now
+            )
+            return (pairing, issued)
+        }
         let share = ShareRecord(label: label, pairing: pairing, client: issued.client, keys: members.map(\.name))
         return (issued.token, credential, share)
     }

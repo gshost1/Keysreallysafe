@@ -111,6 +111,9 @@ final class ShareTests: XCTestCase {
         XCTAssertThrowsError(try service.issueShare(label: "box", keys: ["missing"]))
         XCTAssertThrowsError(try service.issueShare(label: "box", keys: ["claude"], days: 0))
         XCTAssertThrowsError(try service.issueShare(label: "box\nnext", keys: ["claude"]))
+        for label in ["box\u{202E}xob", "bo\u{2028}x", "my \"box\"", "box $(id)", "box `id`", "box\\"] {
+            XCTAssertThrowsError(try service.issueShare(label: label, keys: ["claude"]), label)
+        }
         XCTAssertEqual(gate.reasons, [], "every refusal comes before the prompt")
 
         _ = try service.issueShare(label: "box", keys: ["claude"])
@@ -119,6 +122,20 @@ final class ShareTests: XCTestCase {
             XCTAssertTrue("\(error)".contains("revoke it first"), "\(error)")
         }
         XCTAssertEqual(gate.reasons.count, 1, "a duplicate live label is refused before the prompt")
+    }
+
+    /// A second share of the same name approved while the first prompt was up is refused
+    /// after the prompt, and nothing half-made is left behind.
+    func testADuplicateApprovedDuringThePromptIsRefusedAtomically() throws {
+        let (service, gate, db, _) = try makeService()
+        gate.duringNextPrompt = { _ = try service.issueShare(label: "box", keys: ["router"]) }
+        XCTAssertThrowsError(try service.issueShare(label: "box", keys: ["claude"])) { error in
+            XCTAssertTrue("\(error)".contains("already exists"), "\(error)")
+        }
+        let live = try service.shares().filter { $0.isActive(now: Date()) }
+        XCTAssertEqual(live.map(\.keys), [["router"]], "only the share approved first exists")
+        XCTAssertEqual(try db.relayPairings().filter { $0.revokedAt == nil }.count, 1, "no orphan pairing")
+        XCTAssertEqual(try db.allGatewayClients().filter { $0.revokedAt == nil }.count, 1, "no orphan token")
     }
 
     // MARK: revoke and liveness

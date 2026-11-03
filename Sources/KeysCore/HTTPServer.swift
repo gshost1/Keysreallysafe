@@ -858,7 +858,8 @@ final class APIHandler: @unchecked Sendable {
         guard let label = JSONValue.string(obj["label"]), !label.isEmpty else {
             return HTTPResponse.json(400, ["error": "label is required"])
         }
-        let revoked = try service.revokeShare(label)
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "dashboard"
+        let revoked = try service.revokeShare(label, caller: caller)
         return HTTPResponse.json(200, ["share": revoked.jsonObject(now: Date())])
     }
 
