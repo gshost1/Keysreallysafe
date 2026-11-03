@@ -87,20 +87,7 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   same token checks. Relayed requests can additionally be restricted to
   agents you have paired with the Mac. Keys never leave the Mac over it; see
   [docs/relay.md](relay.md).
-  Optional product analytics
-  ("share to compare") is off until the user opts in. Then, once a day, it
-  sends one aggregate report to `analytics.keysrs.com`: feature counters, token
-  totals per tool, provider and public model name, gateway totals per provider,
-  and plan-window peaks, never from before opting in.
-- Product analytics excludes prompt content, credentials, key/project/session
-  names, paths, dollar amounts, exact times, and persistent device/user
-  identifiers. The Privacy dialog shows the destination and unsent reports and
-  can stop collection and discard them.
-- With sharing on, the app also downloads the public comparison table from the
-  same host once a day. These two requests are the only analytics network
-  traffic, and neither happens without opting in.
-  See [product analytics](product-analytics.md) and the
-  [self-hosted collector](../Analytics/README.md).
+- The app sends no analytics or telemetry.
 - Update checks send one cookieless request to GitHub's public
   latest-release API and read only the release's version and download
   address. Nothing from the catalog goes with it. Install updates
@@ -284,9 +271,6 @@ item** (the status item, off by default) and **Install updates
 automatically** (on by default; see Updates above). Settings and the app
 menu also carry Quit and the relay controls, so nothing needs the menu bar
 item to be on.
-
-The [analytics collector](../Analytics/README.md) runs at `analytics.keysrs.com`
-and is deployed separately from the app.
 
 Every request the page makes is same-origin. Mutating calls carry a token the
 server generates per launch. That token is a browser CSRF defense: it stops a
@@ -594,9 +578,7 @@ project, and `grant_status` hands the scoped token and base URL over on the
 one approved poll. `send_feedback` scrubs a feedback draft in the app (key
 values, token shapes, paths, names, emails removed first), opens the prefilled
 support mail or GitHub issue page, and never submits anything itself.
-`set_analytics_sharing` records the user's own answer to the analytics
-question, and only after they give it; it can turn sharing off, but turning it
-on is left to the user's own switch in the app. The revoke pair `revoke_all` /
+The revoke pair `revoke_all` /
 `revoke_project` ends access in one call — every grant and client token at
 once, one key's, or one project's client tokens by label — with honest counts
 and no Touch ID. `activity` reads recent gateway use from the local catalog —
@@ -609,7 +591,7 @@ clients, writing the resolved `keys` binary path plus the `mcp` argument into
 `claude_desktop_config.json` — no secret in any of them, a `.bak` beside each,
 idempotent, and `keys setup mcp --remove` to undo. The server stays on
 loopback: it reads the catalog locally, reaches the app through the same
-control channel as the CLI, and sends no product analytics. See
+control channel as the CLI, and sends nothing anywhere else. See
 [docs/agents.md](agents.md) for the tool list and the grant flow.
 
 Keysrs also ships an **agent skill** — `Skills/keysrs/SKILL.md` in the
@@ -852,8 +834,7 @@ assistant turn, and, for a `droid exec -o stream-json` capture passed with
 `--stream`, the closing event's token totals. Prompts, answers, tool output,
 paths and Factory credits stay behind. Rows are stored as `droid-remote` and
 `claude-remote` and appear in the Chart under **Cloud** (and in All); they never
-feed the local Droid or Claude plan windows, carry no dollar estimate, and are
-not part of share-to-compare analytics. Droid's per-request lines keep each
+feed the local Droid or Claude plan windows and carry no dollar estimate. Droid's per-request lines keep each
 request's model, so a run that fell back from Claude to `kimi-k3` shows both. A
 stream-json total covers a whole session and is stored under the model
 `unattributed`; if the same session's per-request lines are imported too, they

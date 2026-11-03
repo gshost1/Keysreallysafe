@@ -13,7 +13,7 @@
 // Real here: the page, the routing, the response shapes, the status codes, the
 // headers, the catalog rows, the key events and the X-KSF-Token, Origin/Host and
 // Sec-Fetch-Site gates the page's own requests pass. Mocked there: keychain
-// storage, Touch ID, the clipboard, any provider call and analytics upload.
+// storage, Touch ID, the clipboard and any provider call.
 // Every secret below is invented for the harness; the suite never reaches a real
 // vault, credential or network endpoint, and it neither relaxes nor bypasses the
 // product's authentication. The forged-request matrix (bad tokens, foreign

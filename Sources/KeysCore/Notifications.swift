@@ -138,7 +138,7 @@ final class AppNotifier: @unchecked Sendable {
     /// update and never again for the same version. The version marker is stored
     /// once the ask returns, so a denial is remembered and not re-asked.
     @discardableResult
-    func requestAuthorizationIfNeeded(version: String = ProductAnalyticsConfiguration.appVersion) async -> Bool {
+    func requestAuthorizationIfNeeded(version: String = AppVersion.current) async -> Bool {
         guard preferences.notificationsAuthorizedVersion != version else { return false }
         let granted = await authorizer.requestAuthorization()
         try? preferences.recordNotificationsAuthorized(version: version)

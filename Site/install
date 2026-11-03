@@ -1,0 +1,207 @@
+#!/bin/sh
+# Keysrs installer for macOS 14+ on Apple Silicon:
+#
+#     curl -fsSL https://keysrs.com/install | bash
+#
+# It downloads the latest release's Keysrs-arm64.dmg from GitHub, checks its
+# SHA-256 against the release's Keysrs-arm64.dmg.sha256, mounts it read-only,
+# checks the app's code signature (identifier "keysreallysafe", Developer ID
+# team YS9TM7MAA5), and copies Keysrs.app into /Applications. It never uses
+# sudo and never changes anything outside /Applications/Keysrs.app and a
+# temporary folder it removes on exit.
+#
+# Everything runs from main(), called on the last line: a download that is cut
+# short either fails to parse or never reaches that line, so half a script
+# never runs.
+#
+# KEYSRS_APPS_DIR (default /Applications) exists so the tests can install into a
+# scratch folder.
+
+set -eu
+set -f # no globbing: a checksum line is data
+
+RELEASE_URL="https://github.com/gshost1/Keysreallysafe/releases/latest/download"
+DMG_NAME="Keysrs-arm64.dmg"
+APP_NAME="Keysrs.app"
+TEAM_ID="YS9TM7MAA5"
+
+# The requirement Sources/KeysCore/StableSigning.swift accepts for this app: the
+# identifier, the pinned team, and an Apple Developer ID / Apple Development chain.
+APPLE_SIGNER='anchor apple generic and ((certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists) or (certificate 1[field.1.2.840.113635.100.6.2.1] exists and certificate leaf[field.1.2.840.113635.100.6.1.12] exists) or (certificate 1[field.1.2.840.113635.100.6.2.1] exists and certificate leaf[field.1.2.840.113635.100.6.1.7] exists))'
+
+WORK=""
+MOUNT=""
+STAGED=""
+DONE=no
+
+say() { printf '%s\n' "$*"; }
+
+die() {
+  printf 'keysrs install: %s\n' "$*" >&2
+  exit 1
+}
+
+cleanup() {
+  status=$?
+  trap - EXIT
+  # bash 3.2 (macOS /bin/bash) reports 0 here after an unset-variable error; success is only ever "done".
+  if [ "$status" -eq 0 ] && [ "$DONE" != yes ]; then status=1; fi
+  detached=yes
+  if [ -n "$MOUNT" ]; then
+    if hdiutil detach "$MOUNT" -quiet </dev/null >/dev/null 2>&1 \
+      || hdiutil detach "$MOUNT" -force -quiet </dev/null >/dev/null 2>&1; then
+      MOUNT=""
+    else
+      detached=no
+    fi
+  fi
+  if [ -n "$STAGED" ] && [ -e "$STAGED" ]; then rm -rf "$STAGED"; fi
+  # Never delete a folder whose disk image could not be detached.
+  if [ -n "$WORK" ] && [ -d "$WORK" ]; then
+    if [ "$detached" = yes ]; then rm -rf "$WORK"; else printf 'keysrs install: could not eject the disk image; left %s in place.\n' "$WORK" >&2; fi
+  fi
+  exit "$status"
+}
+
+check_platform() {
+  [ "$(uname -s)" = "Darwin" ] || die "Keysrs is a Mac app; this is not macOS."
+  arch=$(uname -m)
+  if [ "$arch" != "arm64" ] && [ "$(sysctl -in hw.optional.arm64 2>/dev/null || true)" != "1" ]; then
+    die "Keysrs needs a Mac with Apple Silicon; this one reports $arch."
+  fi
+  version=$(sw_vers -productVersion 2>/dev/null || true)
+  major=${version%%.*}
+  case $major in
+    ''|*[!0-9]*) die "Could not read the macOS version." ;;
+  esac
+  [ "$major" -ge 14 ] || die "Keysrs needs macOS 14 or newer; this Mac has $version."
+  for tool in curl hdiutil codesign ditto shasum open; do
+    command -v "$tool" >/dev/null 2>&1 || die "Missing the $tool command; this does not look like a normal macOS."
+  done
+}
+
+# True while the installed copy is running. Matches only processes launched
+# from inside the bundle, not a `keys` command-line call through a symlink.
+app_running() {
+  pgrep -f "$1/Contents/MacOS/" >/dev/null 2>&1
+}
+
+# The first line of the release's checksum file that holds a SHA-256, in the
+# two layouts the app's updater accepts: "<hex>  Keysrs-arm64.dmg" (or a bare
+# hash) and BSD "SHA256 (Keysrs-arm64.dmg) = <hex>". Prints it in lowercase.
+parse_checksum() {
+  file=$1
+  while IFS= read -r line || [ -n "$line" ]; do
+    set -- $line
+    [ $# -gt 0 ] || continue
+    if is_sha256 "$1"; then lower "$1"; return 0; fi
+    if [ $# -eq 4 ] && [ "$(lower "$1")" = "sha256" ] && [ "$3" = "=" ] && is_sha256 "$4"; then
+      lower "$4"; return 0
+    fi
+  done < "$file"
+  return 1
+}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+is_sha256() {
+  [ "${#1}" -eq 64 ] || return 1
+  case $1 in *[!0-9a-fA-F]*) return 1 ;; esac
+}
+
+# The release must publish its checksum; without one there is nothing to
+# verify against, so nothing is downloaded.
+fetch_expected_checksum() {
+  sidecar="$WORK/$DMG_NAME.sha256"
+  curl -fsSL --proto '=https' --tlsv1.2 -o "$sidecar" "$RELEASE_URL/$DMG_NAME.sha256" </dev/null \
+    || die "The release does not publish a checksum ($DMG_NAME.sha256), so the download cannot be verified. Nothing was downloaded or installed."
+  parse_checksum "$sidecar" \
+    || die "The release's checksum file could not be read. Nothing was downloaded or installed."
+}
+
+# Identifier, pinned team and Apple chain, plus an intact, strictly valid bundle.
+verify_signature() {
+  bundle=$1
+  codesign --verify --deep --strict "$bundle" </dev/null >/dev/null 2>&1 \
+    || die "The app's code signature is not valid. Nothing was installed."
+  requirement="identifier \"keysreallysafe\" and certificate leaf[subject.OU] = \"$TEAM_ID\" and $APPLE_SIGNER"
+  codesign --verify --strict --test-requirement="=$requirement" "$bundle" </dev/null >/dev/null 2>&1 \
+    || die "The app is not signed as keysreallysafe by team $TEAM_ID. Nothing was installed."
+}
+
+main() {
+  check_platform
+
+  apps_dir=${KEYSRS_APPS_DIR:-/Applications}
+  app="$apps_dir/$APP_NAME"
+  incoming="$apps_dir/.Keysrs.app.incoming"
+  previous="$apps_dir/.Keysrs.app.previous"
+
+  [ -d "$apps_dir" ] && [ -w "$apps_dir" ] \
+    || die "Cannot write to $apps_dir. Run this from an administrator account (the script never uses sudo)."
+  if [ -e "$app" ] && app_running "$app"; then
+    die "Keysrs is running. Quit it (menu bar item, Quit) and run this again."
+  fi
+
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/keysrs-install.XXXXXX") || die "Could not make a temporary folder."
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+
+  say "Checking the latest release…"
+  expected=$(fetch_expected_checksum) || exit 1
+
+  say "Downloading ${DMG_NAME}…"
+  dmg="$WORK/$DMG_NAME"
+  curl -fsSL --proto '=https' --tlsv1.2 -o "$dmg" "$RELEASE_URL/$DMG_NAME" </dev/null \
+    || die "The download failed. Nothing was installed; try again."
+
+  actual=$(shasum -a 256 "$dmg" | cut -d ' ' -f 1)
+  [ "$(lower "$actual")" = "$expected" ] \
+    || die "The download's checksum does not match the release. Nothing was installed; try again."
+
+  mkdir "$WORK/mount"
+  if ! hdiutil attach "$dmg" -nobrowse -readonly -quiet -mountpoint "$WORK/mount" </dev/null >/dev/null 2>&1; then
+    hdiutil detach "$WORK/mount" -force -quiet </dev/null >/dev/null 2>&1 || true
+    die "The download could not be opened as a disk image. Nothing was installed."
+  fi
+  MOUNT="$WORK/mount"
+
+  candidate="$MOUNT/$APP_NAME"
+  [ -d "$candidate" ] || die "The disk image does not contain $APP_NAME. Nothing was installed."
+  verify_signature "$candidate"
+
+  # Stage beside the destination so the final step is a rename on one volume,
+  # then check the staged copy again before anything is replaced.
+  STAGED="$incoming"
+  rm -rf "$incoming"
+  ditto "$candidate" "$incoming" </dev/null || die "Could not copy Keysrs into $apps_dir. Nothing was installed."
+  verify_signature "$incoming"
+
+  if [ -e "$app" ] && app_running "$app"; then
+    die "Keysrs is running. Quit it (menu bar item, Quit) and run this again."
+  fi
+  rm -rf "$previous"
+  if [ -e "$app" ]; then
+    mv "$app" "$previous" || die "Could not set the existing Keysrs aside; it was left as it was."
+  fi
+  if ! mv "$incoming" "$app"; then
+    if [ -e "$previous" ]; then
+      mv "$previous" "$app" || true
+      die "Could not move the new Keysrs into place; the previous version was restored."
+    fi
+    die "Could not move the new Keysrs into place. Nothing was installed."
+  fi
+  STAGED=""
+  rm -rf "$previous"
+
+  say "Installed $app"
+  if open "$app" </dev/null >/dev/null 2>&1; then
+    say "Keysrs is open in your menu bar. Ask your agent: \"set up my keys for this project\"."
+  else
+    say "Open it from Applications when you are ready."
+  fi
+  DONE=yes
+}
+
+main "$@"

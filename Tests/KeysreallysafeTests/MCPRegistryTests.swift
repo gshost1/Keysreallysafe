@@ -8,17 +8,16 @@ final class MCPRegistryTests: XCTestCase {
 
     /// The full merged mission roster: the mcp-core mission's five read tools,
     /// its two grants tools, the onboarding mission's four tools, then the
-    /// feedback mission's five (send_feedback, set_analytics_sharing,
-    /// revoke_all, revoke_project, activity) — in registration order, which is
+    /// feedback mission's four (send_feedback, revoke_all, revoke_project,
+    /// activity) — in registration order, which is
     /// the order of the groups in `MCPToolRegistry.groups`.
     static let milestoneOneRoster = ["version", "list_keys", "gateway_info", "open_app", "check_update"]
     static let milestoneTwoRoster = ["request_grant", "grant_status"]
     static let onboardingRoster = ["scan_project", "check_exposure", "import_and_wrap", "test_keys"]
     static let feedbackRoster = ["send_feedback"]
-    static let analyticsRoster = ["set_analytics_sharing"]
     static let revokeRoster = ["revoke_all", "revoke_project"]
     static let activityRoster = ["activity"]
-    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster + feedbackRoster + analyticsRoster + revokeRoster + activityRoster
+    static let missionRoster = milestoneOneRoster + milestoneTwoRoster + onboardingRoster + feedbackRoster + revokeRoster + activityRoster
 
     /// Names no revision of this server has registered: the cancel tool that
     /// deliberately does not exist (denial is the user cancelling Touch ID), and
@@ -33,7 +32,7 @@ final class MCPRegistryTests: XCTestCase {
 
     /// The roster is the LITERAL mission set, pinned by name — not by comparing
     /// `tools/list` to the registry's own declared groups, which is self-referential
-    /// and would let a wrongly-named tool pass. The mission's sixteen tools, in
+    /// and would let a wrongly-named tool pass. The mission's fifteen tools, in
     /// registration order, each once; every listed name answers `tools/call`, and
     /// the not-yet-built names still answer -32602 and are absent — future tools
     /// appear by registration, never by accident.
@@ -111,7 +110,7 @@ final class MCPRegistryTests: XCTestCase {
             #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
         ])
         let listed = try Self.names(in: frames[1], id: 1)
-        XCTAssertEqual(listed, Self.missionRoster, "the roster is the sixteen-tool union")
+        XCTAssertEqual(listed, Self.missionRoster, "the roster is the fifteen-tool union")
 
         // Tool names are snake_case, so the forbidden kinds are checked as whole
         // segments (never as substrings: `revoke_all` must not read as `rotate`).

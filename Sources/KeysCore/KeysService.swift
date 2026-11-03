@@ -58,13 +58,7 @@ final class KeysService: @unchecked Sendable {
     /// cannot both find it off and race for the lock.
     private let relayToggleLock = NSLock()
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
-    var analytics: ProductAnalytics?
-    /// The app's one analytics confirmation line, as the MCP `set_analytics_sharing`
-    /// route drives it. The running app wires it to menubar.log in `AppRuntime.run()`
-    /// beside `relayHost`; every other process leaves it a no-op, so only the app
-    /// records the onboarding answer. The line names the new state and nothing else.
-    var analyticsLog: (String) -> Void = { _ in }
-    /// First-launch answers: background Claude limit refresh, analytics question asked.
+    /// First-launch answers: background Claude limit refresh.
     let preferences: AppPreferences
     private var screenLockObserver: NSObjectProtocol?
 
@@ -655,12 +649,6 @@ final class KeysService: @unchecked Sendable {
             caller: caller,
             detail: Self.grantDetail(issued.grant)
         )
-        // The onboarding `grant_issue` counter's producer: the MCP `request_grant`
-        // flow issues with caller "mcp". The key-event audit's `grant_create`
-        // (recordKeyEvent just above) already counts every issuance, so this stays
-        // the onboarding-only signal. Opt-in: `record` is a no-op while analytics
-        // sharing is off.
-        if caller == "mcp" { analytics?.record(.grantIssue) }
         return issued
     }
 
@@ -1478,7 +1466,6 @@ final class KeysService: @unchecked Sendable {
     }
 
     func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil, method: String = "POST") throws {
-        analytics?.record((200..<400).contains(row.status) ? .gatewaySuccess : .gatewayFailure, durationMS: row.durationMs)
         var event = row.usageEvent()
         if let grantId {
             grants.charge(
@@ -1985,7 +1972,6 @@ final class KeysService: @unchecked Sendable {
         revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
         try relaySecrets?.deleteAll()
-        try analytics?.setEnabled(false, consentVersion: ProductAnalytics.consentVersion)
         try catalog.wipeData()
     }
 
@@ -2029,17 +2015,6 @@ final class KeysService: @unchecked Sendable {
         if touchLastUsed {
             try catalog.touchLastUsed(name: name, at: ts)
         }
-        // Only the action's fixed enum crosses into product analytics.
-        // The name, caller and audit detail stay in the local audit table.
-        let event: ProductAnalyticsEvent? = switch action {
-        case "add": .keyAdd
-        case "copy": .keyCopy
-        case "rm": .keyDelete
-        case "grant": .grantCreate
-        case "client_issue": .clientCreate
-        default: nil
-        }
-        if let event { analytics?.record(event) }
     }
 
     func pollOpenRouter() throws {
@@ -2098,8 +2073,6 @@ final class KeysService: @unchecked Sendable {
 
     private func ingestLocked(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
         // Every ingest path (explicit, scheduled, the dashboard's stale refresh) comes through here.
-        var succeeded = false
-        defer { analytics?.record(succeeded ? .ingestSuccess : .ingestFailure) }
         var reports = try Ingest.run(
             source: source,
             grokHome: grokHome,
@@ -2120,7 +2093,6 @@ final class KeysService: @unchecked Sendable {
         }
         try catalog.ensureModelColors()
         try catalog.setLastIngestAt(UTC.iso(Date()))
-        succeeded = true
         return reports
     }
 
@@ -2244,8 +2216,6 @@ final class KeysService: @unchecked Sendable {
         // The user's subscriptions take over their placeholders and attach Factory's plan to the
         // Droid row, before the poll hands the rows to the dashboard.
         status.plans = Subscriptions.merge(try catalog.listSubscriptions(), into: status.plans)
-        // Plan-window peaks for the day's report; a no-op unless sharing is on.
-        analytics?.observe(status)
         return status
     }
 
@@ -2309,7 +2279,6 @@ enum AppFactory {
             presencePrompts: prompts
         )
         service.observeScreenLock()
-        service.analytics = ProductAnalytics(catalog: db)
         return service
     }
 }

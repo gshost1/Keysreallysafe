@@ -16,7 +16,6 @@ const html = asset("index.html").toString("utf8").replace("<head>", '<head><meta
 const assets = new Map([
   ["/", ["text/html; charset=utf-8", html]],
   ["/app.js", ["application/javascript", asset("app.js")]],
-  ["/analytics.js", ["application/javascript", ""]],
   ["/styles.css", ["text/css", asset("styles.css")]],
   ["/providers.json", ["application/json", asset("providers.json")]],
   ["/icon.png", ["image/png", asset("icon.png")]],

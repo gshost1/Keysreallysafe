@@ -262,7 +262,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
             defer { checking = false }
             do {
                 let release = try await latestRelease()
-                if UpdateCheck.isNewer(release.version, than: ProductAnalyticsConfiguration.appVersion) {
+                if UpdateCheck.isNewer(release.version, than: AppVersion.current) {
                     // Only the person's Check for Updates offers the modal. The
                     // scheduled check runs over a Dock-less app, so it installs
                     // through the background path and raises no dialog; a failed
@@ -270,7 +270,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
                     if manual { offerUpdate(release) }
                     else { background?.install(release) }
                 } else if manual {
-                    alert("Keysrs Is Up to Date", "Keysrs \(ProductAnalyticsConfiguration.appVersion) is the newest release.")
+                    alert("Keysrs Is Up to Date", "Keysrs \(AppVersion.current) is the newest release.")
                 }
             } catch {
                 if manual { alert("Could Not Check for Updates", error.localizedDescription) }
@@ -301,7 +301,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     private static func askUpdateChoice(_ release: ReleaseInfo) -> UpdateChoice {
         let prompt = NSAlert()
         prompt.messageText = "Keysrs \(release.version) is available"
-        prompt.informativeText = "You have \(ProductAnalyticsConfiguration.appVersion). Update Now downloads the new version from GitHub, checks its checksum and Apple signature, replaces this copy and restarts. Keys and history are untouched."
+        prompt.informativeText = "You have \(AppVersion.current). Update Now downloads the new version from GitHub, checks its checksum and Apple signature, replaces this copy and restarts. Keys and history are untouched."
         prompt.addButton(withTitle: "Update Now")
         prompt.addButton(withTitle: "Release Notes")
         prompt.addButton(withTitle: "Later")

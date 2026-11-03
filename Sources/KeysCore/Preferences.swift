@@ -1,12 +1,14 @@
 import Foundation
 
 /// Choices the person makes on first launch and can change later from the menu.
-/// Stored in the private catalog's `meta` table beside the analytics
-/// state, so every Keysrs process (menu bar, dashboard, CLI) reads the same answer.
+/// Stored in the private catalog's `meta` table, so every Keysrs process (menu bar, dashboard, CLI) reads the same answer.
 final class AppPreferences: @unchecked Sendable {
     static let claudeRefreshKey = "pref_claude_usage_refresh"
     static let welcomeKey = "welcome_answered_at"
-    static let analyticsAskedKey = "welcome_analytics_consent_asked"
+    /// Catalog keys left by the product analytics that earlier releases shipped:
+    /// the consent and unsent reports, the downloaded comparison table, and the
+    /// welcome window's "asked" marker. Nothing reads them any more.
+    static let retiredAnalyticsKeys = ["product_analytics_v1", "product_analytics_benchmarks", "welcome_analytics_consent_asked"]
     private let catalog: CatalogDB
 
     init(catalog: CatalogDB) {
@@ -146,22 +148,23 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta("app_login_registered", "yes") }
     }
 
-    /// What the welcome window still has to ask. The analytics question appears
-    /// once per consent version, unless sharing is already on: an unticked box is
-    /// an answer and is not asked again.
+    /// What the welcome window still has to ask: only the first-run question.
     struct WelcomePlan: Equatable, Sendable {
         var firstRun: Bool
-        var askAnalytics: Bool
-        var isEmpty: Bool { !firstRun && !askAnalytics }
+        var isEmpty: Bool { !firstRun }
     }
 
-    func welcomePlan(analyticsEnabled: Bool) -> WelcomePlan {
+    func welcomePlan() -> WelcomePlan {
         let answered = (try? catalog.metaValue(Self.welcomeKey)).map { !$0.isEmpty } ?? false
-        let asked = (try? catalog.metaValue(Self.analyticsAskedKey)).flatMap { Int($0) } ?? 0
-        return WelcomePlan(
-            firstRun: !answered,
-            askAnalytics: !analyticsEnabled && asked < ProductAnalytics.consentVersion
-        )
+        return WelcomePlan(firstRun: !answered)
+    }
+
+    /// Deletes what the removed product analytics left in the catalog, so an
+    /// upgraded install keeps no queued reports. Safe to run on every launch.
+    func removeRetiredAnalytics() throws {
+        try catalog.withTransaction {
+            for key in Self.retiredAnalyticsKeys { try catalog.deleteMeta(key) }
+        }
     }
 
     func recordWelcome(_ plan: WelcomePlan, claudeRefresh: Bool, now: Date = Date()) throws {
@@ -169,9 +172,6 @@ final class AppPreferences: @unchecked Sendable {
             if plan.firstRun {
                 try catalog.setMeta(Self.welcomeKey, UTC.iso(now))
                 try catalog.setMeta(Self.claudeRefreshKey, claudeRefresh ? "on" : "off")
-            }
-            if plan.askAnalytics {
-                try catalog.setMeta(Self.analyticsAskedKey, String(ProductAnalytics.consentVersion))
             }
         }
     }

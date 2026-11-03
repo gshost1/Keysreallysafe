@@ -18,8 +18,7 @@ import XCTest
 /// loop, the tool registry, the app connection, the app's routes, the pending
 /// store, the formatter and the output guard. Nothing leaves the machine — the
 /// request log proves every byte the subprocess sent landed on the loopback
-/// control channel, and the recording analytics transport (consent explicitly
-/// ON) stays empty, so this test is VAL-CROSS-003's subprocess-level
+/// control channel, so this test is VAL-CROSS-003's subprocess-level
 /// confirmation as well.
 final class MCPClientFlowTests: XCTestCase {
 
@@ -54,8 +53,6 @@ final class MCPClientFlowTests: XCTestCase {
         /// Every request that reached the loopback server — what the subprocess
         /// actually sent, as observed, never inferred.
         let requests: RequestLog
-        let analytics: ProductAnalytics
-        let transport: ProductAnalyticsTests.Transport
         /// The folder the subprocess runs in: its project folder.
         let agentCwd: URL
     }
@@ -96,13 +93,6 @@ final class MCPClientFlowTests: XCTestCase {
         _ = try service.issueGatewayClient(name: "demo", label: "router", project: project.id)
         XCTAssertEqual(gate.recordedReasons.count, 1, "setup spent exactly one prompt")
 
-        // Sharing consented ON and the transport recording: if any MCP path
-        // enrolled or sent anything, it lands here and fails the test.
-        let transport = ProductAnalyticsTests.Transport()
-        let analytics = ProductAnalytics(catalog: db, transport: transport)
-        try analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
-        service.analytics = analytics
-        analytics.start()
 
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try fm.createDirectory(at: web, withIntermediateDirectories: true)
@@ -123,8 +113,8 @@ final class MCPClientFlowTests: XCTestCase {
         }
         return Rig(
             service: service, db: db, dir: dir, gate: gate, handler: handler,
-            server: server, control: control, requests: requests, analytics: analytics,
-            transport: transport, agentCwd: agentCwd
+            server: server, control: control, requests: requests, 
+            agentCwd: agentCwd
         )
     }
 
@@ -373,7 +363,7 @@ final class MCPClientFlowTests: XCTestCase {
         XCTAssertEqual((capabilities?["tools"] as? [String: Any])?.count, 0)
         let serverInfo = initialize["serverInfo"] as? [String: Any]
         XCTAssertEqual(serverInfo?["name"] as? String, "keysrs")
-        XCTAssertEqual(serverInfo?["version"] as? String, ProductAnalyticsConfiguration.appVersion,
+        XCTAssertEqual(serverInfo?["version"] as? String, AppVersion.current,
                        "serverInfo.version is the single version constant")
         XCTAssertTrue((initialize["instructions"] as? String)?.contains("Keysrs is the local API-key vault") ?? false,
                       "the instructions string is the frozen one")
@@ -388,7 +378,7 @@ final class MCPClientFlowTests: XCTestCase {
         let roster = try MCPSession.toolNames(in: try client.frame(), id: "list")
         XCTAssertEqual(roster, ["version", "list_keys", "gateway_info", "open_app", "check_update",
                                 "request_grant", "grant_status", "scan_project", "check_exposure", "import_and_wrap",
-                                "test_keys", "send_feedback", "set_analytics_sharing", "revoke_all", "revoke_project",
+                                "test_keys", "send_feedback", "revoke_all", "revoke_project",
                                 "activity"],
                        "the deterministic mission roster")
 
@@ -516,10 +506,6 @@ final class MCPClientFlowTests: XCTestCase {
             XCTAssertTrue(request.path.hasPrefix("/api/mcp/grants"),
                           "the control channel serves the MCP routes and nothing else: \(request.path)")
         }
-        // Analytics stays silent even with sharing consented ON: an MCP session
-        // must never silently enroll the user in share-to-compare.
-        XCTAssertEqual(rig.transport.calls.count, 0, "no analytics report was attempted")
-        XCTAssertEqual(rig.transport.fetches.count, 0, "no benchmark fetch was attempted")
 
         // The delivered token never touched disk — the store keeps hashes only.
         assertNoSentinel(token!, in: rig.dir)
@@ -561,7 +547,7 @@ final class MCPClientFlowTests: XCTestCase {
 
     /// The synthetic app for the onboarding flow: the same in-process app shape
     /// as `makeRig` (temp catalog, temp control file, blocking presence, memory
-    /// secrets, consent-ON recording analytics) plus a gateway listener and a
+    /// secrets) plus a gateway listener and a
     /// stub upstream, so the minted project token's acceptance is proven by a
     /// real loopback HTTP round trip — never the network. The two vault keys the
     /// flow "finds" are seeded with the env file's own fake values and their
@@ -576,7 +562,6 @@ final class MCPClientFlowTests: XCTestCase {
         let handler: APIHandler
         let server: LoopbackHTTPServer
         let requests: RequestLog
-        let transport: ProductAnalyticsTests.Transport
         let stub: LoopbackHTTPServer
         let stubRequests: RequestLog
         let gateway: GatewayListener
@@ -623,13 +608,6 @@ final class MCPClientFlowTests: XCTestCase {
         let gateway = try GatewayListener(service: service, port: 0)
         gateway.start()
 
-        // Sharing consented ON and the transport recording: any MCP path that
-        // enrolled or sent anything lands here and fails the test.
-        let transport = ProductAnalyticsTests.Transport()
-        let analytics = ProductAnalytics(catalog: db, transport: transport)
-        try analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
-        service.analytics = analytics
-        analytics.start()
 
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try fm.createDirectory(at: web, withIntermediateDirectories: true)
@@ -673,7 +651,7 @@ final class MCPClientFlowTests: XCTestCase {
         }
         return OnboardingRig(
             service: service, db: db, dir: dir, gate: gate, handler: handler,
-            server: server, requests: requests, transport: transport,
+            server: server, requests: requests,
             stub: stub, stubRequests: stubRequests, gateway: gateway,
             project: project, env: env
         )
@@ -788,8 +766,7 @@ final class MCPClientFlowTests: XCTestCase {
     /// project token then authorizes a real gateway request for a member key; the
     /// app-side unwrap restores the file byte-for-byte and revokes the token,
     /// which the gateway then refuses. The sweeps close the loop: the transcript
-    /// holds no value, no absolute project path and no token; the consent-ON
-    /// analytics transport stays empty; and on disk the token and the values
+    /// holds no value, no absolute project path and no token; and on disk the token and the values
     /// live only in the env file, its backup and the catalog's token hash.
     func testOnboardingDoneCriterionFlow() async throws {
         let binary = Self.repoRoot.appendingPathComponent(".build/debug/keys")
@@ -824,7 +801,7 @@ final class MCPClientFlowTests: XCTestCase {
         let roster = try MCPSession.toolNames(in: try client.frame(), id: "list")
         XCTAssertEqual(roster, ["version", "list_keys", "gateway_info", "open_app", "check_update",
                                 "request_grant", "grant_status", "scan_project", "check_exposure", "import_and_wrap",
-                                "test_keys", "send_feedback", "set_analytics_sharing", "revoke_all", "revoke_project",
+                                "test_keys", "send_feedback", "revoke_all", "revoke_project",
                                 "activity"],
                        "the deterministic mission roster")
 
@@ -998,9 +975,6 @@ final class MCPClientFlowTests: XCTestCase {
             XCTAssertFalse(body.contains(fakeBody), "no value crossed the wire")
             XCTAssertFalse(body.contains(token), "no token crossed the wire")
         }
-        // Analytics stays silent even with sharing consented ON.
-        XCTAssertEqual(rig.transport.calls.count, 0, "no analytics report was attempted")
-        XCTAssertEqual(rig.transport.fetches.count, 0, "no benchmark fetch was attempted")
 
         // Closing stdin is the documented shutdown: exit 0, within the bound.
         let exited = try client.closeAndWaitForExit()

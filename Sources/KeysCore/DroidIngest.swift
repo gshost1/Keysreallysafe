@@ -95,7 +95,7 @@ enum DroidIngest {
     }
 
     /// The log names only the model, so the vendor comes from the id's public prefix — the
-    /// same split the analytics vocabulary and the chart's family colours use.
+    /// same split the chart's family colours use.
     static func provider(forModel model: String) -> String {
         let lower = model.lowercased()
         if lower.hasPrefix("claude-") { return "anthropic" }

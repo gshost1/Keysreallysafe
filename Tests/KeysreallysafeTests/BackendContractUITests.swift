@@ -14,7 +14,6 @@ import XCTest
 /// | Secret storage | `MemorySecretStore` in a temp dir | never the login keychain |
 /// | Touch ID | `RecordingPresenceGate` | no GUI presence prompt in CI |
 /// | Clipboard | `FakeClipboard` | no real pasteboard write |
-/// | Analytics upload | recording transport, sharing never turned on | nothing leaves the machine |
 ///
 /// The browser half lives in `scripts/tests/test_backend_contract_ui.cjs`, which
 /// this test launches against the port it just bound. Every secret below is
@@ -47,7 +46,6 @@ final class BackendContractUITests: XCTestCase {
         let presence = RecordingPresenceGate()
         let secrets = MemorySecretStore()
         let clipboard = FakeClipboard()
-        let analyticsTransport = ProductAnalyticsTests.Transport()
         let service = KeysService(
             catalog: db,
             secrets: secrets,
@@ -58,9 +56,6 @@ final class BackendContractUITests: XCTestCase {
             codexHome: Fixtures.codexHome,
             droidHome: Fixtures.droidHome
         )
-        // Sharing is off: the privacy pane reads a real status, and the recording
-        // transport would hold any report or benchmark request that slipped out.
-        service.analytics = ProductAnalytics(catalog: db, transport: analyticsTransport)
 
         // A synthetic vault: four keys the browser will list, two of them on the
         // providers that bill by key so the API keys view has a real ledger.
@@ -157,8 +152,6 @@ final class BackendContractUITests: XCTestCase {
         XCTAssertEqual(driver.terminationReason, .exit, "the browser contract suite was killed")
         XCTAssertEqual(driver.terminationStatus, 0, "the browser contract suite failed; see its output above")
 
-        XCTAssertTrue(analyticsTransport.calls.isEmpty && analyticsTransport.fetches.isEmpty,
-                      "no analytics report or benchmark may be attempted")
         // The state assertions below describe the whole ordered scenario, so a
         // deliberately filtered run stops here rather than reporting the cases
         // it was told not to run as failures.

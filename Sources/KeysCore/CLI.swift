@@ -12,7 +12,7 @@ public struct KeysCLI: ParsableCommand {
         abstract: "Keysrs — local key vault and token spend meter.",
         // `--version` answers from the single version constant (the same one the
         // updater and share-to-compare report); the subcommand adds --json shape.
-        version: ProductAnalyticsConfiguration.appVersion,
+        version: AppVersion.current,
         subcommands: [
             AddCommand.self,
             ListCommand.self,
@@ -391,12 +391,12 @@ struct VersionCommand: ParsableCommand {
     }
 
     static func humanLine() -> String {
-        "Keysrs \(ProductAnalyticsConfiguration.appVersion)"
+        "Keysrs \(AppVersion.current)"
     }
 
     /// The one line, sorted keys, that every `--json` flag prints.
     static func jsonObject() -> [String: String] {
-        ["version": ProductAnalyticsConfiguration.appVersion]
+        ["version": AppVersion.current]
     }
 }
 

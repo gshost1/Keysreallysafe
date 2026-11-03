@@ -135,8 +135,8 @@ final class MCPServerToolsTests: XCTestCase {
         // The `version` tool answers the single version constant, like keys version --json.
         let text = (content?.first?["text"] as? String) ?? ""
         let decoded = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
-        XCTAssertEqual(decoded?["version"] as? String, ProductAnalyticsConfiguration.appVersion)
-        XCTAssertEqual(VersionCommand.jsonObject(), ["version": ProductAnalyticsConfiguration.appVersion])
+        XCTAssertEqual(decoded?["version"] as? String, AppVersion.current)
+        XCTAssertEqual(VersionCommand.jsonObject(), ["version": AppVersion.current])
     }
 
     /// TOOLS-005: every tool-handler throw becomes an isError result inside the

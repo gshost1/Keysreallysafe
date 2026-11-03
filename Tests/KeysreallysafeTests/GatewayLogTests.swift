@@ -427,37 +427,6 @@ final class GatewayLogTests: XCTestCase {
         XCTAssertEqual(try db.gatewayLog(through: cursor, filter: .failed, limit: 50).count, 23, "--failed still lists every refusal")
     }
 
-    // MARK: product analytics
-
-    /// The log's new fields stay in the catalog: the analytics report carries no host, reason
-    /// or duration, and a timed-out call counts exactly as any failed call did before.
-    func testLogFieldsNeverReachProductAnalytics() throws {
-        let (db, dir) = try makeDB()
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let clock = ProductAnalyticsTests.Clock(), transport = ProductAnalyticsTests.Transport()
-        let analytics = ProductAnalytics(catalog: db, endpoint: URL(string: "https://analytics.example/v1/reports")!,
-                                         transport: transport, now: { clock.date() })
-        try analytics.setEnabled(true, consentVersion: 2)
-        analytics.record(.viewUsage)
-        let day = UTC.iso(clock.date().addingTimeInterval(3600))
-        for (status, reason) in [(502, "gateway_timeout"), (200, "client_closed"), (200, "upstream_status")] {
-            try db.insertUsage(GatewayUsageRow(ts: day, key: "demo", provider: "openai", model: "gpt-4.1",
-                                               inputTokens: 5, outputTokens: 1, status: status, durationMs: 987_654,
-                                               upstreamHost: "private-upstream.example", reason: reason).usageEvent())
-        }
-        clock.advance(86_400)
-        analytics.flushCompletedReports()
-        let data = try XCTUnwrap(transport.calls.first?.data)
-        let text = String(decoding: data, as: UTF8.self)
-        for leak in ["private-upstream", "gateway_timeout", "client_closed", "upstream_status", "987654", "reason", "duration"] {
-            XCTAssertFalse(text.contains(leak), leak)
-        }
-        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let gateway = try XCTUnwrap((sent["gateway"] as? [[String: Any]])?.first)
-        XCTAssertEqual(gateway["requests"] as? Int, 3)
-        XCTAssertEqual(gateway["ok"] as? Int, 2)
-        XCTAssertEqual(gateway["failed"] as? Int, 1)
-    }
 }
 
 /// The real gateway with a short request limit, so a timeout takes half a second, in front of

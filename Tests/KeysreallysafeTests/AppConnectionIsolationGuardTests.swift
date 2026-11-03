@@ -245,7 +245,7 @@ final class AppConnectionIsolationGuardTests: XCTestCase {
             "MCPServerTestSupport.swift", "TestSupport.swift",
             "ImportAndWrapTests.swift", "TestKeysToolTests.swift", "CheckExposureToolTests.swift",
             "ScanProjectToolTests.swift", "FeedbackToolsTests.swift", "RevokeToolsTests.swift",
-            "AnalyticsToolsTests.swift", "ActivityToolsTests.swift", "UnwrapTests.swift",
+            "ActivityToolsTests.swift", "UnwrapTests.swift",
             "UninstallOfferTests.swift",
         ]
         // A use hands the configured control world to something that can act on it.

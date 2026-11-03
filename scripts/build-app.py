@@ -30,7 +30,7 @@ SIGNING_IDENTIFIER = "keysreallysafe"
 ICON_NAME = "Keysrs"
 
 WEB_FILES = (
-    "app.js", "analytics.js", "icon.png", "icon.svg", "index.html", "providers.json", "styles.css",
+    "app.js", "icon.png", "icon.svg", "index.html", "providers.json", "styles.css",
 )
 # providers.json ships inside Web/; only the price table lives beside it (LoginItem.stageFixtures).
 FIXTURE_FILES = ("models.json",)
@@ -42,7 +42,7 @@ LICENSE_FILES = (
     "licenses/Keysreallysafe-legacy-MIT.txt", "licenses/swift-argument-parser.txt",
 )
 ICONSET_SIZES = (16, 32, 128, 256, 512)
-VERSION_SOURCE = "Sources/KeysCore/ProductAnalytics.swift"
+VERSION_SOURCE = "Sources/KeysCore/AppVersion.swift"
 
 
 class BuildError(Exception):
@@ -95,10 +95,10 @@ def default_binary(repo: Path) -> Path:
 def read_version(repo: Path) -> str:
     source = repo / VERSION_SOURCE
     require_regular(source, "version source", repo)
-    match = re.search(r'static let appVersion = "([0-9]+\.[0-9]+\.[0-9]+)"',
+    match = re.search(r'static let current = "([0-9]+\.[0-9]+\.[0-9]+)"',
                       source.read_text(encoding="utf-8"))
     if not match:
-        raise BuildError(f"no appVersion string found in {VERSION_SOURCE}")
+        raise BuildError(f"no version string found in {VERSION_SOURCE}")
     return match[1]
 
 
@@ -285,7 +285,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--sign", dest="identity", default="-",
                         help="40-character SHA-1 of a Developer ID / Apple Development identity; "
                              "default - signs ad hoc for local runs only")
-    parser.add_argument("--version", help=f"bundle version (default: appVersion in {VERSION_SOURCE})")
+    parser.add_argument("--version", help=f"bundle version (default: AppVersion.current in {VERSION_SOURCE})")
     parser.add_argument("--icns", type=Path, help="prebuilt .icns inside the checkout (default Assets/icon/Keysrs.icns, else built from Web/icon.png)")
     parser.add_argument("--replace", action="store_true", help="replace an existing Keysrs.app in --output")
     return parser.parse_args(argv)

@@ -236,7 +236,7 @@ struct TestToolGroup: MCPToolGroup, @unchecked Sendable {
 /// through `control`, the catalog group opens `catalog`, the release check
 /// fetches through `fetchLatestRelease`, the grants and onboarding groups
 /// name `projectFolder` as their own project, and every app-bound group (the
-/// read, grant, onboarding, feedback, analytics and revoke groups) connects
+/// read, grant, onboarding, feedback and revoke groups) connects
 /// through `launch` — so the real tool code runs against
 /// the caller's temp state, never the machine's real catalog or installed app.
 /// Building a roster is itself fail-closed: the isolation guard rejects a
@@ -257,7 +257,6 @@ enum MCPRoster {
             MCPGrantTools(control: control, projectFolder: projectFolder, launch: launch),
             MCPOnboardingTools(control: control, projectFolder: projectFolder, launch: launch),
             MCPFeedbackTools(control: control, launch: launch),
-            MCPAnalyticsTools(control: control, launch: launch),
             MCPRevokeTools(control: control, launch: launch),
             MCPActivityTools(catalog: catalog),
         ]
@@ -366,10 +365,6 @@ enum MCPSweepRig {
         // no prompt, no request, nothing opened, and the draft carries nothing
         // planted.
         "send_feedback": ["draft": "the menu bar chart is nice", "destination": "email"],
-        // The state-only row: an explicit boolean, nothing planted. Against the
-        // rig's unwritten control file the tool answers the not-running sentence,
-        // so no request leaves and the analytics transport stays silent.
-        "set_analytics_sharing": ["enabled": false],
         // The kill switches stay off the machine: against the rig's unwritten
         // control file both answer the not-running sentence, so nothing is
         // revoked, no prompt, no request leaves.

@@ -13,30 +13,67 @@ def squircle(x,y,s,n=5.0,steps=240):
         pts.append(f"{x+c+px:.1f} {y+c+py:.1f}")
     return "M"+"L".join(pts)+"Z"
 TILE=squircle(100,100,824)
-DEFS='''<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a4a50"/><stop offset="1" stop-color="#151517"/></linearGradient>
-<linearGradient id="hl" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".14"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient>
-<linearGradient id="bl" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5ab0ff"/><stop offset="1" stop-color="#0a6cff"/></linearGradient>
-<filter id="sh" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity=".3"/></filter>'''
-def tile(shadow):
-    f=' filter="url(#sh)"' if shadow else ''
-    return (f'<path d="{TILE}" fill="url(#bg)"{f}/><path d="{TILE}" fill="url(#hl)"/>'
-            f'<path d="{TILE}" fill="none" stroke="#fff" stroke-opacity=".08" stroke-width="2"/>')
+from pathlib import Path
+import subprocess
+import tempfile
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parent.parent
+DEFS = '<linearGradient id="tile" x2="0" y2="1"><stop stop-color="#fff"/><stop offset="1" stop-color="#ececf0"/></linearGradient><linearGradient id="blue" x2="1" y2="1"><stop stop-color="#5ab0ff"/><stop offset="1" stop-color="#0a6cff"/></linearGradient><filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dy="12" stdDeviation="12" flood-opacity="0.13"/></filter>'
+def tile(shadow=True, small=False):
+    return f'<path d="{TILE}" fill="url(#tile)" stroke="#d2d2d7" stroke-width="{7 if small else 3}"' + (' filter="url(#shadow)"' if shadow else '') + '/>'
+
 def glyph(small=False):
-    if small:  # 16-32px: heavier ring, two deep cuts instead of four
-        r,sw,cx,op=158,100,380,.28
-        blade='<path d="M150 -48H400Q462 -48 474 0Q462 48 424 48L400 48L372 96L344 48L318 48L290 92L262 48L150 48Z" fill="#fff" stroke="#fff" stroke-width="14" stroke-linejoin="round"/>'
-    else:
-        r,sw,cx,op=150,72,372,.2
-        blade='<path d="M150 -36H405Q452 -36 462 0Q452 36 420 36L404 36L386 68L364 36L342 36L322 74L300 36L278 36L260 62L242 36L150 36Z" fill="#fff" stroke="#fff" stroke-width="10" stroke-linejoin="round"/>'
-    return (f'<circle cx="{cx}" cy="512" r="{r}" fill="none" stroke="#fff" stroke-opacity="{op}" stroke-width="{sw}"/>'
-            f'<path d="{arc(cx,512,r,-90,162)}" fill="none" stroke="url(#bl)" stroke-width="{sw}" stroke-linecap="round"/>'
-            f'<g transform="translate({cx} 512)">{blade}</g>')
-S='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
-files={
- "keysrs-icon.svg":      S+f"<defs>{DEFS}</defs>{tile(False)}{glyph()}</svg>",
- "keysrs-icon-app.svg":  S+f"<defs>{DEFS}</defs>{tile(True)}{glyph()}</svg>",
- "keysrs-icon-small.svg":S+f"<defs>{DEFS}</defs>{tile(False)}{glyph(True)}</svg>",
- # full-bleed square for apple-touch-icon; iOS applies its own mask
- "keysrs-icon-bleed.svg":S+f'<defs>{DEFS}</defs><rect width="1024" height="1024" fill="url(#bg)"/><rect width="1024" height="1024" fill="url(#hl)"/><g transform="translate(512 512) scale(1.12) translate(-512 -512)">{glyph()}</g></svg>',
-}
-for k,v in files.items(): open(k,"w").write(v)
+    # Balanced master: two broad teeth; optically heavier at 16–32 px.
+    return SMALL_GLYPH if small else GLYPH
+GLYPH = '<circle cx="372" cy="512" r="150" fill="none" stroke="#000" stroke-opacity=".08" stroke-width="72"/><path d="M372 362A150 150 0 1 1 229.34 558.35" fill="none" stroke="url(#blue)" stroke-width="72" stroke-linecap="round"/><path d="M510 474H800Q834 474 840 512Q834 550 806 550H786L760 608L730 550H690L660 604L630 550H510Z" fill="#1d1d1f" stroke="#1d1d1f" stroke-width="6" stroke-linejoin="round"/>'
+SMALL_GLYPH = '<circle cx="380" cy="512" r="158" fill="none" stroke="#000" stroke-opacity=".08" stroke-width="100"/><path d="M380 354A158 158 0 1 1 229.73 560.82" fill="none" stroke="url(#blue)" stroke-width="100" stroke-linecap="round"/><path d="M526 464H800Q834 464 840 512Q834 560 806 560H786L760 618L730 560H690L660 614L630 560H526Z" fill="#1d1d1f" stroke="#1d1d1f" stroke-width="10" stroke-linejoin="round"/>'
+
+def build():
+    prefix = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs>' + DEFS + '</defs>'
+    files = {
+        'keysrs-icon.svg': tile(False) + glyph(),
+        'keysrs-icon-app.svg': tile() + glyph(),
+        'keysrs-icon-small.svg': tile(True, True) + glyph(True),
+        'keysrs-icon-bleed.svg': '<rect width="1024" height="1024" fill="url(#tile)"/><g transform="translate(512 512) scale(1.12) translate(-512 -512)">' + glyph() + '</g>',
+    }
+    for name, body in files.items():
+        (ROOT / name).write_text(prefix + body + '</svg>')
+    # Chromium renders SVG filters consistently with the website. Requires scripts/tests npm ci.
+    script = r"""
+const {chromium} = require('playwright');
+(async () => {
+ const browser = await chromium.launch();
+ const page = await browser.newPage({deviceScaleFactor:1});
+ for (const size of [16,32,48,64,128,180,256,512,1024]) {
+  await page.setViewportSize({width:size,height:size});
+  const name = size <= 32 ? 'small' : size === 180 ? 'bleed' : 'app';
+  const svg = require('fs').readFileSync(process.argv[1]+'/keysrs-icon-'+name+'.svg','utf8');
+  await page.setContent('<style>body{margin:0}svg{display:block;width:100vw;height:100vh}</style>'+svg);
+  await page.screenshot({path:process.argv[1]+'/png/keysrs-icon-'+size+'.png',omitBackground:true});
+ }
+ await browser.close();
+})().catch(e => {console.error(e);process.exit(1)});
+"""
+    subprocess.run(['node', '-e', script, str(ROOT)], cwd=REPO/'scripts/tests', check=True)
+    with tempfile.TemporaryDirectory() as temp:
+        iconset = Path(temp)/'Keysrs.iconset'
+        iconset.mkdir()
+        for size in [16,32,128,256,512]:
+            for scale in [1,2]:
+                source = ROOT/'png'/f'keysrs-icon-{size*scale}.png'
+                suffix = '@2x' if scale == 2 else ''
+                (iconset/f'icon_{size}x{size}{suffix}.png').write_bytes(source.read_bytes())
+        subprocess.run(['/usr/bin/iconutil','-c','icns','-o',str(ROOT/'Keysrs.icns'),str(iconset)],check=True)
+    svg = (ROOT/'keysrs-icon.svg').read_bytes()
+    for directory in ['Site','Web']:
+        (REPO/directory/'icon.svg').write_bytes(svg)
+    Image.open(ROOT/'png/keysrs-icon-48.png').save(
+        REPO/'Site/favicon.ico', sizes=[(16,16),(32,32),(48,48)],
+        append_images=[Image.open(ROOT/'png/keysrs-icon-16.png'),
+                       Image.open(ROOT/'png/keysrs-icon-32.png')])
+    (REPO/'Site/apple-touch-icon.png').write_bytes((ROOT/'png/keysrs-icon-180.png').read_bytes())
+
+if __name__ == '__main__':
+    build()

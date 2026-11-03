@@ -427,7 +427,6 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 14px; display: fl
 }
 .usage-totals b { font-weight: 500; color: var(--ink); }
 .usage-totals .totals-sep { margin: 0 6px; }
-.usage-compare { margin-top: 4px; }
 
 .interval {
   padding: 0;
@@ -1206,20 +1205,6 @@ html[data-theme="light"] .tint-6 { --tint: var(--s-deepseek-3); }
 .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; margin-bottom: 14px; }
 .shortcuts dt { display: flex; gap: 3px; }
 .shortcuts dd { color: var(--ink-2); }
-
-/* ---------- product analytics privacy ---------- */
-
-.privacy-dialog { max-width: 540px; }
-.privacy-copy { margin: 0 0 10px; color: var(--ink-2); font-size: 12px; }
-.privacy-destination { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-2); color: var(--ink-2); font-size: 12px; overflow-wrap: anywhere; }
-.privacy-choice { display: flex !important; align-items: center; gap: 7px; margin: 0 0 6px !important; color: var(--ink) !important; font-size: 13px !important; }
-.privacy-choice input { display: inline-block !important; width: auto !important; height: auto !important; margin: 0 !important; }
-.privacy-facts { display: grid; grid-template-columns: 1fr auto; gap: 3px 16px; margin: 14px 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
-.privacy-facts span { color: var(--ink-2); }
-.privacy-facts strong { font-weight: 500; font-variant-numeric: tabular-nums; }
-.privacy-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0 5px; }
-.privacy-preview-head h3 { margin: 0; font-size: 12px; font-weight: 500; color: var(--ink-2); }
-.privacy-preview { max-height: 180px; margin: 0 0 12px; padding: 8px 10px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-2); color: var(--ink-2); font: 11px/16px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {
   [role="tabpanel"].fade { animation: none; }

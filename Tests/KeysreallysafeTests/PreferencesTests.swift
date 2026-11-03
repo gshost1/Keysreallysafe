@@ -45,12 +45,10 @@ final class PreferencesTests: XCTestCase {
     // stored answer must survive; only an absent value is defaulted.
     func testHeadlessDefaultsMigrateOnceAndPreserveUnrelatedState() throws {
         let (db, _) = try makeDB()
-        // A 0.13-shaped store: the welcome answered, the analytics question
-        // already asked for the current consent version, Claude refresh on,
+        // A 0.13-shaped store: the welcome answered, Claude refresh on,
         // cards hidden, the relay's keep-awake chosen, update checks explicitly
         // turned off, and usage rows in the catalog.
         try db.setMeta(AppPreferences.welcomeKey, "2026-10-01T00:00:00Z")
-        try db.setMeta(AppPreferences.analyticsAskedKey, String(ProductAnalytics.consentVersion))
         try db.setMeta(AppPreferences.claudeRefreshKey, "on")
         try db.setMeta(AppPreferences.hiddenUsageKey, #"["openai"]"#)
         try db.setMeta(AppPreferences.relayStayAwakeKey, "on")
@@ -65,7 +63,7 @@ final class PreferencesTests: XCTestCase {
         XCTAssertTrue(prefs.claudeUsageRefresh, "an unrelated preference keeps its answer")
         XCTAssertEqual(prefs.hiddenUsage, ["openai"])
         XCTAssertTrue(prefs.relayStayAwake)
-        XCTAssertTrue(prefs.welcomePlan(analyticsEnabled: false).isEmpty, "the answered welcome is not asked again")
+        XCTAssertTrue(prefs.welcomePlan().isEmpty, "the answered welcome is not asked again")
 
         // The migration marker holds: choices made after it are never overwritten.
         try prefs.setMenubarItem(true)
@@ -102,27 +100,30 @@ final class PreferencesTests: XCTestCase {
     func testWelcomeAsksOnceAndRecordsTheAnswer() throws {
         let (db, _) = try makeDB()
         let prefs = AppPreferences(catalog: db)
-        let first = prefs.welcomePlan(analyticsEnabled: false)
-        XCTAssertEqual(first, .init(firstRun: true, askAnalytics: true))
+        let first = prefs.welcomePlan()
+        XCTAssertEqual(first, .init(firstRun: true))
         try prefs.recordWelcome(first, claudeRefresh: false)
-        XCTAssertTrue(prefs.welcomePlan(analyticsEnabled: false).isEmpty, "declining is not asked again")
+        XCTAssertTrue(prefs.welcomePlan().isEmpty, "declining is not asked again")
         XCTAssertFalse(prefs.claudeUsageRefresh, "Continue with nothing ticked keeps it off")
     }
 
-    func testAnalyticsQuestionReturnsOnlyForANewConsentVersion() throws {
+    /// An upgrade from a release with product analytics: its consent, unsent reports,
+    /// comparison table and "asked" marker are deleted, and nothing else is touched.
+    func testRetiredAnalyticsStateIsRemovedAndNothingElse() throws {
         let (db, _) = try makeDB()
-        let prefs = AppPreferences(catalog: db)
-        // Someone who answered the welcome under an older consent version.
+        try db.setMeta("product_analytics_v1", #"{"enabled":true,"reports":[{"day":"2026-10-30"}]}"#)
+        try db.setMeta("product_analytics_benchmarks", "{}")
+        try db.setMeta("welcome_analytics_consent_asked", "2")
         try db.setMeta(AppPreferences.welcomeKey, "2026-09-01T00:00:00Z")
         try db.setMeta(AppPreferences.claudeRefreshKey, "on")
-        try db.setMeta(AppPreferences.analyticsAskedKey, String(ProductAnalytics.consentVersion - 1))
-        let later = prefs.welcomePlan(analyticsEnabled: false)
-        XCTAssertEqual(later, .init(firstRun: false, askAnalytics: true))
-        try prefs.recordWelcome(later, claudeRefresh: false)
-        XCTAssertTrue(prefs.claudeUsageRefresh, "answering analytics does not touch the Claude choice")
-        XCTAssertTrue(prefs.welcomePlan(analyticsEnabled: false).isEmpty)
-        XCTAssertFalse(AppPreferences(catalog: try makeDB().0).welcomePlan(analyticsEnabled: true).askAnalytics,
-                       "someone who already opted in is not asked")
+        let prefs = AppPreferences(catalog: db)
+        try prefs.removeRetiredAnalytics()
+        for key in AppPreferences.retiredAnalyticsKeys {
+            XCTAssertNil(try db.metaValue(key), key)
+        }
+        XCTAssertTrue(prefs.claudeUsageRefresh)
+        XCTAssertTrue(prefs.welcomePlan().isEmpty, "the welcome answer survives")
+        try prefs.removeRetiredAnalytics()   // a second launch is a no-op
     }
 
     // MARK: - The token-gated preferences and Quit routes

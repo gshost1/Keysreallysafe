@@ -3,7 +3,7 @@ import XCTest
 
 /// Round 2 of the remote import review: totals that count this Mac's own droid rows as detail,
 /// remote rows a later local ingest duplicates, mixed spend rows, held-file churn, purge, the
-/// ingest API and saturating sums in the windows and analytics.
+/// ingest API and saturating sums in the windows.
 final class RemoteImportRound2Tests: XCTestCase {
     // Not a session id the fixture droid logs use: those count as this Mac's detail for it.
     private let session = "r2r2r2r2-0000-4000-8000-0000000000a1"
@@ -242,9 +242,9 @@ final class RemoteImportRound2Tests: XCTestCase {
         XCTAssertEqual(claude["rows_skipped"] as? Int, 0)
     }
 
-    // MARK: 7 saturating windows and analytics
+    // MARK: 7 saturating windows
 
-    func testDroidWindowsAndAnalyticsSumsSaturateOnHugeStoredRows() throws {
+    func testDroidWindowsSaturateOnHugeStoredRows() throws {
         let (db, _) = try tempCatalog()
         let now = Date()
         let at = UTC.iso(now.addingTimeInterval(-600))
@@ -256,23 +256,5 @@ final class RemoteImportRound2Tests: XCTestCase {
         let windows = try DroidUsage.windows(catalog: db, now: now)
         XCTAssertEqual(windows.fiveHour, Int.max)
         XCTAssertEqual(windows.monthly, Int.max)
-
-        let clock = ProductAnalyticsTests.Clock(), transport = ProductAnalyticsTests.Transport()
-        let analytics = ProductAnalytics(catalog: db, endpoint: URL(string: "https://analytics.example/v1/reports")!,
-                                         transport: transport, now: { clock.date() })   // 2026-05-19T04:00Z
-        try analytics.setEnabled(true, consentVersion: 2)
-        for n in 0..<2 {
-            _ = try db.insertUsage(UsageEvent(source: "claude-local", sessionId: "s", promptId: "c\(n)", model: "claude-fable-5-1",
-                occurredAt: "2026-05-19T06:00:00Z", provider: "anthropic", inputTokens: Int.max, outputTokens: Int.max,
-                cachedReadTokens: Int.max, cacheCreationTokens: Int.max, reasoningTokens: Int.max))
-        }
-        analytics.record(.viewUsage)
-        clock.advance(86_400)
-        analytics.flushCompletedReports()
-        let data = try XCTUnwrap(transport.calls.first?.data)
-        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let usage = try XCTUnwrap(sent["usage"] as? [[String: Any]])
-        XCTAssertEqual(usage.first?["prompts"] as? Int, 2)
-        XCTAssertEqual(usage.first?["input_tokens"] as? Int, Int(ProductAnalytics.maxTokens))
     }
 }

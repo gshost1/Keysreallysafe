@@ -157,7 +157,7 @@ final class FeedbackToolsTests: XCTestCase {
         XCTAssertTrue(scrubbed.contains("[redacted]"))
         XCTAssertTrue(scrubbed.contains("line one,\nline two & café"))
         let version = ProcessInfo.processInfo.operatingSystemVersion
-        let expectedFooter = "\n\nKeysrs \(ProductAnalyticsConfiguration.appVersion) "
+        let expectedFooter = "\n\nKeysrs \(AppVersion.current) "
             + "on macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
         XCTAssertTrue(scrubbed.hasSuffix(expectedFooter), "the version footer: \(scrubbed)")
         for planted in [site.plantedSecret, grant, plantedPath, marker, "demo", "fb-proj"] {
@@ -251,7 +251,7 @@ final class FeedbackToolsTests: XCTestCase {
         XCTAssertLessThanOrEqual(url!.absoluteString.count, 2_000, "the encoded URL is capped near 2,000")
         let bodyValue = (try queryItems(of: url!) ?? []).first { $0.name == "body" }?.value ?? ""
         let version = ProcessInfo.processInfo.operatingSystemVersion
-        let footer = "\n\nKeysrs \(ProductAnalyticsConfiguration.appVersion) "
+        let footer = "\n\nKeysrs \(AppVersion.current) "
             + "on macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
         XCTAssertTrue(bodyValue.hasSuffix(footer), "the version footer is always kept")
         XCTAssertFalse(bodyValue.contains(site.plantedSecret), "no planted value is in the opened body")
@@ -283,7 +283,7 @@ final class FeedbackToolsTests: XCTestCase {
         XCTAssertEqual(url.host, "github.com")
         XCTAssertLessThanOrEqual(url.absoluteString.count, 2_000, "the encoded URL is capped near 2,000")
         let bodyValue = (try queryItems(of: url) ?? []).first { $0.name == "body" }?.value ?? ""
-        XCTAssertTrue(bodyValue.contains("Keysrs \(ProductAnalyticsConfiguration.appVersion) on macOS"),
+        XCTAssertTrue(bodyValue.contains("Keysrs \(AppVersion.current) on macOS"),
                       "the version footer is always kept")
         XCTAssertEqual(bodyValue, answer["scrubbed"] as? String, "the answer names the opened body")
     }
@@ -359,7 +359,7 @@ final class FeedbackToolsTests: XCTestCase {
         let scrubbed = answer["scrubbed"] as? String ?? ""
         XCTAssertFalse(scrubbed.contains(site.plantedSecret))
         XCTAssertFalse(scrubbed.contains("fb-proj"))
-        XCTAssertTrue(scrubbed.contains("Keysrs \(ProductAnalyticsConfiguration.appVersion)"))
+        XCTAssertTrue(scrubbed.contains("Keysrs \(AppVersion.current)"))
         let removed = answer["removed"] as! [String: Any]
         XCTAssertEqual(removed["vault_value"] as? Int, 1)
         XCTAssertEqual(removed["name"] as? Int, 1)
@@ -439,8 +439,7 @@ final class FeedbackToolsTests: XCTestCase {
     /// path, names, an email and marked prompt text: the answer carries the
     /// scrubbed text and the per-category counts, and no planted value survives
     /// in the result frames (the server's whole captured stdout), the temp tree
-    /// or the recorded opener URL. The flow consumes zero presence prompts and
-    /// zero analytics transport calls.
+    /// or the recorded opener URL. The flow consumes zero presence prompts.
     func testEndToEndNoPlantedSecretSurvives() throws {
         let plantedSecret = "fake-vault-" + String(repeating: "e2", count: 8)
         let grant = GrantToken.generate(id: "feed0020")
@@ -456,12 +455,6 @@ final class FeedbackToolsTests: XCTestCase {
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         _ = try service.resolveProject(folder: folder.path)
 
-        // Sharing consented ON with a recording transport: if the feedback flow
-        // recorded or sent anything, it lands here and fails the test.
-        let transport = ProductAnalyticsTests.Transport()
-        let analytics = ProductAnalytics(catalog: db, transport: transport)
-        try analytics.setEnabled(true, consentVersion: ProductAnalytics.consentVersion)
-        service.analytics = analytics
 
         let open = OpenSpy()
         let web = dir.appendingPathComponent("Web", isDirectory: true)
@@ -515,7 +508,7 @@ final class FeedbackToolsTests: XCTestCase {
                        ["vault_value", "token", "path", "name", "email", "prompt_text"],
                        "exactly the categories this draft planted")
         let scrubbed = answer["scrubbed"] as! String
-        XCTAssertTrue(scrubbed.contains("Keysrs \(ProductAnalyticsConfiguration.appVersion)"),
+        XCTAssertTrue(scrubbed.contains("Keysrs \(AppVersion.current)"),
                       "the version footer crossed the dispatch")
 
         // The one open: mailto, the scrubbed body, nothing planted.
@@ -540,10 +533,7 @@ final class FeedbackToolsTests: XCTestCase {
             assertNoSentinel(planted, in: dir)
         }
 
-        // Zero presence prompts for the whole flow, zero analytics transport
-        // activity, and exactly the one app round trip.
+        // Zero presence prompts for the whole flow, and exactly the one app round trip.
         XCTAssertEqual(gate.reasons, [], "the feedback flow never asks for Touch ID")
-        XCTAssertEqual(transport.calls.count, 0, "no analytics report was attempted")
-        XCTAssertEqual(transport.fetches.count, 0, "no benchmark fetch was attempted")
     }
 }

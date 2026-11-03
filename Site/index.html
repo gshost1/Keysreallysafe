@@ -62,10 +62,28 @@
         <p class="lead">Your agent gets a scoped, expiring token. The key never leaves your Mac's Keychain.</p>
         <div class="get" id="install">
           <div class="for-mac">
-            <div class="brew"><code id="brew-cmd">brew install --cask gshost1/keysrs/keysrs</code><button type="button" data-copy="brew-cmd">Copy</button></div>
-            <p class="on-phone">Paste it into Terminal on your Mac.</p>
-            <p class="alt"><a href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg">Download the DMG</a><span>macOS 14+, Apple Silicon</span><span>Free, MIT</span><a class="star" href="https://github.com/gshost1/Keysreallysafe" data-event="star_click">★ Star on GitHub</a></p>
-            <p class="adopt">Keysrs.app already in Applications? Add <code>--adopt</code> the first time.</p>
+            <div class="install">
+              <div class="itabs" role="tablist" aria-label="Install method">
+                <button type="button" role="tab" id="tab-brew" class="itab" aria-selected="true" aria-controls="panel-brew">brew</button>
+                <button type="button" role="tab" id="tab-curl" class="itab" aria-selected="false" aria-controls="panel-curl" tabindex="-1">curl</button>
+                <button type="button" role="tab" id="tab-dmg" class="itab" aria-selected="false" aria-controls="panel-dmg" tabindex="-1">DMG</button>
+              </div>
+              <div role="tabpanel" id="panel-brew" aria-labelledby="tab-brew">
+                <div class="irow"><code id="brew-cmd">brew install --cask gshost1/keysrs/keysrs</code><button type="button" class="icopy" data-copy="brew-cmd" aria-label="Copy command"><svg class="i-copy" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="7" y="7" width="9.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><svg class="i-ok" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 10.5l3.4 3.4L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+                <p class="inote">Keysrs.app already in Applications? Add <code>--adopt</code> the first time.</p>
+              </div>
+              <div role="tabpanel" id="panel-curl" aria-labelledby="tab-curl" hidden>
+                <div class="irow"><code id="curl-cmd">curl -fsSL https://keysrs.com/install | bash</code><button type="button" class="icopy" data-copy="curl-cmd" aria-label="Copy command"><svg class="i-copy" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="7" y="7" width="9.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><svg class="i-ok" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 10.5l3.4 3.4L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+                <p class="inote">Checks the download against the release's SHA-256 and its signature before installing. <a href="/install">View script</a></p>
+              </div>
+              <div role="tabpanel" id="panel-dmg" aria-labelledby="tab-dmg" hidden>
+                <div class="irow"><a class="idl" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M10 3.5v9m0 0L6.5 9m3.5 3.5L13.5 9M4 15.5h12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Download <b>Keysrs-arm64.dmg</b></span></a></div>
+                <p class="inote">macOS 14+, Apple Silicon. Open the DMG and drag Keysrs to Applications.</p>
+              </div>
+              <p class="vh" role="status" id="copy-status"></p>
+              <p class="on-phone">Paste it into Terminal on your Mac.</p>
+              <p class="alt"><span>macOS 14+, Apple Silicon</span><span>Free, MIT</span><a class="star" href="https://github.com/gshost1/Keysreallysafe" data-event="star_click">★ Star on GitHub</a></p>
+            </div>
           </div>
           <div class="not-mac">
             <p class="mo">Keysrs is Mac-only for now.</p>
@@ -223,7 +241,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
   <div class="wrap">
     <div class="head">
       <p class="eyebrow">Tools</p>
-      <h2 class="sh">Sixteen tools.<br>None of them returns a key.</h2>
+      <h2 class="sh">Fifteen tools.<br>None of them returns a key.</h2>
       <p class="sp">Everything your agent can ask Keysrs for. Anything that stores a key, hands out access or calls a provider waits for Touch ID; reveal, copy, rotate and delete are not tools at all.</p>
     </div>
     <div class="tooltable">
@@ -241,7 +259,6 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
           <tr><td><code>revoke_project</code></td><td>Ends one project's tokens now.</td><td></td></tr>
           <tr><td><code>revoke_all</code></td><td>Ends every grant and token now. It only takes access away.</td><td></td></tr>
           <tr><td><code>send_feedback</code></td><td>Scrubs a bug report of keys, tokens, paths and names, then opens an email or issue for you to send.</td><td></td></tr>
-          <tr><td><code>set_analytics_sharing</code></td><td>Records your answer to the opt-in question about aggregate stats. An agent's "on" waits for your own switch in the app.</td><td></td></tr>
           <tr><td><code>open_app</code></td><td>Shows the Keysrs window.</td><td></td></tr>
           <tr><td><code>check_update</code></td><td>Current and latest version.</td><td></td></tr>
           <tr><td><code>version</code></td><td>The app version.</td><td></td></tr>
@@ -363,11 +380,6 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
       </div>
       <div class="out">
         <div class="node">
-          <b>analytics.keysrs.com</b>
-          <span>Share to compare, only if you say yes</span>
-          <p>Asked once, off unless you agree. Daily totals, never keys, names, paths or prompts.</p>
-        </div>
-        <div class="node">
           <b>Your Worker</b>
           <span>The relay, only if you turn it on</span>
           <p>One WebSocket from your Mac to a Worker in your own Cloudflare account. Never a key.</p>
@@ -378,7 +390,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
     <div class="never">Never touches:
       <s>provider websites</s><s>browser cookies</s><s>other tools' auth files</s><s>your prompts</s>
     </div>
-    <p class="fineprint">That is the app. This website is different: it counts visits, and with your OK it remembers you and records masked sessions. Every detail, including the app's exact analytics schema, is in the <a class="link" href="https://github.com/gshost1/Keysreallysafe">source</a> and the <a class="link" href="/privacy">privacy page</a>.</p>
+    <p class="fineprint">That is the app. This website is different: it counts visits, and with your OK it remembers you and records masked sessions. Every detail is in the <a class="link" href="https://github.com/gshost1/Keysreallysafe">source</a> and the <a class="link" href="/privacy">privacy page</a>.</p>
   </div>
 </section>
 
@@ -404,7 +416,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
       </div>
       <div class="r">
         <ul class="checks">
-          <li><svg><use href="#check"/></svg><span><b>MCP server</b> with sixteen tools, for Claude Code, Codex, Cursor, Droid and Claude Desktop</span></li>
+          <li><svg><use href="#check"/></svg><span><b>MCP server</b> with fifteen tools, for Claude Code, Codex, Cursor, Droid and Claude Desktop</span></li>
           <li><svg><use href="#check"/></svg><span><b>Project tokens</b> that expire, instead of keys in <code>.env</code></span></li>
           <li><svg><use href="#check"/></svg><span><b>Key vault</b> in the Keychain, behind Touch ID</span></li>
           <li><svg><use href="#check"/></svg><span><b>Relay Worker</b> for VMs and cloud agents, in your own Cloudflare account</span></li>
