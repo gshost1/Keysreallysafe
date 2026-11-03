@@ -16,6 +16,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     private var relayAppItem: NSMenuItem?
     private var relayAppStatusItem: NSMenuItem?
     private var relayAppAwakeItem: NSMenuItem?
+    private var relayAppSharedAwakeItem: NSMenuItem?
     private var updateTimer: Timer?
     private var checking = false
     private weak var menubar: MenubarExtra?
@@ -160,6 +161,8 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         appMenu.addItem(relayStatus)
         relayAppStatusItem = relayStatus
         relayAppAwakeItem = add("Keep Mac Awake for Relay Calls", #selector(MenubarExtra.toggleRelayAwake), extra)
+        relayAppSharedAwakeItem = add(MenubarExtra.sharedAwakeTitle, #selector(MenubarExtra.toggleRelayAwakeWhileShared), extra)
+        relayAppSharedAwakeItem?.toolTip = MenubarExtra.sharedAwakeToolTip
         appMenu.addItem(.separator())
         _ = add("Hide Keysrs", #selector(NSApplication.hide(_:)), NSApp, "h")
         _ = add("Quit Keysrs", #selector(MenubarExtra.quit), extra, "q")
@@ -191,6 +194,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
             relayAppStatusItem?.isHidden = relay.line.isEmpty
             relayAppStatusItem?.toolTip = relay.lastError
             relayAppAwakeItem?.state = relay.awake ? .on : .off
+            relayAppSharedAwakeItem?.state = relay.awakeWhileShared ? .on : .off
         }
     }
 

@@ -161,6 +161,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var relayItem: NSMenuItem?
     private var relayStatusItem: NSMenuItem?
     private var relayAwakeItem: NSMenuItem?
+    private var relaySharedAwakeItem: NSMenuItem?
     /// What a toggle in progress is waiting for (Touch ID, the loop to stop); clicks meanwhile
     /// are ignored.
     private var relayPending: String?
@@ -390,12 +391,19 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateRelayItems()
     }
 
+    @objc func toggleRelayAwakeWhileShared() {
+        let on = !service.preferences.relayAwakeWhileShared
+        do { try service.setRelayAwakeWhileShared(on) } catch { relayAlert(error) }
+        updateRelayItems()
+    }
+
     /// One relay snapshot both surfaces read — the status item's menu and the
     /// app menu while the window is shown — so the two can never diverge.
     struct RelayMenuState {
         var on: Bool
         var line: String
         var awake: Bool
+        var awakeWhileShared = false
         var lastError: String?
     }
 
@@ -404,6 +412,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return RelayMenuState(on: report.host.on,
                               line: relayPending ?? Self.relayLine(report),
                               awake: report.stayAwake,
+                              awakeWhileShared: report.awakeWhileShared,
                               lastError: report.host.state.lastError)
     }
 
@@ -414,7 +423,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         relayStatusItem?.isHidden = state.line.isEmpty
         relayStatusItem?.toolTip = state.lastError
         relayAwakeItem?.state = state.awake ? .on : .off
+        relaySharedAwakeItem?.state = state.awakeWhileShared ? .on : .off
     }
+
+    nonisolated static let sharedAwakeTitle = "Keep Mac Awake While Sharing Keys"
+    nonisolated static let sharedAwakeToolTip = "While a share from keys share is live and the relay is on, the Mac does not sleep when idle, but only on its power adapter. The display can still sleep, and closing the lid still sleeps the Mac."
 
     /// The disabled line under the toggle; empty hides it.
     nonisolated static func relayLine(_ report: KeysService.RelayReport) -> String {
@@ -434,7 +447,9 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .waiting, .stopped:
             line = "Not connected; retrying"
         }
-        if report.host.awake { line += " · keeping the Mac awake" }
+        if report.host.awake {
+            line += report.host.awakeReason == .shared ? " · awake for shared keys" : " · keeping the Mac awake"
+        }
         return line
     }
 
@@ -547,6 +562,11 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         awake.toolTip = "While a relayed call is open, and for 5 minutes after the last one, the Mac does not sleep when idle. The display can still sleep, and closing the lid still sleeps the Mac."
         relayAwakeItem = awake
         menu.addItem(awake)
+        let shared = NSMenuItem(title: Self.sharedAwakeTitle, action: #selector(toggleRelayAwakeWhileShared), keyEquivalent: "")
+        shared.target = self
+        shared.toolTip = Self.sharedAwakeToolTip
+        relaySharedAwakeItem = shared
+        menu.addItem(shared)
         menu.addItem(.separator())
         // Also in the app menu, which is only visible while the window is frontmost.
         let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")

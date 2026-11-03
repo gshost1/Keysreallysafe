@@ -317,12 +317,17 @@ final class RecordingPresenceGate: PresenceGate, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var reasons: [String] = []
     var error: AppError?
+    /// Runs once, inside the next prompt, as if something else happened while it was up.
+    var duringNextPrompt: (() throws -> Void)?
     init(error: AppError? = nil) { self.error = error }
     func require(reason: String) throws {
         lock.lock()
         reasons.append(reason)
         let err = error
+        let during = duringNextPrompt
+        duringNextPrompt = nil
         lock.unlock()
+        try during?()
         if let err { throw err }
     }
 }

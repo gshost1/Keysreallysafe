@@ -56,7 +56,9 @@ keys tunnel user@my-vm                               # VM reaches the gateway ov
 On the VM, point the agent at `http://127.0.0.1:12767/openai` and use the
 `ksfc_…` token as its API key. For a sandbox you can't SSH into, `keys relay`
 carries the same gateway through a Cloudflare Worker you deploy into your own
-account. See [cloud agents](docs/cloud-agents.md) and [the relay](docs/relay.md).
+account, and `keys share "my box" --key openai` hands a machine several keys
+at once through it (one token, one pairing, printed as env lines to paste).
+See [cloud agents](docs/cloud-agents.md) and [the relay](docs/relay.md).
 
 ## From the command line
 

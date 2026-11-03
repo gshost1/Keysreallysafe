@@ -105,6 +105,7 @@ function reset() {
     configured: true, url: "https://keysrs-relay.example.workers.dev", on: false, state: "off",
     connected_since: null, retry_at: null, last_error: null, inflight: 0,
     elsewhere: false, elsewhere_pid: null, stay_awake: false, awake: false,
+    awake_while_shared: false, awake_reason: null, active_shares: 0,
   };
   // The persisted app choices (GET /api/preferences). The app-mode default has the
   // meter off, but this suite is about the meter's own presentation, so its fixture
@@ -548,11 +549,12 @@ function handle(method, pathname, body, params) {
   if (pathname === "/api/relay" && method === "GET") return [200, relay];
   if (pathname === "/api/relay" && method === "POST") {
     const fields = Object.keys(body);
-    if (!fields.length || fields.some((f) => f !== "enabled" && f !== "stay_awake")) {
-      return [400, { error: "send enabled, stay_awake or both" }];
+    if (!fields.length || fields.some((f) => !["enabled", "stay_awake", "awake_while_shared"].includes(f))) {
+      return [400, { error: "send enabled, stay_awake, awake_while_shared or a mix" }];
     }
     for (const f of fields) if (typeof body[f] !== "boolean") return [400, { error: `${f} must be true or false` }];
     if ("stay_awake" in body) relay.stay_awake = body.stay_awake;
+    if ("awake_while_shared" in body) relay.awake_while_shared = body.awake_while_shared;
     if (body.enabled === true && !relay.on) {
       if (!relay.configured) return [400, { error: "no relay is set up; deploy the Worker (docs/relay.md), then run: keys relay setup --url https://<your worker>.workers.dev" }];
       if (relay.elsewhere) return [400, { error: "keys relay is already running on this Mac (process 4242), and the Worker keeps only one Mac connection; stop it with Ctrl-C in its Terminal, then turn the relay on here" }];
@@ -4708,8 +4710,21 @@ test("Settings turns the app's relay on and off with the page token and says whe
   assert.equal(relay.stay_awake, true);
   assert.equal(relay.on, true, "the awake choice leaves the relay as it was");
 
+  const shared = page.locator("#relay-shared-switch");
+  assert.equal(await shared.getAttribute("aria-checked"), "false", "keeping the Mac awake for shares is off by default");
+  await shared.click();
+  await page.waitForFunction(() => document.getElementById("relay-shared-switch").getAttribute("aria-checked") === "true");
+  assert.equal(relay.awake_while_shared, true);
+  assert.equal(relay.stay_awake, true, "the share choice leaves the calls choice as it was");
+
   // Open calls and a held assertion are on the same line.
   Object.assign(relay, { inflight: 2, awake: true });
+  await reopenSettings(page);
+  await relayHintMatches(page, /since \d\d:\d\d · 2 calls open · keeping the Mac awake$/);
+  Object.assign(relay, { inflight: 0, awake: true, awake_reason: "shared" });
+  await reopenSettings(page);
+  await relayHintMatches(page, /since \d\d:\d\d · awake for shared keys$/);
+  Object.assign(relay, { inflight: 2, awake_reason: "calls" });
   await reopenSettings(page);
   await relayHintMatches(page, /since \d\d:\d\d · 2 calls open · keeping the Mac awake$/);
 

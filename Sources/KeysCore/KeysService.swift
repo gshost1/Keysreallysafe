@@ -1721,6 +1721,9 @@ final class KeysService: @unchecked Sendable {
         /// A relay this process does not run holds the lock: `keys relay` in a Terminal.
         var elsewhere: RelayLock.Held?
         var stayAwake: Bool
+        var awakeWhileShared = false
+        /// Shares neither revoked nor expired.
+        var activeShares = 0
         /// The pairing enforcement flag and how many pairings are neither revoked nor expired,
         /// so `keys relay status` and /api/relay can show the mode without a second question.
         var pairingRequired = false
@@ -1738,6 +1741,8 @@ final class KeysService: @unchecked Sendable {
             host: host,
             elsewhere: host.on ? nil : RelayLock.holder(at: relayLockURL),
             stayAwake: preferences.relayStayAwake,
+            awakeWhileShared: preferences.relayAwakeWhileShared,
+            activeShares: ((try? shares()) ?? []).filter { $0.isActive(now: now) }.count,
             pairingRequired: relayPairingRequired(),
             activePairings: pairings.filter { $0.isActive(now: now) }.count
         )
@@ -1771,6 +1776,7 @@ final class KeysService: @unchecked Sendable {
             }
             let (origin, secret) = try relayCredentials()
             relayHost.setStayAwake(preferences.relayStayAwake)
+            relayHost.setStayAwakeWhileShared(preferences.relayAwakeWhileShared, live: shareLiveCheck())
             relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held, pairing: relayPairingVerifier())
         }
         return relayReport()
@@ -1781,6 +1787,20 @@ final class KeysService: @unchecked Sendable {
     func setRelayStayAwake(_ on: Bool) throws {
         try preferences.setRelayStayAwake(on)
         relayHost.setStayAwake(on)
+    }
+
+    /// Whether the relay keeps the Mac from idle sleep for as long as a share is live and the
+    /// Mac is on power. Off unless the person turns it on; stored like the calls choice.
+    func setRelayAwakeWhileShared(_ on: Bool) throws {
+        try preferences.setRelayAwakeWhileShared(on)
+        relayHost.setStayAwakeWhileShared(on, live: shareLiveCheck())
+    }
+
+    /// The share check the relay polls. It captures the catalog and nothing else, like the
+    /// pairing verifier, so the relay holds no Keychain-backed store.
+    func shareLiveCheck() -> @Sendable () -> Bool {
+        let catalog = self.catalog
+        return { KeysService.hasLiveShare(catalog: catalog) }
     }
 
     /// For quitting: no presence, no owner check, whatever is in progress.

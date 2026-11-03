@@ -388,12 +388,14 @@ final class AppLaunchSeamTests: XCTestCase {
         // through ProviderHideCommand.setHidden, so it has no connect of its own.
         // UnwrapCommand is the onboarding slice's `keys unwrap`: it deliberately
         // keeps the plain client and never auto-launches (a script gets exit 6).
+        // The `keys share` verbs mirror client and pair issue: the running app when
+        // there is one, the catalog otherwise, and no launch.
         let graceful = blocks.filter { _, body in body.contains("ControlClient.connect") }
         XCTAssertEqual(
             Set(graceful.keys),
             ["ListCommand", "ClientIssueCommand", "ProviderAddCommand", "ProviderRmCommand", "ProviderHideCommand",
              "AgentCommand", "RelayPairIssueCommand", "RelayPairRequireCommand", "RelayStatusCommand",
-             "RelayResetCommand", "UnwrapCommand"],
+             "RelayResetCommand", "UnwrapCommand", "ShareIssueCommand", "ShareRevokeCommand", "ShareAwakeCommand"],
             "exactly the graceful population keeps the plain control client"
         )
     }

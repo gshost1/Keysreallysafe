@@ -3841,7 +3841,7 @@
     } else {
       line = "Not connected; retrying" + (r.retry_at ? ` at ${clockOf(r.retry_at)}` : "") + (r.last_error ? `. ${r.last_error}` : "");
     }
-    if (r.awake) line += " · keeping the Mac awake";
+    if (r.awake) line += r.awake_reason === "shared" ? " · awake for shared keys" : " · keeping the Mac awake";
     return line;
   }
 
@@ -3857,6 +3857,9 @@
     const awake = $("relay-awake-switch");
     setSwitch(awake, r.stay_awake);
     awake.disabled = !!state.relayPending;
+    const shared = $("relay-shared-switch");
+    setSwitch(shared, r.awake_while_shared);
+    shared.disabled = !!state.relayPending;
   }
 
   async function setRelay(body, pending) {
@@ -3881,6 +3884,10 @@
   $("relay-awake-switch").addEventListener("click", () => {
     if (!state.relay) return;
     setRelay({ stay_awake: !state.relay.stay_awake }, "Saving…");
+  });
+  $("relay-shared-switch").addEventListener("click", () => {
+    if (!state.relay) return;
+    setRelay({ awake_while_shared: !state.relay.awake_while_shared }, "Saving…");
   });
 
   // One quiet line under the plan rows: this month from the local logs, in the unit this page is

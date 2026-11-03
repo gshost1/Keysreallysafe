@@ -199,6 +199,7 @@ final class AppActivationPolicyTests: XCTestCase {
         XCTAssertEqual(item("Quit Keysrs")?.action, #selector(MenubarExtra.quit), "Quit stays in the app menu while the window is shown")
         XCTAssertEqual(item("Relay for Cloud Agents")?.action, #selector(MenubarExtra.toggleRelay))
         XCTAssertEqual(item("Keep Mac Awake for Relay Calls")?.action, #selector(MenubarExtra.toggleRelayAwake))
+        XCTAssertEqual(item("Keep Mac Awake While Sharing Keys")?.action, #selector(MenubarExtra.toggleRelayAwakeWhileShared))
         XCTAssertNotNil(item("Show Usage Meter"))
         XCTAssertNotNil(item("Show Menu Bar Item"))
         XCTAssertNotNil(item("Install Updates Automatically"), "the old label is now the install setting")
