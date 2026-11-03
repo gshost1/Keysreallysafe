@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import IOKit.ps
 import IOKit.pwr_mgt
 
 /// One relay per Mac. The Worker keeps a single Mac connection and gives it to whichever
@@ -128,6 +129,18 @@ final class IOKitIdleSleepBlocker: IdleSleepBlocker, @unchecked Sendable {
     }
 }
 
+/// Whether the Mac runs on its power adapter. Holding it awake for a share on battery would
+/// drain it overnight, so "Keep Mac Awake While Sharing" only holds on power; a Mac without a
+/// battery always reads as on power.
+enum PowerSource {
+    static func onExternalPower() -> Bool {
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let type = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?
+        else { return true }
+        return type == kIOPMACPowerKey
+    }
+}
+
 /// The relay as the app runs it (docs/relay.md): one RelayClient from the moment it is turned
 /// on until it is turned off or the app quits, redialing on its own after a dropped socket or
 /// sleep, its lines going to `log` (menubar.log in the app). It is never turned on by itself:
@@ -139,7 +152,18 @@ final class RelayHost: @unchecked Sendable {
         var state: RelayClient.State
         /// Whether the idle-sleep assertion is held right now.
         var awake: Bool
+        /// Why it is held: for relayed calls, or because a share is live and the Mac is on power.
+        var awakeReason: AwakeReason? = nil
     }
+
+    enum AwakeReason: String, Equatable {
+        case calls
+        case shared
+    }
+
+    /// How often the share hold rechecks the shares and the power source: an expired share or
+    /// an unplugged adapter lets the Mac sleep within this long.
+    static let defaultShareCheckInterval: TimeInterval = 60
 
     /// How long the Mac is kept from idle sleep after the last relayed call, when the person
     /// asked for it: an agent's calls come in bursts with its own tool runs in between, and
@@ -169,22 +193,32 @@ final class RelayHost: @unchecked Sendable {
     private let lock = NSLock()
     private var running: Running?
     private var stayAwake = false
-    // Confined to awakeQueue, except `awakeHeld`, which status reads.
+    private var awakeWhileShared = false
+    private var shareLive: @Sendable () -> Bool = { false }
+    private let onPower: @Sendable () -> Bool
+    private let shareCheckInterval: TimeInterval
+    // Confined to awakeQueue, except `awakeHeld` and `awakeReason`, which status reads.
     private let awakeQueue = DispatchQueue(label: "keysreallysafe.relay.awake")
     private let awakeHeld = LockedValue(false)
+    private let awakeReason = LockedValue<AwakeReason?>(nil)
     private var lingerItem: DispatchWorkItem?
+    private var shareTimer: DispatchSourceTimer?
 
     init(
         log: @escaping @Sendable (String) -> Void = { line in FileHandle.standardError.write(Data("relay  \(line)\n".utf8)) },
         dialer: any RelayDialer = URLSessionRelayDialer(),
         blocker: any IdleSleepBlocker = IOKitIdleSleepBlocker(),
         linger: TimeInterval = RelayHost.defaultLinger,
+        onPower: @escaping @Sendable () -> Bool = { PowerSource.onExternalPower() },
+        shareCheckInterval: TimeInterval = RelayHost.defaultShareCheckInterval,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.log = log
         self.dialer = dialer
         self.blocker = blocker
         self.linger = linger
+        self.onPower = onPower
+        self.shareCheckInterval = shareCheckInterval
         self.now = now
     }
 
@@ -197,7 +231,11 @@ final class RelayHost: @unchecked Sendable {
 
     var status: Status {
         let (origin, state) = lock.withLock { (running?.origin, running?.client.state) }
-        return Status(on: origin != nil, origin: origin, state: state ?? RelayClient.State(), awake: awakeHeld.get())
+        let held = awakeHeld.get()
+        return Status(
+            on: origin != nil, origin: origin, state: state ?? RelayClient.State(), awake: held,
+            awakeReason: held ? awakeReason.get() : nil
+        )
     }
 
     /// Starts relaying with credentials the caller obtained behind presence, holding `relayLock`
@@ -232,6 +270,9 @@ final class RelayHost: @unchecked Sendable {
             relayLock.release()
             return
         }
+        // The awake choices are set before the relay starts; the share hold needs no call to
+        // begin, so it is decided now rather than at the first relayed call.
+        activityChanged()
         log("on; agents reach the gateway at \(RelayURL.baseURL(origin, key: "<key name>")) with a client token")
     }
 
@@ -257,6 +298,18 @@ final class RelayHost: @unchecked Sendable {
         activityChanged()
     }
 
+    /// Whether to keep the Mac from idle sleep for as long as a share is live and the Mac is on
+    /// its power adapter, calls or not: the other machine's agent may call at any moment, and
+    /// a sleeping Mac answers nothing. `live` reads the catalog; it is polled every
+    /// `shareCheckInterval` while the hold is wanted, never on the relay's receive loop.
+    func setStayAwakeWhileShared(_ on: Bool, live: @escaping @Sendable () -> Bool) {
+        lock.withLock {
+            awakeWhileShared = on
+            shareLive = live
+        }
+        activityChanged()
+    }
+
     /// Waits until the idle-sleep decisions queued so far have been made; for tests.
     func settle() {
         awakeQueue.sync {}
@@ -266,47 +319,98 @@ final class RelayHost: @unchecked Sendable {
         awakeQueue.async { [weak self] in self?.evaluateAwake() }
     }
 
-    /// On awakeQueue. Holds the assertion while a relayed call is open and for `linger` after
-    /// the last one, and only while the relay is on and the person asked for it.
+    /// On awakeQueue. Holds the assertion while a share is live and the Mac is on power, when
+    /// the person asked for that; otherwise while a relayed call is open and for `linger` after
+    /// the last one, when they asked for that. Never while the relay is off.
     private func evaluateAwake() {
-        let (wanted, busy) = lock.withLock { () -> (Bool, Bool) in
-            (stayAwake && running != nil, (running?.client.inflightCount ?? 0) > 0)
+        let (callsWanted, sharedWanted, busy, live) = lock.withLock { () -> (Bool, Bool, Bool, @Sendable () -> Bool) in
+            (stayAwake && running != nil, awakeWhileShared && running != nil,
+             (running?.client.inflightCount ?? 0) > 0, shareLive)
         }
-        guard wanted else {
+        updateShareTimer(sharedWanted)
+        if sharedWanted, live(), onPower() {
             lingerItem?.cancel()
             lingerItem = nil
-            if awakeHeld.get() {
-                blocker.end()
-                awakeHeld.set(false)
-                log("letting the Mac sleep again")
-            }
+            hold(.shared)
+            return
+        }
+        guard callsWanted else {
+            lingerItem?.cancel()
+            lingerItem = nil
+            release("letting the Mac sleep again")
             return
         }
         if busy {
             lingerItem?.cancel()
             lingerItem = nil
-            guard !awakeHeld.get() else { return }
-            if blocker.begin(reason: "Keysrs is relaying a call from a cloud agent") {
-                awakeHeld.set(true)
-                log("keeping the Mac awake while relayed calls are open")
-            } else {
-                log("could not keep the Mac awake: the system refused the power assertion")
-            }
+            hold(.calls)
         } else if awakeHeld.get(), lingerItem == nil {
+            // The share hold just ended (expired, revoked, unplugged) with calls wanted: the
+            // usual quiet period after the last call still applies before the Mac may sleep.
+            if awakeReason.get() == .shared { awakeReason.set(.calls) }
             let item = DispatchWorkItem { [weak self] in self?.lingerEnded() }
             lingerItem = item
             awakeQueue.asyncAfter(deadline: .now() + linger, execute: item)
         }
     }
 
+    /// On awakeQueue. Takes the assertion, or keeps it under a new reason, logging changes only.
+    private func hold(_ reason: AwakeReason) {
+        if awakeHeld.get() {
+            guard awakeReason.get() != reason else { return }
+            awakeReason.set(reason)
+            log(reason == .shared
+                ? "keeping the Mac awake while keys are shared and it is on power"
+                : "keeping the Mac awake while relayed calls are open")
+            return
+        }
+        let why = reason == .shared
+            ? "Keysrs is sharing keys with another machine"
+            : "Keysrs is relaying a call from a cloud agent"
+        if blocker.begin(reason: why) {
+            awakeHeld.set(true)
+            awakeReason.set(reason)
+            log(reason == .shared
+                ? "keeping the Mac awake while keys are shared and it is on power"
+                : "keeping the Mac awake while relayed calls are open")
+        } else {
+            log("could not keep the Mac awake: the system refused the power assertion")
+        }
+    }
+
+    /// On awakeQueue.
+    private func release(_ line: String) {
+        guard awakeHeld.get() else { return }
+        blocker.end()
+        awakeHeld.set(false)
+        awakeReason.set(nil)
+        log(line)
+    }
+
+    /// On awakeQueue. The share hold has no event to wake it when a share expires or the
+    /// adapter is pulled, so it rechecks on a timer for as long as it is wanted.
+    private func updateShareTimer(_ wanted: Bool) {
+        if !wanted {
+            shareTimer?.cancel()
+            shareTimer = nil
+            return
+        }
+        guard shareTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: awakeQueue)
+        timer.schedule(deadline: .now() + shareCheckInterval, repeating: shareCheckInterval)
+        timer.setEventHandler { [weak self] in self?.evaluateAwake() }
+        shareTimer = timer
+        timer.resume()
+    }
+
     /// On awakeQueue: the quiet period after the last call ran out.
     private func lingerEnded() {
         lingerItem = nil
-        // A call that opened meanwhile keeps the assertion; its end schedules a new wait.
-        guard (lock.withLock { running?.client.inflightCount ?? 0 }) == 0, awakeHeld.get() else { return }
-        blocker.end()
-        awakeHeld.set(false)
+        // A call that opened meanwhile keeps the assertion; its end schedules a new wait. A
+        // share hold that took over meanwhile is the share check's to end.
+        guard (lock.withLock { running?.client.inflightCount ?? 0 }) == 0, awakeHeld.get(),
+              awakeReason.get() != .shared else { return }
         let quiet = linger >= 60 ? "\(Int(linger / 60)) min" : "\(Int(linger.rounded())) s"
-        log("letting the Mac sleep again: no relayed call for \(quiet)")
+        release("letting the Mac sleep again: no relayed call for \(quiet)")
     }
 }

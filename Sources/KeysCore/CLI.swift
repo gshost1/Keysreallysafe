@@ -50,6 +50,7 @@ public struct KeysCLI: ParsableCommand {
             SetupCommand.self,
             TunnelCommand.self,
             RelayCommand.self,
+            ShareCommand.self,
             PurgeCommand.self,
         ]
     )
@@ -2280,7 +2281,10 @@ struct RelayCommand: ParsableCommand {
             line = "on, not connected; retrying"
             if let error = JSONValue.string(obj["last_error"]) { line += " (\(error))" }
         }
-        if JSONValue.bool(obj["awake"]) == true { line += ", keeping the Mac awake" }
+        if JSONValue.bool(obj["awake"]) == true {
+            line += JSONValue.string(obj["awake_reason"]) == "shared"
+                ? ", keeping the Mac awake for shared keys" : ", keeping the Mac awake"
+        }
         return line
     }
 
@@ -2598,5 +2602,174 @@ struct RelayResetCommand: ParsableCommand {
         }
         try service.resetRelay()
         print("relay forgotten on this Mac; on the Cloudflare side run: cd Relay && npx wrangler secret delete RELAY_SECRET (or npx wrangler delete)")
+    }
+}
+
+struct ShareCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "share",
+        abstract: "Share keys with another machine (a Linux box, a VPS) through your relay. Keys never leave this Mac.",
+        discussion: """
+            keys share "<machine>" --key <name> mints one client token for the named keys and one \
+            relay pairing, under one Touch ID, and prints the lines to paste on the other \
+            machine: base URLs on your relay Worker plus the token. Calls from there land in \
+            the gateway on this Mac like local ones: scoped, metered and revocable. This Mac \
+            has to be awake and the relay on; keys share awake on keeps it awake while a share \
+            is live and the Mac is on its power adapter. Set up the relay first (docs/relay.md).
+            """,
+        subcommands: [ShareIssueCommand.self, ShareListCommand.self, ShareRevokeCommand.self, ShareAwakeCommand.self],
+        defaultSubcommand: ShareIssueCommand.self
+    )
+}
+
+struct ShareIssueCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "issue",
+        abstract: "Share keys with a machine (one Touch ID). The token and pairing are shown once."
+    )
+
+    @Argument(help: "The other machine's name, e.g. \"hetzner box\".") var label: String
+    @Option(name: .customLong("key"), help: "Key to share; repeat for more.") var keys: [String] = []
+    @Option(help: "Days until the share expires (1 to \(RelayPairing.maxDays)).") var days: Int = 30
+    @Option(name: .customLong("method"), help: "Allowed HTTP method; repeat for more. Default GET and POST.") var methods: [String] = []
+
+    func validate() throws {
+        _ = try Share.validateLabel(label)
+        guard !keys.isEmpty else { throw AppError.usage("name at least one key with --key") }
+        for key in keys { try KeyName.validate(key) }
+        _ = try RelayPairing.validateDays(days)
+        if !methods.isEmpty { _ = try GatewayClientToken.validateMethods(methods) }
+    }
+
+    func run() throws {
+        let token: String, credential: String, origin: URL, members: [ShareEnv.Member], expires: String
+        var notes: [String] = []
+        if let control = try? ControlClient.connect() {
+            // The running app mints it under one Touch ID there and turns the gateway on for
+            // each key in the same prompt, exactly like keys client issue.
+            fputs("Touch ID in Keysrs…\n", stderr)
+            var body: [String: Any] = ["label": label, "keys": keys, "days": days, "caller": "cli"]
+            if !methods.isEmpty { body["methods"] = methods }
+            let obj = try control.call(method: "POST", path: "/api/shares", body: body, expect: 201)
+            token = JSONValue.string(obj["token"]) ?? ""
+            credential = JSONValue.string(obj["credential"]) ?? ""
+            guard !token.isEmpty, !credential.isEmpty,
+                  let url = JSONValue.string(obj["relay_url"]).flatMap({ try? RelayURL.validate($0) })
+            else { throw AppError.usage("the site returned no share") }
+            origin = url
+            members = ((obj["members"] as? [Any]) ?? []).compactMap(JSONValue.object).map {
+                ShareEnv.Member(name: JSONValue.string($0["key"]) ?? "", api: JSONValue.string($0["api"]) ?? "")
+            }
+            expires = JSONValue.string(JSONValue.object(obj["share"])?["expires_at"]) ?? ""
+            if JSONValue.bool(obj["gateway_enabled"]) != true {
+                notes.append("The gateway is not on for every shared key; run: keys gateway on <key>")
+            }
+            if let relay = try? control.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5) {
+                if JSONValue.bool(relay["on"]) != true {
+                    notes.append("The relay is off, so nothing reaches this Mac yet; turn it on: keys relay on")
+                }
+                if JSONValue.bool(relay["awake_while_shared"]) != true {
+                    notes.append("If this Mac sleeps, the other machine gets mac_offline; to keep it awake on power: keys share awake on")
+                }
+                if JSONValue.bool(relay["pairing_required"]) == true, ShareEnv.needsHeaderInCode(members) {
+                    notes.append("Pairing is required, and only Claude Code sends X-KSF-Pair from the environment; other SDKs need it added as a default header in code")
+                }
+            }
+        } else {
+            let service = try AppFactory.makeService()
+            let issued = try service.issueShare(
+                label: label, keys: keys, days: days, methods: methods.isEmpty ? nil : methods, caller: "cli"
+            )
+            guard let url = service.relayStatus().url else { throw AppError.usage("no relay is set up") }
+            token = issued.token
+            credential = issued.credential
+            origin = url
+            members = service.shareMembers(issued.share)
+            expires = issued.share.client?.expiresAt ?? ""
+            notes.append("Keysrs is not running, so the gateway and the relay are off; open it, then run: keys relay on")
+        }
+        FileHandle.standardError.write(Data(("""
+        Shared \(members.map(\.name).joined(separator: ", ")) with "\(label)" until \(expires).
+        On that machine, paste these lines into its shell, or save them as ~/.keysrs.env (chmod 600)
+        and source it. The token and pairing are shown this once; keys share revoke "\(label)" ends both.
+
+        """).utf8))
+        for line in ShareEnv.lines(origin: origin, members: members, token: token, pairing: credential) {
+            print(line)
+        }
+        if !notes.isEmpty {
+            FileHandle.standardError.write(Data(("\n" + notes.joined(separator: "\n") + "\n").utf8))
+        }
+    }
+}
+
+struct ShareListCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "list",
+        abstract: "List shares: machine, keys, expiry, last use, state. Never a token."
+    )
+
+    func run() throws {
+        let service = try AppFactory.makeService()
+        let now = Date()
+        let shares = try service.shares()
+        if shares.isEmpty {
+            print("no shares; create one with: keys share \"<machine>\" --key <name>")
+            return
+        }
+        for share in shares {
+            let revoked = share.pairing.revokedAt != nil || share.client?.revokedAt != nil
+            let state = revoked ? "revoked" : (share.isActive(now: now) ? "active" : "expired")
+            let expires = share.client?.expiresAt ?? share.pairing.expiresAt ?? "-"
+            print("\(state)\t\(share.keys.joined(separator: ","))\texpires \(expires)\tlast \(share.lastUsedAt ?? "-")\t\(share.label)")
+        }
+    }
+}
+
+struct ShareRevokeCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "revoke",
+        abstract: "End a share: its token and its pairing stop working at the next call."
+    )
+
+    @Argument(help: "The machine's name from keys share list.") var label: String
+
+    func run() throws {
+        let share: [String: Any]
+        if let control = try? ControlClient.connect() {
+            let obj = try control.call(method: "DELETE", path: "/api/shares", body: ["label": label], expect: 200)
+            share = JSONValue.object(obj["share"]) ?? [:]
+        } else {
+            let service = try AppFactory.makeService()
+            share = try service.revokeShare(label, caller: "cli").jsonObject(now: Date())
+        }
+        let keys = (share["keys"] as? [Any])?.compactMap { $0 as? String }.joined(separator: ", ") ?? ""
+        print("revoked the share with \"\(label)\" (\(keys)); its token and pairing are refused from now on")
+    }
+}
+
+struct ShareAwakeCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "awake",
+        abstract: "Keep this Mac awake while a share is live and it is on power (on), or not (off, the default)."
+    )
+
+    @Argument(help: "on or off.") var state: String
+
+    func run() throws {
+        let on: Bool
+        switch state.lowercased() {
+        case "on": on = true
+        case "off": on = false
+        default: throw AppError.usage("usage: keys share awake on|off")
+        }
+        if let control = try? ControlClient.connect() {
+            _ = try control.call(method: "POST", path: "/api/relay", body: ["awake_while_shared": on], expect: 200)
+        } else {
+            try AppFactory.makeService().preferences.setRelayAwakeWhileShared(on)
+        }
+        print(on
+            ? "keeping the Mac awake while a share is live, the relay is on and the Mac is on power; the display may still sleep, and closing the lid still sleeps the Mac"
+            : "the Mac may idle-sleep while keys are shared; the other machine gets mac_offline until it wakes")
     }
 }

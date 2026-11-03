@@ -356,6 +356,12 @@ final class APIHandler: @unchecked Sendable {
                 return try relayPairingsRevoke(request)
             case ("POST", "/api/relay/pairings/required"):
                 return try relayPairingsRequired(request)
+            case ("GET", "/api/shares"):
+                return try sharesList()
+            case ("POST", "/api/shares"):
+                return try sharesIssue(request)
+            case ("DELETE", "/api/shares"):
+                return try sharesRevoke(request)
             case ("POST", "/api/preferences/hidden-usage"):
                 guard let list = try jsonBody(request)["hidden"] as? [Any] else {
                     return HTTPResponse.json(400, ["error": "hidden must be a list"])
@@ -730,12 +736,12 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, try service.keyJSONObject(row))
     }
 
-    /// `enabled` turns this process's relay on (Touch ID here) or off, `stay_awake` is the
-    /// idle-sleep choice; either or both, and nothing else.
+    /// `enabled` turns this process's relay on (Touch ID here) or off, `stay_awake` and
+    /// `awake_while_shared` are the idle-sleep choices; any of them, and nothing else.
     private func relaySet(_ request: HTTPRequest) throws -> HTTPResponse {
         let obj = try jsonBody(request)
-        guard !obj.isEmpty, Set(obj.keys).isSubset(of: ["enabled", "stay_awake"]) else {
-            return HTTPResponse.json(400, ["error": "send enabled, stay_awake or both"])
+        guard !obj.isEmpty, Set(obj.keys).isSubset(of: ["enabled", "stay_awake", "awake_while_shared"]) else {
+            return HTTPResponse.json(400, ["error": "send enabled, stay_awake, awake_while_shared or a mix"])
         }
         func flag(_ key: String) throws -> Bool? {
             guard obj.keys.contains(key) else { return nil }
@@ -744,6 +750,7 @@ final class APIHandler: @unchecked Sendable {
         }
         let enabled = try flag("enabled")
         if let stayAwake = try flag("stay_awake") { try service.setRelayStayAwake(stayAwake) }
+        if let shared = try flag("awake_while_shared") { try service.setRelayAwakeWhileShared(shared) }
         if let enabled { _ = try service.setRelay(enabled: enabled) }
         return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
     }
@@ -804,6 +811,57 @@ final class APIHandler: @unchecked Sendable {
         return HTTPResponse.json(200, ["pairing": Self.pairingJSON(revoked, now: Date())])
     }
 
+    /// The one response that ever carries a share's token and pairing credential. Every
+    /// refusal — a bad body, an unknown key, no relay, a duplicate live label — is thrown
+    /// before issueShare asks for presence, so a refused share never prompts.
+    private func sharesIssue(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard Set(obj.keys).isSubset(of: ["label", "keys", "days", "methods", "caller"]) else {
+            return HTTPResponse.json(400, ["error": "send label and keys, and optionally days and methods"])
+        }
+        guard let keys = obj["keys"] as? [String], !keys.isEmpty else {
+            return HTTPResponse.json(400, ["error": "keys must name at least one key"])
+        }
+        var days: Int?
+        if obj.keys.contains("days") {
+            guard let d = obj["days"] as? Int else { return HTTPResponse.json(400, ["error": "invalid days"]) }
+            days = d
+        }
+        var methods: [String]?
+        if obj.keys.contains("methods") {
+            guard let m = obj["methods"] as? [String] else { return HTTPResponse.json(400, ["error": "invalid methods"]) }
+            methods = m
+        }
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "dashboard"
+        let issued = try service.issueShare(
+            label: JSONValue.string(obj["label"]) ?? "", keys: keys, days: days, methods: methods, caller: caller
+        )
+        let origin = service.relayStatus().url
+        return HTTPResponse.json(201, [
+            "token": issued.token,
+            "credential": issued.credential,
+            "share": issued.share.jsonObject(now: Date()),
+            "relay_url": origin?.absoluteString ?? NSNull(),
+            "members": service.shareMembers(issued.share).map { ["key": $0.name, "api": $0.api] },
+            "gateway_enabled": issued.share.keys.allSatisfy { service.isGatewayEnabled($0) },
+        ])
+    }
+
+    private func sharesList() throws -> HTTPResponse {
+        let now = Date()
+        return HTTPResponse.json(200, ["shares": try service.shares().map { $0.jsonObject(now: now) }])
+    }
+
+    /// The label travels in the body because it can hold any character, spaces included.
+    private func sharesRevoke(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let label = JSONValue.string(obj["label"]), !label.isEmpty else {
+            return HTTPResponse.json(400, ["error": "label is required"])
+        }
+        let revoked = try service.revokeShare(label)
+        return HTTPResponse.json(200, ["share": revoked.jsonObject(now: Date())])
+    }
+
     /// Hint and metadata only: neither the credential nor its hash ever appears in an API
     /// response other than the one-time mint.
     static func pairingJSON(_ pairing: RelayPairingRecord, now: Date) -> [String: Any] {
@@ -847,7 +905,10 @@ final class APIHandler: @unchecked Sendable {
             "elsewhere": report.elsewhere != nil,
             "elsewhere_pid": report.elsewhere?.pid.map { Int($0) } ?? NSNull(),
             "stay_awake": report.stayAwake,
+            "awake_while_shared": report.awakeWhileShared,
             "awake": report.host.awake,
+            "awake_reason": report.host.awakeReason?.rawValue ?? NSNull(),
+            "active_shares": report.activeShares,
             "pairing_required": report.pairingRequired,
             "active_pairings": report.activePairings,
         ]

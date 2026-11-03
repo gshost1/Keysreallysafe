@@ -105,6 +105,17 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta(Self.relayStayAwakeKey, on ? "on" : "off") }
     }
 
+    static let relayAwakeWhileSharedKey = "pref_relay_awake_shared"
+
+    /// Holding the Mac awake for as long as a share is live costs power for hours, not
+    /// minutes, so it is off until the person turns it on, and it only ever holds on the
+    /// power adapter.
+    var relayAwakeWhileShared: Bool { (try? catalog.metaValue(Self.relayAwakeWhileSharedKey)) == "on" }
+
+    func setRelayAwakeWhileShared(_ on: Bool) throws {
+        try catalog.withTransaction { try catalog.setMeta(Self.relayAwakeWhileSharedKey, on ? "on" : "off") }
+    }
+
     static let dockerAccessKey = "pref_docker_access"
 
     /// Whether Docker Desktop may route through the gateway. Off until the person

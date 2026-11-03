@@ -157,6 +157,43 @@ rejection to its default 502 with the code preserved — a refusal either way,
 so the mismatch fails closed. Redeploying the Worker from this checkout turns
 the 502 into the precise 403.
 
+## Sharing keys with another machine
+
+`keys share` is the short way to give one machine — a Linux box, a VPS, a
+second laptop — several keys at once through the relay. It is a pairing and a
+client token minted together, nothing new on the wire:
+
+```sh
+keys share "hetzner box" --key router --key openai --days 30
+#    one Touch ID; prints, once, the lines to paste on that machine
+keys share list                    # machine, keys, expiry, last use, state — never a token
+keys share revoke "hetzner box"    # the token and the pairing stop at the next call
+keys share awake on                # keep this Mac awake while a share is live, on power only
+```
+
+Under the one Touch ID it turns the gateway on for each key, mints one
+`ksfc_…` client token that serves every named key (methods GET and POST, so an
+SDK can list models) and one `ksfp_…` pairing scoped to the same keys, both
+with the same expiry and both labelled `share: <machine>`. The token is an
+ordinary multi-key client token: its soft project reference is
+`share:<pairing id>`, which has no projects row, so no folder flow can reach
+it. Revoking the share revokes both halves; revoking either one alone also
+ends it. Everything that can be refused (no relay set up, an unknown key, a
+provider the gateway cannot proxy, a live share of the same name) is refused
+before the prompt.
+
+The printed lines are environment variables: `KEYSRS_TOKEN`, `KEYSRS_PAIR`,
+one `KEYSRS_<KEY>_BASE_URL` per key, and for the first Anthropic-wire key
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_CUSTOM_HEADERS`
+(the pairing header, which Claude Code sends), and for the first OpenAI-wire
+key `OPENAI_BASE_URL` and `OPENAI_API_KEY`. A second key on the same wire keeps
+only its `KEYSRS_` variable. Only Claude Code reads an extra header from the
+environment, so while pairing is required the other SDKs need `X-KSF-Pair`
+added as a default header in code; `keys share` says so when it applies.
+
+A share works only while this Mac is awake, online and relaying, the same as
+any relayed call ([Sleep](#sleep)).
+
 ## Sleep
 
 The Mac has to be awake and online for a call to get through; the relay does
@@ -182,6 +219,17 @@ Settings say "keeping the Mac awake", `pmset -g assertions` lists it, and
 menubar.log notes when it is taken and released. `keys relay` in a Terminal
 never takes it; `caffeinate -i keys relay` keeps an idle Mac awake for as
 long as it runs.
+
+**Keep Mac Awake While Sharing Keys** (menu bar, Settings → Relay or `keys
+share awake on|off`; off by default, remembered across launches) takes the
+same assertion for as long as the relay is on, a share is live and the Mac
+runs on its power adapter, with or without calls. On battery it lets go, so a
+forgotten share cannot drain the Mac overnight. The relay rechecks the shares
+and the power source once a minute, so an expired or revoked share, or a
+pulled adapter, lets the Mac sleep within about a minute; if the calls choice
+is on too, its five-minute quiet period then applies as usual. Closing the
+lid, choosing Sleep or a critical battery still sleeps the Mac, and the
+other machine then gets 503 `mac_offline`.
 
 ## The protocol
 

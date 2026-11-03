@@ -279,6 +279,55 @@ final class RelayHostTests: XCTestCase {
         XCTAssertFalse(blocker.isHeld, "a relay that is off keeps nothing awake")
     }
 
+    /// "Keep Mac Awake While Sharing Keys": held while a share is live and the Mac is on power,
+    /// calls or not, rechecked on the share timer, and never while the relay is off.
+    func testSharedAwakeHoldsWhileAShareIsLiveAndTheMacIsOnPower() async throws {
+        let socket = FakeRelaySocket()
+        let blocker = FakeSleepBlocker()
+        let logs = RelayTests.LogSink()
+        let power = LockedValue(true)
+        let live = LockedValue(true)
+        let host = RelayHost(
+            log: { logs.add($0) }, dialer: FakeRelayDialer([.success(socket)]), blocker: blocker,
+            linger: 0.2, onPower: { power.get() }, shareCheckInterval: 0.05
+        )
+        host.setStayAwakeWhileShared(true, live: { live.get() })
+        host.settle()
+        XCTAssertFalse(blocker.isHeld, "a relay that is off keeps nothing awake")
+
+        host.start(origin: origin, secret: secret, gatewayPort: 1, relayLock: try RelayLock(at: try TempDir.make().appendingPathComponent("relay.lock")))
+        defer { host.stop() }
+        try await until("held for the share") { blocker.isHeld }
+        XCTAssertEqual(blocker.reasons, ["Keysrs is sharing keys with another machine"])
+        XCTAssertEqual(host.status.awakeReason, .shared)
+        XCTAssertTrue(logs.all.contains("keeping the Mac awake while keys are shared and it is on power"))
+
+        // Pulling the adapter lets go at the next check; plugging it back in takes it again.
+        power.set(false)
+        try await until("released on battery") { !blocker.isHeld }
+        XCTAssertNil(host.status.awakeReason)
+        power.set(true)
+        try await until("held again on power") { blocker.isHeld }
+
+        // The share ending (revoked, expired) lets go too.
+        live.set(false)
+        try await until("released without a live share") { !blocker.isHeld }
+
+        // With the calls choice on as well, the share hold handing back leaves the usual linger.
+        live.set(true)
+        host.setStayAwake(true)
+        try await until("held for the share again") { blocker.isHeld }
+        live.set(false)
+        try await until("released after the linger", timeout: 3) { !blocker.isHeld }
+
+        live.set(true)
+        try await until("held once more") { blocker.isHeld }
+        host.setStayAwakeWhileShared(false, live: { live.get() })
+        host.setStayAwake(false)
+        host.settle()
+        XCTAssertFalse(blocker.isHeld, "turning it off lets go at once")
+    }
+
     /// A relayed call stamps the moment it opened or closed (H4's quiet-gate
     /// source): the background update gate reads `lastRelayedCall` so a call
     /// relayed moments ago holds the install for its recent-use window. The
