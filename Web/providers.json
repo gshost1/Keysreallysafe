@@ -243,6 +243,15 @@
       "path_prefix": "/v1"
     },
     {
+      "id": "inception",
+      "name": "Inception Labs (Mercury)",
+      "group": "labs",
+      "host": "api.inceptionlabs.ai",
+      "api": "openai",
+      "path_prefix": "/v1",
+      "note": "OpenAI-shaped, Bearer key; /v1/models answers (checked 2026-11-03)."
+    },
+    {
       "id": "friendli",
       "name": "FriendliAI",
       "group": "labs",
@@ -632,6 +641,14 @@
       "host": "google.serper.dev",
       "auth_header": "X-API-KEY",
       "auth_prefix": ""
+    },
+    {
+      "id": "boxd",
+      "name": "boxd (VM sandboxes)",
+      "group": "non-chat",
+      "key_prefix": "bxd_",
+      "gateway": false,
+      "note": "gRPC on boxd.sh:9443, which the HTTP gateway cannot carry; not proxied."
     },
     {
       "id": "pinecone",
