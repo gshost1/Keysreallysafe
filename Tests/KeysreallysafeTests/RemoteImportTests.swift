@@ -49,7 +49,7 @@ final class RemoteImportTests: XCTestCase {
         XCTAssertEqual(stored.map(\.model), ["claude-opus-5-5", "kimi-k3"])
         XCTAssertEqual(stored.map(\.provider), ["anthropic", "moonshot"])
         XCTAssertEqual(try db.usageEvents(from: "1970-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", source: .droid).count, 0,
-                       "remote usage never lands in the local Droid ledger or its plan windows")
+                       "remote usage never lands in the local Droid ledger")
         XCTAssertEqual(try db.usageEvents(from: "1970-01-01T00:00:00Z", to: "2100-01-01T00:00:00Z", source: .cloud).count, 2)
     }
 

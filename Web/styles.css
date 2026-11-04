@@ -411,7 +411,7 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 14px; display: fl
 /* Orange is Claude's alone on this page, so a caution in the totals line wears red. */
 .totals-note.warn { color: var(--red); }
 
-/* Usage pane: plan windows first, local dollars as one quiet line under them */
+/* Usage pane: this month from the local logs, as one quiet line */
 .usage-totals {
   padding: 10px 16px 16px;
   font-size: 12px;

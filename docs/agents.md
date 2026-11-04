@@ -1,7 +1,7 @@
 # Coding agents: operating the vault from an agent
 
 `keys` is built to be driven by an AI agent as well as by a person: it answers
-a version probe, reports the plan windows as one JSON line, and exits with a
+a version probe, prints one JSON line per `--json` command, and exits with a
 code a script can branch on instead of parsing prose. This page is the manual
 for that surface — the supported workflows, the exit codes, the
 machine-readable flags, and the privacy rules that are part of the product
@@ -93,16 +93,9 @@ keys version --json      # {"version":"0.14.1"} — one line, exit 0
 An install old enough to answer exit 64 here does not know this surface yet;
 ask the user to update Keysrs instead of falling back to parsing prose.
 
-Then read the plan windows:
-
-```sh
-keys status --json       # one line, a "tools" array with an entry per tool
-```
-
-Every entry states `"tracked"`: true or false, and an untracked tool carries
-no usage numbers at all — an absent figure means not tracked, never a measured
-zero, and a percent whose window already reset is left out rather than shown
-as current. Never present a number the JSON does not give you as if it were
+`keys status` and its plan windows were removed on 2026-11-03: Keysrs no
+longer tracks plan limits. For token and spend figures use `keys spend
+--json`, and never present a number the JSON does not give you as if it were
 measured.
 
 ## Wire and launch an agent
@@ -413,7 +406,7 @@ exits 6 but never launches the app — a script gets exit 6 and nothing
 changes when no site owns the gateway. `keys tunnel` and `keys relay run`
 use the same launch, but keep their own gateway-down error when the app is
 up and its gateway is not listening. Commands that need no site — `keys
-list`, `keys status`, `keys version`, `keys setup` — run without one and
+list`, `keys version`, `keys setup` — run without one and
 never launch the app.
 
 Exit 2 covers a missing key or grant, and one more case worth stating
@@ -439,7 +432,6 @@ keys test … --json
 keys models … --json
 keys providers --json
 keys version --json
-keys status --json
 keys setup … --json
 ```
 
