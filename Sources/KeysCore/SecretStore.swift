@@ -126,8 +126,57 @@ struct KeychainStore: SecretStore {
         try KeyName.validate(name)
         let query = KeychainQuery.item(service: service, name: name)
         let status = SecItemDelete(query as CFDictionary)
-        if status == errSecItemNotFound { return }
+        if status == errSecItemNotFound || status == errSecSuccess { return }
+        // Items saved before the stable signing identity (September 2026 builds) keep a
+        // `cdhash:` partition from the build that made them. "Always Allow" let later builds
+        // read them, but SecItemDelete still refuses, so the dashboard could not delete them.
+        // Apple's own tool may delete them (it did, without a prompt, on the owner's Mac).
+        // Every caller wants the item gone: rm and purge after Touch ID, add's rollback and
+        // relay reset for items this app just wrote, so the fallback grants nothing new.
+        if Self.securityToolMayHelp(status) {
+            Self.runSecurityTool(["delete-generic-password", "-s", service, "-a", name])
+            if !Self.exists(query) { return }
+        }
         try Self.finish(status, op: "delete", name: name)
+    }
+
+    /// A cancelled prompt or a missing login session is not an ownership refusal, and the
+    /// tool cannot fix either. errSecAuthFailed is not excluded: on the file-based keychain a
+    /// partition refusal can come back as it, and Touch ID has already passed by then.
+    private static func securityToolMayHelp(_ status: OSStatus) -> Bool {
+        status != errSecUserCanceled && status != errSecInteractionNotAllowed
+    }
+
+    /// `/usr/bin/security` with argv only (no shell; names are validated key names), output
+    /// discarded. Bounded so a Keychain dialog the headless app cannot show never hangs the
+    /// request; callers check the Keychain afterwards instead of trusting the exit code.
+    private static func runSecurityTool(_ arguments: [String]) {
+        let proc = Process()
+        let exited = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in exited.signal() }
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        proc.arguments = arguments
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return }
+        if exited.wait(timeout: .now() + 10) == .timedOut {
+            proc.terminate()
+            _ = exited.wait(timeout: .now() + 2)
+        }
+    }
+
+    /// Attributes-only lookup: asks for no data, so it never prompts.
+    private static func exists(_ query: [String: Any]) -> Bool {
+        SecItemCopyMatching(query as CFDictionary, nil) != errSecItemNotFound
+    }
+
+    private static func count(_ query: [String: Any]) -> Int {
+        var all = query
+        all[kSecMatchLimit as String] = kSecMatchLimitAll
+        all[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(all as CFDictionary, &result) == errSecSuccess else { return 0 }
+        return (result as? [Any])?.count ?? 0
     }
 
     func replace(name: String, secret: String) throws {
@@ -148,7 +197,21 @@ struct KeychainStore: SecretStore {
         // 0.9.0 and 0.9.1 kept the removed optimizer's encryption key under its own service.
         _ = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                            kSecAttrService as String: "keysreallysafe.optimizer"] as CFDictionary)
-        if status == errSecItemNotFound { return }
+        if status == errSecItemNotFound || status == errSecSuccess { return }
+        // Same pre-stable-signing items as in delete(name:). The tool removes one match per
+        // run, so repeat until none is left, stopping at the first run that removes nothing.
+        if Self.securityToolMayHelp(status) {
+            let serviceQuery: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                               kSecAttrService as String: service]
+            var remaining = Self.count(serviceQuery)
+            while remaining > 0 {
+                Self.runSecurityTool(["delete-generic-password", "-s", service])
+                let now = Self.count(serviceQuery)
+                if now >= remaining { break }
+                remaining = now
+            }
+            if remaining == 0 { return }
+        }
         try Self.finish(status, op: "delete", name: service)
     }
 
