@@ -43,6 +43,11 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
+    /// Tables and `meta` keys of the plan-window meter removed on 2026-11-03, dropped by
+    /// `removeRetiredPlanMeter()` at app launch. Kept as names only so the drop stays obvious.
+    static let retiredTables = ["usage_limits", "subscriptions", "provider_snapshots"]
+    static let retiredMetaKeys = ["pref_claude_usage_refresh", "pref_show_usage_meter", "pref_hidden_usage"]
+
     private func migrate() throws {
         try exec("""
             CREATE TABLE IF NOT EXISTS catalog (
@@ -155,22 +160,6 @@ final class CatalogDB: @unchecked Sendable {
             );
             """)
         try exec("""
-            CREATE TABLE IF NOT EXISTS provider_snapshots (
-              provider TEXT NOT NULL,
-              key_name TEXT NOT NULL,
-              ts TEXT NOT NULL,
-              usage_daily REAL,
-              usage_weekly REAL,
-              usage_monthly REAL,
-              "limit" REAL,
-              limit_remaining REAL,
-              raw_kind TEXT
-            );
-            """)
-        try exec(
-            "CREATE INDEX IF NOT EXISTS provider_snapshots_key_ts ON provider_snapshots (provider, key_name, ts DESC);"
-        )
-        try exec("""
             CREATE TABLE IF NOT EXISTS gateway_clients (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               key_name TEXT NOT NULL,
@@ -262,33 +251,6 @@ final class CatalogDB: @unchecked Sendable {
               note TEXT,
               gateway INTEGER NOT NULL DEFAULT 1,
               created_at TEXT NOT NULL
-            );
-            """)
-        // A user-set token limit for one window of a locally tracked row. The CHECKs hold the
-        // shape the API already validates, so a row written another way cannot sneak past them.
-        try exec("""
-            CREATE TABLE IF NOT EXISTS usage_limits (
-              source TEXT NOT NULL,
-              window TEXT NOT NULL CHECK (window IN ('five_hour', 'weekly', 'monthly')),
-              tokens INTEGER NOT NULL CHECK (tokens > 0),
-              PRIMARY KEY (source, window)
-            );
-            """)
-        // A subscription the user pinned on the Usage pane: a plan name and an optional limit
-        // for a tool Keysrs cannot measure locally (or Factory, whose usage is Droid's here).
-        // The limit is one fact in three fields, and the CHECKs hold the all-or-nothing shape
-        // the API already enforces.
-        try exec("""
-            CREATE TABLE IF NOT EXISTS subscriptions (
-              id TEXT PRIMARY KEY,
-              tool TEXT NOT NULL CHECK (tool IN ('cursor', 'gemini', 'copilot', 'perplexity', 'chatgpt', 'factory', 'custom')),
-              name TEXT NOT NULL DEFAULT '',
-              plan TEXT NOT NULL,
-              limit_amount REAL,
-              limit_unit TEXT CHECK (limit_unit IS NULL OR limit_unit IN ('tokens', 'requests', 'credits', 'usd')),
-              limit_period TEXT CHECK (limit_period IS NULL OR limit_period IN ('five_hour', 'weekly', 'monthly')),
-              created_at TEXT NOT NULL,
-              CHECK ((limit_amount IS NULL) = (limit_unit IS NULL) AND (limit_amount IS NULL) = (limit_period IS NULL))
             );
             """)
         // A project is a folder an agent works in, held by its canonical symlink-resolved
@@ -508,153 +470,6 @@ final class CatalogDB: @unchecked Sendable {
     @discardableResult
     func deleteCustomProvider(id: String) throws -> Bool {
         try withLock { try run("DELETE FROM custom_providers WHERE id = ?;", id) > 0 }
-    }
-
-    // MARK: usage limits
-
-    struct UsageLimit: Equatable {
-        var source: String
-        var window: String
-        var tokens: Int
-
-        func jsonObject() -> [String: Any] {
-            ["source": source, "window": window, "tokens": tokens]
-        }
-    }
-
-    func usageLimits(source: String? = nil) throws -> [UsageLimit] {
-        var sql = "SELECT source, window, tokens FROM usage_limits"
-        var args: [any SQLBindable] = []
-        if let source {
-            sql += " WHERE source = ?"
-            args.append(source)
-        }
-        sql += " ORDER BY source, window;"
-        return try query(sql, args) {
-            UsageLimit(
-                source: columnText($0, 0) ?? "",
-                window: columnText($0, 1) ?? "",
-                tokens: Int(sqlite3_column_int64($0, 2))
-            )
-        }
-    }
-
-    /// Upsert: setting a limit again replaces it, so the row is always the one truth.
-    func setUsageLimit(source: String, window: String, tokens: Int) throws {
-        try withLock {
-            try run("""
-                INSERT INTO usage_limits (source, window, tokens)
-                VALUES (?, ?, ?)
-                ON CONFLICT(source, window) DO UPDATE SET tokens = excluded.tokens;
-                """, source, window, tokens)
-        }
-    }
-
-    /// True when a limit existed; clearing an already-clear window is fine either way.
-    @discardableResult
-    func clearUsageLimit(source: String, window: String) throws -> Bool {
-        try withLock { try run("DELETE FROM usage_limits WHERE source = ? AND window = ?;", source, window) > 0 }
-    }
-
-    // MARK: subscriptions (plans the user pinned on the Usage pane)
-
-    struct Subscription: Equatable {
-        var id: String
-        var tool: String
-        var name: String
-        var plan: String
-        var limitAmount: Double?
-        var limitUnit: String?
-        var limitPeriod: String?
-        var createdAt: String
-
-        /// The three limit fields as one value, when the row has a limit at all.
-        var limit: Subscriptions.LimitFields? {
-            guard let limitAmount, let limitUnit, let limitPeriod else { return nil }
-            return Subscriptions.LimitFields(amount: limitAmount, unit: limitUnit, period: limitPeriod)
-        }
-
-        func jsonObject() -> [String: Any] {
-            [
-                "id": id,
-                "tool": tool,
-                "name": name,
-                "plan": plan,
-                "limit_amount": limitAmount as Any? ?? NSNull(),
-                "limit_unit": limitUnit as Any? ?? NSNull(),
-                "limit_period": limitPeriod as Any? ?? NSNull(),
-                "created_at": createdAt,
-            ]
-        }
-    }
-
-    private static let subscriptionColumns =
-        "id, tool, name, plan, limit_amount, limit_unit, limit_period, created_at"
-
-    private func decodeSubscription(_ stmt: OpaquePointer) -> Subscription {
-        func double(_ idx: Int32) -> Double? { sqlite3_column_type(stmt, idx) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, idx) }
-        return Subscription(
-            id: columnText(stmt, 0) ?? "",
-            tool: columnText(stmt, 1) ?? "",
-            name: columnText(stmt, 2) ?? "",
-            plan: columnText(stmt, 3) ?? "",
-            limitAmount: double(4),
-            limitUnit: columnText(stmt, 5),
-            limitPeriod: columnText(stmt, 6),
-            createdAt: columnText(stmt, 7) ?? ""
-        )
-    }
-
-    func listSubscriptions() throws -> [Subscription] {
-        try query(
-            "SELECT \(Self.subscriptionColumns) FROM subscriptions ORDER BY created_at, id;",
-            row: decodeSubscription
-        )
-    }
-
-    func subscription(id: String) throws -> Subscription? {
-        try one("SELECT \(Self.subscriptionColumns) FROM subscriptions WHERE id = ?;", id, row: decodeSubscription)
-    }
-
-    /// The one Factory subscription, if there is one; it attaches to the Droid row.
-    func factorySubscription() throws -> Subscription? {
-        try one(
-            "SELECT \(Self.subscriptionColumns) FROM subscriptions WHERE tool = 'factory' ORDER BY created_at, id;",
-            row: decodeSubscription
-        )
-    }
-
-    func insertSubscription(_ row: Subscription) throws {
-        try withLock {
-            do {
-                try run("""
-                    INSERT INTO subscriptions
-                      (id, tool, name, plan, limit_amount, limit_unit, limit_period, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    row.id, row.tool, row.name, row.plan, row.limitAmount, row.limitUnit, row.limitPeriod,
-                    row.createdAt)
-            } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
-                throw AppError.alreadyExists(row.id)
-            }
-        }
-    }
-
-    /// True when the row existed; the id and the tool never change, only the user's fields do.
-    @discardableResult
-    func updateSubscription(_ row: Subscription) throws -> Bool {
-        try withLock {
-            try run("""
-                UPDATE subscriptions SET tool = ?, name = ?, plan = ?,
-                  limit_amount = ?, limit_unit = ?, limit_period = ? WHERE id = ?;
-                """, row.tool, row.name, row.plan, row.limitAmount, row.limitUnit, row.limitPeriod, row.id) > 0
-        }
-    }
-
-    /// True when the row existed.
-    @discardableResult
-    func deleteSubscription(id: String) throws -> Bool {
-        try withLock { try run("DELETE FROM subscriptions WHERE id = ?;", id) > 0 }
     }
 
     private static let catalogColumns = "name, provider, kind, notes, created_at, last_used_at, gateway_host, version, gateway_cheapest"
@@ -1685,51 +1500,6 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
-    struct ProviderSnapshot: Equatable {
-        var provider: String
-        var keyName: String
-        var ts: String
-        var usageDaily: Double?
-        var usageWeekly: Double?
-        var usageMonthly: Double?
-        var limit: Double?
-        var limitRemaining: Double?
-        var rawKind: String?
-    }
-
-    func insertProviderSnapshot(_ row: ProviderSnapshot) throws {
-        try run("""
-            INSERT INTO provider_snapshots (
-              provider, key_name, ts, usage_daily, usage_weekly, usage_monthly,
-              "limit", limit_remaining, raw_kind
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """, row.provider, row.keyName, row.ts, row.usageDaily, row.usageWeekly, row.usageMonthly,
-            row.limit, row.limitRemaining, row.rawKind)
-    }
-
-    func latestProviderSnapshot(provider: String) throws -> ProviderSnapshot? {
-        try one("""
-            SELECT provider, key_name, ts, usage_daily, usage_weekly, usage_monthly,
-                   "limit", limit_remaining, raw_kind
-            FROM provider_snapshots
-            WHERE provider = ?
-            ORDER BY ts DESC
-            LIMIT 1;
-            """, provider) {
-            ProviderSnapshot(
-                provider: columnText($0, 0) ?? "",
-                keyName: columnText($0, 1) ?? "",
-                ts: columnText($0, 2) ?? "",
-                usageDaily: columnOptionalDouble($0, 3),
-                usageWeekly: columnOptionalDouble($0, 4),
-                usageMonthly: columnOptionalDouble($0, 5),
-                limit: columnOptionalDouble($0, 6),
-                limitRemaining: columnOptionalDouble($0, 7),
-                rawKind: columnText($0, 8)
-            )
-        }
-    }
-
     func incrementVersion(name: String) throws -> Int {
         try withLock {
             if try run("UPDATE catalog SET version = version + 1 WHERE name = ?;", name) == 0 {
@@ -1742,6 +1512,38 @@ final class CatalogDB: @unchecked Sendable {
 
     func newestUsage(source: String) throws -> String? {
         try one("SELECT MAX(occurred_at) FROM usage_events WHERE source = ?;", source) { columnText($0, 0) } ?? nil
+    }
+
+    /// Drops what the plan-window meter (removed 2026-11-03) left in an upgraded catalog: the
+    /// user-set Droid limits, the pinned subscriptions, the OpenRouter credit snapshots and the
+    /// meter's preferences. Run at app launch, not from `migrate()`: a 0.14.x process still up
+    /// beside the new CLI reads those tables, and a launch is the moment the old app is gone.
+    /// Reads first, so a catalog with nothing left takes no write lock. True when it dropped
+    /// something.
+    @discardableResult
+    func removeRetiredPlanMeter() throws -> Bool {
+        try withLock {
+            let quoted = { (names: [String]) in names.map { "'\($0)'" }.joined(separator: ", ") }
+            let tables = try query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (\(quoted(Self.retiredTables)));"
+            ) { columnText($0, 0) }.compactMap { $0 }
+            let keys = try query(
+                "SELECT key FROM meta WHERE key IN (\(quoted(Self.retiredMetaKeys)));"
+            ) { columnText($0, 0) }.compactMap { $0 }
+            guard !tables.isEmpty || !keys.isEmpty else { return false }
+            try exec("BEGIN IMMEDIATE")
+            do {
+                for table in tables where Self.retiredTables.contains(table) {
+                    try exec("DROP TABLE IF EXISTS \(table);")
+                }
+                for key in keys { try run("DELETE FROM meta WHERE key = ?;", key) }
+                try exec("COMMIT")
+            } catch {
+                try? exec("ROLLBACK")
+                throw error
+            }
+            return true
+        }
     }
 
     /// Every table is emptied, meta included, so a table or meta key added later cannot be

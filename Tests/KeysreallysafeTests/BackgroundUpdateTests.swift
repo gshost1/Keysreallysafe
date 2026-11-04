@@ -324,13 +324,12 @@ extension AppUpdaterTests {
 
         // The relaunch the helper performs: the same service, catalog and
         // preferences, assembled fresh exactly as a new process finds them.
-        let before = (meter: rig.preferences.showUsageMeter, item: rig.preferences.menubarItem, updates: rig.preferences.updateChecks)
+        let before = (item: rig.preferences.menubarItem, updates: rig.preferences.updateChecks)
         release.currentNow()
         rig.relaunch()
         XCTAssertEqual(rig.appliedPolicies, [.accessory], "the relaunch is headless: accessory at rest")
         XCTAssertEqual(rig.window.orderedFrontCount, 0, "no dashboard window appears on its own")
         XCTAssertFalse(rig.welcomeShown, "no welcome appears after the relaunch")
-        XCTAssertEqual(rig.preferences.showUsageMeter, before.meter, "preferences survive the relaunch")
         XCTAssertEqual(rig.preferences.menubarItem, before.item, "preferences survive the relaunch")
         XCTAssertEqual(rig.preferences.updateChecks, before.updates, "preferences survive the relaunch")
 

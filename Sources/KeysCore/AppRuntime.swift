@@ -101,6 +101,11 @@ enum AppRuntime {
         let service = try AppFactory.makeService()
         // Upgrades from a release with product analytics drop its consent and unsent reports.
         try? service.preferences.removeRetiredAnalytics()
+        // Upgrades from 0.14.x drop the removed plan-window meter's tables, preferences, Claude
+        // plan snapshot and the menu-bar panel's remembered tab.
+        _ = try? service.catalog.removeRetiredPlanMeter()
+        try? KeysService.removeRetiredPlanSnapshot(catalogDirectory: service.catalog.path.deletingLastPathComponent())
+        UserDefaults.standard.removeObject(forKey: "menubar.tab")
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.
         service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
         // The app owns notifications: the authorization ask and the local-state poll
@@ -168,11 +173,9 @@ enum AppRuntime {
         window: (any DashboardWindow)? = nil,
         makeItemController: @escaping () -> MenubarItemController = { MenubarItemController() },
         scheduleIngest: (KeysService) -> Void = { IngestScheduler.scheduleRepeating(service: $0) },
-        scheduleOpenRouter: (KeysService) -> Void = { OpenRouterScheduler.schedule(service: $0) },
         ingestInitially: (KeysService) -> Void = { service in
             DispatchQueue.global(qos: .utility).async {
                 _ = try? service.ingest(.all)
-                try? service.pollOpenRouter()
             }
         },
         notifications: AppNotifier? = nil,
@@ -216,7 +219,6 @@ enum AppRuntime {
         MenubarRuntime.extra = extra
         NSApplication.shared.delegate = extra
         scheduleIngest(service)
-        scheduleOpenRouter(service)
         ingestInitially(service)
         // The one startup prompt the headless app may raise: the OS notification
         // permission request, behind the injected notifier. Absent (every test

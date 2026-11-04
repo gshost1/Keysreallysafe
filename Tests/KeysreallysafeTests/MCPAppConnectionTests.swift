@@ -39,9 +39,8 @@ struct AppConnectionProbeGroup: MCPToolGroup {
         // that wired this probe at production state aborts here.
         try AppConnectionIsolationGuard.assertIsolated(control: control, launch: launch)
         let app = try AppConnection.connect(control: control, launch: launch)
-        let answer = try app.call(
-            method: "POST", path: "/api/preferences/hidden-usage", body: ["hidden": [] as [String]], expect: 200
-        )
+        // A token-gated mutation with nothing to change: no grant is live in the rig.
+        let answer = try app.call(method: "DELETE", path: "/api/grants", body: [:], expect: 200)
         return try MCPToolResult.json(answer)
     }
 }
@@ -304,10 +303,8 @@ final class MCPAppConnectionTests: XCTestCase {
         XCTAssertNotNil(grants["grants"] as? [Any])
         // …and so does a token-gated mutation: the origin-token check would have
         // refused it (403) if the per-launch token were missing or wrong.
-        let hidden = try app.call(
-            method: "POST", path: "/api/preferences/hidden-usage", body: ["hidden": [] as [String]], expect: 200
-        )
-        XCTAssertEqual((hidden["hidden"] as? [Any])?.count, 0)
+        let revoked = try app.call(method: "DELETE", path: "/api/grants", body: [:], expect: 200)
+        XCTAssertEqual((revoked["revoked"] as? [Any])?.count, 0)
 
         // Every AppConnection call carried the control file's per-launch token.
         XCTAssertEqual(log.count, 2, "one request per call, no retries")

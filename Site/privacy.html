@@ -30,16 +30,15 @@
 
 <article class="legal">
 <h1>Privacy</h1>
-<p class="meta">Effective 2026-11-02. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
+<p class="meta">Effective 2026-11-03. This page describes the app as built; the rules below are enforced in code, and the source is public so you can check.</p>
 
 <h2>The short version</h2>
 <p>Keysrs runs on your Mac. There is no account. We do not receive your prompts, your keys, your usage or your identity. There is no license check and no analytics: the app never contacts us.</p>
 
 <h2>What the app reads on your Mac</h2>
 <ul>
-  <li>Usage records that Claude Code, OpenAI Codex CLI and Grok CLI write to your home folder (session logs and usage caches). Only counts and metadata are kept; prompt content is not stored.</li>
+  <li>Usage records that Claude Code, OpenAI Codex CLI and Grok CLI write to your home folder (session logs). Only counts and metadata are kept; prompt content is not stored.</li>
   <li>The per-request usage records Droid writes to <code>~/.factory/logs/</code>: only the <code>[Agent] Streaming result</code> lines of <code>droid-log-single.log</code> and its dated rotations are read, keeping their token counts, model, session id and timestamp. Nothing under <code>~/.factory/sessions/</code> is read, and Droid's transcripts, its login files, and every other record in its log (the ones that carry message content) are never opened.</li>
-  <li>Claude's subscription limits, from the cache Claude Code keeps and, when you ask for it, through Claude Code's own <code>/usage</code> command using its existing login. Refreshing in the background every five minutes is off unless you turn it on at first launch or from the menu. No model request is made and no credentials are read.</li>
   <li>API keys you add yourself. They are stored in the macOS Keychain under your login and are read back only after a Touch ID or login-password prompt.</li>
 </ul>
 <p>The app never reads other tools' authentication files (for example <code>~/.codex/auth.json</code> or <code>~/.grok/auth.json</code>), never opens provider websites, and never uses browser cookies or sessions.</p>

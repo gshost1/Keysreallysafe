@@ -12,10 +12,9 @@ carries the call home. The real keys never leave the Mac.
 
 It reads the usage numbers that Claude Code, Grok and Codex already write to
 your home folder, prices them from a checked-in list-price table, and shows the
-result in the Keysrs window, and optionally in the menu bar. Secrets live in the macOS
-Keychain, and the app asks for Touch ID before it reads one out. The dashboard
-stays local. If you turn on Keep Claude Limits Fresh (off by default), Claude's
-built-in `/usage` command refreshes subscription limits through its existing login.
+result in the Keysrs window. Secrets live in the macOS Keychain, and the app
+asks for Touch ID before it reads one out. The dashboard stays local. Plan
+limits and quota windows are not tracked (removed on 2026-11-03).
 
 ## Install
 
@@ -35,8 +34,7 @@ update; those notifications never name a key, token or path. Opening it
 again from Applications or Spotlight — or running `keys dashboard`, or an
 agent's `open_app` MCP call — shows the window, with a Dock icon while it
 is up, and closing the window hides it again and keeps everything running.
-The menu bar item and the usage meter are off until you turn them on in the
-dashboard's Settings, which also holds Quit and the relay controls. `⌘Q`
+The menu bar item is off until you turn it on in the dashboard's Settings, which also holds Quit and the relay controls. `⌘Q`
 quits all of it while the window is shown.
 
 On first launch Keysrs adds itself as a login item. Turn that off or on again
@@ -100,17 +98,16 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
 - The usage catalog stores only counters and metadata. Gateway request bodies
   never reach that catalog.
 - No credentials from other tools. `~/.codex/auth.json` and
-  `~/.grok/auth.json` are never read, and from Grok Bot's folder only the chat
-  replicas in `sand-client-persistence/` are opened, never its cookies or
-  `sand-secrets.json`. Message text is not kept; only prompts are counted.
-  Nothing under `~/.factory/sessions/` is read, and Droid's transcripts
+  `~/.grok/auth.json` are never read, and nothing in Grok Bot's folder is
+  opened. Nothing under `~/.factory/sessions/` is read, and Droid's transcripts
   (`*.jsonl`) and its auth files are never opened. From `~/.factory/logs/` only the
   `[Agent] Streaming result` records of `droid-log-single.log` and its dated
   rotations are read, and of those only the token counts, model id, session
   id and timestamp are kept; the log's other record types carry message
   content and are never parsed.
-- No fake numbers. A provider whose remaining quota is not in a local file is
-  listed as "not tracked" with a link to its own dashboard.
+- No fake numbers, and no plan limits. Keysrs shows no quota windows,
+  percent-of-limit meters or remaining credit; it counts tokens from local
+  logs and labels list-price dollars as estimates.
 - No secret on screen by default. The key list shows names, never values.
   Copy, reveal, env and rotate ask for user presence every time.
 - No open gateway. A request through the gateway needs a grant token: one
@@ -142,16 +139,8 @@ binary starts the app when it is opened with no arguments and is the command
 line otherwise, so `.build/debug/keys` works directly for the commands below.
 
 With **Show menu bar item** on (Settings; it is off by default), the menu
-bar shows Claude's Fable percentage and the other tools' weekly
-percentages (`C 39%  X 46%  G 8%`). Missing Fable usage shows `C —`. All plan
-windows are in the dropdown.
-
-Claude's Fable quota comes from Claude Code's account-matched `/usage` cache in
-`~/.claude.json`. With Keep Claude Limits Fresh on (menu bar or welcome window; off
-by default), the menu-bar app refreshes that cache every five minutes through
-Claude's built-in `/usage` command (no model request), using the existing Claude
-login. Otherwise the limits are as fresh as Claude Code last left them. Readings
-older than one hour or past their reset are ignored.
+bar shows a plain `Keysrs` item whose menu carries the relay controls, Refresh,
+Start at Login, Install Command Line Tool… and Quit.
 
 Remove everything with `keys purge` (catalog and every Keychain item, after
 Touch ID), then move the app to the Trash.
@@ -165,31 +154,8 @@ The dashboard is dark by default (neutral grey, not blue-tinted). **Settings →
 keysrs.com light look; the choice is remembered on this Mac and does not follow the
 system appearance.
 
-**Usage** is the first thing you see: the plan windows each tool reports
-locally, as `plan · % used · resets in`. Claude has five-hour, Fable, and weekly
-windows; Codex has five-hour and weekly windows; Grok has a weekly one. Grok Bot
-is a separate plan from SuperGrok and keeps no usage figures on disk, so its row
-counts this week's prompts from the chats it stores locally and says its limits
-are not tracked. Droid's row shows three token windows — a rolling 5-hour one,
-the calendar week and the calendar month — counted from the per-request
-records in its local logs, and **Set limits** on the row adds an optional
-token limit for each window, turning that window into a percent meter; Factory's
-own plan limits are not in local files. Tools whose quota is not in any local file
-sit in a collapsed "not tracked" group with a link to their own dashboard.
-**+ Add subscription** under the rows pins a plan you pay for: pick Cursor,
-Gemini, Copilot, Perplexity, ChatGPT, Factory or a custom tool you name, name
-the plan, and optionally give it a limit — an amount, a unit (tokens, requests,
-credits or USD) and a window (5-hour, week or month), all three together or
-none. Keysrs measures none of those tools locally, so the row shows exactly the
-plan and the limit, says "usage not tracked locally", and never dresses a note
-up as a percent; it takes over that tool's placeholder in the collapsed group
-until you remove it. A Factory subscription instead attaches to the Droid row —
-Droid's usage is the one that is measured — so its plan names the row, a token
-limit is that window's limit (the same single fact as the row's **Set limits**
-dialog, stored in the same place), and any other unit stays text. Edit and
-Remove sit on each row, and Remove asks first. One
-quiet line underneath gives this month from the local logs, in tokens by
-default, with a switch on the line itself for USD. A first run with an empty
+**Usage** is the first thing you see: one quiet line with this month from the
+local logs, in tokens by default, with a switch on the line itself for USD. A first run with an empty
 vault also gets a short getting-started guide there; it stays available under
 **Help** at the foot of the rail (or the `?` key).
 
@@ -212,8 +178,7 @@ totals line as Markdown (both are also buttons in Settings).
 
 Under **Subscriptions**, chips narrow the view to Grok, Claude, OpenAI or
 Droid. Everything here is estimated from what those tools wrote to their own logs on
-this Mac — not from a plan invoice, and the plan windows themselves stay in the
-Usage pane rather than being redrawn as bars. Claude and Codex dollars are
+this Mac — not from a plan invoice. Claude and Codex dollars are
 list-price estimates and are labelled as such; Grok's come from its own cost
 log. With the Claude chip selected, `P` switches the breakdown to projects.
 
@@ -255,20 +220,14 @@ does, and `Esc` clears it — a provider filter shows one provider's keys, and
 the sort orders by name, recency, use or age, remembered across launches. `?`
 lists every shortcut.
 
-**Settings** holds what used to crowd the toolbar: the theme switch, which
-cards Usage shows, **Ingest now** with the last ingest time, the CSV export and
-Copy totals, and the Agents and Privacy dialogs. Turning a card off only takes
-it off Usage — the subscription, its history and the Chart are untouched, and
-Usage says how many cards are hidden rather than showing nothing. Droid's row
-is off by default (**Show Droid on Usage** turns it on); its usage is ingested
-and charted either way. These choices live in this browser's storage, not in
-the catalog.
+**Settings** holds what used to crowd the toolbar: the theme switch,
+**Ingest now** with the last ingest time, the CSV export and Copy totals, and
+the Agents and Privacy dialogs. The theme lives in this browser's storage, not
+in the catalog.
 
-Three switches there are app-wide instead: **Show usage meter** (the
-plan-window meter on Usage, off by default; hiding it changes presentation
-only — usage is still collected, totalled and charted), **Show menu bar
-item** (the status item, off by default) and **Install updates
-automatically** (on by default; see Updates above). Settings and the app
+Two switches there are app-wide instead: **Show menu bar item** (the status
+item, off by default) and **Install updates automatically** (on by default;
+see Updates above). Settings and the app
 menu also carry Quit and the relay controls, so nothing needs the menu bar
 item to be on.
 
@@ -505,9 +464,6 @@ the gateway's `request-id` matches a local event the local one wins and the
 gateway copy is dropped, and otherwise the two totals are shown side by side
 rather than added.
 
-For an OpenRouter key of kind `billing` with the gateway on, the engine polls
-OpenRouter's key endpoint every 15 minutes and shows the remaining credit.
-
 ## Checks
 
 `keys test <name>` hits the provider's read-only model list (`/v1/models` for
@@ -691,7 +647,6 @@ keys ingest [all|grok|claude|openai|droid]
 keys usage import <file>...
 keys spend [--month|--week] [--json] [--by model|session|project]
 keys version [--json]
-keys status [--json]
 keys doctor
 keys log [--key <name>] [--failed] [--tail] [--limit N] [--json]
 keys dashboard [--month|--week]
@@ -795,13 +750,9 @@ it ends.
 | Source | Path | Feeds |
 |---|---|---|
 | Claude Code sessions | `~/.claude/projects/**/*.jsonl` | Claude tokens, estimate, per-project view |
-| claude-hud snapshot | `~/Library/Application Support/Keysreallysafe/claude-plan.json` | Claude 5-hour and weekly % |
-| Claude Code usage cache | `~/.claude.json` → `cachedUsageUtilization` | Claude Fable, five-hour, and weekly %; refreshed every five minutes when Keep Claude Limits Fresh is on |
 | Grok sessions | `~/.grok/sessions` | Grok dollars |
-| Grok billing log | `~/.grok/logs/unified.jsonl` | Grok weekly % |
-| Grok Bot chats | `~/Library/Application Support/Grok Bot/sand-client-persistence/*.blob` | Grok Bot prompt count (kind, role and timestamp only) |
-| Droid logs | `~/.factory/logs/droid-log-single.log` and its dated rotations | Droid 5-hour, weekly and month tokens (only the Streaming-result token fields, model id, session id and timestamp) |
-| Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate, 5-hour and weekly % |
+| Droid logs | `~/.factory/logs/droid-log-single.log` and its dated rotations | Droid tokens (only the Streaming-result token fields, model id, session id and timestamp) |
+| Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate |
 | Gateway | in-process | dollars per key |
 
 Ingest is incremental, reads logs in bounded chunks, commits in batches, and
@@ -810,7 +761,6 @@ runs on a background queue on start, every five minutes, and on demand
 in local token totals and estimated spend when their logs are present. Existing
 Claude subagent logs are picked up on the next scan. Subagent usage appears in
 the existing model/session/project breakdowns, without a separate subagent view.
-Provider-reported plan percentages remain separate from these local estimates.
 The cursor it keeps per file is a SHA-256 of the last 32 bytes, never
 the bytes themselves. Claude turns are counted once per message id even though Claude Code
 writes one log line per content block. Prices come from `Fixtures/models.json`
@@ -833,8 +783,8 @@ model and session ids, the `usage` block, model and ids of each Claude Code
 assistant turn, and, for a `droid exec -o stream-json` capture passed with
 `--stream`, the closing event's token totals. Prompts, answers, tool output,
 paths and Factory credits stay behind. Rows are stored as `droid-remote` and
-`claude-remote` and appear in the Chart under **Cloud** (and in All); they never
-feed the local Droid or Claude plan windows and carry no dollar estimate. Droid's per-request lines keep each
+`claude-remote` and appear in the Chart under **Cloud** (and in All); they
+carry no dollar estimate. Droid's per-request lines keep each
 request's model, so a run that fell back from Claude to `kimi-k3` shows both. A
 stream-json total covers a whole session and is stored under the model
 `unattributed`; if the same session's per-request lines are imported too, they
@@ -862,7 +812,7 @@ deleting the app leaves both alone.
 ## Development
 
 ```sh
-CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home GROK_BOT_HOME=Fixtures/grok-bot-home KEYS_DROID_HOME=Fixtures/droid-home swift test
+CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home KEYS_DROID_HOME=Fixtures/droid-home swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 KEYS_NO_OPEN=1 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```

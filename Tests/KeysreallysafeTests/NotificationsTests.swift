@@ -65,7 +65,6 @@ final class NotificationsTests: XCTestCase {
             codexHome: Fixtures.codexHome,
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
-            openRouter: OpenRouterHTTP(),
             relaySecrets: MemorySecretStore()
         )
     }

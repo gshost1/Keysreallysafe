@@ -1,111 +1,11 @@
 import AppKit
 import Foundation
 
-struct MenubarSnapshot: Equatable {
-    var title: String
-    var tooltip: String
-    /// One card per subscription with a plan window, in menubar order. Feeds the dropdown panel.
-    var cards: [ToolCard] = []
-    var spendLine: String = ""
-
-    struct Window: Equatable {
-        var label: String
-        var pctUsed: Int
-        var resetsAt: String?
-    }
-
-    struct ToolCard: Equatable {
-        var id: String
-        var name: String
-        var plan: String?
-        var windows: [Window]
-        var note: String?
-        var usdLine: String?
-
-        var overviewWindow: Window? {
-            return windows.last { $0.label.hasSuffix("weekly") } ?? windows.first
-        }
-    }
-
-    /// Title: each tool's weekly percentage; Claude's Fable window stays in the dropdown.
-    /// Percentages are used quota, directly from local snapshots. Grok's dollars are the
-    /// week's local spend the Grok status row already carries.
-    /// `hidden` is the Settings choice mirrored from the dashboard. A tool that is hidden, or
-    /// whose quota no local file measures, gets no title part and no card, as on the Usage pane.
-    static func from(_ status: LiveStatus?, hidden: Set<String> = [], now: Date = Date()) -> MenubarSnapshot {
-        let grok = status?.grok ?? status?.plans.first { $0.source == "grok" }
-        let spendLine = "Grok \(formatUsd(grok?.weeklyUsd ?? 0)) this week"
-        var parts: [String] = []
-        var tooltip: [String] = [spendLine]
-        var cards: [ToolCard] = []
-        if let status {
-            let claude = status.claude ?? status.plans.first { $0.source == "claude" }
-            let codex = status.plans.first { $0.source == "openai" }
-            for (letter, name, tool) in [("C", "Claude", claude), ("X", "Codex", codex), ("G", "Grok", grok)] {
-                guard let tool, !hidden.contains(tool.source) else { continue }
-                let measured = tool.source == "claude" || tool.fiveHourPct != nil || tool.weeklyPct != nil ||
-                    (tool.source == "grok" && tool.weeklyUsd != nil)
-                guard measured else { continue }
-                if tool.source == "claude" {
-                    parts.append(tool.weeklyPct.map { "\(letter) \($0)%" } ?? "\(letter) —")
-                } else if let week = tool.weeklyPct {
-                    parts.append("\(letter) \(week)%")
-                }
-                var windows: [Window] = []
-                if let five = tool.fiveHourPct {
-                    windows.append(Window(label: "\(name) 5-hour", pctUsed: five, resetsAt: tool.fiveHourResetsAt))
-                }
-                if let fable = tool.fablePct, tool.source == "claude" {
-                    windows.append(Window(label: "Claude Fable", pctUsed: fable, resetsAt: tool.fableResetsAt))
-                }
-                if let week = tool.weeklyPct {
-                    windows.append(Window(label: "\(name) weekly", pctUsed: week, resetsAt: tool.weeklyResetsAt))
-                }
-                tooltip += windows.map { "\($0.label) \($0.pctUsed)% used" }
-                if tool.source == "claude", tool.fablePct == nil { tooltip.append("Claude Fable unavailable") }
-                cards.append(ToolCard(
-                    id: tool.source,
-                    name: name,
-                    plan: tool.plan,
-                    windows: windows,
-                    note: tool.usageNote,
-                    usdLine: letter == "G" ? spendLine : nil
-                ))
-            }
-        }
-        tooltip.append("plan windows · usage used · click for resets and spend")
-        return MenubarSnapshot(
-            title: parts.isEmpty ? "—" : parts.joined(separator: "  "),
-            tooltip: tooltip.joined(separator: " · "),
-            cards: cards,
-            spendLine: spendLine
-        )
-    }
-
-    /// `Resets today, 14:05` · `Resets tomorrow, 02:01` · `Resets 11 Sep at 09:45`. Local time.
-    static func resetsLabel(_ iso: String?, now: Date, calendar: Calendar = .current) -> String {
-        guard let iso, let date = UTC.parse(iso) else { return "" }
-        if date <= now { return "Reset due" }
-        let time = DateFormatter()
-        time.calendar = calendar
-        time.timeZone = calendar.timeZone
-        time.dateFormat = "HH:mm"
-        if calendar.isDate(date, inSameDayAs: now) { return "Resets today, \(time.string(from: date))" }
-        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(date, inSameDayAs: tomorrow) {
-            return "Resets tomorrow, \(time.string(from: date))"
-        }
-        let day = DateFormatter()
-        day.calendar = calendar
-        day.timeZone = calendar.timeZone
-        day.dateFormat = "d MMM"
-        return "Resets \(day.string(from: date)) at \(time.string(from: date))"
-    }
-
-    static func formatUsd(_ usd: Double) -> String {
-        if usd == 0 { return "$0" }
-        if usd < 0.01 { return String(format: "$%.4f", usd) }
-        return String(format: "$%.2f", usd)
-    }
+/// The status item's fixed face. Plan windows and the per-tool cards it used to carry were
+/// removed on 2026-11-03; the item stays for its menu (relay, login, CLI, quit).
+enum MenubarFace {
+    static let title = "Keysrs"
+    static let tooltip = "Keysrs · click for the relay, login and Quit"
 }
 
 enum MenubarRuntime {
@@ -152,10 +52,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var item: NSStatusItem? { itemController?.item }
     private let makeItemController: () -> MenubarItemController
     private var timer: Timer?
-    private var lastSnapshot: MenubarSnapshot?
-    private var updatedAt: Date?
-    private let panel = MenubarPanel()
-    private var claudeRefreshItem: NSMenuItem?
     private var appOnlyItems: [NSMenuItem] = []
     private var loginMenuItem: NSMenuItem?
     private var relayItem: NSMenuItem?
@@ -165,7 +61,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// What a toggle in progress is waiting for (Touch ID, the loop to stop); clicks meanwhile
     /// are ignored.
     private var relayPending: String?
-    private static let tabKey = "menubar.tab"
     /// The deferred welcome: headless launch presents nothing, the first window
     /// show runs this. Injectable so the launch tests can prove a headless
     /// launch raises no dialog.
@@ -186,11 +81,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
             itemController = makeItemController()
         }
         presentWelcome = { [weak self] in self?.showWelcomeIfNeeded() }
-        panel.selectedTab = UserDefaults.standard.string(forKey: Self.tabKey) ?? "overview"
-        panel.onSelect = { [weak self] id in
-            UserDefaults.standard.set(id, forKey: Self.tabKey)
-            self?.renderPanel()
-        }
         if let item {
             item.menu = buildMenu()
             item.menu?.delegate = self
@@ -264,11 +154,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func ingestNow() {
-        // An explicit Refresh also asks Claude Code for its limits once, whether or
-        // not the background refresh is on: the person asked for it.
-        ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
-            DispatchQueue.main.async { self?.refresh() }
-        }
         // Never on the main thread: a pass over a large log tree would freeze the menu bar.
         let queued = IngestScheduler.enqueue(service: service) { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
@@ -283,10 +168,9 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.terminate(nil)
     }
 
-    /// Refresh right before the menu drops down, so the rows are never a minute stale.
+    /// Refresh right before the menu drops down, so the toggles are never a minute stale.
     func menuWillOpen(_ menu: NSMenu) {
         itemController?.menuIsOpen = true
-        claudeRefreshItem?.state = service.preferences.claudeUsageRefresh ? .on : .off
         // The legacy menubar CLI has no app window, login item or bundle to link to.
         appOnlyItems.forEach { $0.isHidden = appWindow == nil }
         loginMenuItem?.state = appWindow?.startsAtLogin == true ? .on : .off
@@ -307,26 +191,12 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func refresh() {
         itemController?.checkVisibility()
-        if service.preferences.claudeUsageRefresh {
-            ClaudeUsageRefresh.enqueue(home: service.claudeHome) { [weak self] in
-                DispatchQueue.main.async { self?.refresh() }
-            }
-        }
-        let snap = MenubarSnapshot.from(try? service.liveStatus(), hidden: service.preferences.hiddenUsage)
-        item?.button?.title = snap.title
-        item?.button?.toolTip = snap.tooltip
-        lastSnapshot = snap
-        updatedAt = Date()
-        renderPanel()
+        item?.button?.title = MenubarFace.title
+        item?.button?.toolTip = MenubarFace.tooltip
         if let item, item.menu == nil {
             item.menu = buildMenu()
             item.menu?.delegate = self
         }
-    }
-
-    private func renderPanel() {
-        guard let snap = lastSnapshot else { return }
-        panel.render(snapshot: snap, updatedAt: updatedAt ?? Date())
     }
 
     /// Status pages for the tracked tools. Public pages, no auth.
@@ -349,13 +219,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .version: "local vault + usage · loopback only",
             .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. MIT licensed."),
         ])
-    }
-
-    @objc func toggleClaudeRefresh() {
-        let on = !service.preferences.claudeUsageRefresh
-        try? service.preferences.setClaudeUsageRefresh(on)
-        claudeRefreshItem?.state = on ? .on : .off
-        if on { refresh() }
     }
 
     // MARK: relay
@@ -480,47 +343,18 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Welcome to Keysrs"
-        alert.informativeText = "Keysrs keeps running when you close its window. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain. Nothing is ticked below; choose what you are comfortable with. You can change it later."
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 4
-        func note(_ text: String) -> NSTextField {
-            let label = NSTextField(wrappingLabelWithString: text)
-            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            label.textColor = .secondaryLabelColor
-            label.preferredMaxLayoutWidth = 320
-            return label
-        }
-        let claudeBox = NSButton(checkboxWithTitle: "Keep Claude plan limits fresh", target: nil, action: nil)
-        claudeBox.state = .off
-        stack.addArrangedSubview(claudeBox)
-        stack.addArrangedSubview(note("Every 5 minutes, Keysrs runs Claude Code's own /usage command in the background with your existing login. No model request is made. If this is off, Claude limits appear when Claude Code has refreshed them recently, or when you choose Refresh."))
-        stack.layoutSubtreeIfNeeded()
-        stack.frame = NSRect(origin: .zero, size: NSSize(width: 340, height: stack.fittingSize.height))
-        alert.accessoryView = stack
+        alert.informativeText = "Keysrs keeps running when you close its window. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain."
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Continue and Open Keysrs")
 
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
-        let claudeOn = claudeBox.state == .on
-        try? service.preferences.recordWelcome(plan, claudeRefresh: claudeOn)
-        claudeRefreshItem?.state = service.preferences.claudeUsageRefresh ? .on : .off
-        if claudeOn { refresh() }
+        try? service.preferences.recordWelcome(plan)
         if response == .alertSecondButtonReturn { openDashboard() }
     }
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
-        let host = NSMenuItem()
-        host.view = panel
-        menu.addItem(host)
-        menu.addItem(.separator())
-        let plan = NSMenuItem(title: "Plan Usage", action: #selector(openDashboard), keyEquivalent: "")
-        plan.target = self
-        plan.toolTip = "Open the Usage pane in Keysrs"
-        menu.addItem(plan)
         let status = NSMenuItem(title: "Status Page", action: nil, keyEquivalent: "")
         let statusMenu = NSMenu()
         for page in Self.statusPages {
@@ -540,12 +374,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ingest.target = self
         ingest.toolTip = "Ingest the local session logs now"
         menu.addItem(ingest)
-        let claude = NSMenuItem(title: "Keep Claude Limits Fresh", action: #selector(toggleClaudeRefresh), keyEquivalent: "")
-        claude.target = self
-        claude.toolTip = "Every 5 minutes, run Claude Code's own /usage in the background (no model request)"
-        claude.state = service.preferences.claudeUsageRefresh ? .on : .off
-        claudeRefreshItem = claude
-        menu.addItem(claude)
         menu.addItem(.separator())
         let relay = NSMenuItem(title: "Relay for Cloud Agents", action: #selector(toggleRelay), keyEquivalent: "")
         relay.target = self

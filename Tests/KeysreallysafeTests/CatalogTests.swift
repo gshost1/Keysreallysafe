@@ -141,3 +141,74 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(try CatalogDB(path: path).gatewayEvents().map(\.httpStatus), [502], "reopening is a no-op")
     }
 }
+
+/// Plan-window and limit tracking was removed on 2026-11-03. A catalog written by 0.14.x still
+/// holds its tables and preferences; opening it must drop them and leave everything else.
+final class RetiredPlanMeterMigrationTests: XCTestCase {
+    private func rawExec(_ path: URL, _ sql: String) throws {
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path.path, &handle), SQLITE_OK)
+        defer { sqlite3_close(handle) }
+        var err: UnsafeMutablePointer<CChar>?
+        let rc = sqlite3_exec(handle, sql, nil, nil, &err)
+        if rc != SQLITE_OK { XCTFail(String(cString: err!)); sqlite3_free(err) }
+    }
+
+    private func tableNames(_ path: URL) -> Set<String> {
+        var handle: OpaquePointer?
+        guard sqlite3_open(path.path, &handle) == SQLITE_OK else { return [] }
+        defer { sqlite3_close(handle) }
+        var stmt: OpaquePointer?
+        sqlite3_prepare_v2(handle, "SELECT name FROM sqlite_master WHERE type = 'table';", -1, &stmt, nil)
+        defer { sqlite3_finalize(stmt) }
+        var out: Set<String> = []
+        while sqlite3_step(stmt) == SQLITE_ROW { out.insert(String(cString: sqlite3_column_text(stmt, 0))) }
+        return out
+    }
+
+    func testLaunchRetiresTheMeterTablesAndPreferencesOnly() throws {
+        let dir = try TempDir.make()
+        let path = dir.appendingPathComponent("catalog.db")
+        // A 0.14.1-shaped catalog: open once so every live table exists, then add what the
+        // meter wrote the way that release did.
+        do {
+            let db = try CatalogDB(path: path)
+            try db.setMeta(AppPreferences.welcomeKey, "2026-10-01T00:00:00Z")
+        }
+        try rawExec(path, """
+            CREATE TABLE usage_limits (source TEXT NOT NULL, window TEXT NOT NULL, tokens INTEGER NOT NULL,
+              PRIMARY KEY (source, window));
+            INSERT INTO usage_limits VALUES ('droid', 'weekly', 1000000);
+            CREATE TABLE subscriptions (id TEXT PRIMARY KEY, tool TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+              plan TEXT NOT NULL, limit_amount REAL, limit_unit TEXT, limit_period TEXT, created_at TEXT NOT NULL);
+            INSERT INTO subscriptions VALUES ('s1', 'cursor', '', 'Pro', 500, 'requests', 'monthly', '2026-10-01T00:00:00Z');
+            CREATE TABLE provider_snapshots (provider TEXT NOT NULL, key_name TEXT NOT NULL, ts TEXT NOT NULL,
+              usage_daily REAL, usage_weekly REAL, usage_monthly REAL, "limit" REAL, limit_remaining REAL, raw_kind TEXT);
+            CREATE INDEX provider_snapshots_key_ts ON provider_snapshots (provider, key_name, ts DESC);
+            INSERT INTO provider_snapshots VALUES ('openrouter', 'or', '2026-10-01T00:00:00Z', 1, 2, 3, 100, 97, 'monthly');
+            INSERT OR REPLACE INTO meta VALUES ('pref_claude_usage_refresh', 'on');
+            INSERT OR REPLACE INTO meta VALUES ('pref_show_usage_meter', 'on');
+            INSERT OR REPLACE INTO meta VALUES ('pref_hidden_usage', '["openai"]');
+            """)
+        XCTAssertTrue(tableNames(path).isSuperset(of: CatalogDB.retiredTables), "the 0.14 tables are in place")
+
+        // Opening the catalog writes nothing: an older Keysrs still running against the same
+        // file keeps its tables until this release's app launch retires them.
+        let db = try CatalogDB(path: path)
+        XCTAssertTrue(tableNames(path).isSuperset(of: CatalogDB.retiredTables), "open alone leaves them")
+        XCTAssertEqual(try db.metaValue("pref_show_usage_meter"), "on")
+
+        XCTAssertTrue(try db.removeRetiredPlanMeter())
+        XCTAssertTrue(tableNames(path).isDisjoint(with: CatalogDB.retiredTables), "\(tableNames(path))")
+        for key in CatalogDB.retiredMetaKeys {
+            XCTAssertNil(try db.metaValue(key), key)
+        }
+        XCTAssertEqual(try db.metaValue(AppPreferences.welcomeKey), "2026-10-01T00:00:00Z", "other meta survives")
+        XCTAssertNotNil(try db.metaValue("catalog_version"))
+
+        // The second launch finds nothing to do, and purge's wipe still runs over the store.
+        XCTAssertFalse(try db.removeRetiredPlanMeter())
+        try db.wipeData()
+        XCTAssertNil(try db.metaValue(AppPreferences.welcomeKey))
+    }
+}

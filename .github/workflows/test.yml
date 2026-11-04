@@ -13,7 +13,6 @@ jobs:
     env:
       CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
       GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
-      GROK_BOT_HOME: ${{ github.workspace }}/Fixtures/grok-bot-home
       KEYS_DROID_HOME: ${{ github.workspace }}/Fixtures/droid-home
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

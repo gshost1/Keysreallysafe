@@ -348,26 +348,23 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertEqual(json["counted_tokens"] as? Int, 1_875)
     }
 
-    // The Chart's Droid filter and the Usage row's Month window read the same records, so their
-    // figures must be the same number: the chart sums the rows' counted totals, the row sums
-    // `TokenTotals.normalized` over the same window. (Fixture math: the October records of
-    // Fixtures/droid-home are 74,352 claude-sonnet-5 tokens and 956 gpt-6-pro tokens.)
-    func testDroidMonthChartRowsMatchTheDroidRowMonthWindow() throws {
+    // The Chart's Droid filter counts every bucket Droid's log reports, by
+    // `TokenTotals.normalized`. (Fixture math: the October records of Fixtures/droid-home are
+    // 74,352 claude-sonnet-5 tokens and 956 gpt-6-pro tokens.)
+    func testDroidMonthChartRowsCountTheFixtureMonth() throws {
         let (db, _) = try makeDB()
         _ = try DroidIngest.run(home: Fixtures.droidHome, db: db)
         let utc = TimeZone(identifier: "UTC")!
         let now = UTC.parse("2026-10-10T22:00:00Z")!
-        let windows = try DroidUsage.windows(catalog: db, now: now, timeZone: utc)
-        XCTAssertEqual(windows.monthly, 75_308)
         let report = try SpendQueries(db: db).report(
             range: .month, by: .model, source: .droid, now: now, timeZone: utc
         )
         XCTAssertEqual(report.rows.count, 2, "only the two October models are in this month")
         XCTAssertEqual(Set(report.rows.compactMap(\.model)), ["claude-sonnet-5", "gpt-6-pro"])
-        XCTAssertEqual(report.rows.reduce(0) { $0 + $1.countedTokens }, windows.monthly)
+        XCTAssertEqual(report.rows.reduce(0) { $0 + $1.countedTokens }, 75_308)
         // The weekly chart says the same thing: this calendar week holds both October records.
         let week = try SpendQueries(db: db).report(range: .week, by: .model, source: .droid, now: now, timeZone: utc)
-        XCTAssertEqual(week.rows.reduce(0) { $0 + $1.countedTokens }, windows.weekly)
+        XCTAssertEqual(week.rows.reduce(0) { $0 + $1.countedTokens }, 75_308)
     }
 
     private static let denver = TimeZone(identifier: "America/Denver")!

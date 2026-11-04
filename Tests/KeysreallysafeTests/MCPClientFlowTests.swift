@@ -76,7 +76,6 @@ final class MCPClientFlowTests: XCTestCase {
             codexHome: Fixtures.codexHome,
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
-            openRouter: OpenRouterHTTP(),
             relaySecrets: relaySecrets
         )
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
@@ -587,7 +586,6 @@ final class MCPClientFlowTests: XCTestCase {
             codexHome: Fixtures.codexHome,
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
-            openRouter: OpenRouterHTTP(),
             relaySecrets: MemorySecretStore()
         )
 

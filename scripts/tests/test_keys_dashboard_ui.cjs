@@ -70,7 +70,7 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, plans, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, limits, subscriptions, nextSubId, grants, profiles, preferences;
+let keys, ledger, localRows, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, grants, profiles, preferences;
 
 function reset() {
   keys = baseKeys();
@@ -78,15 +78,8 @@ function reset() {
   rotations = [];
   customProviders = [];
   hiddenUsers = new Set();
-  // "source/window" -> token limit, mirroring the engine's usage_limits rows.
-  limits = new Map();
   ledger = baseLedger();
   localRows = [];
-  // The plan cards. Empty unless a test fills it, as most of this suite expects.
-  plans = [];
-  // The subscriptions the user pinned on the Usage pane, mirroring the engine's rows.
-  subscriptions = [];
-  nextSubId = 1;
   failures = new Map();   // "METHOD /path" -> {status, body} | "drop"
   delays = new Map();     // "METHOD /path" -> milliseconds
   requests = [];
@@ -107,11 +100,9 @@ function reset() {
     elsewhere: false, elsewhere_pid: null, stay_awake: false, awake: false,
     awake_while_shared: false, awake_reason: null, active_shares: 0,
   };
-  // The persisted app choices (GET /api/preferences). The app-mode default has the
-  // meter off, but this suite is about the meter's own presentation, so its fixture
-  // starts with the meter on; the fresh-store default and its migration are pinned
-  // in the XCTest PreferencesTests. The meter-visibility case flips it off and back.
-  preferences = { show_usage_meter: true, menubar_item: false, update_checks: true };
+  // The persisted app choices (GET /api/preferences), at the app-mode defaults; the
+  // fresh-store default and its migration are pinned in the XCTest PreferencesTests.
+  preferences = { menubar_item: false, update_checks: true };
 }
 let catalogVersion = 1;
 let keyEvents = [];
@@ -237,70 +228,6 @@ function spend(params) {
     daily: by === "hour" ? [] : point({ day }),
     points: by === "hour" ? point({ hour: `${day}T${pad2(new Date().getHours())}:00` }) : [],
   }];
-}
-
-const SUB_TOOLS = ["cursor", "gemini", "copilot", "perplexity", "chatgpt", "factory", "custom"];
-const SUB_UNITS = ["tokens", "requests", "credits", "usd"];
-const SUB_PERIODS = ["five_hour", "weekly", "monthly"];
-
-// The engine's subscription validation, mirrored so a page that sends a half-sent payload
-// fails here instead of passing. `existing` carries PATCH's "absent means keep".
-function subLimitOf(body, existingLimit) {
-  const present = (k) => Object.prototype.hasOwnProperty.call(body, k);
-  const keys = ["limit_amount", "limit_unit", "limit_period"];
-  const presentCount = keys.filter(present).length;
-  if (!presentCount) return [null, existingLimit];
-  const amount = present("limit_amount") && body.limit_amount !== null ? body.limit_amount : null;
-  const unit = present("limit_unit") && body.limit_unit !== null ? body.limit_unit : null;
-  const period = present("limit_period") && body.limit_period !== null ? body.limit_period : null;
-  const allOrNothing = "limit fields are all-or-nothing: set amount, unit and period together, or clear all three";
-  if (amount == null && unit == null && period == null) {
-    if (presentCount !== 3) return [allOrNothing];
-    return [null, null];
-  }
-  if (presentCount !== 3 || amount == null || unit == null || period == null) return [allOrNothing];
-  const value = Number(amount);
-  if (typeof amount !== "number" || !Number.isFinite(value) || value <= 0 || value > 1e9) {
-    return ["limit amount must be greater than 0 and at most a billion"];
-  }
-  if (!SUB_UNITS.includes(unit)) return [`limit unit must be one of ${SUB_UNITS.join(", ")}`];
-  if (!SUB_PERIODS.includes(period)) return [`limit period must be one of ${SUB_PERIODS.join(", ")}`];
-  if ((unit === "tokens" || unit === "requests") && !Number.isInteger(value)) {
-    return [`a ${unit} limit is a whole number`];
-  }
-  return [null, { amount: value, unit, period }];
-}
-
-function subValidate(body, existing) {
-  if (!existing && (typeof body.tool !== "string" || !SUB_TOOLS.includes(body.tool))) {
-    return [`tool must be one of ${SUB_TOOLS.join(", ")}`];
-  }
-  const tool = existing ? existing.tool : body.tool;
-  const rawName = body.name !== undefined ? body.name : (existing ? existing.name : undefined);
-  const name = typeof rawName === "string" ? rawName.trim() : "";
-  if (tool === "custom") {
-    if (!name || name.length > 64 || /\n/.test(name)) {
-      return ["a custom subscription needs a name (one line, at most 64 characters)"];
-    }
-  } else if (name) return ["name is only for a custom tool"];
-  const rawPlan = body.plan !== undefined ? body.plan : (existing ? existing.plan : undefined);
-  const plan = typeof rawPlan === "string" ? rawPlan.trim() : "";
-  if (!plan || plan.length > 80 || /\n/.test(plan)) {
-    return ["plan is required (one line, at most 80 characters)"];
-  }
-  const [limitErr, limit] = subLimitOf(body, existing ? existing.limit : null);
-  if (limitErr) return [limitErr];
-  return [null, { tool, name, plan, limit }];
-}
-
-function subRecord(sub) {
-  return {
-    id: sub.id, tool: sub.tool, name: sub.name, plan: sub.plan,
-    limit_amount: sub.limit ? sub.limit.amount : null,
-    limit_unit: sub.limit ? sub.limit.unit : null,
-    limit_period: sub.limit ? sub.limit.period : null,
-    created_at: sub.created_at,
-  };
 }
 
 const rule = (method, pathname) => `${method} ${pathname}`;
@@ -460,82 +387,13 @@ function handle(method, pathname, body, params) {
     return [200, { removed: id }];
   }
   if (pathname === "/api/models") return [200, []];
-  if (pathname === "/api/status") return [200, { plans, catalog_version: catalogVersion }];
-  // The per-window token limits, mirroring the engine's usage_limits: only the Droid row is
-  // tracked, the windows are fixed, and a limit is a positive whole number and nothing else.
-  if (pathname === "/api/limits" && method === "GET") {
-    return [200, { limits: [...limits].map(([key, tokens]) => {
-      const [source, window] = key.split("/");
-      return { source, window, tokens };
-    }) }];
-  }
-  const limitMatch = /^\/api\/limits\/([a-z0-9-]+)\/([a-z_]+)$/.exec(pathname);
-  if (limitMatch) {
-    const source = limitMatch[1], window = limitMatch[2];
-    if (source !== "droid") return [400, { error: "limits exist for droid only" }];
-    if (!["five_hour", "weekly", "monthly"].includes(window)) return [400, { error: "window must be five_hour, weekly or monthly" }];
-    if (method === "PUT") {
-      if (typeof body.tokens !== "number" || !Number.isInteger(body.tokens) || body.tokens <= 0) {
-        return [400, { error: "tokens must be a positive whole number" }];
-      }
-      limits.set(`${source}/${window}`, body.tokens);
-      return [200, { source, window, tokens: body.tokens }];
-    }
-    if (method === "DELETE") {
-      limits.delete(`${source}/${window}`);
-      return [200, { removed: `${source}/${window}` }];
-    }
-  }
-  // The subscriptions the user pins to the Usage pane, mirroring the engine's rows and its
-  // strict validation: one of the listed tools, a custom tool named by its own name, a plan
-  // always, and the limit one fact in three fields.
-  if (pathname === "/api/subscriptions" && method === "GET") {
-    return [200, { subscriptions: subscriptions.map(subRecord) }];
-  }
-  if (pathname === "/api/subscriptions" && method === "POST") {
-    const [err, fields] = subValidate(body, null);
-    if (err) return [400, { error: err }];
-    if (fields.tool === "factory" && subscriptions.some((s) => s.tool === "factory")) {
-      return [400, { error: "a Factory subscription already exists; edit it instead" }];
-    }
-    const sub = { id: "sub-" + (nextSubId++), created_at: "2026-10-11T00:00:00Z", ...fields };
-    subscriptions.push(sub);
-    return [201, subRecord(sub)];
-  }
-  const subMatch = /^\/api\/subscriptions\/([^/]+)$/.exec(pathname);
-  if (subMatch) {
-    const sub = subscriptions.find((s) => s.id === subMatch[1]);
-    if (method === "PATCH") {
-      if (!sub) return [404, { error: "not_found" }];
-      if (body.tool !== undefined && body.tool !== sub.tool) {
-        return [400, { error: "tool cannot change; remove the subscription and add it again" }];
-      }
-      const [err, fields] = subValidate(body, sub);
-      if (err) return [400, { error: err }];
-      Object.assign(sub, fields);
-      return [200, subRecord(sub)];
-    }
-    if (method === "DELETE") {
-      if (!sub) return [404, { error: "not_found" }];
-      subscriptions = subscriptions.filter((s) => s.id !== subMatch[1]);
-      return [200, { removed: subMatch[1] }];
-    }
-    return [405, { error: "method_not_allowed" }];
-  }
+  if (pathname === "/api/status") return [200, { catalog_version: catalogVersion, last_ingest_at: null }];
   // The app's relay, mirroring the engine: the body is enabled and/or stay_awake, booleans and
   // nothing else; on needs a relay that is set up and no relay running in a Terminal.
-  // The menu bar's copy of the hidden usage cards, mirroring the engine's validation.
-  if (pathname === "/api/preferences/hidden-usage" && method === "POST") {
-    if (!Array.isArray(body.hidden) || body.hidden.some((x) => typeof x !== "string")) {
-      return [400, { error: "hidden must be a list" }];
-    }
-    return [200, { hidden: [...new Set(body.hidden)].sort() }];
-  }
   // The persisted app choices, mirroring the engine: GET reads them, each write takes exactly
   // {on: bool} and answers the whole persisted state.
   if (pathname === "/api/preferences" && method === "GET") return [200, preferences];
   const preferenceKeys = {
-    "/api/preferences/show-usage-meter": "show_usage_meter",
     "/api/preferences/menubar-item": "menubar_item",
     "/api/preferences/update-checks": "update_checks",
   };
@@ -643,9 +501,6 @@ const dialogOpen = (page, id) => page.locator(`#${id}`).evaluate((node) => node.
 const waitDialog = (page, id, open) =>
   page.waitForFunction(([name, want]) => document.getElementById(name).open === want, [id, open]);
 
-// Droid is off the Usage pane by default (Settings → Show Droid on Usage); the tests about its
-// card turn it on before the page loads.
-const showDroidOnUsage = (page) => page.addInitScript(() => { try { localStorage.setItem("ksf.showDroid", "1"); } catch { /* fine */ } });
 
 async function openKeys(page, origin, options = {}) {
   await page.goto(origin);
@@ -3146,436 +3001,6 @@ test("the Keys figures follow the Chart's unit at 390 px and stay inside the row
   assert.equal(await page.locator("#pane-chart").isVisible(), true);
 });
 
-// The plan cards carry provider-reported money too, and they follow the same rule: what was
-// measured by default, a sum only when USD is chosen.
-test("the plan cards hide local dollars and OpenRouter credit until USD is chosen", async (page, origin) => {
-  plans = [
-    { source: "grok", title: "Grok", kind: "local", weekly_usd: 1.25, weekly_tokens: 120000, period: { label: "This week" } },
-    { source: "openrouter", title: "OpenRouter", kind: "api", limit: 20, limit_remaining: 5, usage_weekly: 3.5 },
-  ];
-  localRows = subscriptionRows();
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#live-status .live-row").first().waitFor();
-  const cards = () => page.locator("#live-status").textContent();
-  const measured = await cards();
-  assert.doesNotMatch(measured, /\$/, "no provider or local dollars on a card until USD is chosen");
-  assert.match(measured, /120K tokens/, "the local week still says what it measured");
-  assert.match(measured, /25% of the credit limit left/, "a share is the same fact without a sum");
-  assert.match(measured, /choose USD below for the amount/, "and it says where the amount is");
-
-  await page.getByRole("button", { name: "Show this month in USD instead of tokens" }).click();
-  await page.waitForFunction(() => /\$/.test(document.getElementById("live-status").textContent));
-  const priced = await cards();
-  assert.match(priced, /\$1\.25/, "the local week's dollars come back with the unit");
-  assert.match(priced, /\$5\.00 left of \$20\.00/);
-  assert.match(priced, /\$3\.50 billed by OpenRouter/);
-});
-
-// Grok Bot keeps no usage figures on disk, only chats. A week with prompts gets a card that says
-// what was counted; an idle week falls into "not tracked" rather than showing a zero as a measure.
-test("Grok Bot shows this week's prompt count, and an idle week is not tracked", async (page, origin) => {
-  plans = [
-    { source: "grok-bot", title: "Grok Bot", kind: "subscription", weekly_prompts: 12, period: { label: "This week" },
-      usage_note: "12 prompts in 3 chats this week, counted from the chats Grok Bot keeps on this Mac. Grok Bot's plan is separate from SuperGrok; its credits and limits are not in local files." },
-  ];
-  localRows = subscriptionRows();
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const card = page.locator('#live-status .live-row[data-source="grok-bot"]');
-  await card.waitFor();
-  assert.match(await card.textContent(), /12 prompts sent · limit not tracked/);
-  assert.match(await card.textContent(), /plan is separate from SuperGrok/);
-
-  // An idle week is not a card: nothing is measured, so nothing is shown, and no "not tracked"
-  // list stands in for it.
-  plans = [{ source: "grok-bot", title: "Grok Bot", kind: "subscription", weekly_prompts: 0, usage_note: "No Grok Bot prompts this week." }];
-  await page.reload();
-  await page.waitForLoadState("networkidle");
-  await page.locator("#usage-totals b").first().waitFor();
-  assert.equal(await page.locator('#live-status .live-row[data-source="grok-bot"]').count(), 0);
-  assert.equal(await page.locator("#live-status").isHidden(), true);
-  assert.equal(await page.locator("#pane-usage details").count(), 0, "no collapsed 'not tracked locally' group");
-  assert.doesNotMatch(await page.locator("#pane-usage").textContent(), /not tracked locally|cards? hidden/);
-});
-
-// The Droid row is catalog-backed: three windows (5-hour rolling, calendar week, calendar month),
-// each tokens-only until the user sets a limit for it, which turns that one window into a
-// percent meter. The fixture numbers mirror the droid-home fixture's windows at its fixed clock.
-const droidPlan = (extra = {}) => ({
-  source: "droid", title: "Droid", kind: "subscription",
-  five_hour_tokens: 74352, weekly_tokens: 75308, monthly_tokens: 75308, ...extra,
-  usage_note: extra.usage_note || "Tokens per window, from the per-request records in Droid's local logs. Factory's own plan limits are not in local files; use Set limits to add your own.",
-});
-
-test("Droid shows three token windows, tokens only until a window gets a limit", async (page, origin) => {
-  await showDroidOnUsage(page);
-  plans = [droidPlan()];
-  localRows = subscriptionRows();
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const card = page.locator('#live-status .live-row[data-source="droid"]');
-  await card.waitFor();
-  // Laid out like the Claude/OpenAI rows: one meter line per window, in this order.
-  assert.deepEqual(
-    await card.locator(".live-meter-label").evaluateAll((rows) => rows.map((r) => r.firstChild.textContent.trim())),
-    ["5 hour", "Weekly", "Month"],
-  );
-  const text = await card.textContent();
-  assert.match(text, /74\.4K tokens/, "the 5-hour window shows its own tokens");
-  assert.match(text, /75\.3K tokens.*75\.3K tokens/, "weekly and month each show their figure");
-  assert.match(text, /per-request records in Droid's local logs/);
-  // Without limits nothing is a percent: no track, no % sign, and the row stays tracked.
-  assert.equal(await card.locator(".live-track").count(), 0);
-  assert.doesNotMatch(text, /%/);
-  assert.equal(await card.locator("#live-status .live-absent").count(), 0);
-  assert.equal(await card.getByRole("button", { name: "Set limits" }).count(), 1);
-
-  // A limit turns exactly its own window into a meter; the others stay token text.
-  plans = [droidPlan({ weekly_limit: 100000, weekly_pct: 75 })];
-  await page.reload();
-  await page.waitForLoadState("networkidle");
-  await card.locator(".live-track").waitFor();
-  const weekly = card.locator(".live-meter", { hasText: "Weekly" });
-  assert.match(await weekly.textContent(), /75% · 75\.3K of 100K tokens/);
-  const fill = await weekly.locator(".live-fill").evaluate((n) => n.style.width);
-  assert.equal(fill, "75%");
-  assert.equal(await card.locator(".live-track").count(), 1, "only the limited window gets a track");
-  assert.match(await card.locator(".live-meter", { hasText: "5 hour" }).textContent(), /74\.4K tokens/);
-  assert.match(await card.locator(".live-meter", { hasText: "Month" }).textContent(), /75\.3K tokens/);
-});
-
-test("a blown Droid limit caps the bar but keeps the true percentage", async (page, origin) => {
-  await showDroidOnUsage(page);
-  plans = [droidPlan({ weekly_tokens: 120000, monthly_tokens: 120000, weekly_limit: 100000, weekly_pct: 120 })];
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const weekly = page.locator('#live-status .live-row[data-source="droid"] .live-meter', { hasText: "Weekly" });
-  await weekly.waitFor();
-  assert.match(await weekly.textContent(), /120% · 120K of 100K tokens/, "the number stays honest past 100");
-  assert.equal(await weekly.locator(".live-fill").evaluate((n) => n.style.width), "100%", "the bar caps visually");
-  assert.match(await weekly.locator(".live-fill").getAttribute("class"), /live-fill-over/);
-});
-
-test("Set limits sets, validates and clears Droid window limits through the API", async (page, origin) => {
-  await showDroidOnUsage(page);
-  plans = [droidPlan()];
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const card = page.locator('#live-status .live-row[data-source="droid"]');
-  await card.waitFor();
-  await card.getByRole("button", { name: "Set limits" }).click();
-  await waitDialog(page, "dlg-limits", true);
-  const form = page.locator("#limits-form");
-  // Three optional fields, prefilled from the row's current limits (none yet).
-  assert.deepEqual(
-    await form.locator("input").evaluateAll((inputs) => inputs.map((i) => i.value)),
-    ["", "", ""],
-  );
-
-  // 0 is not a limit: an inline error, the dialog stays open, nothing is sent.
-  await form.locator('input[name="weekly"]').fill("0");
-  await page.getByRole("button", { name: "Save" }).click();
-  assert.match(await page.locator("#limits-err").textContent(), /whole token counts of 1 or more/);
-  assert.equal(await dialogOpen(page, "dlg-limits"), true);
-  assert.equal(requests.filter((r) => r.pathname.startsWith("/api/limits")).length, 0);
-  // Non-numeric text, negatives and fractions are refused the same way, never read as an empty
-  // "no limit". Chromium drops typed letters outright, but "1e" reaches the field as badInput.
-  await form.locator('input[name="weekly"]').fill("");
-  for (const bad of ["1e", "-5", "12.5"]) {
-    await page.locator("#limits-err").evaluate((n) => { n.textContent = ""; });
-    await form.locator('input[name="monthly"]').evaluate((n) => { n.value = ""; });
-    await form.locator('input[name="monthly"]').pressSequentially(bad);
-    await page.getByRole("button", { name: "Save" }).click();
-    assert.match(await page.locator("#limits-err").textContent(), /whole token counts of 1 or more/, `"${bad}" must be refused`);
-    assert.equal(await dialogOpen(page, "dlg-limits"), true);
-  }
-  assert.equal(requests.filter((r) => r.pathname.startsWith("/api/limits")).length, 0);
-  await form.locator('input[name="monthly"]').fill("");
-
-  // A valid limit saves (the fixture answers, and the status reload carries the meter).
-  await form.locator('input[name="weekly"]').fill("100000");
-  plans = [droidPlan({ weekly_limit: 100000, weekly_pct: 75 })];
-  await page.getByRole("button", { name: "Save" }).click();
-  await waitDialog(page, "dlg-limits", false);
-  const put = requests.find((r) => r.method === "PUT" && r.pathname === "/api/limits/droid/weekly");
-  assert.ok(put, "the save writes the limit through the token-protected route");
-  assert.equal(put.token, "test-token");
-  await card.locator(".live-track").waitFor();
-  assert.match(await card.textContent(), /75% · 75\.3K of 100K tokens/);
-
-  // Reopening prefills the saved limit; clearing the field clears the window's limit.
-  await card.getByRole("button", { name: "Set limits" }).click();
-  await waitDialog(page, "dlg-limits", true);
-  assert.equal(await form.locator('input[name="weekly"]').inputValue(), "100000");
-  plans = [droidPlan()];
-  await form.locator('input[name="weekly"]').fill("");
-  await page.getByRole("button", { name: "Save" }).click();
-  await waitDialog(page, "dlg-limits", false);
-  const del = requests.find((r) => r.method === "DELETE" && r.pathname === "/api/limits/droid/weekly");
-  assert.ok(del, "an emptied field clears the limit instead of writing 0");
-  await page.waitForFunction(() => document.querySelector('#live-status .live-row[data-source="droid"]') && document.querySelectorAll('#live-status .live-row[data-source="droid"] .live-track').length === 0);
-  assert.match(await card.textContent(), /75\.3K tokens/);
-});
-
-test("an empty Droid catalog shows zeros and no fabricated numbers", async (page, origin) => {
-  await showDroidOnUsage(page);
-  plans = [droidPlan({
-    five_hour_tokens: 0, weekly_tokens: 0, monthly_tokens: 0,
-    usage_note: "No Droid usage recorded yet. The windows fill from the per-request records in Droid's local logs.",
-  })];
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const card = page.locator('#live-status .live-row[data-source="droid"]');
-  await card.waitFor();
-  const text = await card.textContent();
-  assert.match(text, /No Droid usage recorded yet/);
-  assert.equal((text.match(/0 tokens/g) || []).length, 3, "each window says its real zero");
-  assert.doesNotMatch(text, /%/, "no percent without a limit");
-  assert.equal(await card.locator(".live-track").count(), 0);
-
-  // A limit on an empty window is a real 0%, which is the one honest percent there is.
-  plans = [droidPlan({
-    five_hour_tokens: 0, weekly_tokens: 0, monthly_tokens: 0,
-    monthly_limit: 500000, monthly_pct: 0,
-    usage_note: "No Droid usage recorded yet. The windows fill from the per-request records in Droid's local logs.",
-  })];
-  await page.reload();
-  await page.waitForLoadState("networkidle");
-  const month = card.locator(".live-meter", { hasText: "Month" });
-  await month.locator(".live-track").waitFor();
-  assert.match(await month.textContent(), /0% · 0 of 500K tokens/);
-  assert.equal(await card.locator(".live-track").count(), 1, "the unlimited windows stay plain");
-});
-
-// ---------- subscriptions (plans the user pins to the Usage pane) ----------
-
-// The shape the engine gives a pinned subscription row on /api/status.
-const subPlan = (extra = {}) => ({
-  source: "cursor", title: "Cursor", kind: "subscription", subscription_id: "sub-1",
-  plan: "Pro", limit_text: "500 requests per month", usage_note: "usage not tracked locally", ...extra,
-});
-// The dialog's own controls, scoped so the toolbar's "+ Add subscription" and a row's Edit and
-// Remove (whose accessible names are just "Edit" / "Remove") never collide with them.
-const subSubmit = (page) => page.locator("#dlg-sub").getByRole("button", { name: "Add subscription", exact: true });
-const subCancel = (page) => page.locator("#dlg-sub-remove").getByRole("button", { name: "Cancel", exact: true });
-const subConfirm = (page) => page.locator("#dlg-sub-remove").getByRole("button", { name: "Remove", exact: true });
-
-test("+ Add subscription opens the dialog and Custom requires a name", async (page, origin) => {
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("button", { name: "+ Add subscription" }).click();
-  await waitDialog(page, "dlg-sub", true);
-  const form = page.locator("#sub-form");
-  // Every tool the engine lists, and only those.
-  assert.deepEqual(
-    await form.locator("select[name=tool] option").evaluateAll((os) => os.map((o) => o.textContent.trim())),
-    ["Cursor", "Gemini", "GitHub Copilot", "Perplexity", "ChatGPT", "Factory", "Custom…"],
-  );
-  // The name field belongs to Custom alone.
-  assert.equal(await page.locator("#sub-name-label").evaluate((n) => n.hidden), true);
-  await form.locator("select[name=tool]").selectOption("custom");
-  assert.equal(await page.locator("#sub-name-label").evaluate((n) => n.hidden), false);
-
-  // A custom tool with no name is refused here; nothing is sent.
-  await form.locator("input[name=plan]").fill("Team");
-  await subSubmit(page).click();
-  assert.match(await page.locator("#sub-err").textContent(), /custom tool needs a name/);
-  assert.equal(await dialogOpen(page, "dlg-sub"), true);
-  assert.equal(requests.filter((r) => r.pathname === "/api/subscriptions").length, 0);
-
-  // With a name the POST carries the tool and the name, and no limit was invented.
-  await form.locator("input[name=name]").fill("Windsurf");
-  plans = [subPlan({ source: "custom", title: "Windsurf", subscription_id: "sub-1", plan: "Team", limit_text: null, usage_note: "usage not tracked locally" })];
-  await subSubmit(page).click();
-  await waitDialog(page, "dlg-sub", false);
-  const post = requests.find((r) => r.method === "POST" && r.pathname === "/api/subscriptions");
-  assert.ok(post, "the save goes through the token-protected route");
-  assert.equal(post.token, "test-token");
-  assert.equal(subscriptions[0].tool, "custom");
-  assert.equal(subscriptions[0].name, "Windsurf");
-  assert.equal(subscriptions[0].plan, "Team");
-  assert.equal(subscriptions[0].limit, null);
-  const row = page.locator('#live-status .live-row[data-sub-id="sub-1"]');
-  await row.waitFor();
-  const text = await row.textContent();
-  assert.match(text, /Windsurf/);
-  assert.match(text, /Team/);
-  assert.match(text, /usage not tracked locally/);
-  assert.doesNotMatch(text, /%/, "a row that measures nothing shows no percent");
-});
-
-test("a built-in subscription shows its plan, limit text and honest note, and hides the placeholder", async (page, origin) => {
-  plans = [
-    subPlan(),
-    { source: "gemini", title: "Gemini", kind: "subscription", usage_note: "Google AI Pro/Ultra remaining is not in local files." },
-  ];
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const card = page.locator('#live-status .live-row[data-source="cursor"]');
-  await card.waitFor();
-  const text = await card.textContent();
-  assert.match(text, /Cursor/);
-  assert.match(text, /Pro/);
-  assert.match(text, /500 requests per month/);
-  assert.match(text, /usage not tracked locally/);
-  // No invented usage: no percent, no token figure, no meter track on a row that measures nothing.
-  assert.doesNotMatch(text, /%/);
-  assert.doesNotMatch(text, /tokens/);
-  assert.equal(await card.locator(".live-track").count(), 0);
-  // A tool nobody pinned and nothing measures is not on the pane at all: no placeholder row and
-  // no collapsed "not tracked locally" group for it to sit in.
-  assert.equal(await page.locator("#live-status .live-row").count(), 1, "the pinned Cursor card is the only row");
-  assert.doesNotMatch(await page.locator("#live-status").textContent(), /Gemini/);
-  assert.equal(await page.locator("#pane-usage details").count(), 0);
-  assert.equal(await card.locator('button[title="Edit this subscription"]').count(), 1);
-  assert.equal(await card.locator('button[title="Remove this subscription"]').count(), 1);
-});
-
-test("the subscription limit is all-or-nothing before anything is sent", async (page, origin) => {
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("button", { name: "+ Add subscription" }).click();
-  await waitDialog(page, "dlg-sub", true);
-  const form = page.locator("#sub-form");
-  await form.locator("input[name=plan]").fill("Pro");
-  // An amount alone is not a limit.
-  await form.locator("input[name=limit_amount]").fill("500");
-  await subSubmit(page).click();
-  assert.match(await page.locator("#sub-err").textContent(), /amount, a unit and a period together/);
-  // Unit and period without an amount are not one either.
-  await form.locator("select[name=limit_unit]").selectOption("requests");
-  await form.locator("select[name=limit_period]").selectOption("monthly");
-  await form.locator("input[name=limit_amount]").fill("");
-  await subSubmit(page).click();
-  assert.match(await page.locator("#sub-err").textContent(), /amount, a unit and a period together/);
-  // Zero, negatives and fractions of a request are refused, never coerced.
-  for (const bad of ["0", "-5", "12.5"]) {
-    await page.locator("#sub-err").evaluate((n) => { n.textContent = ""; });
-    await form.locator("input[name=limit_amount]").evaluate((n) => { n.value = ""; });
-    await form.locator("input[name=limit_amount]").pressSequentially(bad);
-    await subSubmit(page).click();
-    assert.match(await page.locator("#sub-err").textContent(), bad === "12.5" ? /whole number/ : /greater than 0/, `"${bad}" must be refused`);
-    assert.equal(await dialogOpen(page, "dlg-sub"), true);
-  }
-  assert.equal(requests.filter((r) => r.pathname === "/api/subscriptions").length, 0);
-
-  // A valid one sends all three fields together.
-  await form.locator("input[name=limit_amount]").fill("500");
-  plans = [subPlan()];
-  await subSubmit(page).click();
-  await waitDialog(page, "dlg-sub", false);
-  assert.deepEqual(subscriptions[0].limit, { amount: 500, unit: "requests", period: "monthly" });
-  await page.locator('#live-status .live-row[data-source="cursor"]').waitFor();
-});
-
-test("Edit and Remove go through PATCH and a confirmed DELETE, and the placeholder returns", async (page, origin) => {
-  subscriptions = [{
-    id: "sub-1", tool: "cursor", name: "", plan: "Pro",
-    limit: { amount: 500, unit: "requests", period: "monthly" },
-    created_at: "2026-10-11T00:00:00Z",
-  }];
-  plans = [subPlan()];
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const card = page.locator('#live-status .live-row[data-source="cursor"]');
-  await card.waitFor();
-  await card.locator('button[title="Edit this subscription"]').click();
-  await waitDialog(page, "dlg-sub", true);
-  const form = page.locator("#sub-form");
-  // The edit dialog keeps the tool fixed and fills the fields from the stored record.
-  assert.equal(await form.locator("select[name=tool]").isDisabled(), true);
-  assert.equal(await form.locator("select[name=tool]").inputValue(), "cursor");
-  await page.waitForFunction(() => document.querySelector('#sub-form input[name="plan"]').value === "Pro");
-  assert.equal(await form.locator("input[name=limit_amount]").inputValue(), "500");
-  assert.equal(await form.locator("select[name=limit_unit]").inputValue(), "requests");
-  assert.equal(await form.locator("select[name=limit_period]").inputValue(), "monthly");
-  // The title and the button say edit.
-  assert.equal(await page.locator("#sub-title").textContent(), "Edit subscription");
-
-  await form.locator("input[name=plan]").fill("Ultra");
-  await form.locator("input[name=limit_amount]").fill("1000");
-  plans = [subPlan({ plan: "Ultra", limit_text: "1,000 requests per month" })];
-  await page.locator("#dlg-sub").getByRole("button", { name: "Save" }).click();
-  await waitDialog(page, "dlg-sub", false);
-  const patch = requests.find((r) => r.method === "PATCH" && r.pathname === "/api/subscriptions/sub-1");
-  assert.ok(patch, "the edit is a token-protected PATCH on the row's id");
-  assert.equal(patch.token, "test-token");
-  assert.equal(subscriptions[0].plan, "Ultra");
-  assert.deepEqual(subscriptions[0].limit, { amount: 1000, unit: "requests", period: "monthly" });
-  await page.waitForFunction(() => /Ultra/.test(document.querySelector('#live-status .live-row[data-source="cursor"]').textContent));
-  assert.match(await card.textContent(), /1,000 requests per month/);
-
-  // Remove asks first; a cancel keeps the row.
-  await card.locator('button[title="Remove this subscription"]').click();
-  await waitDialog(page, "dlg-sub-remove", true);
-  assert.match(await page.locator("#sub-remove-title").textContent(), /Remove Cursor\?/);
-  await subCancel(page).click();
-  await waitDialog(page, "dlg-sub-remove", false);
-  assert.equal(requests.filter((r) => r.method === "DELETE" && r.pathname === "/api/subscriptions/sub-1").length, 0);
-  assert.equal(await card.count(), 1, "the row survives a cancelled remove");
-
-  // Confirming removes it, and the built-in placeholder returns to the not-tracked group.
-  await card.locator('button[title="Remove this subscription"]').click();
-  await waitDialog(page, "dlg-sub-remove", true);
-  plans = [{ source: "cursor", title: "Cursor", kind: "subscription", usage_note: "Plan remaining is not in local files. We do not read Cursor cookies." }];
-  await subConfirm(page).click();
-  await waitDialog(page, "dlg-sub-remove", false);
-  const del = requests.find((r) => r.method === "DELETE" && r.pathname === "/api/subscriptions/sub-1");
-  assert.ok(del, "the confirmed remove is a DELETE on the row's id");
-  assert.equal(del.token, "test-token");
-  assert.equal(subscriptions.length, 0);
-  await page.waitForFunction(() => document.querySelectorAll("#live-status .live-row[data-sub-id]").length === 0);
-  // The engine's placeholder row is back, but a tool nothing measures is not a card: the pane
-  // shows no Cursor and no "not tracked" group, only the way to pin a plan again.
-  assert.equal(await page.locator('#live-status .live-row[data-source="cursor"]').count(), 0);
-  assert.equal(await page.locator("#pane-usage details").count(), 0);
-  assert.equal(await page.getByRole("button", { name: "+ Add subscription" }).isVisible(), true);
-});
-
-test("a Factory subscription attaches to the Droid row, its token limit becoming a window meter", async (page, origin) => {
-  await showDroidOnUsage(page);
-  subscriptions = [{
-    id: "sub-9", tool: "factory", name: "", plan: "Max",
-    limit: { amount: 100000, unit: "tokens", period: "monthly" },
-    created_at: "2026-10-11T00:00:00Z",
-  }];
-  plans = [droidPlan({ plan: "Max", subscription_id: "sub-9", monthly_limit: 100000, monthly_pct: 75 })];
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  const card = page.locator('#live-status .live-row[data-source="droid"]');
-  await card.waitFor();
-  assert.match(await card.textContent(), /Max/, "the Factory plan names the Droid row");
-  const month = card.locator(".live-meter", { hasText: "Month" });
-  assert.match(await month.textContent(), /75% · 75\.3K of 100K tokens/, "the Factory token limit is the Month window's meter");
-  assert.equal(await page.locator('#live-status .live-row[data-source="factory"]').count(), 0, "no duplicate Factory row appears");
-  // The Droid row carries the pinned subscription's own Edit and Remove beside Set limits.
-  assert.equal(await card.locator('button[title="Edit the Factory subscription pinned to this row"]').count(), 1);
-  assert.equal(await card.locator('button[title="Remove the Factory subscription from the Droid row"]').count(), 1);
-  assert.equal(await card.getByRole("button", { name: "Set limits" }).count(), 1);
-
-  // Removing it from the Droid row takes the plan and the meter off with it.
-  await card.locator('button[title="Remove the Factory subscription from the Droid row"]').click();
-  await waitDialog(page, "dlg-sub-remove", true);
-  // The question is about the subscription, not the row it is pinned to.
-  assert.match(await page.locator("#sub-remove-title").textContent(), /Remove the Factory subscription\?/);
-  assert.doesNotMatch(await page.locator("#sub-remove-title").textContent(), /Droid/);
-  plans = [droidPlan()];
-  await subConfirm(page).click();
-  await waitDialog(page, "dlg-sub-remove", false);
-  await page.waitForFunction(() => !/Max/.test(document.querySelector('#live-status .live-row[data-source="droid"]').textContent));
-  assert.equal(await card.locator(".live-track").count(), 0, "the window the subscription drove goes back to tokens only");
-
-  // A non-token Factory limit stays one line of text beside the plan, never a meter.
-  plans = [droidPlan({ plan: "Max", subscription_id: "sub-9", limit_text: "$200 per month" })];
-  await page.reload();
-  await page.waitForLoadState("networkidle");
-  const text = await card.textContent();
-  assert.match(text, /Max/);
-  assert.match(text, /\$200 per month/);
-  assert.equal(await card.locator(".live-track").count(), 0);
-});
-
 // The engine's token rule counts reasoning tokens for Codex, OpenAI and Grok. A headline that
 // dropped them would disagree with the bars the same payload drew.
 test("token headlines count reasoning tokens exactly as the engine's buckets do", async (page, origin) => {
@@ -3603,8 +3028,8 @@ test("token headlines count reasoning tokens exactly as the engine's buckets do"
 
 // The droid-home fixture's October records, in the local shape the engine serves after
 // `keys ingest droid`: two claude-sonnet-5 requests and one gpt-6-pro, every bucket Droid's
-// log reports counted. The month total 75,308 is the figure the Droid row's Month window shows
-// for the same data (the mock's numbers mirror Fixtures/droid-home/README.md).
+// log reports counted, 75,308 tokens in all (the mock's numbers mirror
+// Fixtures/droid-home/README.md).
 const droidFixtureRows = () => [
   { model: "claude-sonnet-5", source: "droid-local", input_tokens: 1200, output_tokens: 340, cached_read_tokens: 30000, cache_creation_tokens: 500, reasoning_tokens: 0, usd: null, usd_estimate: null },
   { model: "claude-sonnet-5", source: "droid-local", input_tokens: 800, output_tokens: 512, cached_read_tokens: 41000, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
@@ -3612,7 +3037,6 @@ const droidFixtureRows = () => [
 ];
 
 test("the Droid chip filters the chart to Droid's own records and the URL boots into it", async (page, origin) => {
-  await showDroidOnUsage(page);
   localRows = droidFixtureRows();
   await page.goto(`${origin}/?range=month`);
   await page.waitForLoadState("networkidle");
@@ -3713,11 +3137,9 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
 test("neutral dark is the default, Settings switches to the site's light look and it survives a reload", async (page, origin) => {
   // The OS preference never decides: a light system still opens dark.
   await page.emulateMedia({ colorScheme: "light" });
-  plans = [droidPlan()];
-  await showDroidOnUsage(page);
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  await page.locator('#live-status .live-row[data-source="droid"]').waitFor();
+  await page.locator("#pane-usage").waitFor();
   const read = () => page.evaluate(() => ({
     attr: document.documentElement.dataset.theme || null,
     meta: document.querySelector('meta[name="color-scheme"]').content,
@@ -3782,10 +3204,10 @@ test("neutral dark is the default, Settings switches to the site's light look an
   assert.ok(!css.includes("prefers-color-scheme"), "no OS-driven media block");
 
   // The primary button is the site's blue pill in the light look.
-  await page.getByRole("tab", { name: "Usage" }).click();
-  await page.locator("#btn-add-sub").click();
-  await waitDialog(page, "dlg-sub", true);
-  const primary = await page.locator("#dlg-sub .btn-primary").evaluate((n) => {
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator("#btn-add").click();
+  await waitDialog(page, "dlg-add", true);
+  const primary = await page.locator("#dlg-add .btn-primary").evaluate((n) => {
     const cs = getComputedStyle(n);
     return { bg: cs.backgroundColor, radius: cs.borderRadius, color: cs.color };
   });
@@ -3842,16 +3264,14 @@ test("a theme switch keeps the vault's filter, search and menu, and a reload kee
 test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
   const foreign = [];
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
-  plans = [droidPlan()];
   localRows = subscriptionRows();
-  await showDroidOnUsage(page);
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   for (const width of [390, 540, 780, 1280, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
       await page.getByRole("tab", { name: pane, exact: true }).click();
-      if (pane === "Usage") await page.locator("#live-status .live-row").first().waitFor();
+      if (pane === "Usage") await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
       else if (pane === "Chart") await page.locator("#daily-svg").waitFor();
       else if (pane === "Keys") await page.locator("#keys-body .key-row[data-name]").first().waitFor();
       else await page.locator("#theme-switch").waitFor();
@@ -4077,33 +3497,6 @@ test("a model used by Claude Code and Droid is one series whose total counts bot
   assert.match(await page.locator("#totals .totals-main").getAttribute("title"), /25 reasoning/);
   const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
   assert.ok(labels.some((l) => /claude-sonnet-5 1\.9K/.test(l)), `the bar and the headline must agree: ${labels.join(" | ")}`);
-});
-
-test("the Droid chart's month total is the Droid row's Month figure", async (page, origin) => {
-  await showDroidOnUsage(page);
-  plans = [droidPlan()];
-  localRows = droidFixtureRows();
-  await page.goto(`${origin}/?range=month`);
-  await page.waitForLoadState("networkidle");
-  const month = page.locator('#live-status .live-row[data-source="droid"] .live-meter', { hasText: "Month" });
-  await month.waitFor();
-  const rowFigure = (await month.locator(".live-note").textContent()).trim();
-  assert.equal(rowFigure, "75.3K tokens", "the fixture's Month figure");
-
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#mix .mix-row").first().waitFor();
-  await page.getByRole("radio", { name: "Droid", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('#source-chips [data-source="droid"]').getAttribute("aria-checked") === "true");
-  await page.waitForFunction((t) => document.querySelector("#totals .totals-main").textContent.includes(t), rowFigure,
-    { timeout: 5000 });
-  const chartTotal = (await page.locator("#totals .totals-main").textContent()).trim();
-  assert.equal(chartTotal, rowFigure, "the chart's Droid month total equals the Droid row's Month figure");
-  // The cache buckets Droid reports are in that total, not dropped by a family-based guess.
-  assert.match(await page.locator("#totals .totals-main").getAttribute("title"), /71,000 cached input read/);
-  assert.deepEqual(
-    (await page.locator("#mix .mix-name").allTextContents()).sort(),
-    ["claude-sonnet-5", "gpt-6-pro"],
-  );
 });
 
 // ---------- model identity ----------
@@ -4773,17 +4166,17 @@ test("the relay switch says why it cannot turn on: not set up, a Terminal relay,
 
 // ---------- Settings: the Keysrs app's own choices ----------
 
-// The meter, the menu-bar item and automatic updates are persisted in the catalog, not this
+// The menu-bar item and automatic updates are persisted in the catalog, not this
 // browser, so the app menu shows the same values. Each write rides the page token and answers the
 // whole persisted state; a reload reads the store, not a browser copy.
 test("Settings shows the app's persisted choices and writes each one with the page token", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Settings" }).click();
-  const meter = page.locator("#meter-switch");
   const menubar = page.locator("#menubar-item-switch");
   const autoUpdate = page.locator("#auto-update-switch");
-  await page.waitForFunction(() => document.getElementById("meter-switch").getAttribute("aria-checked") === "true");
+  await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
+  assert.equal(await page.locator("#meter-switch").count(), 0, "the plan-window meter switch is gone");
   assert.equal(await menubar.getAttribute("aria-checked"), "false", "the menu bar item starts off");
   assert.equal(await autoUpdate.getAttribute("aria-checked"), "true", "automatic updates start on");
 
@@ -4798,8 +4191,7 @@ test("Settings shows the app's persisted choices and writes each one with the pa
   await autoUpdate.click();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "false");
   assert.equal(preferences.update_checks, false);
-  assert.equal(preferences.show_usage_meter, true, "a write to one choice leaves the others alone");
-  assert.equal(preferences.menubar_item, true);
+  assert.equal(preferences.menubar_item, true, "a write to one choice leaves the other alone");
 
   // A reload reads the persisted truth, not a browser copy.
   await page.reload();
@@ -4807,36 +4199,6 @@ test("Settings shows the app's persisted choices and writes each one with the pa
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
   assert.equal(await autoUpdate.getAttribute("aria-checked"), "false");
-});
-
-// The meter is the Usage pane's plan windows. Hiding it takes them off screen only: the month's
-// totals line and the Chart stay, and turning it back on renders them from the same status.
-test("Show usage meter off hides the meter without removing the data, and on restores it", async (page, origin) => {
-  plans = [subPlan()];
-  localRows = subscriptionRows();
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#live-status .live-row").first().waitFor();
-  assert.equal(await page.locator("#live-status .live-row").count(), 1);
-
-  await page.getByRole("tab", { name: "Settings" }).click();
-  await page.locator("#meter-switch").click();
-  await page.waitForFunction(() => document.getElementById("meter-switch").getAttribute("aria-checked") === "false");
-  assert.equal(preferences.show_usage_meter, false);
-
-  await page.getByRole("tab", { name: "Usage" }).click();
-  await page.waitForFunction(() => document.getElementById("live-status").hidden === true);
-  assert.equal(await page.locator("#live-status .live-row").count(), 0, "the meter is hidden");
-  assert.equal(await page.locator("#usage-empty").isHidden(), true, "a hidden meter does not read as no plan windows");
-  // The month's totals line is not the meter, so it stays.
-  await page.locator("#usage-totals b").first().waitFor();
-
-  await page.getByRole("tab", { name: "Settings" }).click();
-  await page.locator("#meter-switch").click();
-  await page.waitForFunction(() => document.getElementById("meter-switch").getAttribute("aria-checked") === "true");
-  await page.getByRole("tab", { name: "Usage" }).click();
-  await page.locator("#live-status .live-row").first().waitFor();
-  assert.equal(await page.locator("#live-status .live-row").count(), 1, "the meter returns from the same data");
 });
 
 // Quit and the relay controls are reachable from Settings while the window is shown, even with the
@@ -4860,88 +4222,6 @@ test("with the menu bar item off, Settings still carries Quit and the relay cont
   assert.equal(posts[0].token, "test-token", "Quit carries the page token");
   assert.equal(await page.locator("#btn-quit").isDisabled(), true, "Quit is not clickable twice");
   assert.match(await page.locator("#quit-hint").textContent(), /Quitting Keysrs/);
-});
-
-// ---------- Settings: which cards Usage shows ----------
-
-// Hiding a card is a display choice. The subscription, its history and the Chart stay as they were,
-// so hidden never reads as zero and nothing is deleted on the engine's side.
-test("hiding a usage card in Settings takes it off Usage only and survives a reload", async (page, origin) => {
-  plans = [subPlan(), { ...subPlan({ subscription_id: "sub-2", title: "Copilot", source: "copilot" }) }];
-  localRows = subscriptionRows();
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#live-status .live-row").nth(1).waitFor();
-  assert.equal(await page.locator("#live-status .live-row").count(), 2);
-
-  await page.getByRole("tab", { name: "Settings" }).click();
-  const cursor = page.locator('#usage-cards-list [data-usage-id="sub-1"]');
-  assert.equal(await cursor.getAttribute("aria-checked"), "true", "every card starts shown");
-  await cursor.click();
-  assert.equal(await cursor.getAttribute("aria-checked"), "false");
-
-  await page.getByRole("tab", { name: "Usage" }).click();
-  assert.equal(await page.locator("#live-status .live-row").count(), 1);
-  assert.match(await page.locator("#live-status").textContent(), /Copilot/);
-  assert.doesNotMatch(await page.locator("#live-status").textContent(), /Cursor/);
-  // No "N cards hidden" count on the pane: Settings is where the choice lives and is undone.
-  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
-  assert.doesNotMatch(await page.locator("#pane-usage").innerText(), /hidden/);
-  assert.equal(requests.filter((r) => r.method === "DELETE").length, 0, "hiding deletes nothing");
-
-  await page.reload();
-  await page.waitForLoadState("networkidle");
-  await page.locator("#live-status .live-row").first().waitFor();
-  assert.equal(await page.locator("#live-status .live-row").count(), 1, "the choice is remembered");
-
-  // The Chart still asks for everything; Settings is not a filter on history.
-  const before = requests.filter((r) => r.pathname === "/api/spend").length;
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#mix .mix-row").first().waitFor();
-  assert.ok(requests.filter((r) => r.pathname === "/api/spend").length >= before);
-  assert.equal(await page.locator("#mix .mix-row").count() > 0, true);
-
-  // Settings is where the card is turned on again.
-  await page.getByRole("tab", { name: "Settings" }).click();
-  assert.equal(await page.locator("#pane-settings").isVisible(), true);
-  await page.locator('#usage-cards-list [data-usage-id="sub-1"]').click();
-  await page.getByRole("tab", { name: "Usage" }).click();
-  assert.equal(await page.locator("#live-status .live-row").count(), 2);
-  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
-});
-
-test("with every card hidden Usage says so instead of claiming there is nothing", async (page, origin) => {
-  plans = [subPlan()];
-  await page.addInitScript(() => { try { localStorage.setItem("ksf.hiddenUsage", JSON.stringify(["sub-1"])); } catch { /* fine */ } });
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#usage-hidden").waitFor();
-  assert.match(await page.locator("#usage-hidden").textContent(), /All usage cards are hidden/);
-  assert.equal(await page.locator("#live-status .live-row").count(), 0);
-  assert.equal(await page.locator("#usage-empty").isHidden(), true, "hidden is not the same as empty");
-});
-
-test("Droid stays off Usage until Settings turns it on, and is never removed", async (page, origin) => {
-  plans = [droidPlan(), subPlan()];
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#live-status .live-row").first().waitFor();
-  assert.equal(await page.locator('#live-status .live-row[data-source="droid"]').count(), 0);
-  // Off by default is not announced on the pane; the switch in Settings is where it lives.
-  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
-
-  await page.getByRole("tab", { name: "Settings" }).click();
-  const sw = page.locator("#droid-switch");
-  assert.equal(await sw.getAttribute("aria-checked"), "false");
-  assert.equal(await page.locator('#usage-cards-list [data-usage-id="droid"]').count(), 0, "Droid has its own switch");
-  await sw.click();
-  assert.equal(await sw.getAttribute("aria-checked"), "true");
-  await page.getByRole("tab", { name: "Usage" }).click();
-  await page.locator('#live-status .live-row[data-source="droid"]').waitFor();
-  assert.equal(await page.locator("#usage-hidden").isHidden(), true);
-  await page.reload();
-  await page.waitForLoadState("networkidle");
-  await page.locator('#live-status .live-row[data-source="droid"]').waitFor();
 });
 
 // ---------- key search ----------

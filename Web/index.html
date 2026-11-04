@@ -39,12 +39,6 @@
   <main>
     <p id="engine-down" class="err engine-down" role="alert" hidden>Engine is not answering. Run keys dashboard or keys menubar, then reload.</p>
     <section id="pane-usage" role="tabpanel" aria-labelledby="nav-usage">
-      <div id="live-status" class="live-status" hidden></div>
-      <!-- The quiet way in to the subscription list; the rows above stay the point of the pane. -->
-      <p class="subs-add"><button type="button" id="btn-add-sub" class="btn-quiet" title="Pin a plan Keysrs does not measure locally, or a Factory plan onto the Droid row">+ Add subscription</button></p>
-      <!-- Only when every card is off: hidden must not read as "nothing yet". -->
-      <p id="usage-hidden" class="muted usage-hidden" hidden>All usage cards are hidden. Turn them back on in <button type="button" class="link" data-action="settings">Settings</button></p>
-      <p id="usage-empty" class="empty" hidden>No plan windows yet. They appear after the first Claude Code, Codex or Grok prompt on this Mac. <button type="button" class="link" id="usage-empty-help">See how Keys works</button></p>
       <!-- First use only: an empty vault with nothing dismissed yet. It is filled from the help
            dialog's guide so the two can never drift apart, and it stays reachable from ? later. -->
       <section id="onboard" class="onboard" aria-labelledby="onboard-title" hidden>
@@ -189,15 +183,6 @@
           <button type="button" role="switch" id="theme-switch" class="switch" aria-checked="false" aria-labelledby="theme-label"></button>
         </div>
       </section>
-      <section class="settings-group" aria-labelledby="set-usage">
-        <h2 id="set-usage">Usage cards</h2>
-        <p class="setting-note">Hiding a card only takes it off the Usage pane. Its tokens are still recorded and still count in the Chart.</p>
-        <div class="setting">
-          <span class="setting-label" id="droid-label">Show Droid on Usage</span>
-          <button type="button" role="switch" id="droid-switch" class="switch" aria-checked="false" aria-labelledby="droid-label"></button>
-        </div>
-        <div id="usage-cards-list" class="usage-cards-list"></div>
-      </section>
       <section class="settings-group" aria-labelledby="set-data">
         <h2 id="set-data">Data</h2>
         <div class="setting">
@@ -228,13 +213,9 @@
       </section>
       <section class="settings-group" aria-labelledby="set-app">
         <h2 id="set-app">Keysrs app</h2>
-        <p class="setting-note">The same choices the Keysrs menu shows while the window is open. Hiding the meter or the menu-bar item only takes them off screen: usage keeps being recorded and still counts in the Chart.</p>
+        <p class="setting-note">The same choices the Keysrs menu shows while the window is open. Hiding the menu-bar item only takes it off screen: usage keeps being recorded and still counts in the Chart.</p>
         <div class="setting">
-          <span class="setting-label" id="meter-label">Show usage meter<span class="setting-hint">The plan-window meter on the Usage pane.</span></span>
-          <button type="button" role="switch" id="meter-switch" class="switch" aria-checked="false" aria-labelledby="meter-label"></button>
-        </div>
-        <div class="setting">
-          <span class="setting-label" id="menubar-item-label">Show menu bar item<span class="setting-hint">The status item with the plan windows.</span></span>
+          <span class="setting-label" id="menubar-item-label">Show menu bar item<span class="setting-hint">A status item with the relay, login and Quit.</span></span>
           <button type="button" role="switch" id="menubar-item-switch" class="switch" aria-checked="false" aria-labelledby="menubar-item-label"></button>
         </div>
         <div class="setting">
@@ -490,90 +471,6 @@
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
         <button type="submit" class="btn btn-danger" id="delete-confirm">Delete</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="dlg-limits" class="dlg" aria-labelledby="limits-title">
-    <form id="limits-form" novalidate>
-      <h2 id="limits-title">Droid token limits</h2>
-      <p class="hint">Optional, per window. A window with a limit becomes a percent meter on the Droid row; an empty field clears it. Factory's own plan limits are not in local files, so set your own here.</p>
-      <label>5-hour rolling window
-        <input name="five_hour" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit" autocomplete="off">
-      </label>
-      <label>Weekly (calendar week)
-        <input name="weekly" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit" autocomplete="off">
-      </label>
-      <label>Month (calendar month)
-        <input name="monthly" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit" autocomplete="off">
-      </label>
-      <p class="err" id="limits-err" role="alert"></p>
-      <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="dlg-sub" class="dlg" aria-labelledby="sub-title">
-    <form id="sub-form" novalidate>
-      <h2 id="sub-title">Add subscription</h2>
-      <label>Tool
-        <select name="tool">
-          <option value="cursor">Cursor</option>
-          <option value="gemini">Gemini</option>
-          <option value="copilot">GitHub Copilot</option>
-          <option value="perplexity">Perplexity</option>
-          <option value="chatgpt">ChatGPT</option>
-          <option value="factory">Factory</option>
-          <option value="custom">Custom…</option>
-        </select>
-      </label>
-      <label id="sub-name-label" hidden>Name
-        <input name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="The tool's own name" maxlength="64">
-      </label>
-      <label>Plan
-        <input name="plan" required autocomplete="off" placeholder="Pro" maxlength="80">
-      </label>
-      <div class="two-col">
-        <label>Limit amount (optional)
-          <input name="limit_amount" type="number" min="0.01" step="any" inputmode="decimal" placeholder="none" autocomplete="off">
-        </label>
-        <label>Unit
-          <select name="limit_unit">
-            <option value="">—</option>
-            <option value="tokens">tokens</option>
-            <option value="requests">requests</option>
-            <option value="credits">credits</option>
-            <option value="usd">usd</option>
-          </select>
-        </label>
-      </div>
-      <label>Period
-        <select name="limit_period">
-          <option value="">—</option>
-          <option value="five_hour">5-hour window</option>
-          <option value="weekly">week</option>
-          <option value="monthly">month</option>
-        </select>
-      </label>
-      <p class="hint" id="sub-hint">Keysrs does not measure these tools' quotas, so a subscription is a note about your plan, never a usage figure. A Factory subscription attaches its plan to the Droid row, and a token limit becomes that window's limit there.</p>
-      <p class="err" id="sub-err" role="alert"></p>
-      <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary" id="sub-submit">Add subscription</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="dlg-sub-remove" class="dlg" aria-labelledby="sub-remove-title">
-    <form id="sub-remove-form">
-      <h2 id="sub-remove-title">Remove <span id="sub-remove-name"></span>?</h2>
-      <p class="hint" id="sub-remove-hint"></p>
-      <p class="err" id="sub-remove-err" role="alert"></p>
-      <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-danger" id="sub-remove-confirm">Remove</button>
       </div>
     </form>
   </dialog>

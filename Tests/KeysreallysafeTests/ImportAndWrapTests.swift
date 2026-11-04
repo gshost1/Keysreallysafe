@@ -348,7 +348,6 @@ final class ImportAndWrapTests: XCTestCase {
             codexHome: Fixtures.codexHome,
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
-            openRouter: OpenRouterHTTP(),
             relaySecrets: MemorySecretStore()
         )
         let project = try makeProject(in: dir)
@@ -956,7 +955,6 @@ final class ImportAndWrapTests: XCTestCase {
             codexHome: Fixtures.codexHome,
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
-            openRouter: OpenRouterHTTP(),
             relaySecrets: MemorySecretStore()
         )
         let project = try makeProject(in: dir)

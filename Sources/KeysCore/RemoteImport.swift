@@ -6,7 +6,7 @@ import Foundation
 /// with `keys usage import` or dropped into the `imports/` folder beside the catalog.
 ///
 /// Rows land under their own sources, `droid-remote` and `claude-remote`, so remote usage is
-/// never mistaken for what this Mac's logs measured and never moves the local plan windows.
+/// never mistaken for what this Mac's logs measured.
 enum RemoteImport {
     static let droidSource = "droid-remote"
     static let claudeSource = "claude-remote"

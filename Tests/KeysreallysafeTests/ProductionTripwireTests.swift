@@ -42,11 +42,10 @@ final class ProductionTripwireTests: XCTestCase {
 
     // MARK: - S6: the Application Support root itself
 
-    /// The Application Support root, the installer that removes beneath it and
-    /// the claude-plan.json snapshot all refuse the real folder under the
-    /// tripwire. Failed pre-fix: `Paths.appSupport` was the only resolver, it
-    /// never threw, and `Installer.live` and `liveStatus()` rooted the real
-    /// folder from a test process.
+    /// The Application Support root and the installer that removes beneath it
+    /// refuse the real folder under the tripwire. Failed pre-fix:
+    /// `Paths.appSupport` was the only resolver, it never threw, and
+    /// `Installer.live` rooted the real folder from a test process.
     func testTheApplicationSupportRootRefusesUnderTestIsolation() throws {
         try XCTSkipIf(Paths.env("KEYS_CATALOG") != nil, "KEYS_CATALOG is the sanctioned override")
         XCTAssertThrowsError(try Paths.resolvingAppSupport()) { error in
@@ -54,10 +53,6 @@ final class ProductionTripwireTests: XCTestCase {
             XCTAssertTrue(message.contains("test isolation"), message)
         }
         XCTAssertThrowsError(try Installer.live, "the destructive uninstall root is never built over the real folder")
-        XCTAssertNil(Paths.claudePlanFile, "no real claude-plan.json is named")
-        let (db, _) = try makeDB()
-        let (service, _) = makeGatedService(db: db)
-        XCTAssertNil(service.claudePlanFile, "a test service reads no real plan snapshot")
     }
 
     /// Structural belt: Sources asks Foundation for Application Support in one

@@ -2,16 +2,15 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
-/// The background Claude /usage refresh is opt-in, and the welcome window asks
-/// each question once: an unticked box is an answer.
+/// The persisted app choices, the one-time headless migration, and the welcome
+/// window that is asked once.
 final class PreferencesTests: XCTestCase {
     func testAppSettingsDefaultToAutomaticUpdatesAndRememberLoginRegistration() throws {
         let (db, directory) = try makeDB()
         defer { try? FileManager.default.removeItem(at: directory) }
         let prefs = AppPreferences(catalog: db)
-        // The 0.14 headless defaults: meter off, menu-bar item off, automatic
-        // update installs on.
-        XCTAssertFalse(prefs.showUsageMeter)
+        // The 0.14 headless defaults: menu-bar item off, automatic update
+        // installs on.
         XCTAssertFalse(prefs.menubarItem)
         XCTAssertTrue(prefs.updateChecks, "Install updates automatically is the fresh default")
         XCTAssertFalse(prefs.loginRegistrationAttempted)
@@ -27,15 +26,12 @@ final class PreferencesTests: XCTestCase {
     func testNewSettingsPersistIndependently() throws {
         let (db, _) = try makeDB()
         let prefs = AppPreferences(catalog: db)
-        try prefs.setShowUsageMeter(true)
+        try prefs.setMenubarItem(true)
         let reopened = AppPreferences(catalog: db)
-        XCTAssertTrue(reopened.showUsageMeter, "the meter choice survives reopening the store")
-        XCTAssertFalse(reopened.menubarItem, "changing one value leaves the other two at their defaults")
-        XCTAssertTrue(reopened.updateChecks)
-        try reopened.setMenubarItem(true)
+        XCTAssertTrue(reopened.menubarItem, "the item choice survives reopening the store")
+        XCTAssertTrue(reopened.updateChecks, "changing one value leaves the other at its default")
         try reopened.setUpdateChecks(false)
         let third = AppPreferences(catalog: db)
-        XCTAssertTrue(third.showUsageMeter)
         XCTAssertTrue(third.menubarItem)
         XCTAssertFalse(third.updateChecks)
     }
@@ -45,31 +41,25 @@ final class PreferencesTests: XCTestCase {
     // stored answer must survive; only an absent value is defaulted.
     func testHeadlessDefaultsMigrateOnceAndPreserveUnrelatedState() throws {
         let (db, _) = try makeDB()
-        // A 0.13-shaped store: the welcome answered, Claude refresh on,
-        // cards hidden, the relay's keep-awake chosen, update checks explicitly
-        // turned off, and usage rows in the catalog.
+        // A 0.13-shaped store: the welcome answered, the relay's keep-awake
+        // chosen, update checks explicitly turned off, and usage rows in the
+        // catalog.
         try db.setMeta(AppPreferences.welcomeKey, "2026-10-01T00:00:00Z")
-        try db.setMeta(AppPreferences.claudeRefreshKey, "on")
-        try db.setMeta(AppPreferences.hiddenUsageKey, #"["openai"]"#)
         try db.setMeta(AppPreferences.relayStayAwakeKey, "on")
         try db.setMeta("pref_update_checks", "off")
         let before = try db.allUsageEvents()
         let prefs = AppPreferences(catalog: db)
         try prefs.applyHeadlessDefaults()
-        XCTAssertFalse(prefs.showUsageMeter, "the meter is off after the migration")
-        XCTAssertFalse(prefs.menubarItem)
+        XCTAssertFalse(prefs.menubarItem, "the menu-bar item is off after the migration")
         XCTAssertFalse(prefs.updateChecks, "an explicitly stored \"off\" survives the migration; only an absent value is defaulted")
         XCTAssertEqual(try db.allUsageEvents(), before, "usage rows survive the migration untouched")
-        XCTAssertTrue(prefs.claudeUsageRefresh, "an unrelated preference keeps its answer")
-        XCTAssertEqual(prefs.hiddenUsage, ["openai"])
-        XCTAssertTrue(prefs.relayStayAwake)
+        XCTAssertTrue(prefs.relayStayAwake, "an unrelated preference keeps its answer")
         XCTAssertTrue(prefs.welcomePlan().isEmpty, "the answered welcome is not asked again")
 
         // The migration marker holds: choices made after it are never overwritten.
         try prefs.setMenubarItem(true)
         try prefs.setUpdateChecks(false)
         try prefs.applyHeadlessDefaults()
-        XCTAssertFalse(prefs.showUsageMeter)
         XCTAssertTrue(prefs.menubarItem, "a later launch does not reapply defaults over the user's choice")
         XCTAssertFalse(prefs.updateChecks)
     }
@@ -78,23 +68,12 @@ final class PreferencesTests: XCTestCase {
         let (db, _) = try makeDB()
         let prefs = AppPreferences(catalog: db)
         try prefs.applyHeadlessDefaults()
-        XCTAssertFalse(prefs.showUsageMeter)
         XCTAssertFalse(prefs.menubarItem)
         XCTAssertTrue(prefs.updateChecks)
         // A second application is a no-op, not a reset.
-        try prefs.setShowUsageMeter(true)
+        try prefs.setMenubarItem(true)
         try prefs.applyHeadlessDefaults()
-        XCTAssertTrue(prefs.showUsageMeter)
-    }
-
-    func testClaudeRefreshIsOffUntilTurnedOn() throws {
-        let (db, _) = try makeDB()
-        let prefs = AppPreferences(catalog: db)
-        XCTAssertFalse(prefs.claudeUsageRefresh)
-        try prefs.setClaudeUsageRefresh(true)
-        XCTAssertTrue(AppPreferences(catalog: db).claudeUsageRefresh, "another process sees the choice")
-        try prefs.setClaudeUsageRefresh(false)
-        XCTAssertFalse(prefs.claudeUsageRefresh)
+        XCTAssertTrue(prefs.menubarItem)
     }
 
     func testWelcomeAsksOnceAndRecordsTheAnswer() throws {
@@ -102,9 +81,8 @@ final class PreferencesTests: XCTestCase {
         let prefs = AppPreferences(catalog: db)
         let first = prefs.welcomePlan()
         XCTAssertEqual(first, .init(firstRun: true))
-        try prefs.recordWelcome(first, claudeRefresh: false)
-        XCTAssertTrue(prefs.welcomePlan().isEmpty, "declining is not asked again")
-        XCTAssertFalse(prefs.claudeUsageRefresh, "Continue with nothing ticked keeps it off")
+        try prefs.recordWelcome(first)
+        XCTAssertTrue(prefs.welcomePlan().isEmpty, "the welcome is not asked again")
     }
 
     /// An upgrade from a release with product analytics: its consent, unsent reports,
@@ -115,13 +93,13 @@ final class PreferencesTests: XCTestCase {
         try db.setMeta("product_analytics_benchmarks", "{}")
         try db.setMeta("welcome_analytics_consent_asked", "2")
         try db.setMeta(AppPreferences.welcomeKey, "2026-09-01T00:00:00Z")
-        try db.setMeta(AppPreferences.claudeRefreshKey, "on")
+        try db.setMeta(AppPreferences.relayStayAwakeKey, "on")
         let prefs = AppPreferences(catalog: db)
         try prefs.removeRetiredAnalytics()
         for key in AppPreferences.retiredAnalyticsKeys {
             XCTAssertNil(try db.metaValue(key), key)
         }
-        XCTAssertTrue(prefs.claudeUsageRefresh)
+        XCTAssertTrue(prefs.relayStayAwake)
         XCTAssertTrue(prefs.welcomePlan().isEmpty, "the welcome answer survives")
         try prefs.removeRetiredAnalytics()   // a second launch is a no-op
     }
@@ -135,30 +113,35 @@ final class PreferencesTests: XCTestCase {
     func testPreferencesRouteReadsAndWritesThePersistedChoices() throws {
         let (handler, service, _) = try makeHandler()
         let initial = try object(handle(handler, method: "GET", path: "/api/preferences"))
-        XCTAssertEqual(initial["show_usage_meter"] as? Bool, false)
+        XCTAssertNil(initial["show_usage_meter"], "the retired meter choice is not reported")
         XCTAssertEqual(initial["menubar_item"] as? Bool, false)
         XCTAssertEqual(initial["update_checks"] as? Bool, true, "Install updates automatically is on by default")
 
         let written = try object(handle(
-            handler, method: "POST", path: "/api/preferences/show-usage-meter",
-            body: try JSONValue.data(["on": true])
+            handler, method: "POST", path: "/api/preferences/update-checks",
+            body: try JSONValue.data(["on": false])
         ))
-        XCTAssertEqual(written["show_usage_meter"] as? Bool, true, "the write answers the persisted state")
-        XCTAssertTrue(service.preferences.showUsageMeter)
+        XCTAssertEqual(written["update_checks"] as? Bool, false, "the write answers the persisted state")
+        XCTAssertFalse(service.preferences.updateChecks)
         XCTAssertFalse(service.preferences.menubarItem, "one write leaves the other choices alone")
-        XCTAssertTrue(service.preferences.updateChecks)
+
+        // The plan-window meter's routes are gone, not quietly accepted.
+        for (method, path) in [("POST", "/api/preferences/show-usage-meter"), ("POST", "/api/preferences/hidden-usage"),
+                               ("GET", "/api/limits"), ("PUT", "/api/limits/droid/weekly"),
+                               ("GET", "/api/subscriptions"), ("POST", "/api/subscriptions")] {
+            let gone = handle(handler, method: method, path: path, body: try JSONValue.data(["on": true]))
+            XCTAssertEqual(gone.status, 405, "\(method) \(path)")
+        }
     }
 
     func testPreferencesWritesWithoutThePageTokenAreRefused() throws {
         let (handler, service, _) = try makeHandler()
-        for path in ["/api/preferences/show-usage-meter", "/api/preferences/menubar-item",
-                     "/api/preferences/update-checks", "/api/app/quit"] {
+        for path in ["/api/preferences/menubar-item", "/api/preferences/update-checks", "/api/app/quit"] {
             let refused = handle(handler, method: "POST", path: path,
                                  body: try JSONValue.data(["on": true]), token: false)
             XCTAssertEqual(refused.status, 403, path)
             XCTAssertEqual(try object(refused)["error"] as? String, "missing or bad token", path)
         }
-        XCTAssertFalse(service.preferences.showUsageMeter)
         XCTAssertFalse(service.preferences.menubarItem)
         XCTAssertTrue(service.preferences.updateChecks, "a refused write changed nothing")
     }
@@ -171,15 +154,14 @@ final class PreferencesTests: XCTestCase {
             ("an extra field", try JSONValue.data(["on": true, "extra": 1])),
             ("an empty body", Data()),
         ]
-        for path in ["/api/preferences/show-usage-meter", "/api/preferences/menubar-item",
-                     "/api/preferences/update-checks"] {
+        for path in ["/api/preferences/menubar-item", "/api/preferences/update-checks"] {
             for (why, body) in bodies {
                 let refused = handle(handler, method: "POST", path: path, body: body)
                 XCTAssertEqual(refused.status, 400, "\(path) with \(why)")
             }
         }
-        XCTAssertFalse(service.preferences.showUsageMeter, "no bad body wrote a choice")
-        XCTAssertFalse(service.preferences.menubarItem)
+        XCTAssertFalse(service.preferences.menubarItem, "no bad body wrote a choice")
+        XCTAssertTrue(service.preferences.updateChecks)
     }
 
     func testPreferenceWritesDriveTheRunningAppSurfaces() throws {

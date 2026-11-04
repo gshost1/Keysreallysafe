@@ -11,7 +11,7 @@ cask "keysrs" do
   # updater fixtures pin; Keysrs tags are the version with a v.
   url "https://github.com/gshost1/Keysreallysafe/releases/download/v#{version}/Keysrs-arm64.dmg"
   name "Keysrs"
-  desc "Local Mac usage meter and API-key vault"
+  desc "API-key vault and spend tracker for AI agents on your Mac"
   homepage "https://keysrs.com"
 
   # macOS 14+ is the supported range (CLAUDE.md).

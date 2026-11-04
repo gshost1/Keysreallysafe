@@ -180,14 +180,6 @@ p { margin: 0; }
 .dd .hd b { font-size: 14px; }
 .dd .hd span { font-size: 11px; color: #8a8a8e; }
 .grp { font-size: 11px; font-weight: 600; color: #8a8a8e; margin: 11px 2px 0; }
-.m { margin-top: 7px; padding: 0 2px; }
-.m .l { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: #6e6e73; }
-.m .l b { color: #1d1d1f; font-weight: 500; }
-.m .l .warn { color: #a85800; font-weight: 500; }
-.track { height: 6px; border-radius: 3px; background: rgba(0,0,0,.08); margin-top: 5px; overflow: hidden; }
-.track i { display: block; height: 100%; border-radius: 3px; background: var(--blue); width: var(--w); transform-origin: left; animation: grow 1.1s cubic-bezier(.2,.8,.2,1) both; }
-.track i.hot { background: var(--orange); }
-@keyframes grow { from { transform: scaleX(0); } }
 .dd .menu { border-top: 1px solid rgba(0,0,0,.1); margin-top: 12px; padding-top: 5px; }
 .dd .menu div { display: flex; justify-content: space-between; padding: 3px 8px; border-radius: 5px; }
 .dd .menu div:first-child { background: var(--blue); color: #fff; }
@@ -239,10 +231,6 @@ code { font-family: var(--mono); font-size: .86em; background: var(--bg-2); bord
 .s4 { grid-column: span 4; } .s3 { grid-column: span 3; } .s2 { grid-column: span 2; }
 .viz { margin-top: 28px; }
 
-.meters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; }
-.meters .m { padding: 0; }
-.meters .m .l { font-size: 14px; }
-.meters .track { height: 8px; border-radius: 4px; }
 .prov { grid-column: 1 / -1; font-size: 13px; font-weight: 600; color: var(--ink-3); margin-top: 10px; }
 .prov:first-child { margin-top: 0; }
 
@@ -395,14 +383,13 @@ pre .cu { color: #1d1d1f; font-weight: 600; background: #f2f2f5; }
   .mbar .hs { display: none; }
   .dd { left: 10px; right: 10px; width: auto; }
   .term, .touch { display: none; }
-  .meters { grid-template-columns: 1fr; }
   .nodes { grid-template-columns: 1fr; }
   .card, .price .l, .price .r, .pcol { padding: 24px; }
   section { padding: 88px 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .track i, .col i, .cur { animation: none; }
+  .col i, .cur { animation: none; }
 }
 
 /* legal pages (privacy, terms) */
@@ -437,11 +424,8 @@ pre.mini { margin: 0; padding: 10px 12px; border-radius: 10px; background: #fff;
 .notif { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 16px; background: rgba(240,240,242,.9); box-shadow: 0 0 0 .5px rgba(0,0,0,.15), 0 10px 24px -12px rgba(0,0,0,.3); font-size: 13px; }
 .notif b { display: block; font-size: 13px; }
 .notif span { color: var(--ink-2); }
-.meterrow { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: center; }
-.meterrow .viz { margin-top: 0; }
-.meters.compact { grid-template-columns: 1fr; }
 #setup .tool, #app .card { box-shadow: 0 0 0 1px var(--line), 0 8px 28px -14px rgba(0,0,0,.12); }
-@media (max-width: 980px) { .tools, .cant { grid-template-columns: 1fr; } .s6 { grid-column: span 2; } .meterrow { grid-template-columns: 1fr; } }
+@media (max-width: 980px) { .tools, .cant { grid-template-columns: 1fr; } .s6 { grid-column: span 2; } }
 
 /* the Claude desktop app's Code tab, full screen: sessions sidebar, a serif transcript
    with tool rows, the composer. Session names are invented. */

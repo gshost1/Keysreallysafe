@@ -6,9 +6,9 @@ license: MIT
 
 # Keysrs
 
-Keysrs is a local Mac app plus the `keys` command line tool: a usage meter that
-reads the plan logs coding agents already write, and an API-key vault that keeps
-provider secrets in the macOS Keychain behind Touch ID. It is not an AI
+Keysrs is a local Mac app plus the `keys` command line tool: an API-key vault
+that keeps provider secrets in the macOS Keychain behind Touch ID, and a spend
+chart from the usage logs coding agents already write. It is not an AI
 subscription: it supplies no credits and no model, and everything it runs binds
 to `127.0.0.1` on this Mac.
 
@@ -62,8 +62,8 @@ still gets all of them:
 
 ## The short reference
 
-- `keys status --json` — plan windows; an untracked tool has no numbers at all,
-  so never present an absent figure as a measured zero.
+- `keys spend --week --json` — local token and estimated spend figures; never
+  present an absent figure as a measured zero.
 - `keys grant <key> --task "…" --minutes N --json` — one Touch ID, one scoped
   token; treat the token as a secret.
 - Never run `keys` with no arguments (it starts the app or shows an alert), and

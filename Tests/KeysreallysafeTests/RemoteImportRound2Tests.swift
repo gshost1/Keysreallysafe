@@ -241,20 +241,4 @@ final class RemoteImportRound2Tests: XCTestCase {
         XCTAssertEqual(claude["held"] as? [String], [])
         XCTAssertEqual(claude["rows_skipped"] as? Int, 0)
     }
-
-    // MARK: 7 saturating windows
-
-    func testDroidWindowsSaturateOnHugeStoredRows() throws {
-        let (db, _) = try tempCatalog()
-        let now = Date()
-        let at = UTC.iso(now.addingTimeInterval(-600))
-        for n in 0..<2 {
-            _ = try db.insertUsage(UsageEvent(source: "droid-local", sessionId: "s\(n)", promptId: "p\(n)", model: "kimi-k3",
-                occurredAt: at, provider: "moonshot", inputTokens: Int.max, outputTokens: Int.max,
-                cachedReadTokens: Int.max, cacheCreationTokens: Int.max, reasoningTokens: Int.max))
-        }
-        let windows = try DroidUsage.windows(catalog: db, now: now)
-        XCTAssertEqual(windows.fiveHour, Int.max)
-        XCTAssertEqual(windows.monthly, Int.max)
-    }
 }
