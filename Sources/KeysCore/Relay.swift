@@ -15,11 +15,13 @@ enum RelayProtocol {
     /// Largest body chunk per frame; Cloudflare caps a WebSocket message at 1 MiB.
     static let chunk = 64 * 1024
     /// Least time between two body frames of one response. Every frame is an incoming
-    /// WebSocket message to the Worker's Durable Object. Workers Paid bills those 20 to a
-    /// request, but the dashboard counts each one, and so did the free plan's 100,000-a-day
-    /// cap when one night of evals sent 1.83M (2026-11-04): one frame per read of a token
-    /// stream was about 200 per call. The first frame still goes out at once; after it, a
-    /// stream sends at most five frames a second, plus one per 64 KiB when it is faster.
+    /// WebSocket message to the Worker's Durable Object, counted 20 to a request against
+    /// the free plan's 100,000 a day and Paid billing alike (the dashboard shows the raw
+    /// count). One frame per read of a token stream was about 200 frames, so ~11 requests,
+    /// per call, and 6.5k eval calls hit the cap overnight on 2026-11-04 (1.83M frames).
+    /// The first frame still goes out at once; after it, a stream sends at most five frames
+    /// a second, plus one per 64 KiB when it is faster. What the Worker sends to the Mac,
+    /// request bodies included, is outgoing and free.
     static let flushWindow: TimeInterval = 0.2
     /// Matches the gateway's own request body cap, so the relay refuses nothing the gateway
     /// would accept and buffers nothing it would refuse.
