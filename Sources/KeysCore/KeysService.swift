@@ -1855,11 +1855,14 @@ final class KeysService: @unchecked Sendable {
             throw AppError.usage("type purge to confirm")
         }
         try Self.removeRetiredOptimizerData(catalogDirectory: catalog.path.deletingLastPathComponent())
+        try Self.removeRetiredPlanSnapshot(catalogDirectory: catalog.path.deletingLastPathComponent())
         try Self.removeRemoteImports(importsDir)
         gatewayLock.withLock { gatewayCache.removeAll() }
         revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
         try relaySecrets?.deleteAll()
+        // A catalog the 0.15 app never launched against still carries the meter's tables.
+        _ = try catalog.removeRetiredPlanMeter()
         try catalog.wipeData()
     }
 
@@ -1873,6 +1876,16 @@ final class KeysService: @unchecked Sendable {
         let fm = FileManager.default
         guard (try? fm.attributesOfItem(atPath: directory.path)) != nil else { return }
         try fm.removeItem(at: directory)
+    }
+
+    /// The Claude plan snapshot (`claude-plan.json`) the plan-window meter read until it was
+    /// removed on 2026-11-03. Keysrs never wrote it, but it sits in Keysrs's own folder with
+    /// no reader left, so launch and purge both remove it.
+    static func removeRetiredPlanSnapshot(catalogDirectory: URL) throws {
+        let file = catalogDirectory.appendingPathComponent("claude-plan.json")
+        var info = stat()
+        guard lstat(file.path, &info) == 0 else { return }
+        try FileManager.default.removeItem(at: file)
     }
 
     /// The drop folder holds usage exports the user brought in, and `imported/` inside it keeps

@@ -166,7 +166,7 @@ final class RetiredPlanMeterMigrationTests: XCTestCase {
         return out
     }
 
-    func testAnUpgradedCatalogDropsTheMeterTablesAndPreferencesOnly() throws {
+    func testLaunchRetiresTheMeterTablesAndPreferencesOnly() throws {
         let dir = try TempDir.make()
         let path = dir.appendingPathComponent("catalog.db")
         // A 0.14.1-shaped catalog: open once so every live table exists, then add what the
@@ -192,7 +192,13 @@ final class RetiredPlanMeterMigrationTests: XCTestCase {
             """)
         XCTAssertTrue(tableNames(path).isSuperset(of: CatalogDB.retiredTables), "the 0.14 tables are in place")
 
+        // Opening the catalog writes nothing: an older Keysrs still running against the same
+        // file keeps its tables until this release's app launch retires them.
         let db = try CatalogDB(path: path)
+        XCTAssertTrue(tableNames(path).isSuperset(of: CatalogDB.retiredTables), "open alone leaves them")
+        XCTAssertEqual(try db.metaValue("pref_show_usage_meter"), "on")
+
+        XCTAssertTrue(try db.removeRetiredPlanMeter())
         XCTAssertTrue(tableNames(path).isDisjoint(with: CatalogDB.retiredTables), "\(tableNames(path))")
         for key in CatalogDB.retiredMetaKeys {
             XCTAssertNil(try db.metaValue(key), key)
@@ -200,8 +206,8 @@ final class RetiredPlanMeterMigrationTests: XCTestCase {
         XCTAssertEqual(try db.metaValue(AppPreferences.welcomeKey), "2026-10-01T00:00:00Z", "other meta survives")
         XCTAssertNotNil(try db.metaValue("catalog_version"))
 
-        // A second open is a no-op, and purge's wipe still runs over the migrated store.
-        _ = try CatalogDB(path: path)
+        // The second launch finds nothing to do, and purge's wipe still runs over the store.
+        XCTAssertFalse(try db.removeRetiredPlanMeter())
         try db.wipeData()
         XCTAssertNil(try db.metaValue(AppPreferences.welcomeKey))
     }

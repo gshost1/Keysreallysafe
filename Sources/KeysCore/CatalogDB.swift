@@ -44,7 +44,7 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     /// Tables and `meta` keys of the plan-window meter removed on 2026-11-03, dropped by
-    /// `migrate()` on every open. Kept as names only so the drop stays obvious.
+    /// `removeRetiredPlanMeter()` at app launch. Kept as names only so the drop stays obvious.
     static let retiredTables = ["usage_limits", "subscriptions", "provider_snapshots"]
     static let retiredMetaKeys = ["pref_claude_usage_refresh", "pref_show_usage_meter", "pref_hidden_usage"]
 
@@ -253,16 +253,6 @@ final class CatalogDB: @unchecked Sendable {
               created_at TEXT NOT NULL
             );
             """)
-        // Plan-window and limit tracking was removed on 2026-11-03: the user-set Droid limits,
-        // the pinned subscriptions and the OpenRouter credit snapshots have no reader any more.
-        // Dropped on every open so an upgraded catalog keeps none of them; a fresh one never
-        // had them. The same goes for the meter's preferences in `meta`.
-        for table in Self.retiredTables {
-            try exec("DROP TABLE IF EXISTS \(table);")
-        }
-        for key in Self.retiredMetaKeys {
-            try run("DELETE FROM meta WHERE key = ?;", key)
-        }
         // A project is a folder an agent works in, held by its canonical symlink-resolved
         // path (UNIQUE, so two processes can never manufacture two ids for one folder)
         // and shown by a display label only: the path never leaves the Mac, so it never
@@ -1522,6 +1512,38 @@ final class CatalogDB: @unchecked Sendable {
 
     func newestUsage(source: String) throws -> String? {
         try one("SELECT MAX(occurred_at) FROM usage_events WHERE source = ?;", source) { columnText($0, 0) } ?? nil
+    }
+
+    /// Drops what the plan-window meter (removed 2026-11-03) left in an upgraded catalog: the
+    /// user-set Droid limits, the pinned subscriptions, the OpenRouter credit snapshots and the
+    /// meter's preferences. Run at app launch, not from `migrate()`: a 0.14.x process still up
+    /// beside the new CLI reads those tables, and a launch is the moment the old app is gone.
+    /// Reads first, so a catalog with nothing left takes no write lock. True when it dropped
+    /// something.
+    @discardableResult
+    func removeRetiredPlanMeter() throws -> Bool {
+        try withLock {
+            let quoted = { (names: [String]) in names.map { "'\($0)'" }.joined(separator: ", ") }
+            let tables = try query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (\(quoted(Self.retiredTables)));"
+            ) { columnText($0, 0) }.compactMap { $0 }
+            let keys = try query(
+                "SELECT key FROM meta WHERE key IN (\(quoted(Self.retiredMetaKeys)));"
+            ) { columnText($0, 0) }.compactMap { $0 }
+            guard !tables.isEmpty || !keys.isEmpty else { return false }
+            try exec("BEGIN IMMEDIATE")
+            do {
+                for table in tables where Self.retiredTables.contains(table) {
+                    try exec("DROP TABLE IF EXISTS \(table);")
+                }
+                for key in keys { try run("DELETE FROM meta WHERE key = ?;", key) }
+                try exec("COMMIT")
+            } catch {
+                try? exec("ROLLBACK")
+                throw error
+            }
+            return true
+        }
     }
 
     /// Every table is emptied, meta included, so a table or meta key added later cannot be
