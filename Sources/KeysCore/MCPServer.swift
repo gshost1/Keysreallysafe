@@ -36,7 +36,7 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
 8. Before import_and_wrap, if the scan found docker files, ask whether Docker containers may reach the gateway; the default is no.
 9. Folder tools take an optional folder inside the working directory, which is the default; anything outside it, or a working directory of root or home, is refused.
 10. The X-Keysrs-Source response header tells refusals apart: gateway means Keysrs refused; upstream means the provider answered, so an upstream 401 is the provider rejecting the stored key, not the grant.
-11. If deleting a key fails with a keychain error, a September 2026 build saved it; tell the user to run `security delete-generic-password -s keysreallysafe -a <name> && keys rm <name>` in their own terminal, and never run it yourself.
+11. If deleting a key fails with "delete failed", a September 2026 build saved it; tell the user to run `security delete-generic-password -s keysreallysafe -a <name> && keys rm <name>` in their own terminal, and never run it yourself.
 """
 
     private let writeBytes: (Data) -> Void

@@ -1943,9 +1943,11 @@ final class KeysService: @unchecked Sendable {
         try requireGatewayOwner()
         _ = try existingRow(name)
         try presence.require(reason: "delete \(name)")
+        // The secret goes first: if the Keychain refuses, the key is still listed, so its
+        // grants and cached gateway entry must keep working rather than die for nothing.
+        try secrets.delete(name: name)
         _ = gatewayLock.withLock { gatewayCache.removeValue(forKey: name) }
         revokeGrants(key: name, reason: "key_deleted", caller: caller)
-        try secrets.delete(name: name)
         try catalog.deleteCatalog(name: name)
         try? catalog.deleteProviderCheck(keyName: name)
         try recordKeyEvent(name: name, action: "rm", caller: caller)
