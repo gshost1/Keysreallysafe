@@ -14,11 +14,12 @@ enum RelayProtocol {
     static let protocolHeader = "X-Keysrs-Relay-Protocol"
     /// Largest body chunk per frame; Cloudflare caps a WebSocket message at 1 MiB.
     static let chunk = 64 * 1024
-    /// How long response bytes wait for more before they go out as a frame. Every frame is
-    /// an incoming WebSocket message to the Worker's Durable Object, which Cloudflare counts
-    /// as a request (the free plan stops at 100,000 a day). Sending each read of a token
-    /// stream as its own frame cost about 200 per call and 1.8M requests in one night of
-    /// evals; batching caps a stream at five frames a second for 200 ms of extra latency.
+    /// Least time between two body frames of one response. Every frame is an incoming
+    /// WebSocket message to the Worker's Durable Object. Workers Paid bills those 20 to a
+    /// request, but the dashboard counts each one, and so did the free plan's 100,000-a-day
+    /// cap when one night of evals sent 1.83M (2026-11-04): one frame per read of a token
+    /// stream was about 200 per call. The first frame still goes out at once; after it, a
+    /// stream sends at most five frames a second, plus one per 64 KiB when it is faster.
     static let flushWindow: TimeInterval = 0.2
     /// Matches the gateway's own request body cap, so the relay refuses nothing the gateway
     /// would accept and buffers nothing it would refuse.
@@ -523,14 +524,16 @@ final class RelayRequest: @unchecked Sendable {
     enum PumpEnd: Equatable { case end, readFailed, sendFailed }
 
     /// Streams the rest of a response body from `fd` to `send`, starting with `leftover`.
-    /// Bytes are held until `chunk` of them are ready or the oldest has waited `window`, so a
-    /// token stream goes out in a few frames a second instead of one per read (see
-    /// `RelayProtocol.flushWindow`). What is held is always sent before the end or a failed
-    /// read, so the agent gets every byte the gateway wrote.
+    /// Bytes that arrive within `window` of the last frame are held until the window ends or
+    /// `chunk` of them are ready, so a token stream goes out in a few frames a second instead
+    /// of one per read (see `RelayProtocol.flushWindow`), while the first bytes, and any after
+    /// a quiet spell, go at once. What is held is always sent before the end or a failed read,
+    /// so the agent gets every byte the gateway wrote.
     static func pumpBody(fd: Int32, leftover: Data, window: TimeInterval, send: (Data) -> Bool) -> PumpEnd {
         let windowNanos = UInt64(max(0, window) * 1_000_000_000)
         var held = leftover
-        var deadline: UInt64? = held.isEmpty ? nil : DispatchTime.now().uptimeNanoseconds + windowNanos
+        var lastSent: UInt64?
+        var deadline: UInt64? = held.isEmpty ? nil : 0
         var buf = [UInt8](repeating: 0, count: RelayProtocol.chunk)
 
         func flush(all: Bool) -> Bool {
@@ -538,6 +541,7 @@ final class RelayRequest: @unchecked Sendable {
                 let take = min(held.count, RelayProtocol.chunk)
                 guard send(Data(held.prefix(take))) else { return false }
                 held.removeFirst(take)
+                lastSent = DispatchTime.now().uptimeNanoseconds
             }
             if held.isEmpty { deadline = nil }
             return true
@@ -557,7 +561,12 @@ final class RelayRequest: @unchecked Sendable {
                 let ms = Int32(min(UInt64(Int32.max), (due - now + 999_999) / 1_000_000))
                 let ready = Darwin.poll(&pfd, 1, ms)
                 if ready == 0 { continue }
-                if ready < 0 && errno == EINTR { continue }
+                if ready < 0 {
+                    // Without poll the window cannot be kept, and a blocking read could sit
+                    // on the held bytes until the gateway's read deadline: send them now.
+                    if errno != EINTR { guard flush(all: true) else { return .sendFailed } }
+                    continue
+                }
             }
             let n = Darwin.read(fd, &buf, buf.count)
             if n < 0 && errno == EINTR { continue }
@@ -565,7 +574,7 @@ final class RelayRequest: @unchecked Sendable {
                 guard flush(all: true) else { return .sendFailed }
                 return n == 0 ? .end : .readFailed
             }
-            if held.isEmpty { deadline = DispatchTime.now().uptimeNanoseconds + windowNanos }
+            if held.isEmpty { deadline = lastSent.map { $0 + windowNanos } ?? 0 }
             held.append(contentsOf: buf[0..<n])
         }
     }

@@ -667,10 +667,17 @@ final class RelayBodyPumpTests: XCTestCase {
         }
         gateway.start()
         let sent = Sent()
+        let started = DispatchTime.now().uptimeNanoseconds
         let ended = RelayRequest.pumpBody(fd: reader, leftover: Data("data: first\n\n".utf8), window: 0.1) { sent.add($0); return true }
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
         XCTAssertEqual(ended, .end)
         XCTAssertEqual(sent.joined, Data("data: first\n\n".utf8) + expected)
-        XCTAssertLessThanOrEqual(sent.all.count, 8, "60 reads over ~300 ms in 100 ms windows: \(sent.all.count) frames")
+        // One frame per 100 ms window, plus the immediate first one and the one at the end;
+        // measured against the real duration so a slow runner cannot fail it.
+        XCTAssertLessThanOrEqual(sent.all.count, Int(elapsed / 0.1) + 2, "\(sent.all.count) frames in \(elapsed) s")
+        XCTAssertLessThan(sent.all.count, 30, "60 reads must not become one frame each")
+        let firstAt = try XCTUnwrap(sent.all.first).at
+        XCTAssertLessThan(Double(firstAt - started) / 1e9, 0.05, "the first bytes go out without waiting a window")
     }
 
     func testHeldBytesGoOutWhenTheWindowEndsNotOnlyAtTheEnd() throws {
