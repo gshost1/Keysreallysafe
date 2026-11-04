@@ -3222,15 +3222,10 @@
       }
       state.catalogVersion = version;
       state.status = data;
-      renderStatus();
+      // /api/status carries only the catalog version compared above and the last ingest time
+      // Settings shows; the plan-window cards it used to carry were removed on 2026-11-03.
+      renderSettings();
     } catch { /* the next poll tries again; the status line reports an engine outage */ }
-  }
-
-  // /api/status carries the catalog version the poll above compares and the last ingest time
-  // Settings shows; the plan-window cards it used to carry were removed on 2026-11-03.
-  function renderStatus() {
-    if (!state.status) return;
-    renderSettings();
   }
 
   // ---------- settings ----------
@@ -3276,7 +3271,6 @@
       state.preferences = await api("/api/preferences");
     } catch { /* the switches keep their last state; the status line reports the outage */ }
     renderSettings();
-    renderStatus();
   }
 
   async function setPreference(path, on) {
@@ -3286,7 +3280,6 @@
       });
     } catch (e) { say(e.message); }
     renderSettings();
-    renderStatus();
   }
 
   const switchOn = (id) => $(id).getAttribute("aria-checked") !== "true";

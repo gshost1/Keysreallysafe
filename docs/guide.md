@@ -812,7 +812,7 @@ deleting the app leaves both alone.
 ## Development
 
 ```sh
-CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home GROK_BOT_HOME=Fixtures/grok-bot-home KEYS_DROID_HOME=Fixtures/droid-home swift test
+CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home KEYS_DROID_HOME=Fixtures/droid-home swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 KEYS_NO_OPEN=1 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```

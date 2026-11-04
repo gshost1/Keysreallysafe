@@ -380,18 +380,3 @@ final class SpendQueryTests: XCTestCase {
         ))!
     }
 }
-
-/// The week the spend views and `keys spend --week` label, moved here when the plan-window
-/// tests it lived beside were removed.
-final class SpendPeriodTests: XCTestCase {
-    func testWeekPeriodLabelForCrossingMonth() {
-        let tz = TimeZone(identifier: "America/Denver")!
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = tz
-        let now = cal.date(from: DateComponents(year: 2026, month: 9, day: 3, hour: 12))!
-        let period = SpendPeriod.calendarWeek(now: now, timeZone: tz)
-        XCTAssertEqual(period.startDay, "2026-08-30")
-        XCTAssertEqual(period.endDay, "2026-09-05")
-        XCTAssertEqual(period.label, "Sun Aug 30 – Sat Sep 5")
-    }
-}

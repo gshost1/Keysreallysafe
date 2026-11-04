@@ -164,40 +164,6 @@ enum SpendRange: String {
     }
 }
 
-struct SpendPeriod: Equatable {
-    var startDay: String
-    var endDay: String
-    var label: String
-
-    func jsonObject() -> [String: Any] {
-        [
-            "start_day": startDay,
-            "end_day": endDay,
-            "label": label,
-        ]
-    }
-
-    static func calendarWeek(now: Date, timeZone: TimeZone) -> SpendPeriod {
-        let (start, end) = SpendRange.week.interval(now: now, timeZone: timeZone)
-        return SpendPeriod(
-            startDay: SpendRange.localDay(start, timeZone: timeZone),
-            endDay: SpendRange.inclusiveEndDay(end: end, timeZone: timeZone),
-            label: label(start: start, endExclusive: end, timeZone: timeZone)
-        )
-    }
-
-    static func label(start: Date, endExclusive: Date, timeZone: TimeZone) -> String {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = timeZone
-        let last = cal.date(byAdding: .second, value: -1, to: endExclusive) ?? endExclusive
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "en_US_POSIX")
-        df.timeZone = timeZone
-        df.dateFormat = "EEE MMM d"
-        return "\(df.string(from: start)) – \(df.string(from: last))"
-    }
-}
-
 enum SpendGroup: String {
     case model
     case session

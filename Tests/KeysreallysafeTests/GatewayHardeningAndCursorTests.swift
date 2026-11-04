@@ -252,8 +252,10 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         }
         second.start()
         defer { second.stop() }
-        let first = try LoopbackHTTPServer(port: 0) { _ in
-            HTTPResponse(
+        let firstHits = RequestLog()
+        let first = try LoopbackHTTPServer(port: 0) { request in
+            firstHits.record(request)
+            return HTTPResponse(
                 status: 302,
                 headers: [
                     "Location": "http://127.0.0.1:\(second.boundPort)/secret",
@@ -266,10 +268,10 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         defer { first.stop() }
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(first.boundPort)/api/v1/key")!)
         request.setValue("Bearer sk-or-test", forHTTPHeaderField: "Authorization")
-        if let (_, http) = try? BlockingHTTP.send(request, timeout: 10) {
-            XCTAssertEqual(http.statusCode, 302, "the redirect is answered, not followed")
-        }
-        XCTAssertEqual(secondHits.count, 0)
+        let (_, http) = try BlockingHTTP.send(request, timeout: 10)
+        XCTAssertEqual(http.statusCode, 302, "the redirect is answered, not followed")
+        XCTAssertEqual(firstHits.count, 1, "the request reached the first server")
+        XCTAssertEqual(secondHits.count, 0, "the bearer never followed the redirect")
     }
 
     func testTeeKeepsLastSSEUsageWithoutPrefixCap() throws {
