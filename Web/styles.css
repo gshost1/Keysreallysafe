@@ -69,9 +69,6 @@
   --s-other-3: #48484a;
   --s-other-4: #a4a4aa;
   --s-other: #6c6c70;
-  --live-claude: #e08a6a;
-  --live-droid: #4c9aff;
-  --live-track: #2a2a2e;
 }
 
 html[data-theme="light"] {
@@ -135,9 +132,6 @@ html[data-theme="light"] {
   --s-other-3: #e0e0e5;
   --s-other-4: #7c7c84;
   --s-other: #c7c7cc;
-  --live-claude: #c45c38;
-  --live-droid: #0071e3;
-  --live-track: rgba(0, 0, 0, 0.08); /* the site's meter track */
   --seg-track: rgba(0, 0, 0, 0.06); /* the site's segmented track on white */
   --seg-shadow: rgba(0, 0, 0, 0.15);
   --on-blue: #ffffff;
@@ -436,63 +430,6 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 14px; display: fl
 }
 .interval-dates { color: var(--ink-3); }
 .interval-cross { color: var(--ink-2); }
-
-.live-status {
-  padding: 14px 16px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-width: 0;
-  max-width: 100%;
-}
-.live-row { display: flex; flex-direction: column; gap: 4px; }
-.live-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-variant-numeric: tabular-nums;
-}
-.live-title { font-weight: 600; font-size: 12px; color: var(--ink-2); }
-.live-plan { font-size: 11px; color: var(--ink-3); }
-.live-stale { font-size: 11px; margin-left: auto; }
-.live-meters { display: flex; flex-direction: column; gap: 6px; }
-.live-meter { min-width: 0; }
-.live-meter-plain { flex: 0 1 auto; }
-.live-meter-label {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-.live-track {
-  height: 8px;
-  border-radius: 4px;
-  background: var(--live-track);
-  overflow: hidden;
-}
-.live-fill {
-  display: block;
-  height: 100%;
-  border-radius: 4px;
-  background: var(--s-grok-1);
-}
-.live-row[data-source="claude"] .live-fill { background: var(--live-claude); }
-.live-row[data-source="openai"] .live-fill { background: var(--s-openai-1); }
-/* Droid's models span vendors, so the row meter wears the app's own blue, not a vendor's. */
-.live-row[data-source="droid"] .live-fill { background: var(--live-droid); }
-.live-limits { margin-left: auto; }
-.live-note { color: var(--ink-3); }
-.live-used { color: var(--ink); }
-.live-reset { color: var(--ink-2); }
-.live-open { color: var(--ink-2); text-decoration: none; }
-.live-open:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
-.live-fill-over { background: var(--red) !important; }
-/* The quiet way in to the subscription list, one line under the plan rows. */
-.subs-add { display: flex; padding: 0 16px 12px; }
 
 .caption {
   padding: 8px 16px 16px;
@@ -1149,7 +1086,6 @@ html[data-theme="light"] .tint-6 { --tint: var(--s-deepseek-3); }
 .onboard-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .onboard-head h2 { font-size: 15px; margin: 0 0 8px; }
 .onboard .guide h3 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.usage-hidden { padding: 0 16px 12px; color: var(--ink-3); font-size: 12px; }
 
 /* ---------- settings ---------- */
 
@@ -1169,7 +1105,6 @@ html[data-theme="light"] .tint-6 { --tint: var(--s-deepseek-3); }
 .setting-label { display: flex; flex-direction: column; min-width: 0; }
 .setting-hint { color: var(--ink-3); font-size: 12px; }
 .setting-actions { display: inline-flex; gap: 4px; }
-.usage-cards-list .setting { padding-left: 12px; }
 .switch {
   flex: none;
   position: relative;
@@ -1232,14 +1167,13 @@ html[data-theme="light"] .tint-6 { --tint: var(--s-deepseek-3); }
 @media (max-width: 720px) {
   main { padding: 0 12px 12px; gap: 12px; }
   .status-bar { padding: 0 12px; }
-  .filters, .chart-top, .live-status, .caption, .chart, .usage-totals, .pane-error { padding-left: 12px; padding-right: 12px; }
+  .filters, .chart-top, .caption, .chart, .usage-totals, .pane-error { padding-left: 12px; padding-right: 12px; }
   .chart svg { height: 170px; }
   .filters { gap: 8px 12px; }
   .chips[aria-label="Unit"] { margin-left: 0; }
   .chips[aria-label="Source"] { padding-left: 0; }
   .chips[aria-label="Source"]::before { display: none; }
-  .live-status, .caption, .chart { min-width: 0; }
-  .live-meter-label { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .caption, .chart { min-width: 0; }
   .mix-row { grid-template-columns: 16px 1fr 72px 72px; padding: 0 12px; }
   .mix-bar { display: none; }
 }

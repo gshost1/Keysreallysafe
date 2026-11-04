@@ -54,8 +54,8 @@
     selected: null,
     mixFilter: null,
     busy: false,
-    // The persisted app choices (GET /api/preferences): the meter, the menu-bar
-    // item and automatic updates. The app menu reads the same store.
+    // The persisted app choices (GET /api/preferences): the menu-bar item and
+    // automatic updates. The app menu reads the same store.
     preferences: null,
     colors: new Map(),
     slots: new Map(),
@@ -561,9 +561,6 @@
     syncKeysUnit();
     if (state.keys.length) renderKeys();
     renderUsageTotals();
-    // The plan cards are redrawn from the status already in hand, so the switch does not wait for
-    // the next poll to take effect — and does not ask the engine again to change a unit.
-    if (state.status) renderStatus();
     if (state.spend) { renderTotals(state.spend); renderMix(); drawChart(); }
   }
   // The Keys pane has no chart chips, so it carries its own switch: without it the figures
@@ -3151,7 +3148,6 @@
   }
   $("onboard-dismiss").addEventListener("click", dismissOnboard);
   $("onboard-help").addEventListener("click", openHelp);
-  $("usage-empty-help").addEventListener("click", openHelp);
   $("keys-empty-help").addEventListener("click", openHelp);
 
   // ---------- keyboard ----------
@@ -3210,413 +3206,6 @@
     }
   });
 
-  // ---------- plan rows: plan · % used · resets in ----------
-
-  function resetsIn(iso) {
-    if (!iso) return "";
-    const t = Date.parse(iso);
-    if (Number.isNaN(t)) return "";
-    const s = Math.floor((t - Date.now()) / 1000);
-    if (s <= 0) return "reset due";
-    if (s < 60) return "resets in " + s + "s";
-    const m = Math.floor(s / 60);
-    if (m < 60) return "resets in " + m + "m";
-    const h = Math.floor(m / 60);
-    if (h < 48) return "resets in " + h + "h " + (m % 60) + "m";
-    return "resets in " + Math.floor(h / 24) + "d " + (h % 24) + "h";
-  }
-
-  // "as of 2 h ago" for snapshot-based numbers; empty when fresh or unknown
-  function asOf(iso) {
-    if (!iso) return "";
-    const t = Date.parse(iso);
-    if (Number.isNaN(t)) return "";
-    const m = Math.floor((Date.now() - t) / 60000);
-    if (m < 30) return "";
-    if (m < 120) return `as of ${m} min ago`;
-    if (m < 48 * 60) return `as of ${Math.floor(m / 60)} h ago`;
-    return "as of " + relTime(iso).toLowerCase();
-  }
-
-  function meter(label, pct, right) {
-    const labelRow = el("div", { class: "live-meter-label" },
-      el("span", { text: label }),
-      typeof right === "string" ? el("span", { class: pct == null ? "live-note" : "", text: right }) : right,
-    );
-    if (pct == null) {
-      return el("div", { class: "live-meter live-meter-plain" }, labelRow);
-    }
-    const fill = el("i", { class: "live-fill" + (Number(pct) >= 100 ? " live-fill-over" : "") });
-    const width = Math.max(0, Math.min(100, Number(pct)));
-    fill.style.width = width + "%";
-    if (width > 0) fill.style.minWidth = "8px";
-    return el("div", { class: "live-meter" },
-      labelRow,
-      el("div", { class: "live-track", role: "meter", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(width)), "aria-label": label + " used" }, fill),
-    );
-  }
-
-  // right side of a plan meter: "22% used · resets in 2h 1m"
-  function usedRight(pct, resetIso) {
-    if (pct == null) return el("span", { class: "live-note", text: "Unavailable" });
-    const reset = resetsIn(resetIso);
-    return el("span", {},
-      el("span", { class: "live-used", text: Math.round(pct) + "% used" }),
-      reset ? el("span", { class: "live-reset", text: " · " + reset }) : null,
-    );
-  }
-
-  function hasLocalMeasure(row) {
-    if (!row) return false;
-    // The Droid row is counted from the catalog, so its zeros are real zeros: it never falls
-    // into "not tracked", which is for tools whose quota is not in any local file.
-    if (row.source === "droid") return true;
-    // A subscription row is a card the user pinned here; it shows a plan, never a measurement,
-    // but it belongs in the list above the collapsed group, not inside it.
-    if (row.subscription_id != null) return true;
-    if (row.limit_remaining != null || row.usage_weekly != null) return true;
-    if (row.source === "claude" || row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null) return true;
-    if (row.source === "grok" && row.weekly_usd != null) return true;
-    if (typeof row.weekly_tokens === "number" && row.weekly_tokens > 0) return true;
-    if (typeof row.weekly_prompts === "number" && row.weekly_prompts > 0) return true;
-    if (typeof row.weekly_usd === "number" && row.weekly_usd > 0) return true;
-    return false;
-  }
-
-  // ---------- Droid row: three windows, optional limits ----------
-
-  const LIMIT_WINDOWS = ["five_hour", "weekly", "monthly"];
-  // The row the Set limits dialog was opened for, kept here because the form cannot hold it.
-  let limitsForRow = null;
-
-  // The Droid row: 5-hour rolling, calendar week and calendar month, counted by the engine from
-  // the records it ingested. A window with a limit the user set is a percent meter with
-  // "X of Y tokens"; a window without one shows its tokens alone. Nothing is estimated: a zero
-  // window says zero, and an empty catalog says so in the note.
-  function renderDroidRow(row) {
-    const windows = [
-      { label: "5 hour", tokens: row.five_hour_tokens, limit: row.five_hour_limit, pct: row.five_hour_pct },
-      { label: "Weekly", tokens: row.weekly_tokens, limit: row.weekly_limit, pct: row.weekly_pct },
-      { label: "Month", tokens: row.monthly_tokens, limit: row.monthly_limit, pct: row.monthly_pct },
-    ];
-    const meters = windows.map(({ label, tokens, limit, pct }) => {
-      if (limit != null && pct != null) {
-        // The bar caps at 100%, the number does not: a blown limit stays honest past it.
-        return meter(label, pct, el("span", {},
-          el("span", { class: "live-used", text: pct + "%" }),
-          el("span", { text: " · " + fmtTokens(tokens) + " of " + fmtTokens(limit) + " tokens" }),
-        ));
-      }
-      return meter(label, null, fmtTokens(tokens) + " tokens");
-    });
-    const note = row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null;
-    // A Factory subscription attaches here rather than adding a row of its own: its plan
-    // names the row, a token limit already is one window's limit, and a non-token limit
-    // stays the one line of text it was entered as.
-    const sub = row.subscription_id != null;
-    return el("div", { class: "live-row", "data-source": row.source },
-      el("div", { class: "live-head" },
-        el("span", { class: "live-title", text: row.title || "Droid" }),
-        row.plan ? el("span", { class: "live-plan", text: row.plan, title: "The plan on the Factory subscription pinned to this row" }) : null,
-        row.limit_text ? el("span", { class: "live-plan", text: row.limit_text, title: "The limit on the Factory subscription; a token limit would be the window's meter instead" }) : null,
-        el("span", { class: "row-actions live-limits" },
-          sub ? el("button", {
-            type: "button", class: "btn-row",
-            title: "Edit the Factory subscription pinned to this row",
-            onclick: () => openSubDialog(row),
-          }, "Edit") : null,
-          sub ? el("button", {
-            type: "button", class: "btn-row",
-            title: "Remove the Factory subscription from the Droid row",
-            onclick: () => askRemoveSub(row),
-          }, "Remove") : null,
-          el("button", {
-            type: "button", class: "btn-row",
-            title: "Set optional token limits for the Droid windows",
-            onclick: () => openLimits(row),
-          }, "Set limits"),
-        ),
-      ),
-      el("div", { class: "live-meters" }, ...meters),
-      note,
-    );
-  }
-
-  function openLimits(row) {
-    limitsForRow = row;
-    $("limits-err").textContent = "";
-    const form = $("limits-form");
-    for (const name of LIMIT_WINDOWS) {
-      form.elements[name].value = row[name + "_limit"] != null ? String(row[name + "_limit"]) : "";
-    }
-    if (!$("dlg-limits").open) $("dlg-limits").showModal();
-  }
-
-  $("limits-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const err = $("limits-err");
-    err.textContent = "";
-    const row = limitsForRow;
-    if (!row) { $("dlg-limits").close(); return; }
-    const ops = [];
-    for (const name of LIMIT_WINDOWS) {
-      const input = form.elements[name];
-      const raw = input.value.trim();
-      const prior = row[name + "_limit"];
-      // A number field reports typed letters as an empty value; badInput keeps them from
-      // passing as "no limit" and silently clearing the window.
-      if (input.validity.badInput) {
-        err.textContent = "Limits are whole token counts of 1 or more.";
-        return;
-      }
-      if (!raw) {
-        // An emptied field clears that window's limit; a window that never had one sends nothing.
-        if (prior != null) ops.push(api(`/api/limits/${row.source}/${name}`, { method: "DELETE" }));
-        continue;
-      }
-      const tokens = Number(raw);
-      if (!Number.isInteger(tokens) || tokens <= 0) {
-        err.textContent = "Limits are whole token counts of 1 or more.";
-        return;
-      }
-      if (tokens !== prior) {
-        ops.push(api(`/api/limits/${row.source}/${name}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tokens }),
-        }));
-      }
-    }
-    try {
-      await Promise.all(ops);
-      say("Saved Droid limits.");
-      $("dlg-limits").close();
-      await loadStatus();
-    } catch (e2) { err.textContent = e2.message; }
-  });
-
-  // ---------- subscriptions (plans the user pins to the Usage pane) ----------
-
-  const SUB_TOOLS = ["cursor", "gemini", "copilot", "perplexity", "chatgpt", "factory", "custom"];
-  // The row being edited (its subscription_id addresses the record); null means a fresh add.
-  let subEditing = null;
-  let subRemoving = null;
-
-  // One row per subscription: the plan and the optional limit as text, and the one honest
-  // sentence about why no usage figure sits beside them. Never a percent: nothing on this
-  // row is measured, so there is nothing a percent could be of.
-  function renderSubRow(row) {
-    return el("div", { class: "live-row", "data-source": row.source, "data-sub-id": row.subscription_id },
-      el("div", { class: "live-head" },
-        el("span", { class: "live-title", text: row.title || row.source }),
-        row.plan ? el("span", { class: "live-plan", text: row.plan }) : null,
-        row.limit_text ? el("span", { class: "live-plan", text: row.limit_text, title: "The limit you set; usage against it is not tracked locally" }) : null,
-        el("span", { class: "row-actions live-limits" },
-          el("button", {
-            type: "button", class: "btn-row",
-            title: "Edit this subscription",
-            onclick: () => openSubDialog(row),
-          }, "Edit"),
-          el("button", {
-            type: "button", class: "btn-row",
-            title: "Remove this subscription",
-            onclick: () => askRemoveSub(row),
-          }, "Remove"),
-        ),
-      ),
-      row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null,
-    );
-  }
-
-  function syncSubNameField(tool) {
-    // Only a custom tool is named by its own name; the built-ins carry theirs in the picker.
-    $("sub-name-label").hidden = tool !== "custom";
-  }
-
-  async function openSubDialog(row) {
-    subEditing = row || null;
-    $("sub-err").textContent = "";
-    const dialog = $("dlg-sub");
-    const form = $("sub-form");
-    $("sub-title").textContent = row ? "Edit subscription" : "Add subscription";
-    $("sub-submit").textContent = row ? "Save" : "Add subscription";
-    // The tool is who the subscription is about; once the row exists it cannot change.
-    form.elements.tool.disabled = Boolean(row);
-    if (!dialog.open) dialog.showModal();
-    // An edit fills from the stored record: the rendered row carries the plan and the limit
-    // as text, and the raw amount, unit and period (and a Factory row's tool) live only in
-    // the catalog.
-    let sub = null;
-    if (row) {
-      try {
-        const data = await api("/api/subscriptions");
-        sub = ((data && data.subscriptions) || []).find((s) => s.id === row.subscription_id) || null;
-        if (!sub) $("sub-err").textContent = "That subscription is no longer in the catalog; reload the page.";
-      } catch (e) { $("sub-err").textContent = e.message; }
-    }
-    const tool = sub ? sub.tool : (row ? (row.source === "droid" ? "factory" : row.source) : "cursor");
-    form.elements.tool.value = SUB_TOOLS.includes(tool) ? tool : "cursor";
-    syncSubNameField(form.elements.tool.value);
-    form.elements.name.value = sub ? (sub.name || "") : "";
-    form.elements.plan.value = sub ? sub.plan : "";
-    form.elements.limit_amount.value = sub && sub.limit_amount != null ? String(sub.limit_amount) : "";
-    form.elements.limit_unit.value = sub ? (sub.limit_unit || "") : "";
-    form.elements.limit_period.value = sub ? (sub.limit_period || "") : "";
-  }
-
-  $("btn-add-sub").addEventListener("click", () => openSubDialog(null));
-  $("sub-form").elements.tool.addEventListener("change", (e) => syncSubNameField(e.target.value));
-
-  $("sub-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const err = $("sub-err");
-    err.textContent = "";
-    const tool = form.elements.tool.value;
-    const name = form.elements.name.value.trim();
-    if (tool === "custom" && !name) { err.textContent = "A custom tool needs a name."; return; }
-    const plan = form.elements.plan.value.trim();
-    if (!plan) { err.textContent = "Plan is required."; return; }
-    // The limit is one fact in three fields; anything less is never sent anywhere.
-    const amountInput = form.elements.limit_amount;
-    const rawAmount = amountInput.value.trim();
-    const unit = form.elements.limit_unit.value;
-    const period = form.elements.limit_period.value;
-    const body = {
-      tool,
-      name: tool === "custom" ? name : null,
-      plan,
-      limit_amount: null, limit_unit: null, limit_period: null,
-    };
-    if (rawAmount || unit || period) {
-      if (!rawAmount || !unit || !period) {
-        err.textContent = "A limit needs an amount, a unit and a period together.";
-        return;
-      }
-      // A number field reports typed letters as an empty value; badInput keeps them from
-      // passing as "no limit", the same guard the Droid limits dialog uses.
-      if (amountInput.validity.badInput) { err.textContent = "The limit amount must be a number."; return; }
-      const amount = Number(rawAmount);
-      if (!Number.isFinite(amount) || amount <= 0) { err.textContent = "The limit amount must be greater than 0."; return; }
-      if ((unit === "tokens" || unit === "requests") && !Number.isInteger(amount)) {
-        err.textContent = "A " + unit + " limit is a whole number.";
-        return;
-      }
-      body.limit_amount = amount;
-      body.limit_unit = unit;
-      body.limit_period = period;
-    }
-    try {
-      if (subEditing) {
-        await api("/api/subscriptions/" + encodeURIComponent(subEditing.subscription_id), {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        say("Saved the subscription.");
-      } else {
-        await api("/api/subscriptions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        say("Added the subscription.");
-      }
-      $("dlg-sub").close();
-      await loadStatus();
-    } catch (e2) { err.textContent = e2.message; }
-  });
-
-  function askRemoveSub(row) {
-    subRemoving = row;
-    $("sub-remove-err").textContent = "";
-    // A Factory subscription lives on the Droid row it is pinned to; the confirmation must ask
-    // about the subscription, not name the row it sits on, so it cannot read "Remove Droid?".
-    $("sub-remove-name").textContent = row.source === "droid"
-      ? "the Factory subscription"
-      : row.title || row.plan || "this subscription";
-    $("sub-remove-hint").textContent = row.source === "droid"
-      ? "The plan and limit come off the Droid row, and the window limit it drove is cleared with it."
-      : "The row disappears from this pane and the built-in placeholder returns.";
-    if (!$("dlg-sub-remove").open) $("dlg-sub-remove").showModal();
-  }
-
-  $("sub-remove-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if (!subRemoving) { $("dlg-sub-remove").close(); return; }
-    try {
-      await api("/api/subscriptions/" + encodeURIComponent(subRemoving.subscription_id), { method: "DELETE" });
-      say("Removed the subscription.");
-      subRemoving = null;
-      $("dlg-sub-remove").close();
-      await loadStatus();
-    } catch (e2) { $("sub-remove-err").textContent = e2.message; }
-  });
-
-  function renderLiveRow(row) {
-    if (!row) return null;
-    // The Droid row is its own layout: three windows, each optionally a meter of a limit the
-    // user set, plus the controls that set them and, with a Factory subscription pinned to it,
-    // that subscription's plan, limit text, Edit and Remove. The generic branches below stay
-    // provider-shaped.
-    if (row.source === "droid") return renderDroidRow(row);
-    // A pinned subscription is a card of its own shape: plan, limit text, the honest note, and
-    // Edit and Remove. No meters, no percents — nothing on it was measured.
-    if (row.subscription_id != null) return renderSubRow(row);
-    const meters = [];
-    // The engine attaches its calendar-week period to every row with a weekly figure;
-    // Claude and OpenRouter rows carry none.
-    const weekly = "Weekly · " + (row.period ? row.period.label : "");
-    if (row.five_hour_pct != null || row.source === "claude") {
-      meters.push(meter("5 hour", row.five_hour_pct, usedRight(row.five_hour_pct, row.five_hour_resets_at)));
-    }
-    if (row.source === "claude") {
-      meters.push(meter("Fable", row.fable_pct, usedRight(row.fable_pct, row.fable_resets_at)));
-    }
-    if (row.weekly_pct != null || row.source === "claude") {
-      meters.push(meter("Weekly", row.weekly_pct, usedRight(row.weekly_pct, row.weekly_resets_at)));
-    }
-    // No provider percentage at all: one plain line with what the local logs say for the week.
-    // These cards follow the page's unit too: tokens and percentages are what was measured, and a
-    // dollar figure waits for an explicit USD choice. The switch is on the summary line below.
-    const forUsd = " · choose USD below for the amount";
-    if (row.source !== "claude" && row.five_hour_pct == null && row.fable_pct == null && row.weekly_pct == null) {
-      const tokens = row.weekly_tokens != null ? fmtTokens(row.weekly_tokens) + " tokens" : null;
-      if (usdMode() && row.weekly_usd != null) meters.push(meter(weekly, null, fmtUsd(row.weekly_usd) + (tokens ? " · " + tokens : "") + " · local logs"));
-      else if (tokens) meters.push(meter(weekly, null, tokens + " · local logs"));
-      else if (row.weekly_usd != null) meters.push(meter(weekly, null, "cost recorded in the local logs" + forUsd));
-      else if (row.weekly_prompts != null) meters.push(meter(weekly, null, plural(row.weekly_prompts, "prompt", "prompts") + " sent · limit not tracked"));
-    }
-    if (row.source === "openrouter" && (row.limit_remaining != null || row.usage_weekly != null)) {
-      if (row.limit != null && row.limit > 0 && row.limit_remaining != null) {
-        const used = Math.max(0, row.limit - row.limit_remaining);
-        // The share left is the same fact without naming a sum, so the meter stays informative.
-        const text = usdMode()
-          ? fmtUsd(row.limit_remaining) + " left of " + fmtUsd(row.limit)
-          : trim((row.limit_remaining / row.limit) * 100) + "% of the credit limit left" + forUsd;
-        meters.push(meter("Credit limit", (used / row.limit) * 100, el("span", {}, el("span", { class: "live-used", text }))));
-      } else if (row.limit_remaining != null) {
-        meters.push(meter("Credit", null, usdMode() ? fmtUsd(row.limit_remaining) + " left · no limit set" : "credit remaining, no limit set" + forUsd));
-      }
-      if (row.usage_weekly != null) {
-        meters.push(meter("Weekly", null, usdMode() ? fmtUsd(row.usage_weekly) + " billed by OpenRouter" : "billed by OpenRouter" + forUsd));
-      }
-    }
-    const note = row.usage_note ? el("p", { class: "live-note", text: row.usage_note }) : null;
-    const stale = (row.five_hour_pct != null || row.fable_pct != null || row.weekly_pct != null || row.limit_remaining != null) ? asOf(row.snapshot_at) : "";
-    const planText = row.plan || (row.kind === "api" ? "API" : "");
-    return el("div", { class: "live-row", "data-source": row.source },
-      el("div", { class: "live-head" },
-        el("span", { class: "live-title", text: row.title || row.source }),
-        planText ? el("span", { class: "live-plan", text: planText }) : null,
-        stale ? el("span", { class: "live-note live-stale", text: stale, title: "Plan windows come from the last time the tool ran, not a live pull." }) : null,
-      ),
-      meters.length ? el("div", { class: "live-meters" }, ...meters) : null,
-      note,
-    );
-  }
-
   async function loadStatus() {
     try {
       const data = await api("/api/status");
@@ -3634,83 +3223,18 @@
       state.catalogVersion = version;
       state.status = data;
       renderStatus();
-    } catch {
-      $("live-status").hidden = true;
-    }
+    } catch { /* the next poll tries again; the status line reports an engine outage */ }
   }
 
+  // /api/status carries the catalog version the poll above compares and the last ingest time
+  // Settings shows; the plan-window cards it used to carry were removed on 2026-11-03.
   function renderStatus() {
-    const data = state.status;
-    if (!data) return;
+    if (!state.status) return;
     renderSettings();
-    const box = $("live-status");
-    // The Show usage meter preference hides the plan-window meter, not the data:
-    // the rows are still measured and still count in the Chart and the totals, and
-    // turning the switch back on renders them again from the same status.
-    if (state.preferences && !state.preferences.show_usage_meter) {
-      box.hidden = true;
-      box.replaceChildren();
-      $("usage-empty").hidden = true;
-      $("usage-hidden").hidden = true;
-      return;
-    }
-    // Hidden cards leave this pane only: they are not zero and not "not tracked", and the
-    // Chart, the totals and ingest never consult these preferences.
-    if (!hiddenSynced) syncHiddenUsage(true);
-    const hidden = hiddenUsage();
-    const isHidden = (r) => (r.source === "droid" && !showDroid()) || hidden.has(usageId(r));
-    const all = data.plans || [];
-    const hiddenCount = all.filter(isHidden).length;
-    // Only what this Mac measures is a card. A tool whose quota is in no local file is not
-    // listed as "not tracked": + Add subscription is where a plan for one of those is pinned,
-    // and it then appears here as the card the user made. Cards turned off in Settings are not
-    // counted on this pane either; the one case that needs a word is every card being off,
-    // which must not read as "nothing yet".
-    const nodes = all.filter((r) => !isHidden(r) && hasLocalMeasure(r)).map(renderLiveRow).filter(Boolean);
-    const allHidden = nodes.length === 0 && hiddenCount > 0;
-    $("usage-empty").hidden = nodes.length > 0 || allHidden;
-    $("usage-hidden").hidden = !allHidden;
-    box.hidden = nodes.length === 0;
-    box.replaceChildren(...nodes);
   }
 
   // ---------- settings ----------
 
-  // Per-browser presentation preferences, like the unit and key sort. Nothing here reaches the
-  // catalog or an /api endpoint; hiding a subscription never removes it.
-  const showDroid = () => { try { return localStorage.getItem("ksf.showDroid") === "1"; } catch { return false; } };
-  const hiddenUsage = () => {
-    try {
-      const v = JSON.parse(localStorage.getItem("ksf.hiddenUsage") || "[]");
-      return new Set(Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
-    } catch { return new Set(); }
-  };
-  // Two Cursor plans share a source, so a pinned subscription is told apart by its id.
-  const usageId = (row) => row.subscription_id || row.source;
-
-  function setShowDroid(on) {
-    try { localStorage.setItem("ksf.showDroid", on ? "1" : "0"); } catch { /* fine */ }
-    renderStatus();
-  }
-  function setUsageHidden(id, hide) {
-    const set = hiddenUsage();
-    if (hide) set.add(id); else set.delete(id);
-    try { localStorage.setItem("ksf.hiddenUsage", JSON.stringify([...set])); } catch { /* fine */ }
-    syncHiddenUsage();
-    renderStatus();
-  }
-  // The menu bar has no browser storage, so the app keeps a mirror of this choice. Sent on
-  // every change and once per page load, which carries over a choice made before the mirror.
-  let hiddenSynced = false;
-  function syncHiddenUsage(onLoad) {
-    hiddenSynced = true;
-    const hidden = [...hiddenUsage()];
-    // Nothing hidden on a fresh load means nothing to carry over; the menu bar shows no Droid.
-    if (onLoad && hidden.length === 0) return;
-    api("/api/preferences/hidden-usage", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hidden }),
-    }).catch(() => { /* the menu bar keeps its last copy */ });
-  }
   function setTheme(name) {
     applyTheme(name);
     try { localStorage.setItem("ksf.theme", name); } catch { /* fine */ }
@@ -3723,38 +3247,19 @@
 
   function renderSettings() {
     setSwitch($("theme-switch"), readTheme() === "light");
-    setSwitch($("droid-switch"), showDroid());
     renderAppSettings();
     const status = state.status;
-    const list = $("usage-cards-list");
     if (!status) {
-      list.replaceChildren(el("p", { class: "muted", text: "Loading…" }));
       $("last-ingest").textContent = "";
       return;
     }
     $("last-ingest").textContent = status.last_ingest_at ? "Last ingest " + relTime(status.last_ingest_at) : "Not ingested yet";
-    const hidden = hiddenUsage();
-    const rows = (status.plans || []).filter((r) => r.source !== "droid");
-    list.replaceChildren(...rows.map((r) => {
-      const id = usageId(r);
-      const labelId = "usage-card-" + id.replace(/[^a-z0-9_-]/gi, "-");
-      return el("div", { class: "setting" },
-        el("span", { class: "setting-label", id: labelId, text: r.plan ? `${r.title} · ${r.plan}` : r.title || r.source }),
-        el("button", { type: "button", role: "switch", class: "switch", "data-usage-id": id, "aria-labelledby": labelId, "aria-checked": String(!hidden.has(id)) }),
-      );
-    }));
   }
 
   $("theme-switch").addEventListener("click", () => setTheme(readTheme() === "light" ? "dark" : "light"));
-  $("droid-switch").addEventListener("click", () => setShowDroid(!showDroid()));
-  $("usage-cards-list").addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-usage-id]");
-    if (!btn) return;
-    setUsageHidden(btn.dataset.usageId, btn.getAttribute("aria-checked") === "true");
-  });
   document.querySelectorAll('[data-action="settings"]').forEach((b) => b.addEventListener("click", () => showPane("settings")));
 
-  // ---------- the Keysrs app's own choices (meter, menu bar item, auto updates, Quit) ----------
+  // ---------- the Keysrs app's own choices (menu bar item, auto updates, Quit) ----------
 
   // These live in the catalog, not this browser, because the app menu shows the same values and
   // the menu bar has no browser storage. Every read is the persisted truth; every write rides the
@@ -3762,7 +3267,6 @@
   function renderAppSettings() {
     const p = state.preferences;
     if (!p) return;
-    setSwitch($("meter-switch"), !!p.show_usage_meter);
     setSwitch($("menubar-item-switch"), !!p.menubar_item);
     setSwitch($("auto-update-switch"), !!p.update_checks);
   }
@@ -3786,7 +3290,6 @@
   }
 
   const switchOn = (id) => $(id).getAttribute("aria-checked") !== "true";
-  $("meter-switch").addEventListener("click", () => setPreference("/api/preferences/show-usage-meter", switchOn("meter-switch")));
   $("menubar-item-switch").addEventListener("click", () => setPreference("/api/preferences/menubar-item", switchOn("menubar-item-switch")));
   $("auto-update-switch").addEventListener("click", () => setPreference("/api/preferences/update-checks", switchOn("auto-update-switch")));
 
@@ -3890,7 +3393,7 @@
     setRelay({ awake_while_shared: !state.relay.awake_while_shared }, "Saving…");
   });
 
-  // One quiet line under the plan rows: this month from the local logs, in the unit this page is
+  // One quiet line on the Usage pane: this month from the local logs, in the unit this page is
   // in. It is never a subscription invoice, and no dollar figure appears unless USD was chosen.
   async function loadUsageTotals() {
     try {
@@ -3973,8 +3476,6 @@
   showPane("usage", { keyboard: true });
   loadUsageTotals();
   loadKeys({ quiet: true });
-  // The meter's own preference arrives with the first status, so the Usage pane
-  // honors Show usage meter without a flash of a meter the person turned off.
   loadPreferences();
   setInterval(loadStatus, 15000);
   // The relay's line moves on its own (a reconnect, a call opening), so it is read again while shown.
