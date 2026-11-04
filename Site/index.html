@@ -202,7 +202,7 @@ token expires in 30 days</pre>
     <div class="head">
       <p class="eyebrow">Cloud VMs</p>
       <h2 class="sh">Remote agents hold a token.<br>The key stays on loopback.</h2>
-      <p class="sp">A VM, a GitHub Actions runner or a cloud coding session can't reach <code>127.0.0.1</code>. You deploy the relay Worker into your own Cloudflare account; the Mac dials out <code>wss://&lt;worker&gt;/connect</code> with a relay secret, and the Worker pins that one socket in a Durable Object. <code>keys wrap --relay</code> points the env file's base URL at the Worker. Nothing on the Mac listens on a new port.</p>
+      <p class="sp">A VM, a GitHub Actions runner or a cloud coding session can't reach <code>127.0.0.1</code>. You deploy the relay Worker into your own Cloudflare account; the Mac dials out <code>wss://&lt;worker&gt;/connect</code> with a relay secret, and the Worker pins that one socket in a Durable Object. <code>keys wrap --relay</code> points the env file's base URL at the Worker, and <code>keys share &lt;machine&gt; --key &lt;name&gt;…</code> sets up a whole machine with one Touch ID: one token for several keys, and the env lines to paste there. Nothing on the Mac listens on a new port.</p>
     </div>
 
     <div class="ask">
@@ -409,7 +409,7 @@ OPENAI_BASE_URL=https://keysrs-relay.you.workers.dev/evals-openai
           <li><svg><use href="#check"/></svg><span><b>MCP server</b> with fifteen tools, for Claude Code, Codex, Cursor, Droid and Claude Desktop</span></li>
           <li><svg><use href="#check"/></svg><span><b>Project tokens</b> that expire, instead of keys in <code>.env</code></span></li>
           <li><svg><use href="#check"/></svg><span><b>Key vault</b> in the Keychain, behind Touch ID</span></li>
-          <li><svg><use href="#check"/></svg><span><b>Relay Worker</b> for VMs and cloud agents, in your own Cloudflare account</span></li>
+          <li><svg><use href="#check"/></svg><span><b>Relay Worker</b> for VMs and cloud agents, in your own Cloudflare account, and <code>keys share</code> to hand a machine several keys at once</span></li>
           <li><svg><use href="#check"/></svg><span><b>MIT licensed</b>, source on GitHub</span></li>
         </ul>
         <p class="notbuy">Not an AI subscription and no API credits: you use your own provider accounts.</p>
