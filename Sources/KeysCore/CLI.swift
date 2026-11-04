@@ -52,6 +52,12 @@ public struct KeysCLI: ParsableCommand {
             RelayCommand.self,
             ShareCommand.self,
             PurgeCommand.self,
+            EditCommand.self,
+            EventsCommand.self,
+            PrefsCommand.self,
+            ExpiringCommand.self,
+            UpdateCommand.self,
+            QuitCommand.self,
         ]
     )
 }
