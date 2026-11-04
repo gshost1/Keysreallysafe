@@ -20,4 +20,12 @@ final class CLIParityTests: XCTestCase {
         XCTAssertThrowsError(try PrefsSetCommand.parse(["bogus", "on"]).run())
         XCTAssertThrowsError(try PrefsSetCommand.parse(["menubar-item", "maybe"]).run())
     }
+
+    func testEditRefusesEmptyHost() {
+        XCTAssertThrowsError(try EditCommand.parse(["demo", "--host", " "]).run())
+    }
+
+    func testTsvCellKeepsOneRowPerRecord() {
+        XCTAssertEqual(tsvCell("a\tb\nc"), "a b c")
+    }
 }

@@ -28,6 +28,9 @@ struct EditCommand: ParsableCommand {
     func run() throws {
         try KeyName.validate(name)
         if host != nil && clearHost { throw ValidationError("use --host or --clear-host, not both") }
+        if let host, host.trimmingCharacters(in: .whitespaces).isEmpty {
+            throw ValidationError("--host is empty; use --clear-host to drop the per-key host")
+        }
         if provider == nil && kind == nil && notes == nil && host == nil && !clearHost {
             throw ValidationError("nothing to change; pass --provider, --kind, --notes, --host or --clear-host")
         }
@@ -40,12 +43,13 @@ struct EditCommand: ParsableCommand {
         if let host { body["host"] = host }
         if clearHost { body["host"] = NSNull() }
 
-        if let client = try? ControlClient.connect(),
-           (try? client.call(method: "PATCH", path: "/api/keys/\(name)", body: body, expect: 200)) != nil {
+        // A live site owns the in-memory gateway state, so its answer is final: a refusal
+        // is reported as it is, never retried as a direct write behind its back.
+        if let client = try? ControlClient.connect() {
+            _ = try client.call(method: "PATCH", path: "/api/keys/\(name)", body: body, expect: 200)
             print("edited \(name)")
             return
         }
-        // No live site, or it refused: the direct write reports the real problem.
         let service = try AppFactory.makeService()
         _ = try service.patch(
             name: name, provider: provider, kind: kind, notes: notes,
@@ -54,6 +58,11 @@ struct EditCommand: ParsableCommand {
         print("edited \(name)")
         fputs("no Keysrs site is running; it takes effect when one next starts\n", stderr)
     }
+}
+
+/// Tab-separated output must stay one row per record, whatever a label or detail holds.
+func tsvCell(_ s: String) -> String {
+    s.map { $0 == "\t" || $0.isNewline ? " " : String($0) }.joined()
 }
 
 struct EventsCommand: ParsableCommand {
@@ -86,7 +95,7 @@ struct EventsCommand: ParsableCommand {
         }
         print("TS\tACTION\tCALLER\tDETAIL")
         for row in rows {
-            print([row.ts, row.action, row.caller ?? "-", row.detail ?? "-"].joined(separator: "\t"))
+            print([row.ts, row.action, row.caller ?? "-", row.detail ?? "-"].map(tsvCell).joined(separator: "\t"))
         }
     }
 }
@@ -100,20 +109,30 @@ struct PrefsCommand: ParsableCommand {
     )
 }
 
+/// A read that never launches the app: no live site means nothing to read, said plainly.
+func liveClientOrNil() throws -> ControlClient? {
+    try? ControlClient.connect()
+}
+
 struct PrefsShowCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "show", abstract: "Print the saved choices.")
+    static let configuration = CommandConfiguration(
+        commandName: "show", abstract: "Print the saved choices (needs the app running; never launches it)."
+    )
     @Flag var json = false
 
     func run() throws {
-        let client = try AppConnection.connect().controlClient
+        guard let client = try liveClientOrNil() else {
+            throw AppError.siteUnavailable(AppConnection.notRunningMessage)
+        }
         let obj = try client.call(method: "GET", path: "/api/preferences", expect: 200)
         if json {
             try JSONValue.printLine(obj)
             return
         }
-        for key in PrefsSetCommand.names.keys.sorted() {
-            let field = PrefsSetCommand.names[key]!
-            print("\(key)\t\((JSONValue.bool(obj[field]) ?? false) ? "on" : "off")")
+        // Every boolean the site reports, so a preference it grows shows up here too.
+        for field in obj.keys.sorted() {
+            guard let on = JSONValue.bool(obj[field]) else { continue }
+            print("\(field.replacingOccurrences(of: "_", with: "-"))\t\(on ? "on" : "off")")
         }
     }
 }
@@ -155,7 +174,9 @@ struct ExpiringCommand: ParsableCommand {
     @Flag var json = false
 
     func run() throws {
-        let client = try AppConnection.connect().controlClient
+        guard let client = try liveClientOrNil() else {
+            throw AppError.siteUnavailable(AppConnection.notRunningMessage)
+        }
         let obj = try client.call(method: "POST", path: "/api/expiring_tokens", body: [:], expect: 200)
         let tokens = (obj["tokens"] as? [Any])?.compactMap(JSONValue.object) ?? []
         if json {
@@ -169,7 +190,7 @@ struct ExpiringCommand: ParsableCommand {
         print("LABEL\tKEYS\tEXPIRES")
         for t in tokens {
             let keys = (t["keys"] as? [Any])?.compactMap { $0 as? String }.joined(separator: ",") ?? ""
-            print([JSONValue.string(t["label"]) ?? "", keys, JSONValue.string(t["expires_at"]) ?? ""].joined(separator: "\t"))
+            print([JSONValue.string(t["label"]) ?? "", keys, JSONValue.string(t["expires_at"]) ?? ""].map(tsvCell).joined(separator: "\t"))
         }
     }
 }
@@ -201,9 +222,17 @@ struct QuitCommand: ParsableCommand {
     )
 
     func run() throws {
-        guard let client = try? ControlClient.connect() else {
-            print("Keysrs is not running")
-            return
+        let client: ControlClient
+        do {
+            client = try ControlClient.connect()
+        } catch {
+            // No control file at all is the one case that means "not running"; a file that
+            // exists but cannot be used is a failure, so a script never swaps a live app.
+            if let url = try? ControlFile.url(), !FileManager.default.fileExists(atPath: url.path) {
+                print("Keysrs is not running")
+                return
+            }
+            throw error
         }
         _ = try client.call(method: "POST", path: "/api/app/quit", body: [:], expect: 200)
         print("Keysrs is quitting")
