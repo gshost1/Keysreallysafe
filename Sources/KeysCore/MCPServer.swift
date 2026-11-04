@@ -19,10 +19,11 @@ struct MCPServer {
     /// The server name MCP clients see, the same constant the registration writes.
     static let serverName = "keysrs"
     /// The frozen `instructions` string (VAL-MCP-INSTRUCTIONS-002 pins it byte for
-    /// byte): the preamble line plus the ten rules, LF-joined, no trailing newline.
+    /// byte): the preamble line plus the eleven rules, LF-joined, no trailing newline.
     /// Rules 7-10 came from the 0.14 hands-on test (an agent ran git itself, skipped
     /// the Docker question, and blamed a grant for a provider's 401); rule 9 holds the
-    /// folder scoping the folder tools' descriptions used to repeat.
+    /// folder scoping the folder tools' descriptions used to repeat. Rule 11 is for keys
+    /// whose Keychain item an older build still owns; the delete itself stays the user's.
     static let instructions = """
 Keysrs is the local API-key vault on this Mac. When using its tools, follow these rules:
 1. Never open or read .env files yourself; use the scan_project tool instead.
@@ -35,6 +36,7 @@ Keysrs is the local API-key vault on this Mac. When using its tools, follow thes
 8. Before import_and_wrap, if the scan found docker files, ask whether Docker containers may reach the gateway; the default is no.
 9. Folder tools take an optional folder inside the working directory, which is the default; anything outside it, or a working directory of root or home, is refused.
 10. The X-Keysrs-Source response header tells refusals apart: gateway means Keysrs refused; upstream means the provider answered, so an upstream 401 is the provider rejecting the stored key, not the grant.
+11. If deleting a key fails with a keychain error, a September 2026 build saved it; tell the user to run `security delete-generic-password -s keysreallysafe -a <name> && keys rm <name>` in their own terminal, and never run it yourself.
 """
 
     private let writeBytes: (Data) -> Void
