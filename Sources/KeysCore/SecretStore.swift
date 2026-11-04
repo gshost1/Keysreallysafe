@@ -132,22 +132,29 @@ struct KeychainStore: SecretStore {
         // read them, but SecItemDelete still refuses, so the dashboard could not delete them.
         // Apple's own tool may delete them (it did, without a prompt, on the owner's Mac);
         // the user already passed Touch ID for this delete.
-        if status != errSecUserCanceled, status != errSecAuthFailed, Self.deleteWithSecurityTool(service: service, name: name) {
+        let toolCannotHelp = [errSecUserCanceled, errSecAuthFailed, errSecInteractionNotAllowed]
+        if !toolCannotHelp.contains(status), Self.deleteWithSecurityTool(service: service, name: name) {
             return
         }
         try Self.finish(status, op: "delete", name: name)
     }
 
     /// `/usr/bin/security delete-generic-password`, argv only (no shell; `name` is a
-    /// validated key name). True when the item is gone afterwards.
+    /// validated key name). True when the item is gone afterwards. Bounded so a Keychain
+    /// dialog the headless app cannot show never hangs the dashboard request.
     private static func deleteWithSecurityTool(service: String, name: String) -> Bool {
         let proc = Process()
+        let exited = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in exited.signal() }
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         proc.arguments = ["delete-generic-password", "-s", service, "-a", name]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do { try proc.run() } catch { return false }
-        proc.waitUntilExit()
+        if exited.wait(timeout: .now() + 10) == .timedOut {
+            proc.terminate()
+            _ = exited.wait(timeout: .now() + 2)
+        }
         let check = SecItemCopyMatching(KeychainQuery.item(service: service, name: name) as CFDictionary, nil)
         return check == errSecItemNotFound
     }
