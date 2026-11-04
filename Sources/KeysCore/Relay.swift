@@ -14,6 +14,12 @@ enum RelayProtocol {
     static let protocolHeader = "X-Keysrs-Relay-Protocol"
     /// Largest body chunk per frame; Cloudflare caps a WebSocket message at 1 MiB.
     static let chunk = 64 * 1024
+    /// How long response bytes wait for more before they go out as a frame. Every frame is
+    /// an incoming WebSocket message to the Worker's Durable Object, which Cloudflare counts
+    /// as a request (the free plan stops at 100,000 a day). Sending each read of a token
+    /// stream as its own frame cost about 200 per call and 1.8M requests in one night of
+    /// evals; batching caps a stream at five frames a second for 200 ms of extra latency.
+    static let flushWindow: TimeInterval = 0.2
     /// Matches the gateway's own request body cap, so the relay refuses nothing the gateway
     /// would accept and buffers nothing it would refuse.
     static let bodyCap = GatewayListener.bodyCap
@@ -499,24 +505,69 @@ final class RelayRequest: @unchecked Sendable {
             return
         }
         guard send(.json(.response, id: id, ["status": head.status, "headers": head.headers.map { [$0.0, $0.1] }])) else { return }
-        var leftover = Data(pending[headEnd.upperBound...])
-        while !leftover.isEmpty {
-            let chunk = leftover.prefix(RelayProtocol.chunk)
-            guard send(RelayFrame(type: .body, id: id, payload: Data(chunk))) else { return }
-            leftover.removeFirst(chunk.count)
+        let ended = Self.pumpBody(fd: sock, leftover: Data(pending[headEnd.upperBound...]), window: RelayProtocol.flushWindow) {
+            send(RelayFrame(type: .body, id: id, payload: $0))
         }
-        while true {
-            let n = Darwin.read(sock, &buf, buf.count)
-            if n == 0 { break }
-            if n < 0 {
-                if !isCancelled {
-                    _ = send(.json(.error, id: id, ["code": "gateway_read_failed", "message": "the gateway stopped responding mid-body"]))
-                }
-                return
+        switch ended {
+        case .end:
+            _ = send(RelayFrame(type: .end, id: id))
+        case .readFailed:
+            if !isCancelled {
+                _ = send(.json(.error, id: id, ["code": "gateway_read_failed", "message": "the gateway stopped responding mid-body"]))
             }
-            guard send(RelayFrame(type: .body, id: id, payload: Data(buf[0..<n]))) else { return }
+        case .sendFailed:
+            return
         }
-        _ = send(RelayFrame(type: .end, id: id))
+    }
+
+    enum PumpEnd: Equatable { case end, readFailed, sendFailed }
+
+    /// Streams the rest of a response body from `fd` to `send`, starting with `leftover`.
+    /// Bytes are held until `chunk` of them are ready or the oldest has waited `window`, so a
+    /// token stream goes out in a few frames a second instead of one per read (see
+    /// `RelayProtocol.flushWindow`). What is held is always sent before the end or a failed
+    /// read, so the agent gets every byte the gateway wrote.
+    static func pumpBody(fd: Int32, leftover: Data, window: TimeInterval, send: (Data) -> Bool) -> PumpEnd {
+        let windowNanos = UInt64(max(0, window) * 1_000_000_000)
+        var held = leftover
+        var deadline: UInt64? = held.isEmpty ? nil : DispatchTime.now().uptimeNanoseconds + windowNanos
+        var buf = [UInt8](repeating: 0, count: RelayProtocol.chunk)
+
+        func flush(all: Bool) -> Bool {
+            while held.count >= RelayProtocol.chunk || (all && !held.isEmpty) {
+                let take = min(held.count, RelayProtocol.chunk)
+                guard send(Data(held.prefix(take))) else { return false }
+                held.removeFirst(take)
+            }
+            if held.isEmpty { deadline = nil }
+            return true
+        }
+
+        while true {
+            guard flush(all: false) else { return .sendFailed }
+            if let due = deadline {
+                let now = DispatchTime.now().uptimeNanoseconds
+                if now >= due {
+                    guard flush(all: true) else { return .sendFailed }
+                    continue
+                }
+                // Wait for more bytes only until the held ones are due; the socket's own
+                // read deadline still governs how long an idle gateway may stay silent.
+                var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                let ms = Int32(min(UInt64(Int32.max), (due - now + 999_999) / 1_000_000))
+                let ready = Darwin.poll(&pfd, 1, ms)
+                if ready == 0 { continue }
+                if ready < 0 && errno == EINTR { continue }
+            }
+            let n = Darwin.read(fd, &buf, buf.count)
+            if n < 0 && errno == EINTR { continue }
+            if n <= 0 {
+                guard flush(all: true) else { return .sendFailed }
+                return n == 0 ? .end : .readFailed
+            }
+            if held.isEmpty { deadline = DispatchTime.now().uptimeNanoseconds + windowNanos }
+            held.append(contentsOf: buf[0..<n])
+        }
     }
 
     /// Status line and headers of the gateway's response, minus what the Worker re-frames.

@@ -52,7 +52,12 @@ the only addition is one outbound TLS connection from the Mac to the Worker.
 
 You need a Cloudflare account (the free Workers plan is enough: the relay uses
 a SQLite-backed Durable Object, which the free plan includes) and Node 22 or
-newer on the Mac.
+newer on the Mac. The free plan stops the Durable Object after 100,000
+requests a day, and every frame the Mac sends counts as one: a relayed call
+costs its response head, its end and one body frame per 64 KiB or per 200 ms
+of streaming (`flushWindow` in `Relay.swift`). A long unattended batch of
+streamed calls can still reach that; Workers Paid includes 1 million a month and
+bills Mac frames at 20 to a request.
 
 ```sh
 # 1. Deploy the Worker into your own account (from a checkout of this repo).
