@@ -248,7 +248,10 @@ the page, or the API response for the key list. Run with no arguments in a
 terminal, `keys add` asks for the provider first — type-ahead over the
 catalog, arrows or Tab to choose, Enter to accept — then suggests a unique
 name and takes the value through the same hidden, confirmed prompt as the
-flagged form; without a terminal it prints usage instead.
+flagged form; without a terminal it prints usage instead. A secret that
+belongs to no provider (a machine-identity client ID, a service password)
+goes under `--provider other`, also offered in the picker as "Other secret":
+it is stored and read back like any key, and the gateway never proxies it.
 
 Getting a value back asks for user presence, Touch ID or your login password.
 The prompt is the app's own (LocalAuthentication before an ordinary Keychain

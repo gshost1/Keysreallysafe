@@ -106,7 +106,8 @@ struct AddCommand: ParsableCommand {
     )
 
     @Argument var name: String?
-    @Option var provider: String?
+    @Option(help: "Provider id from keys providers; other for a secret no provider fits (no gateway).")
+    var provider: String?
     @Option var kind: String = "runtime"
     @Option var notes: String = ""
     @Flag var clipboard = false

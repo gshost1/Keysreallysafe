@@ -177,17 +177,25 @@ enum GuidedAdd {
 
     /// The explicit `--provider` gate: the id must resolve through the merged catalog and
     /// overlay (hidden shipped rows still resolve, so retired ids stay valid). Unknown ids
-    /// fail with the nearest known ids and nothing is stored.
+    /// fail with the nearest known ids and nothing is stored. A secret that belongs to no
+    /// provider (an Infisical client ID, say) is what the shipped `other` row is for, so
+    /// the refusal names it rather than leaving the user to guess.
     static func validateExplicitProvider(_ id: String) throws {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw AppError.usage("provider is required") }
         guard Providers.provider(id: trimmed) == nil else { return }
         let near = GuidedProviders.didYouMean(trimmed)
         if near.isEmpty {
-            throw AppError.usage("unknown provider \(trimmed); keys providers lists the valid ids")
+            throw AppError.usage("unknown provider \(trimmed); keys providers lists the valid ids. \(otherHint)")
         }
-        throw AppError.usage("unknown provider \(trimmed); did you mean \(near.joined(separator: ", "))?")
+        throw AppError.usage("unknown provider \(trimmed); did you mean \(near.joined(separator: ", "))? \(otherHint)")
     }
+
+    static let otherHint = "For a secret no provider fits, use --provider \(genericProvider) (stored in Keychain, no gateway)."
+
+    /// The shipped catalog row for secrets that belong to no provider. Keys stored under it
+    /// before it was a catalog row (older versions accepted any id) resolve through it now.
+    static let genericProvider = "other"
 
     /// The fixed refusal every secret-shaped name gets. It names no value, so the
     /// pasted key is neither echoed back nor logged (VAL-H-007).
