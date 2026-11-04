@@ -23,6 +23,7 @@ public struct KeysCLI: ParsableCommand {
             IngestCommand.self,
             UsageCommand.self,
             SpendCommand.self,
+            RetiredStatusCommand.self,
             VersionCommand.self,
             DoctorCommand.self,
             LogCommand.self,
@@ -310,6 +311,22 @@ enum UsageImportRun {
             }
         }
         return failed
+    }
+}
+
+/// `keys status` printed the plan-window cards, removed on 2026-11-03. The hidden stub keeps
+/// old scripts failing with a pointer instead of an "unknown subcommand" error.
+struct RetiredStatusCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "status",
+        abstract: "Removed: Keysrs no longer tracks plan limits.",
+        shouldDisplay: false
+    )
+
+    @Flag var json = false
+
+    func run() throws {
+        throw AppError.usage("keys status was removed on 2026-11-03: Keysrs no longer tracks plan limits; use keys spend --json")
     }
 }
 
