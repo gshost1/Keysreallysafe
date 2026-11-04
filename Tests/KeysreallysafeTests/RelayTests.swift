@@ -629,3 +629,89 @@ final class RelayTests: XCTestCase {
         XCTAssertNoThrow(try service.resetRelay())
     }
 }
+
+/// The response body pump on its own, over a local socket pair: what the gateway writes
+/// must all arrive, in few frames, and nothing may sit unsent past the flush window.
+final class RelayBodyPumpTests: XCTestCase {
+    private final class Sent: @unchecked Sendable {
+        private let lock = NSLock()
+        private var frames: [(Data, UInt64)] = []
+        func add(_ data: Data) { lock.withLock { frames.append((data, DispatchTime.now().uptimeNanoseconds)) } }
+        var all: [(data: Data, at: UInt64)] { lock.withLock { frames.map { ($0.0, $0.1) } } }
+        var joined: Data { all.reduce(Data()) { $0 + $1.data } }
+    }
+
+    private func pair() throws -> (reader: Int32, writer: Int32) {
+        var fds: [Int32] = [0, 0]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else { throw POSIXError(.EIO) }
+        return (fds[0], fds[1])
+    }
+
+    private func write(_ fd: Int32, _ data: Data) {
+        _ = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, data.count) }
+    }
+
+    func testTokenStreamIsBatchedIntoFewFramesWithEveryByteKept() throws {
+        let (reader, writer) = try pair()
+        defer { Darwin.close(reader) }
+        // 60 SSE events 5 ms apart, about 300 ms of streaming: one frame per read would be 60.
+        var expected = Data()
+        let events = (0..<60).map { Data("data: {\"delta\":\"tok\($0)\"}\n\n".utf8) }
+        events.forEach { expected.append($0) }
+        let gateway = Thread {
+            for event in events {
+                self.write(writer, event)
+                usleep(5_000)
+            }
+            Darwin.close(writer)
+        }
+        gateway.start()
+        let sent = Sent()
+        let started = DispatchTime.now().uptimeNanoseconds
+        let ended = RelayRequest.pumpBody(fd: reader, leftover: Data("data: first\n\n".utf8), window: 0.1) { sent.add($0); return true }
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e9
+        XCTAssertEqual(ended, .end)
+        XCTAssertEqual(sent.joined, Data("data: first\n\n".utf8) + expected)
+        // One frame per 100 ms window, plus the immediate first one and the one at the end;
+        // measured against the real duration so a slow runner cannot fail it.
+        XCTAssertLessThanOrEqual(sent.all.count, Int(elapsed / 0.1) + 2, "\(sent.all.count) frames in \(elapsed) s")
+        XCTAssertLessThan(sent.all.count, 30, "60 reads must not become one frame each")
+        let firstAt = try XCTUnwrap(sent.all.first).at
+        XCTAssertLessThan(Double(firstAt - started) / 1e9, 0.05, "the first bytes go out without waiting a window")
+    }
+
+    func testHeldBytesGoOutWhenTheWindowEndsNotOnlyAtTheEnd() throws {
+        let (reader, writer) = try pair()
+        defer { Darwin.close(reader) }
+        let closedAt = LockedValue<UInt64>(0)
+        let gateway = Thread {
+            self.write(writer, Data("data: hello\n\n".utf8))
+            usleep(400_000)
+            closedAt.set(DispatchTime.now().uptimeNanoseconds)
+            Darwin.close(writer)
+        }
+        gateway.start()
+        let sent = Sent()
+        let ended = RelayRequest.pumpBody(fd: reader, leftover: Data(), window: 0.05) { sent.add($0); return true }
+        XCTAssertEqual(ended, .end)
+        let first = try XCTUnwrap(sent.all.first)
+        XCTAssertEqual(first.data, Data("data: hello\n\n".utf8))
+        XCTAssertLessThan(first.at, closedAt.get(), "a quiet stream's bytes must not wait for the end")
+    }
+
+    func testLargeBodySplitsAtTheChunkSizeAndAFailedSendStops() throws {
+        let (reader, writer) = try pair()
+        defer { Darwin.close(reader) }
+        Darwin.close(writer)
+        let big = Data(repeating: 7, count: RelayProtocol.chunk * 2 + 10)
+        let sent = Sent()
+        XCTAssertEqual(RelayRequest.pumpBody(fd: reader, leftover: big, window: 0.2) { sent.add($0); return true }, .end)
+        XCTAssertEqual(sent.all.map { $0.data.count }, [RelayProtocol.chunk, RelayProtocol.chunk, 10])
+
+        let (r2, w2) = try pair()
+        defer { Darwin.close(r2); Darwin.close(w2) }
+        var calls = 0
+        XCTAssertEqual(RelayRequest.pumpBody(fd: r2, leftover: big, window: 0.2) { _ in calls += 1; return false }, .sendFailed)
+        XCTAssertEqual(calls, 1)
+    }
+}
