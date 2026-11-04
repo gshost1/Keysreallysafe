@@ -207,7 +207,6 @@ final class APIHandler: @unchecked Sendable {
     /// GET /api/preferences — the persisted choices both surfaces read.
     private func preferencesStatus() -> HTTPResponse {
         HTTPResponse.json(200, [
-            "show_usage_meter": service.preferences.showUsageMeter,
             "menubar_item": service.preferences.menubarItem,
             "update_checks": service.preferences.updateChecks,
         ])
@@ -219,12 +218,6 @@ final class APIHandler: @unchecked Sendable {
         let obj = try jsonBody(request)
         guard obj.count == 1, let on = JSONValue.bool(obj["on"]) else { return nil }
         return on
-    }
-
-    private func preferenceSet(_ request: HTTPRequest, _ write: (Bool) throws -> Void) throws -> HTTPResponse {
-        guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
-        try write(on)
-        return preferencesStatus()
     }
 
     /// POST /api/app/quit — the token-gated Quit behind the Settings button. The
@@ -251,7 +244,7 @@ final class APIHandler: @unchecked Sendable {
             case ("GET", "/api/spend"):
                 return try spend(request)
             case ("GET", "/api/status"):
-                return try liveStatus()
+                return try status()
             case ("GET", "/api/grants"):
                 return grantsList(request)
             case ("DELETE", "/api/grants"):
@@ -362,19 +355,11 @@ final class APIHandler: @unchecked Sendable {
                 return try sharesIssue(request)
             case ("DELETE", "/api/shares"):
                 return try sharesRevoke(request)
-            case ("POST", "/api/preferences/hidden-usage"):
-                guard let list = try jsonBody(request)["hidden"] as? [Any] else {
-                    return HTTPResponse.json(400, ["error": "hidden must be a list"])
-                }
-                try service.preferences.setHiddenUsage(list.compactMap { $0 as? String })
-                return HTTPResponse.json(200, ["hidden": service.preferences.hiddenUsage.sorted()])
             // The persisted app choices one Settings pane and the in-window app menu
             // both read. GET is open like the other status routes (booleans, nothing
             // secret); every write rides the house token gate above.
             case ("GET", "/api/preferences"):
                 return preferencesStatus()
-            case ("POST", "/api/preferences/show-usage-meter"):
-                return try preferenceSet(request) { try service.preferences.setShowUsageMeter($0) }
             case ("POST", "/api/preferences/menubar-item"):
                 guard let on = try preferenceFlag(request) else { return HTTPResponse.json(400, ["error": "send on"]) }
                 try service.preferences.setMenubarItem(on)
@@ -393,18 +378,6 @@ final class APIHandler: @unchecked Sendable {
             // someone else's process.
             case ("POST", "/api/app/quit"):
                 return appQuit()
-            case ("GET", "/api/limits"):
-                return try limitsList()
-            case ("PUT", let p) where p.hasPrefix("/api/limits/"):
-                return try limitSet(request, path: p)
-            case ("DELETE", let p) where p.hasPrefix("/api/limits/"):
-                return try limitClear(p)
-            case ("GET", "/api/subscriptions"):
-                return try subscriptionsList()
-            case ("POST", "/api/subscriptions"):
-                return try subscriptionsAdd(request)
-            case (_, let p) where p.hasPrefix("/api/subscriptions/"):
-                return try subscriptionsItem(request, path: p)
             case ("GET", _) where !path.hasPrefix("/api/"):
                 return staticFile(path)
             case ("HEAD", _) where !path.hasPrefix("/api/"):
@@ -436,8 +409,8 @@ final class APIHandler: @unchecked Sendable {
     }
 
     private func mutatingAPI(_ method: String) -> Bool {
-        // PUT is only the limits route today, but it mutates the same way POST does, so it
-        // rides the same token gate instead of growing into a hole.
+        // No route takes PUT today, but it mutates the same way POST does, so it rides the
+        // same token gate instead of growing into a hole when one does.
         method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
     }
 
@@ -451,8 +424,14 @@ final class APIHandler: @unchecked Sendable {
             && HTTPFrame.LoopbackOrigin.originAllowed(request.headers["origin"], port: request.serverPort)
     }
 
-    private func liveStatus() throws -> HTTPResponse {
-        HTTPResponse.json(200, try service.liveStatus().jsonObject())
+    /// What an open dashboard polls to know the catalog moved (a gateway call, an ingest pass,
+    /// another window's edit) and when logs were last read. The plan-window rows it used to
+    /// carry were removed on 2026-11-03.
+    private func status() throws -> HTTPResponse {
+        HTTPResponse.json(200, [
+            "last_ingest_at": try service.catalog.lastIngestAt() as Any? ?? NSNull(),
+            "catalog_version": try service.catalog.catalogVersion(),
+        ])
     }
 
     private func spend(_ request: HTTPRequest) throws -> HTTPResponse {
@@ -574,139 +553,6 @@ final class APIHandler: @unchecked Sendable {
         default:
             return HTTPResponse.json(405, ["error": "method_not_allowed"])
         }
-    }
-
-    // The per-window token limits on a locally tracked row (the Droid row today). Writes carry
-    // the same per-launch token as every other mutation, and a limit is a positive whole number
-    // and nothing else, so a value a caller did not quite mean is refused rather than coerced.
-    private func limitsList() throws -> HTTPResponse {
-        HTTPResponse.json(200, ["limits": try service.usageLimits().map { $0.jsonObject() }])
-    }
-
-    private func limitSet(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
-        let (source, window) = try limitTarget(path)
-        let obj = try jsonBody(request)
-        guard let tokens = wholePositiveInt(obj["tokens"]) else {
-            return HTTPResponse.json(400, ["error": "tokens must be a positive whole number"])
-        }
-        return HTTPResponse.json(200, try service.setUsageLimit(
-            source: source, window: window, tokens: tokens
-        ).jsonObject())
-    }
-
-    /// Idempotent on purpose: clearing an already-clear window leaves the same state, so it
-    /// answers like clearing a present limit does.
-    private func limitClear(_ path: String) throws -> HTTPResponse {
-        let (source, window) = try limitTarget(path)
-        try service.clearUsageLimit(source: source, window: window)
-        return HTTPResponse.json(200, ["removed": "\(source)/\(window)"])
-    }
-
-    private func limitTarget(_ path: String) throws -> (source: String, window: String) {
-        let parts = path.dropFirst("/api/limits/".count).split(separator: "/").map(String.init)
-        guard parts.count == 2 else { throw AppError.usage("expected /api/limits/<source>/<window>") }
-        return (parts[0], parts[1])
-    }
-
-    // The subscriptions the user pins to the Usage pane. Writes carry the same per-launch token
-    // as every other mutation, and the fields are validated strictly — a subscription is a note
-    // the user wrote about a plan, so a half-sent one is refused rather than guessed at.
-    private func subscriptionsList() throws -> HTTPResponse {
-        HTTPResponse.json(200, ["subscriptions": try service.subscriptions().map { $0.jsonObject() }])
-    }
-
-    private func subscriptionsAdd(_ request: HTTPRequest) throws -> HTTPResponse {
-        let obj = try jsonBody(request)
-        let tool = try Subscriptions.validateTool(obj["tool"])
-        let name = try Subscriptions.validateName(obj["name"], tool: tool)
-        let plan = try Subscriptions.validatePlan(obj["plan"])
-        let limit = try Subscriptions.resolveLimit(try subscriptionLimitInput(obj), existing: nil)
-        let record = try service.addSubscription(tool: tool, name: name, plan: plan, limit: limit)
-        return HTTPResponse.json(201, record.jsonObject())
-    }
-
-    /// PATCH rewrites the user's fields (a present-and-equal `tool` is accepted so the dialog can
-    /// always send the whole form); DELETE removes the row.
-    private func subscriptionsItem(_ request: HTTPRequest, path: String) throws -> HTTPResponse {
-        let parts = path.dropFirst("/api/subscriptions/".count).split(separator: "/").map(String.init)
-        guard parts.count == 1, !parts[0].isEmpty else {
-            throw AppError.usage("expected /api/subscriptions/<id>")
-        }
-        let id = parts[0]
-        switch request.method {
-        case "PATCH":
-            guard let existing = try service.subscription(id: id) else { throw AppError.notFound(id) }
-            let obj = try jsonBody(request)
-            if obj.keys.contains("tool") {
-                let tool = try Subscriptions.validateTool(obj["tool"])
-                guard tool == existing.tool else {
-                    throw AppError.usage("tool cannot change; remove the subscription and add it again")
-                }
-            }
-            let name: String
-            if obj.keys.contains("name") {
-                name = try Subscriptions.validateName(obj["name"], tool: existing.tool)
-            } else {
-                name = existing.name
-            }
-            let plan: String
-            if obj.keys.contains("plan") {
-                plan = try Subscriptions.validatePlan(obj["plan"])
-            } else {
-                plan = existing.plan
-            }
-            let limit = try Subscriptions.resolveLimit(try subscriptionLimitInput(obj), existing: existing.limit)
-            let record = try service.updateSubscription(id: id, name: name, plan: plan, limit: limit)
-            return HTTPResponse.json(200, record.jsonObject())
-        case "DELETE":
-            try service.removeSubscription(id: id)
-            return HTTPResponse.json(200, ["removed": id])
-        default:
-            return HTTPResponse.json(405, ["error": "method_not_allowed"])
-        }
-    }
-
-    /// The three limit fields with their presence kept, so "all-or-nothing" can be told from
-    /// "not being edited". Values of the wrong type are a 400 here, not a silent nil.
-    private func subscriptionLimitInput(_ obj: [String: Any]) throws -> Subscriptions.LimitInput {
-        var input = Subscriptions.LimitInput()
-        if obj.keys.contains("limit_amount") {
-            input.amountPresent = true
-            let value = obj["limit_amount"]
-            if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
-                input.amount = number.doubleValue
-            } else if !(value is NSNull) {
-                throw AppError.usage("limit_amount must be a number or null")
-            }
-        }
-        if obj.keys.contains("limit_unit") {
-            input.unitPresent = true
-            let value = obj["limit_unit"]
-            if let string = value as? String {
-                input.unit = string
-            } else if !(value is NSNull) {
-                throw AppError.usage("limit_unit must be a string or null")
-            }
-        }
-        if obj.keys.contains("limit_period") {
-            input.periodPresent = true
-            let value = obj["limit_period"]
-            if let string = value as? String {
-                input.period = string
-            } else if !(value is NSNull) {
-                throw AppError.usage("limit_period must be a string or null")
-            }
-        }
-        return input
-    }
-
-    /// A JSON number that is a whole count above zero: booleans, strings, fractions and floats
-    /// beyond the integer range are all nil.
-    private func wholePositiveInt(_ any: Any?) -> Int? {
-        guard let number = any as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        let value = number.doubleValue
-        guard value > 0, value.rounded() == value, value <= 9_007_199_254_740_991 else { return nil }
-        return Int(value)
     }
 
     private func keysGateway(_ request: HTTPRequest, name: String) throws -> HTTPResponse {

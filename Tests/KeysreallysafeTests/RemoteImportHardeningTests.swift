@@ -439,18 +439,4 @@ final class RemoteImportHardeningTests: XCTestCase {
         XCTAssertTrue(after.caption.contains("not priced"), after.caption)
         XCTAssertEqual(after.jsonObject()["caption"] as? String, after.caption)
     }
-
-    // MARK: F12 places remote rows never reach
-
-    func testDroidPlanWindowsIgnoreRemoteRows() throws {
-        let (db, _) = try tempCatalog()
-        let now = Date()
-        let at = UTC.iso(now.addingTimeInterval(-600))
-        _ = try db.insertUsage(UsageEvent(source: "droid-remote", sessionId: "s", promptId: "p", model: "kimi-k3",
-            occurredAt: at, provider: "moonshot", inputTokens: 5_000_000, outputTokens: 0))
-        XCTAssertEqual(try DroidUsage.windows(catalog: db, now: now), DroidUsage.Windows())
-        _ = try db.insertUsage(UsageEvent(source: "droid-local", sessionId: "s", promptId: "p2", model: "kimi-k3",
-            occurredAt: at, provider: "moonshot", inputTokens: 40, outputTokens: 0))
-        XCTAssertEqual(try DroidUsage.windows(catalog: db, now: now).fiveHour, 40)
-    }
 }

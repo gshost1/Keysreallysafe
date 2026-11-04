@@ -242,7 +242,9 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(rest, "v1/x")
     }
 
-    func testOpenRouterPollDeniesRedirects() async throws {
+    // Was the OpenRouter poll's test; the poll is gone (2026-11-03) but provider checks still
+    // send through BlockingHTTP, so the redirect refusal keeps its coverage here.
+    func testBlockingHTTPDeniesRedirects() async throws {
         let secondHits = RequestLog()
         let second = try LoopbackHTTPServer(port: 0) { request in
             secondHits.record(request)
@@ -262,10 +264,11 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         }
         first.start()
         defer { first.stop() }
-        let client = OpenRouterHTTP(
-            endpoint: URL(string: "http://127.0.0.1:\(first.boundPort)/api/v1/key")!
-        )
-        XCTAssertThrowsError(try client.fetch(secret: "sk-or-test"))
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(first.boundPort)/api/v1/key")!)
+        request.setValue("Bearer sk-or-test", forHTTPHeaderField: "Authorization")
+        if let (_, http) = try? BlockingHTTP.send(request, timeout: 10) {
+            XCTAssertEqual(http.statusCode, 302, "the redirect is answered, not followed")
+        }
         XCTAssertEqual(secondHits.count, 0)
     }
 

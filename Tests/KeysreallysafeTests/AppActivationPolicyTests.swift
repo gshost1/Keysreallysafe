@@ -42,11 +42,9 @@ final class AppActivationPolicyTests: XCTestCase {
         XCTAssertEqual(rig.appliedPolicies, [.accessory], "launch applies accessory, nothing more")
         XCTAssertFalse(rig.window.orderedFront, "no dashboard window is shown at launch")
         XCTAssertFalse(rig.welcomeShown, "the first-run welcome is deferred, not raised over the headless launch")
-        XCTAssertTrue(rig.ingestScheduled, "the ingest scheduler starts although the meter and the window are hidden")
-        XCTAssertTrue(rig.openRouterScheduled)
+        XCTAssertTrue(rig.ingestScheduled, "the ingest scheduler starts although the window is hidden")
         XCTAssertTrue(rig.initialIngestQueued)
         // The headless defaults are in force after the launch migration.
-        XCTAssertFalse(rig.preferences.showUsageMeter)
         XCTAssertFalse(rig.preferences.menubarItem)
         XCTAssertTrue(rig.preferences.updateChecks, "Install updates automatically is on by default")
         // A headless app is a running site: its status answer works with no window.
@@ -200,13 +198,12 @@ final class AppActivationPolicyTests: XCTestCase {
         XCTAssertEqual(item("Relay for Cloud Agents")?.action, #selector(MenubarExtra.toggleRelay))
         XCTAssertEqual(item("Keep Mac Awake for Relay Calls")?.action, #selector(MenubarExtra.toggleRelayAwake))
         XCTAssertEqual(item("Keep Mac Awake While Sharing Keys")?.action, #selector(MenubarExtra.toggleRelayAwakeWhileShared))
-        XCTAssertNotNil(item("Show Usage Meter"))
+        XCTAssertNil(item("Show Usage Meter"), "the plan-window meter and its toggle are gone")
         XCTAssertNotNil(item("Show Menu Bar Item"))
         XCTAssertNotNil(item("Install Updates Automatically"), "the old label is now the install setting")
 
         // The same persisted values the dashboard reads drive the menu states.
         rig.extra.appWindow?.menuWillOpen(appMenu)
-        XCTAssertEqual(item("Show Usage Meter")?.state, rig.preferences.showUsageMeter ? .on : .off)
         XCTAssertEqual(item("Show Menu Bar Item")?.state, rig.preferences.menubarItem ? .on : .off)
         XCTAssertEqual(item("Install Updates Automatically")?.state, rig.preferences.updateChecks ? .on : .off)
         // The app menu carries the same relay state the status item's menu does.
@@ -244,7 +241,6 @@ final class HeadlessAppRig {
     var extra: MenubarExtra!
     var appliedPolicies: [AppActivation.Policy] = []
     var ingestScheduled = false
-    var openRouterScheduled = false
     var initialIngestQueued = false
     var welcomeShown = false
     /// The notification notifier a launch may start; nil (the default) proves a
@@ -275,7 +271,7 @@ final class HeadlessAppRig {
         if !freshWelcome {
             // A store that already answered the welcome: the deferred welcome has
             // nothing to ask, so only a fresh store can prove the deferral.
-            try service.preferences.recordWelcome(service.preferences.welcomePlan(), claudeRefresh: false)
+            try service.preferences.recordWelcome(service.preferences.welcomePlan())
         }
         // The launch path's login-item registration is not under test here, and
         // the rig injects no registerLoginItem seam: the recorded marker keeps
@@ -316,7 +312,6 @@ final class HeadlessAppRig {
                                       recoveryDelay: .milliseconds(20), defaults: MemoryDefaults())
             },
             scheduleIngest: { [weak self] _ in self?.ingestScheduled = true },
-            scheduleOpenRouter: { [weak self] _ in self?.openRouterScheduled = true },
             ingestInitially: { [weak self] _ in self?.initialIngestQueued = true },
             notifications: notifier,
             startNotifications: { [weak self] _, _ in self?.notificationsStarted = true },

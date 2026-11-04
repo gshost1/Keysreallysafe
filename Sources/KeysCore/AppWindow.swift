@@ -10,7 +10,6 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     private let activation: AppActivation
     private let window: any DashboardWindow
     private var loginItem: NSMenuItem?
-    private var meterItem: NSMenuItem?
     private var menubarToggleItem: NSMenuItem?
     private var updateItem: NSMenuItem?
     private var relayAppItem: NSMenuItem?
@@ -129,6 +128,9 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     }
 
     func installMenu(extra: MenubarExtra) {
+        // Named explicitly: `NSApp` is only set once something has created the shared
+        // application, and nothing else on this path is guaranteed to have.
+        let app = NSApplication.shared
         menubar = extra
         let main = NSMenu()
         let appItem = NSMenuItem()
@@ -146,7 +148,6 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         loginItem = add("Start at Login", #selector(toggleLogin), self)
         _ = add("Install Command Line Tool…", #selector(installCLI), self)
         appMenu.addItem(.separator())
-        meterItem = add("Show Usage Meter", #selector(toggleShowUsageMeter), self)
         menubarToggleItem = add("Show Menu Bar Item", #selector(toggleMenubarItem), self)
         appMenu.addItem(.separator())
         _ = add("Check for Updates…", #selector(checkForUpdates), self)
@@ -164,7 +165,7 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         relayAppSharedAwakeItem = add(MenubarExtra.sharedAwakeTitle, #selector(MenubarExtra.toggleRelayAwakeWhileShared), extra)
         relayAppSharedAwakeItem?.toolTip = MenubarExtra.sharedAwakeToolTip
         appMenu.addItem(.separator())
-        _ = add("Hide Keysrs", #selector(NSApplication.hide(_:)), NSApp, "h")
+        _ = add("Hide Keysrs", #selector(NSApplication.hide(_:)), app, "h")
         _ = add("Quit Keysrs", #selector(MenubarExtra.quit), extra, "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
@@ -177,15 +178,14 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         let windowItem = NSMenuItem(); windowItem.submenu = windowMenu; main.addItem(windowItem)
-        NSApp.windowsMenu = windowMenu
-        NSApp.mainMenu = main
+        app.windowsMenu = windowMenu
+        app.mainMenu = main
     }
 
     var startsAtLogin: Bool { SMAppService.mainApp.status == .enabled }
 
     func menuWillOpen(_ menu: NSMenu) {
         loginItem?.state = startsAtLogin ? .on : .off
-        meterItem?.state = preferences.showUsageMeter ? .on : .off
         menubarToggleItem?.state = preferences.menubarItem ? .on : .off
         updateItem?.state = preferences.updateChecks ? .on : .off
         if let relay = menubar?.relayMenuState() {
@@ -205,11 +205,6 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
             else { try SMAppService.mainApp.register() }
             try preferences.recordLoginRegistration()
         } catch { alert("Start at Login", error.localizedDescription) }
-    }
-
-    @objc func toggleShowUsageMeter() {
-        do { try preferences.setShowUsageMeter(!preferences.showUsageMeter) }
-        catch { alert("Show Usage Meter", error.localizedDescription) }
     }
 
     @objc func toggleMenubarItem() {

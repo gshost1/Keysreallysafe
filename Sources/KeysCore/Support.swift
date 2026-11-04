@@ -216,7 +216,7 @@ enum Paths {
     }
 
     /// The Application Support root for state that is not the catalog (the
-    /// installer's layout, the app's lock and log, claude-plan.json). Under the
+    /// installer's layout, the app's lock and log). Under the
     /// test tripwire it never names the real folder: an armed process with
     /// `KEYS_CATALOG` gets that catalog's directory as its isolated root, and one
     /// without it throws. A production process always gets the real folder, even
@@ -229,12 +229,6 @@ enum Paths {
             "test isolation refused the real Keysrs Application Support folder (XCTest or KEYS_TEST_ISOLATION "
                 + "is set and KEYS_CATALOG is not); point test state at a temporary catalog"
         )
-    }
-
-    /// The optional Claude plan snapshot beside the catalog, or nil where the
-    /// tripwire refuses the real folder: a test process reads no real plan.
-    static var claudePlanFile: URL? {
-        try? resolvingAppSupport().appendingPathComponent("claude-plan.json")
     }
 
     /// The catalog a caller with no explicit world of its own resolves:
@@ -257,11 +251,6 @@ enum Paths {
 
     static var grokHome: URL {
         env("GROK_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
-    }
-
-    /// The Grok Bot desktop app's Electron data folder.
-    static var grokBotHome: URL {
-        env("GROK_BOT_HOME") ?? userApplicationSupport.appendingPathComponent("Grok Bot", isDirectory: true)
     }
 
     static var claudeHome: URL {

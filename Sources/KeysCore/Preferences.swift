@@ -3,7 +3,6 @@ import Foundation
 /// Choices the person makes on first launch and can change later from the menu.
 /// Stored in the private catalog's `meta` table, so every Keysrs process (menu bar, dashboard, CLI) reads the same answer.
 final class AppPreferences: @unchecked Sendable {
-    static let claudeRefreshKey = "pref_claude_usage_refresh"
     static let welcomeKey = "welcome_answered_at"
     /// Catalog keys left by the product analytics that earlier releases shipped:
     /// the consent and unsent reports, the downloaded comparison table, and the
@@ -13,17 +12,6 @@ final class AppPreferences: @unchecked Sendable {
 
     init(catalog: CatalogDB) {
         self.catalog = catalog
-    }
-
-    /// Running Claude Code's `/usage` on a timer is off until the person turns it
-    /// on. Without it, Claude limits come only from the cache Claude Code writes
-    /// itself, or from a refresh the person asks for.
-    var claudeUsageRefresh: Bool {
-        (try? catalog.metaValue(Self.claudeRefreshKey)) == "on"
-    }
-
-    func setClaudeUsageRefresh(_ on: Bool) throws {
-        try catalog.withTransaction { try catalog.setMeta(Self.claudeRefreshKey, on ? "on" : "off") }
     }
 
     var updateChecks: Bool {
@@ -38,17 +26,6 @@ final class AppPreferences: @unchecked Sendable {
     }
 
     static let updateChecksKey = "pref_update_checks"
-
-    static let showUsageMeterKey = "pref_show_usage_meter"
-
-    /// The global plan-window meter on the Usage pane. Off by default: hiding it
-    /// is presentation only — the per-provider card preferences below stay
-    /// independent, and ingest, totals and charts never consult it.
-    var showUsageMeter: Bool { (try? catalog.metaValue(Self.showUsageMeterKey)) == "on" }
-
-    func setShowUsageMeter(_ on: Bool) throws {
-        try catalog.withTransaction { try catalog.setMeta(Self.showUsageMeterKey, on ? "on" : "off") }
-    }
 
     static let menubarItemKey = "pref_menubar_item"
 
@@ -75,8 +52,8 @@ final class AppPreferences: @unchecked Sendable {
 
     static let headlessDefaultsKey = "headless_defaults_applied"
 
-    /// The 0.13-to-0.14 migration: the app became headless, so the meter and the
-    /// menu-bar item are off until the person turns them on, and updates install
+    /// The 0.13-to-0.14 migration: the app became headless, so the menu-bar item
+    /// is off until the person turns it on, and updates install
     /// automatically. Only absent values are defaulted: 0.13 stored "off" for
     /// update checks solely after an explicit turn-off, so force-writing "on"
     /// would silently re-enable automatic installs over a choice the person
@@ -86,7 +63,6 @@ final class AppPreferences: @unchecked Sendable {
     func applyHeadlessDefaults() throws {
         guard (try? catalog.metaValue(Self.headlessDefaultsKey)) != "yes" else { return }
         try catalog.withTransaction {
-            try catalog.setMeta(Self.showUsageMeterKey, "off")
             try catalog.setMeta(Self.menubarItemKey, "off")
             if try catalog.metaValue(Self.updateChecksKey) == nil {
                 try catalog.setMeta(Self.updateChecksKey, "on")
@@ -134,25 +110,6 @@ final class AppPreferences: @unchecked Sendable {
         try catalog.withTransaction { try catalog.setMeta(Self.dockerAccessKey, on ? "on" : "off") }
     }
 
-    static let hiddenUsageKey = "pref_hidden_usage"
-    static let hiddenUsageMax = 64
-
-    /// Usage cards the person turned off in Settings, by source or subscription id. The
-    /// dashboard keeps its own copy per browser and mirrors it here so the menu bar, which has
-    /// no browser storage, hides the same tools.
-    var hiddenUsage: Set<String> {
-        guard let raw = try? catalog.metaValue(Self.hiddenUsageKey),
-              let list = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String] else { return [] }
-        return Set(list)
-    }
-
-    func setHiddenUsage(_ ids: [String]) throws {
-        let clean = Array(Set(ids.filter { (1...64).contains($0.count) && !$0.contains(where: \.isNewline) })).sorted()
-        guard clean.count <= Self.hiddenUsageMax else { throw AppError.usage("too many hidden cards") }
-        let data = try JSONSerialization.data(withJSONObject: clean)
-        try catalog.withTransaction { try catalog.setMeta(Self.hiddenUsageKey, String(decoding: data, as: UTF8.self)) }
-    }
-
     var loginRegistrationAttempted: Bool { (try? catalog.metaValue("app_login_registered")) == "yes" }
 
     func recordLoginRegistration() throws {
@@ -178,11 +135,10 @@ final class AppPreferences: @unchecked Sendable {
         }
     }
 
-    func recordWelcome(_ plan: WelcomePlan, claudeRefresh: Bool, now: Date = Date()) throws {
+    func recordWelcome(_ plan: WelcomePlan, now: Date = Date()) throws {
         try catalog.withTransaction {
             if plan.firstRun {
                 try catalog.setMeta(Self.welcomeKey, UTC.iso(now))
-                try catalog.setMeta(Self.claudeRefreshKey, claudeRefresh ? "on" : "off")
             }
         }
     }

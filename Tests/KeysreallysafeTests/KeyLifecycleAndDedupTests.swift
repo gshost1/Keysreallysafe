@@ -1,7 +1,7 @@
 import XCTest
 @testable import KeysCore
 
-/// Key audit log, rotate/remove/purge presence, OpenRouter poll, Claude dedup, project spend, menubar text.
+/// Key audit log, rotate/remove/purge presence, Claude dedup, project spend.
 final class KeyLifecycleAndDedupTests: XCTestCase {
     func testKeyEventsNewestFirstAndLastUsedOnlyOnUse() throws {
         let (db, dir) = try makeDB()
@@ -123,67 +123,6 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertFalse(String(data: ok.body, encoding: .utf8)!.contains(fixtureSecret))
     }
 
-    func testOpenRouterPollRequiresGatewayMemoryAndFillsStatus() throws {
-        let (db, _) = try makeDB()
-        let fake = FakeOpenRouter(
-            snapshot: CatalogDB.ProviderSnapshot(
-                provider: "openrouter",
-                keyName: "",
-                ts: "2026-09-04T20:00:00Z",
-                usageDaily: 1.5,
-                usageWeekly: 8.25,
-                usageMonthly: 20,
-                limit: 100,
-                limitRemaining: 79.5,
-                rawKind: "monthly"
-            )
-        )
-        let (service, _) = makeGatedService(db: db, openRouter: fake)
-        // A temp plan snapshot, never the owner's real Application Support one (S6).
-        service.claudePlanFile = try TempDir.make().appendingPathComponent("claude-plan.json")
-        try service.add(name: "or-bill", provider: "openrouter", kind: "billing", notes: "", secret: fixtureSecret)
-        try service.pollOpenRouter()
-        XCTAssertEqual(fake.calls, [])
-        var status = try service.liveStatus()
-        var row = try XCTUnwrap(status.plans.first { $0.source == "openrouter" })
-        XCTAssertEqual(row.usageNote, "enable the gateway for this key to poll")
-        XCTAssertNil(row.limitRemaining)
-
-        _ = try service.setGateway(name: "or-bill", enabled: true, host: nil)
-        try service.pollOpenRouter()
-        XCTAssertEqual(fake.calls, [fixtureSecret])
-        status = try service.liveStatus()
-        row = try XCTUnwrap(status.plans.first { $0.source == "openrouter" })
-        XCTAssertEqual(row.limitRemaining, 79.5)
-        XCTAssertEqual(row.limit, 100)
-        XCTAssertEqual(row.usageWeekly, 8.25)
-        XCTAssertEqual(row.snapshotAt, "2026-09-04T20:00:00Z")
-        XCTAssertNil(row.usageNote)
-        let json = row.jsonObject()
-        XCTAssertEqual(json["limit_remaining"] as? Double, 79.5)
-        XCTAssertEqual(json["source"] as? String, "openrouter")
-    }
-
-    // A key unlocked for another provider must not be polled at openrouter.ai because a
-    // different process relabelled it as an OpenRouter billing key in the catalog.
-    func testOpenRouterPollIgnoresAKeyRelabelledBehindTheService() throws {
-        let (db, _) = try makeDB()
-        let fake = FakeOpenRouter(
-            snapshot: CatalogDB.ProviderSnapshot(
-                provider: "openrouter", keyName: "", ts: "2026-09-04T20:00:00Z",
-                usageDaily: 0, usageWeekly: 0, usageMonthly: 0, limit: nil, limitRemaining: nil, rawKind: nil
-            )
-        )
-        let (service, _) = makeGatedService(db: db, openRouter: fake)
-        try service.add(name: "other", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
-        _ = try service.setGateway(name: "other", enabled: true, host: nil)
-
-        _ = try db.updateCatalog(name: "other", provider: "openrouter", kind: "billing", notes: nil)
-        try service.pollOpenRouter()
-        XCTAssertEqual(fake.calls, [])
-        XCTAssertFalse(service.isGatewayEnabled("other"))
-    }
-
     func testDoctorListsSourcesAndDoesNotProbeInTests() throws {
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
@@ -191,7 +130,7 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         // and Installer.live.binary; the install block has its own coverage in DoctorInstallTests.
         let report = try Doctor.report(service: service, probeListener: false, install: DoctorInstall())
         XCTAssertEqual(report.sources.map(\.id), [
-            "grok-sessions", "grok-quota", "claude-projects", "claude-hud", "claude-usage-cache", "codex-sessions",
+            "grok-sessions", "claude-projects", "codex-sessions",
         ])
         XCTAssertTrue(report.printed.contains("strip=Grok weekly $"))
         XCTAssertTrue(report.printed.contains("catalog"))
@@ -264,21 +203,6 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertEqual(ok.status, 200)
         let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
         XCTAssertEqual(obj["by"] as? String, "project")
-    }
-
-    func testMenubarShowsPlanPercentsAndGrokWeekUsd() {
-        var status = LiveStatus()
-        status.grok = ToolStatus(source: "grok", title: "Grok", weeklyPct: 3, weeklyUsd: 2.81)
-        status.claude = ToolStatus(source: "claude", title: "Claude", fiveHourPct: 22)
-        status.plans = [
-            ToolStatus(source: "openai", title: "OpenAI · Codex", weeklyPct: 32)
-        ]
-        let snap = MenubarSnapshot.from(status)
-        XCTAssertEqual(snap.title, "C —  X 32%  G 3%") // Never substitute 5-hour usage for missing weekly usage.
-        XCTAssertTrue(snap.tooltip.hasPrefix("Grok $2.81"))
-        XCTAssertTrue(snap.tooltip.contains("Claude 5-hour 22%"))
-        XCTAssertTrue(snap.tooltip.contains("Codex weekly 32%"))
-        XCTAssertTrue(snap.tooltip.contains("Grok weekly 3%"))
     }
 
     func testParseAutostartRemoveAndNewCommands() throws {

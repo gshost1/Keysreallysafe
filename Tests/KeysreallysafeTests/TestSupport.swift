@@ -16,7 +16,6 @@ enum Fixtures {
     static var claudeDedupHome: URL { root.appendingPathComponent("claude-dedup") }
     static var codexHome: URL { root.appendingPathComponent("codex-home") }
     static var droidHome: URL { root.appendingPathComponent("droid-home") }
-    static var grokQuotaHome: URL { root.appendingPathComponent("grok-quota") }
     static var codexQuotaHome: URL { root.appendingPathComponent("codex-quota") }
 
     /// The one turn_completed line of a synthetic Grok session in grok-home.
@@ -86,8 +85,7 @@ func makeGatedService(
     secrets: any SecretStore = MemorySecretStore(),
     gate: RecordingPresenceGate = RecordingPresenceGate(),
     clipboard: any ClipboardClient = FakeClipboard(),
-    runner: any CommandRunner = SpawnCommandRunner(restoresHandlers: true),
-    openRouter: any OpenRouterFetching = OpenRouterHTTP()
+    runner: any CommandRunner = SpawnCommandRunner(restoresHandlers: true)
 ) -> (KeysService, RecordingPresenceGate) {
     let service = KeysService(
         catalog: db,
@@ -99,7 +97,6 @@ func makeGatedService(
         codexHome: Fixtures.codexHome,
         droidHome: Fixtures.droidHome,
         runner: runner,
-        openRouter: openRouter,
         relaySecrets: MemorySecretStore()
     )
     return (service, gate)
@@ -284,20 +281,6 @@ final class ThrowingSecretStore: SecretStore, @unchecked Sendable {
     func delete(name: String) throws { throw error }
     func replace(name: String, secret: String) throws { throw error }
     func deleteAll() throws { throw error }
-}
-
-final class FakeOpenRouter: OpenRouterFetching, @unchecked Sendable {
-    var snapshot: CatalogDB.ProviderSnapshot
-    var calls: [String] = []
-    var error: Error?
-    init(snapshot: CatalogDB.ProviderSnapshot) {
-        self.snapshot = snapshot
-    }
-    func fetch(secret: String) throws -> CatalogDB.ProviderSnapshot {
-        calls.append(secret)
-        if let error { throw error }
-        return snapshot
-    }
 }
 
 final class FakeCommandRunner: CommandRunner, @unchecked Sendable {

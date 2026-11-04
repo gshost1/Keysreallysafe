@@ -108,7 +108,6 @@ final class MCPGrantTests: XCTestCase {
             codexHome: Fixtures.codexHome,
             droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
-            openRouter: OpenRouterHTTP(),
             relaySecrets: relaySecrets
         )
         service.mcpPendingGrants.inject(now: { clock.current })
@@ -1553,7 +1552,7 @@ final class MCPGrantTests: XCTestCase {
             catalog: reopened, secrets: MemorySecretStore(), presence: BlockingPresenceGate(),
             clipboard: FakeClipboard(), grokHome: Fixtures.grokHome, claudeHome: Fixtures.claudeHome,
             codexHome: Fixtures.codexHome, droidHome: Fixtures.droidHome,
-            runner: SpawnCommandRunner(restoresHandlers: true), openRouter: OpenRouterHTTP(),
+            runner: SpawnCommandRunner(restoresHandlers: true),
             relaySecrets: MemorySecretStore()
         )
         let web2 = site.dir.appendingPathComponent("Web2", isDirectory: true)

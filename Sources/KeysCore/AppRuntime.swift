@@ -168,11 +168,9 @@ enum AppRuntime {
         window: (any DashboardWindow)? = nil,
         makeItemController: @escaping () -> MenubarItemController = { MenubarItemController() },
         scheduleIngest: (KeysService) -> Void = { IngestScheduler.scheduleRepeating(service: $0) },
-        scheduleOpenRouter: (KeysService) -> Void = { OpenRouterScheduler.schedule(service: $0) },
         ingestInitially: (KeysService) -> Void = { service in
             DispatchQueue.global(qos: .utility).async {
                 _ = try? service.ingest(.all)
-                try? service.pollOpenRouter()
             }
         },
         notifications: AppNotifier? = nil,
@@ -216,7 +214,6 @@ enum AppRuntime {
         MenubarRuntime.extra = extra
         NSApplication.shared.delegate = extra
         scheduleIngest(service)
-        scheduleOpenRouter(service)
         ingestInitially(service)
         // The one startup prompt the headless app may raise: the OS notification
         // permission request, behind the injected notifier. Absent (every test

@@ -56,12 +56,8 @@ enum Doctor {
     static func report(
         service: KeysService, probeListener: Bool = true, probeAgent: Bool = true, install: DoctorInstall? = nil
     ) throws -> DoctorReport {
-        let status = try service.liveStatus()
         let grokSessions = service.grokHome.appendingPathComponent("sessions", isDirectory: true)
-        let grokLog = service.grokHome.appendingPathComponent("logs/unified.jsonl")
         let claudeProjects = service.claudeHome.appendingPathComponent("projects", isDirectory: true)
-        let claudeHud = service.claudeHome.appendingPathComponent("plugins/claude-hud/usage.json")
-        let claudePlan = service.claudePlanFile
         let codexSessions = service.codexHome.appendingPathComponent("sessions", isDirectory: true)
 
         var sources: [DoctorSource] = []
@@ -77,16 +73,6 @@ enum Doctor {
         )
         sources.append(
             source(
-                id: "grok-quota",
-                path: grokLog,
-                directory: false,
-                newestEvent: status.grok?.snapshotAt,
-                strip: "Grok weekly %",
-                emptyReason: emptyGrokPct(status, path: grokLog)
-            )
-        )
-        sources.append(
-            source(
                 id: "claude-projects",
                 path: claudeProjects,
                 directory: true,
@@ -97,37 +83,14 @@ enum Doctor {
                     : "missing file"
             )
         )
-        let hudPath = FileManager.default.isReadableFile(atPath: claudeHud.path) ? claudeHud : (claudePlan ?? claudeHud)
-        let hudStatus = LiveStatus.readClaudePlan(home: service.claudeHome, extra: claudePlan)
-        sources.append(
-            source(
-                id: "claude-hud",
-                path: hudPath,
-                directory: false,
-                newestEvent: hudStatus.snapshotAt,
-                strip: "Claude 5h / weekly %",
-                emptyReason: hudStatus.fiveHourPct != nil || hudStatus.weeklyPct != nil ? nil : "claude-hud not writing"
-            )
-        )
-        let claudeCache = ClaudeUsageCache.read(home: service.claudeHome, now: Date())
-        sources.append(source(
-            id: "claude-usage-cache",
-            path: ClaudeUsageCache.configURL(home: service.claudeHome),
-            directory: false,
-            newestEvent: claudeCache?.snapshotAt,
-            strip: "Claude Fable / 5h / weekly %",
-            emptyReason: claudeCache?.fablePct == nil
-                ? "No current Fable reading for this account; run Claude /usage (the menu-bar app refreshes every 5 minutes)."
-                : nil
-        ))
         sources.append(
             source(
                 id: "codex-sessions",
                 path: codexSessions,
                 directory: true,
                 newestEvent: try service.catalog.newestUsage(source: "codex-local"),
-                strip: "OpenAI · Codex weekly % / tokens",
-                emptyReason: emptyCodex(status, path: codexSessions)
+                strip: "OpenAI · Codex tokens",
+                emptyReason: nil
             )
         )
 
@@ -264,21 +227,6 @@ enum Doctor {
             strip: strip,
             emptyReason: exists ? emptyReason : "missing file"
         )
-    }
-
-    private static func emptyGrokPct(_ status: LiveStatus, path: URL) -> String? {
-        if status.grok?.weeklyPct != nil { return nil }
-        if !FileManager.default.isReadableFile(atPath: path.path) { return "missing file" }
-        if let note = status.grok?.usageNote, note.contains("Quota resets") {
-            return "reset passed"
-        }
-        return "no rate_limits yet"
-    }
-
-    private static func emptyCodex(_ status: LiveStatus, path: URL) -> String? {
-        let openai = status.plans.first { $0.source == "openai" }
-        if openai?.weeklyPct != nil || openai?.fiveHourPct != nil { return nil }
-        return FileManager.default.fileExists(atPath: path.path) ? "no rate_limits yet" : "missing file"
     }
 
     private static func isoMtime(_ url: URL) -> String? {
