@@ -126,8 +126,30 @@ struct KeychainStore: SecretStore {
         try KeyName.validate(name)
         let query = KeychainQuery.item(service: service, name: name)
         let status = SecItemDelete(query as CFDictionary)
-        if status == errSecItemNotFound { return }
+        if status == errSecItemNotFound || status == errSecSuccess { return }
+        // Items saved before the stable signing identity (September 2026 builds) keep a
+        // `cdhash:` partition from the build that made them. "Always Allow" let later builds
+        // read them, but SecItemDelete still refuses, so the dashboard could not delete them.
+        // Apple's own tool may delete them (it did, without a prompt, on the owner's Mac);
+        // the user already passed Touch ID for this delete.
+        if status != errSecUserCanceled, status != errSecAuthFailed, Self.deleteWithSecurityTool(service: service, name: name) {
+            return
+        }
         try Self.finish(status, op: "delete", name: name)
+    }
+
+    /// `/usr/bin/security delete-generic-password`, argv only (no shell; `name` is a
+    /// validated key name). True when the item is gone afterwards.
+    private static func deleteWithSecurityTool(service: String, name: String) -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        proc.arguments = ["delete-generic-password", "-s", service, "-a", name]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return false }
+        proc.waitUntilExit()
+        let check = SecItemCopyMatching(KeychainQuery.item(service: service, name: name) as CFDictionary, nil)
+        return check == errSecItemNotFound
     }
 
     func replace(name: String, secret: String) throws {
