@@ -290,47 +290,6 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         XCTAssertEqual(parsed.cacheReadTokens, 1)
     }
 
-    func testCodexParserKeepsSessionMetaAcrossIncrementalPasses() throws {
-        let home = try TempDir.make()
-        let dir = home.appendingPathComponent("sessions/2026/09/04", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let file = dir.appendingPathComponent(
-            "rollout-2026-09-04T12-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
-        )
-        let header = #"{"timestamp":"2026-09-04T12:00:00.000Z","type":"session_meta","payload":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/x","config":{"model":"gpt-5.4"}}}"#
-        let first = #"{"timestamp":"2026-09-04T12:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"turn_id":"t1","last_token_usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#
-        try (header + "\n" + first + "\n").write(to: file, atomically: true, encoding: .utf8)
-        let (db, _) = try makeDB()
-        XCTAssertEqual(try CodexIngest.run(home: home, db: db).rowsInserted, 1)
-
-        let second = #"{"timestamp":"2026-09-04T12:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"turn_id":"t2","last_token_usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#
-        let existing = try String(contentsOf: file, encoding: .utf8)
-        try (existing + second + "\n").write(to: file, atomically: true, encoding: .utf8)
-        let again = try CodexIngest.run(home: home, db: db)
-        XCTAssertEqual(again.rowsInserted, 1)
-        let events = try db.allUsageEvents()
-        XCTAssertEqual(events.count, 2)
-        XCTAssertEqual(Set(events.map(\.model)), ["gpt-5.4"])
-        XCTAssertEqual(Set(events.map(\.promptId)), ["t1", "t2"])
-    }
-
-    func testRewrittenFileReplaysAndCursorUsesReadSnapshot() throws {
-        let home = try TempDir.make()
-        let project = home.appendingPathComponent("projects/p", isDirectory: true)
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        let file = project.appendingPathComponent("session.jsonl")
-        let first = assistantLine(uuid: "a1", model: "claude-sonnet-5", input: 10, output: 4)
-        try (first + "\n").write(to: file, atomically: true, encoding: .utf8)
-        let (db, _) = try makeDB()
-        XCTAssertEqual(try ClaudeIngest.run(home: home, db: db).rowsInserted, 1)
-
-        let replacement = assistantLine(uuid: "a2", model: "claude-opus-5", input: 20, output: 8)
-        try (replacement + "\n" + first + "\n").write(to: file, atomically: true, encoding: .utf8)
-        let again = try ClaudeIngest.run(home: home, db: db)
-        XCTAssertEqual(again.rowsInserted, 1)
-        XCTAssertEqual(Set(try db.allUsageEvents().map(\.model)), ["claude-sonnet-5", "claude-opus-5"])
-    }
-
     func testAnthropicGatewayEstimateIsAdditive() {
         let subtract = GatewayEstimate.usd(
             model: "claude-sonnet-5",
@@ -348,15 +307,15 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
             cacheWrite: 0,
             api: "anthropic"
         )
-        let claude = ClaudeEstimate.usd(
-            model: "claude-sonnet-5", input: 100, output: 10, cacheCreate: 0, cacheRead: 20
-        )
-        XCTAssertEqual(additive, claude)
+        // Anthropic bills cache reads on top of input: 100 in, 10 out, 20 cache reads at list price.
+        let price = ModelPrices.lookup("claude-sonnet-5")!
+        let expected = (100 * price.inputPerMTok + 10 * price.outputPerMTok + 20 * price.cacheReadPerMTok) / 1_000_000
+        XCTAssertEqual(additive ?? 0, expected, accuracy: 1e-15)
         XCTAssertNotEqual(subtract, additive)
         XCTAssertGreaterThan(additive ?? 0, subtract ?? 0)
     }
 
-    func testSpendTotalsIncludeGatewayDollarsAndTokenRule() throws {
+    func testSpendTotalsCarryGatewayDollars() throws {
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
@@ -377,14 +336,11 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         let report = try service.spend(
             range: .month,
             by: .model,
-            source: .all,
             now: UTC.parse("2026-09-04T18:00:00Z")!,
             timeZone: TimeZone(secondsFromGMT: 0)!,
             key: "demo"
         )
         XCTAssertEqual(report.totals.gatewayUsdEstimate ?? 0, 2.0, accuracy: 1e-9)
-        // Gateway dollars are a separate ledger, never folded into the local estimate.
-        XCTAssertEqual(report.totals.usdEstimate ?? 0, 0.0, accuracy: 1e-9)
         XCTAssertEqual(report.totals.gatewayCalls, 1)
         let json = report.jsonObject()["totals"] as! [String: Any]
         XCTAssertNotNil(json["gateway_usd_estimate"])

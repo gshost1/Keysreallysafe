@@ -10,23 +10,6 @@ enum Fixtures {
             .deletingLastPathComponent()
             .appendingPathComponent("Fixtures")
     }()
-
-    static var grokHome: URL { root.appendingPathComponent("grok-home") }
-    static var claudeHome: URL { root.appendingPathComponent("claude-home") }
-    static var claudeDedupHome: URL { root.appendingPathComponent("claude-dedup") }
-    static var codexHome: URL { root.appendingPathComponent("codex-home") }
-    static var droidHome: URL { root.appendingPathComponent("droid-home") }
-    static var codexQuotaHome: URL { root.appendingPathComponent("codex-quota") }
-
-    /// The one turn_completed line of a synthetic Grok session in grok-home.
-    static func grokTurnLine(_ session: String) throws -> String {
-        let url = grokHome.appendingPathComponent("sessions/synth/\(session)/updates.jsonl")
-        let text = try String(contentsOf: url, encoding: .utf8)
-        guard let line = text.split(separator: "\n").first(where: { $0.contains("\"turn_completed\"") }) else {
-            throw AppError.notFound(session)
-        }
-        return String(line)
-    }
 }
 
 enum TempDir {
@@ -79,7 +62,7 @@ func makeService(db: CatalogDB) -> (KeysService, MemorySecretStore, FakeClipboar
     return (service, secrets, clipboard)
 }
 
-/// A service over the fixture homes whose presence gate records every prompt it would show.
+/// A service whose presence gate records every prompt it would show.
 func makeGatedService(
     db: CatalogDB,
     secrets: any SecretStore = MemorySecretStore(),
@@ -92,10 +75,6 @@ func makeGatedService(
         secrets: secrets,
         presence: gate,
         clipboard: clipboard,
-        grokHome: Fixtures.grokHome,
-        claudeHome: Fixtures.claudeHome,
-        codexHome: Fixtures.codexHome,
-        droidHome: Fixtures.droidHome,
         runner: runner,
         relaySecrets: MemorySecretStore()
     )
@@ -381,20 +360,19 @@ final class BlockingPresenceGate: PresenceGate, @unchecked Sendable {
 extension UsageEvent {
     /// One local usage row; the provider follows from the source.
     static func fixture(
-        source: String = "grok-local", session: String = "s", prompt: String = "p",
-        model: String = "grok-4.6-build", at: String = "2026-01-15T12:00:00Z", cwd: String? = nil,
-        input: Int = 1, output: Int = 1, ticks: Int64? = nil
+        source: String = "gateway", session: String = "s", prompt: String = "p",
+        model: String = "grok-4.6-build", at: String = "2026-01-15T12:00:00Z", provider: String = "xai",
+        key: String? = "test-key", input: Int = 1, output: Int = 1, ticks: Int64? = nil
     ) -> UsageEvent {
-        let provider = ["claude-local": "anthropic", "codex-local": "openai"][source] ?? "xai"
-        return UsageEvent(
+        UsageEvent(
             source: source, sessionId: session, promptId: prompt, model: model, occurredAt: at,
-            provider: provider, cwd: cwd, modelCalls: 1, inputTokens: input, outputTokens: output,
-            costUsdTicks: ticks
+            provider: provider, modelCalls: 1, inputTokens: input, outputTokens: output,
+            costUsdTicks: ticks, keyName: key
         )
     }
 }
 
-/// A priced Grok turn of 10 input and 5 output tokens.
+/// A gateway call of 10 input and 5 output tokens with a provider cost receipt.
 func grokEvent(at iso: String, usd: Double, prompt: String, model: String = "grok-4.6-build") -> UsageEvent {
     .fixture(
         session: "boundary", prompt: prompt, model: model, at: iso, input: 10, output: 5,
@@ -402,23 +380,10 @@ func grokEvent(at iso: String, usd: Double, prompt: String, model: String = "gro
     )
 }
 
-/// One Claude Code assistant line; the request id defaults to the uuid.
-func assistantLine(
-    uuid: String, model: String = "claude-sonnet-5", input: Int = 10, output: Int,
-    requestId: String? = nil, session: String = "inc-sess",
-    cwd: String = "/tmp/keysreallysafe-fixture", at: String = "2026-01-15T12:00:00.000Z"
-) -> String {
-    let request = requestId ?? uuid
-    return "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"requestId\":\"\(request)\",\"sessionId\":\"\(session)\",\"timestamp\":\"\(at)\",\"cwd\":\"\(cwd)\",\"message\":{\"id\":\"msg-\(request)\",\"model\":\"\(model)\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":\(input),\"output_tokens\":\(output),\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}}"
-}
-
 func fieldNames(_ value: Any) -> Set<String> {
     Set(Mirror(reflecting: value).children.compactMap(\.label))
 }
 
-let sentinelMessage = "DO-NOT-INGEST-MESSAGE-TEXT"
-let sentinelRaw = "DO-NOT-INGEST-RAW-INPUT"
-let sentinelClaude = "DO-NOT-INGEST-CLAUDE-CONTENT"
 let fixtureSecret = "unit-test-secret-value-xyz"
 
 /// One grant for `key` on a service whose secret store has no presence gate (or a recording one).
@@ -428,23 +393,9 @@ func grantFor(_ service: KeysService, _ key: String, task: String = "test", minu
 }
 
 extension CatalogDB {
-    /// Every stored usage row, in the order the spend queries use.
-    func allUsageEvents() throws -> [UsageEvent] {
-        try usageEvents(from: "", to: "\u{10FFFF}", source: .all)
-    }
-
-    /// Every stored gateway call.
+    /// Every stored gateway call, in the order the spend queries use.
     func gatewayEvents() throws -> [UsageEvent] {
-        try usageEvents(from: "", to: "\u{10FFFF}", source: .keys)
-    }
-}
-
-extension CodexIngest {
-    /// A whole rollout through one parser, without touching a catalog.
-    static func parseFile(_ url: URL) throws -> [UsageEvent] {
-        let text = try String(contentsOf: url, encoding: .utf8)
-        var parser = LineParser(sessionId: sessionIdFromFilename(url.lastPathComponent))
-        return text.split(separator: "\n").compactMap { parser.consume(String($0)) }
+        try usageEvents(from: "", to: "\u{10FFFF}")
     }
 }
 

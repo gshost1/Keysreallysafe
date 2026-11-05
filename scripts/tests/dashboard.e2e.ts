@@ -62,10 +62,9 @@ test('rotation submits a replacement and fresh reveals keep it', async ({ app, b
   }
 });
 
-test('gateway spend preserves unknown costs through source filtering', async ({ app, browser, screen }) => {
+test('gateway spend preserves unknown costs through provider filtering', async ({ app, browser, screen }) => {
   await reset(app);
   await screen.getByRole('tab', 'Chart').click();
-  await screen.getByRole('radio', 'API keys').click();
   await expect(browser.locator('body')).toContainText('system-one');
   await expect(browser.locator('#chart-error')).toHaveText('');
   await screen.getByRole('radio', 'USD', { exact: true }).click();
@@ -74,7 +73,7 @@ test('gateway spend preserves unknown costs through source filtering', async ({ 
   await screen.getByRole('radio', 'Show only calls routed to TypeSafe').click();
   await expect(browser.locator('#totals')).toContainText('cost unknown');
   await expect(browser.locator('#totals')).toContainText('2 requests');
-  const payload = await (await fetch(new URL('/api/spend?source=keys&by=model', app.baseUrl))).json();
+  const payload = await (await fetch(new URL('/api/spend?by=model', app.baseUrl))).json();
   await expect(payload.totals.gateway_calls).toBe(6);
   await expect(payload.totals.gateway_unpriced_calls).toBe(2);
   await expect(payload.rows.find((r: any) => r.provider === 'typesafe').usd_estimate).toBe(null);

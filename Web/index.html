@@ -60,31 +60,18 @@
           <button type="button" role="radio" data-range="week" aria-checked="false" tabindex="-1">This week</button>
           <button type="button" role="radio" data-range="month" aria-checked="false" tabindex="-1">This month</button>
         </div>
-        <div class="chips" role="radiogroup" aria-label="What is being charted" id="scope-chips" title="Subscription tools or API keys (S)">
-          <button type="button" role="radio" data-scope="subs" aria-checked="true" title="What the subscription tools on this Mac wrote to their own logs. Estimates from those logs, not plan invoices.">Subscriptions</button>
-          <button type="button" role="radio" data-scope="keys" aria-checked="false" tabindex="-1" title="Calls this Mac routed through the local gateway with a key from the vault">API keys</button>
-        </div>
-        <div class="chips" role="radiogroup" aria-label="Source" id="source-chips" title="Which subscription tool">
-          <button type="button" role="radio" data-source="all" aria-checked="true">All</button>
-          <button type="button" role="radio" data-source="grok" aria-checked="false" tabindex="-1">Grok</button>
-          <button type="button" role="radio" data-source="claude" aria-checked="false" tabindex="-1">Claude</button>
-          <button type="button" role="radio" data-source="openai" aria-checked="false" tabindex="-1">OpenAI</button>
-          <button type="button" role="radio" data-source="droid" aria-checked="false" tabindex="-1">Droid</button>
-          <button type="button" role="radio" data-source="cloud" aria-checked="false" tabindex="-1" title="Usage imported from cloud sessions and remote droid runs (keys usage import)">Cloud</button>
-        </div>
         <div class="chips" role="radiogroup" aria-label="Provider" id="provider-filter" hidden title="One provider or all of them"></div>
         <!-- A dropdown, not a chip row: a vault with many keys made this a long line. -->
         <label class="picker" id="keys-filter" hidden title="One key or all of them">Key <select id="keys-filter-select" aria-label="API key"></select></label>
-        <div class="chips" role="radiogroup" aria-label="Group by" id="group-chips" hidden title="Group the list and the chart">
+        <div class="chips" role="radiogroup" aria-label="Group by" id="group-chips" title="Group the list and the chart">
           <button type="button" role="radio" data-group="model" aria-checked="true">Models</button>
-          <button type="button" role="radio" data-group="project" aria-checked="false" tabindex="-1" title="Claude Code projects (P)">Projects</button>
-          <button type="button" role="radio" data-group="key" aria-checked="false" tabindex="-1" hidden title="One row per vault key">Keys</button>
-          <button type="button" role="radio" data-group="provider" aria-checked="false" tabindex="-1" hidden title="One row per provider the keys route to">Providers</button>
+          <button type="button" role="radio" data-group="key" aria-checked="false" tabindex="-1" title="One row per vault key">Keys</button>
+          <button type="button" role="radio" data-group="provider" aria-checked="false" tabindex="-1" title="One row per provider the keys route to">Providers</button>
         </div>
         <div class="chips" role="radiogroup" aria-label="Unit" title="Tokens, USD or requests (T)">
           <button type="button" role="radio" data-unit="tokens" aria-checked="true">Tokens</button>
           <button type="button" role="radio" data-unit="usd" aria-checked="false" tabindex="-1">USD</button>
-          <button type="button" role="radio" data-unit="requests" aria-checked="false" tabindex="-1" hidden title="Gateway requests, countable even when a provider reports no tokens or cost">Requests</button>
+          <button type="button" role="radio" data-unit="requests" aria-checked="false" tabindex="-1" title="Gateway requests, countable even when a provider reports no tokens or cost">Requests</button>
         </div>
       </div>
       <div class="chart-top">
@@ -98,7 +85,7 @@
         <p id="chart-nothing" class="chart-empty" hidden>Nothing yet today.</p>
       </figure>
       <ol id="mix" class="mix" role="listbox" aria-label="Model mix" aria-multiselectable="false"></ol>
-      <p class="caption" id="chart-caption">local tool spend, not a subscription bar · click a model to see it alone</p>
+      <p class="caption" id="chart-caption">calls this Mac routed through the local gateway with a key from the vault</p>
       <p id="spend-empty" class="empty" hidden></p>
     </section>
 
@@ -183,17 +170,10 @@
           <button type="button" role="switch" id="theme-switch" class="switch" aria-checked="false" aria-labelledby="theme-label"></button>
         </div>
       </section>
-      <section class="settings-group" aria-labelledby="set-data">
-        <h2 id="set-data">Data</h2>
-        <div class="setting">
-          <span class="setting-label">Read new sessions now<span class="setting-hint" id="last-ingest"></span></span>
-          <button type="button" id="btn-ingest" class="btn-quiet" title="Ingest Grok, Claude Code, Codex and Droid sessions (⌘R)">Ingest now</button>
-        </div>
-      </section>
       <section class="settings-group" aria-labelledby="set-export">
         <h2 id="set-export">Export</h2>
         <div class="setting">
-          <span class="setting-label">Chart data<span class="setting-hint">Uses the Chart's current range, scope and filters.</span></span>
+          <span class="setting-label">Chart data<span class="setting-hint">Uses the Chart's current range and filters.</span></span>
           <span class="setting-actions">
             <button type="button" id="btn-export" class="btn-quiet" title="Download the current rows as CSV (X)">CSV</button>
             <button type="button" id="btn-copy-totals" class="btn-quiet" title="Copy the totals line as Markdown (⇧C)">Copy totals</button>
@@ -534,7 +514,7 @@
     <h2 id="agents-title">Set up a coding agent</h2>
     <p class="hint">Each agent gets the gateway's local URL and a token where it expects an API key, so the raw secret stays in the vault. One Touch ID per launch covers the whole session; unattended setups use a revocable client token instead.</p>
     <div id="agents-body"></div>
-    <p class="hint">Droid calls routed this way are measured like any other gateway call (Chart → API keys). A session the agent runs directly, outside the gateway, is not observable on this Mac.</p>
+    <p class="hint">Calls routed this way are measured like any other gateway call (Chart). A session the agent runs directly, outside the gateway, is not observable on this Mac.</p>
     <div class="actions">
       <button type="button" class="btn" data-close>Close</button>
     </div>
@@ -565,12 +545,10 @@
           on one Touch ID.</span>
         </li>
         <li>
-          <b>Watch it, revoke it, remove it.</b> <span class="guide-body">The <b>Chart</b> pane's <b>API keys</b>
-          scope shows the calls the local gateway routed — only those; a provider called directly from somewhere
+          <b>Watch it, revoke it, remove it.</b> <span class="guide-body">The <b>Chart</b> pane
+          shows the calls the local gateway routed — only those; a provider called directly from somewhere
           else is not observable here. In <b>Keys</b> you can revoke a grant or a client token and delete a key
-          from this vault; the credential itself is revoked with the provider that issued it. The
-          <b>Subscriptions</b> scope is a separate ledger: what Claude Code, Codex and Grok wrote to their own
-          logs on this Mac.</span>
+          from this vault; the credential itself is revoked with the provider that issued it.</span>
         </li>
       </ol>
       <!-- The walkthrough for people who got the app and want their agent on it. Every command is
@@ -633,10 +611,8 @@ keys relay on</code><button type="button" class="btn-row" data-copy-cmd aria-lab
       <dt><kbd>⌘</kbd><kbd>2</kbd></dt><dd>Chart</dd>
       <dt><kbd>⌘</kbd><kbd>3</kbd></dt><dd>Keys</dd>
       <dt><kbd>⌘</kbd><kbd>4</kbd></dt><dd>Settings</dd>
-      <dt><kbd>⌘</kbd><kbd>R</kbd></dt><dd>Ingest sessions (Ingest now in Settings)</dd>
       <dt><kbd>/</kbd></dt><dd>Search keys</dd>
-      <dt><kbd>S</kbd></dt><dd>Subscriptions / API keys</dd>
-      <dt><kbd>T</kbd></dt><dd>Tokens / USD / requests (requests in the API keys view)</dd>
+      <dt><kbd>T</kbd></dt><dd>Tokens / USD / requests</dd>
       <dt><kbd>N</kbd></dt><dd>Add key</dd>
       <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Move in a list</dd>
       <dt><kbd>↵</kbd><kbd>Space</kbd><kbd>⇧ F10</kbd></dt><dd>Open More actions or activate a menu item</dd>
@@ -648,7 +624,6 @@ keys relay on</code><button type="button" class="btn-row" data-copy-cmd aria-lab
       <dt><kbd>T</kbd></dt><dd>Check connection to the selected key (read-only)</dd>
       <dt><kbd>H</kbd></dt><dd>Activity for the selected key</dd>
       <dt><kbd>R</kbd></dt><dd>Rotate key for the selected key</dd>
-      <dt><kbd>P</kbd></dt><dd>Models / projects (Claude)</dd>
       <dt><kbd>D</kbd> <kbd>W</kbd> <kbd>M</kbd></dt><dd>Today / week / month</dd>
       <dt><kbd>X</kbd></dt><dd>Download spend rows as CSV (also in Settings)</dd>
       <dt><kbd>⇧</kbd><kbd>C</kbd></dt><dd>Copy the totals line as Markdown (also in Settings)</dd>

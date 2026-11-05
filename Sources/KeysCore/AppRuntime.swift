@@ -105,6 +105,15 @@ enum AppRuntime {
         // plan snapshot and the menu-bar panel's remembered tab.
         _ = try? service.catalog.removeRetiredPlanMeter()
         try? KeysService.removeRetiredPlanSnapshot(catalogDirectory: service.catalog.path.deletingLastPathComponent())
+        // Upgrades from 0.15.x drop the subscription tools' usage rows, their file cursors and
+        // the cloud-import drop folder; the gateway ledger stays. The delete is quick; the
+        // vacuum that clears the freed pages can take seconds on a big catalog, and a CLI that
+        // launched the app on demand is waiting for the site to bind, so it runs in the background.
+        if (try? service.catalog.removeRetiredSubscriptionUsage()) == true {
+            let catalog = service.catalog
+            DispatchQueue.global(qos: .utility).async { catalog.compact() }
+        }
+        try? KeysService.removeRetiredUsageImports(catalogDirectory: service.catalog.path.deletingLastPathComponent())
         UserDefaults.standard.removeObject(forKey: "menubar.tab")
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.
         service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
@@ -160,9 +169,7 @@ enum AppRuntime {
     /// is testable without a bundle or a window server. Launch applies the
     /// resting `.accessory` policy, runs the one-time 0.13 preference migration
     /// before any surface reads a preference, starts no dashboard window and
-    /// raises no welcome — presentation waits for an approved show path — while
-    /// the ingest scheduler, the OpenRouter scheduler and the first ingest pass
-    /// all start, because they are services, not presentation.
+    /// raises no welcome — presentation waits for an approved show path.
     @MainActor
     static func assembleApp(
         service: KeysService,
@@ -172,12 +179,6 @@ enum AppRuntime {
         activationApplier: @escaping (AppActivation.Policy) -> Void = AppActivation.applyPolicy,
         window: (any DashboardWindow)? = nil,
         makeItemController: @escaping () -> MenubarItemController = { MenubarItemController() },
-        scheduleIngest: (KeysService) -> Void = { IngestScheduler.scheduleRepeating(service: $0) },
-        ingestInitially: (KeysService) -> Void = { service in
-            DispatchQueue.global(qos: .utility).async {
-                _ = try? service.ingest(.all)
-            }
-        },
         notifications: AppNotifier? = nil,
         startNotifications: (AppNotifier, KeysService) -> Void = AppRuntime.startNotificationPoller,
         latestRelease: (() async throws -> ReleaseInfo)? = nil,
@@ -218,8 +219,6 @@ enum AppRuntime {
         extra.appWindow?.installMenu(extra: extra)
         MenubarRuntime.extra = extra
         NSApplication.shared.delegate = extra
-        scheduleIngest(service)
-        ingestInitially(service)
         // The one startup prompt the headless app may raise: the OS notification
         // permission request, behind the injected notifier. Absent (every test
         // rig that does not inject one) it starts nothing and shows no dialog.

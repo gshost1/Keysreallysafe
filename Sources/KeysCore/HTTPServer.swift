@@ -335,8 +335,6 @@ final class APIHandler: @unchecked Sendable {
                 return try providersAdd(request)
             case (_, let p) where p.hasPrefix("/api/providers/"):
                 return try providersItem(request, path: p)
-            case ("POST", "/api/ingest"):
-                return try ingest(request)
             case ("GET", "/api/relay"):
                 return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
             case ("POST", "/api/relay"):
@@ -424,12 +422,11 @@ final class APIHandler: @unchecked Sendable {
             && HTTPFrame.LoopbackOrigin.originAllowed(request.headers["origin"], port: request.serverPort)
     }
 
-    /// What an open dashboard polls to know the catalog moved (a gateway call, an ingest pass,
-    /// another window's edit) and when logs were last read. The plan-window rows it used to
-    /// carry were removed on 2026-11-03.
+    /// What an open dashboard polls to know the catalog moved (a gateway call, another
+    /// window's edit). The plan-window rows it used to carry were removed on 2026-11-03, the
+    /// last-ingest time with subscription tracking on 2026-11-04.
     private func status() throws -> HTTPResponse {
         HTTPResponse.json(200, [
-            "last_ingest_at": try service.catalog.lastIngestAt() as Any? ?? NSNull(),
             "catalog_version": try service.catalog.catalogVersion(),
         ])
     }
@@ -444,24 +441,14 @@ final class APIHandler: @unchecked Sendable {
         if by == .hour && range != .today {
             return HTTPResponse.json(400, ["error": "invalid by"])
         }
-        guard let source = SourceFilter(rawValue: request.query["source"] ?? "all") else {
+        // The gateway ledger is the only one left. `source` used to pick a subscription tool's
+        // log; `keys` (the gateway) and `all` are still accepted so an older link keeps working.
+        if let source = request.query["source"], !source.isEmpty, source != "keys", source != "all" {
             return HTTPResponse.json(400, ["error": "invalid source"])
         }
-        if (by == .key || by == .provider) && source != .keys {
-            return HTTPResponse.json(400, ["error": "by=key and by=provider require source=keys"])
-        }
-        if by == .project && source != .claude {
-            return HTTPResponse.json(400, ["error": "by=project requires source=claude"])
-        }
-        // A provider names the upstream a vault key routes to, which only gateway calls have.
-        // Refusing it elsewhere keeps a stale filter from silently returning an empty local view.
         let provider = request.query["provider"].flatMap { $0.isEmpty ? nil : $0 }
-        if provider != nil && source != .keys {
-            return HTTPResponse.json(400, ["error": "provider requires source=keys"])
-        }
-        try? service.ingestIfStale()
         let key = request.query["key"].flatMap { $0.isEmpty ? nil : $0 }
-        let report = try service.spend(range: range, by: by, source: source, key: key, provider: provider)
+        let report = try service.spend(range: range, by: by, key: key, provider: provider)
         return HTTPResponse.json(200, report.jsonObject())
     }
 
@@ -1552,31 +1539,6 @@ final class APIHandler: @unchecked Sendable {
     private func keysDelete(_ name: String) throws -> HTTPResponse {
         try service.remove(name: name, caller: "dashboard")
         return HTTPResponse.json(200, ["ok": true, "name": name])
-    }
-
-    private func ingest(_ request: HTTPRequest) throws -> HTTPResponse {
-        var source = Ingest.Source.all
-        if !request.body.isEmpty,
-           let obj = (try? JSONSerialization.jsonObject(with: request.body)).flatMap(JSONValue.object),
-           let raw = JSONValue.string(obj["source"]),
-           let parsed = Ingest.Source(rawValue: raw)
-        {
-            source = parsed
-        }
-        let reports = try service.ingest(source)
-        var payload: [String: Any] = [:]
-        for (name, report) in reports {
-            payload[name] = [
-                "files": report.filesScanned,
-                "inserted": report.rowsInserted,
-                "updated": report.rowsUpdated,
-                "errors": report.parseErrors,
-                "unchanged": report.rowsUnchanged,
-                "rows_skipped": report.rowsSkipped,
-                "held": report.held,
-            ]
-        }
-        return HTTPResponse.json(200, payload)
     }
 
     /// `error` is the stable code the dashboard and the control client match on; `message` is

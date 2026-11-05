@@ -12,8 +12,8 @@ struct GatewayUsageRow: Equatable {
     var cacheWriteTokens: Int?
     var status: Int
     var durationMs: Int
-    /// Upstream `request-id` / `x-request-id` response header. Claude Code stores the same value
-    /// as `requestId`, so a call seen both locally and through the gateway can be matched exactly.
+    /// Upstream `request-id` / `x-request-id` response header, kept as the row's prompt id so a
+    /// call can be found in the provider's own logs.
     var requestId: String? = nil
     /// Provider-reported total USD, at the same precision as local usage costs.
     /// nil means absent/invalid, while zero is an explicit reported zero.

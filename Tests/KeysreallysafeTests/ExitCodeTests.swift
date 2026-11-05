@@ -18,7 +18,7 @@ final class ExitCodeTests: XCTestCase {
         XCTAssertEqual(AppError.authCancelled.exitCode, 3)
         XCTAssertEqual(AppError.authUnavailable("no interactive session").exitCode, 3)
         XCTAssertEqual(AppError.keychain("denied").exitCode, 3)
-        // 4 ingest or catalog.
+        // 4 catalog.
         XCTAssertEqual(AppError.ingestIO("unreadable").exitCode, 4)
         XCTAssertEqual(AppError.sqlite("corrupt").exitCode, 4)
         // 6 no running site: the one deliberate change, these failures used to be 1.

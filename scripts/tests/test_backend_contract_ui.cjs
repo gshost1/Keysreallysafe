@@ -200,14 +200,13 @@ test("the rendered list matches the real /api/keys payload field by field", asyn
 
 // ---------- the real gateway ledger in the API keys view ----------
 
-test("the API keys scope charts the real gateway ledger and keeps an unpriced cost unknown", async (page) => {
+test("the chart draws the real gateway ledger and keeps an unpriced cost unknown", async (page) => {
   await page.goto(base, { waitUntil: "domcontentloaded" });
   await page.getByRole("tab", { name: "Chart" }).click();
-  await page.getByRole("radio", { name: "API keys" }).click();
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length > 0);
 
-  // What the engine really answers for this scope, and what the page made of it.
-  const served = await get(page, "/api/spend?range=month&by=model&source=keys");
+  // What the engine really answers, and what the page made of it.
+  const served = await get(page, "/api/spend?range=month&by=model");
   assert.equal(served.status, 200);
   assert.deepEqual(served.data.rows.map((r) => r.key).sort(), ["contract-typesafe", "contract-vercel"],
     "the real ledger names both keys");
@@ -235,23 +234,23 @@ test("the API keys scope charts the real gateway ledger and keeps an unpriced co
   await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
   await page.waitForFunction(() => /cost unknown/.test(document.getElementById("totals").textContent));
-  const tsServed = await get(page, "/api/spend?range=month&by=model&source=keys&provider=typesafe");
+  const tsServed = await get(page, "/api/spend?range=month&by=model&provider=typesafe");
   assert.equal(tsServed.data.totals.gateway_calls, 2);
   assert.equal(tsServed.data.totals.gateway_usd_estimate, null, "TypeSafe gains no price by being filtered to");
   assert.equal(await page.locator("#mix .mix-name").first().textContent(), "system-one");
   // The key picker narrows with the provider: this one has exactly one key.
   assert.deepEqual(await page.locator("#keys-filter [data-key-filter]").evaluateAll((els) => els.map((e) => e.textContent)),
     ["All keys", "contract-typesafe"]);
-  // A provider outside the gateway ledger is refused rather than answered with a local view.
-  assert.equal((await get(page, "/api/spend?range=month&by=model&source=all&provider=typesafe")).status, 400);
+  // A retired subscription source is refused rather than answered with an empty view.
+  assert.equal((await get(page, "/api/spend?range=month&by=model&source=claude&provider=typesafe")).status, 400);
 
   // The per-key picker offers the real key by name, and filtering asks the real engine for it.
   await page.locator("#keys-filter-select").selectOption("contract-typesafe");
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "contract-typesafe");
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
-  const keyed = await get(page, "/api/spend?range=month&by=model&source=keys&key=contract-typesafe");
+  const keyed = await get(page, "/api/spend?range=month&by=model&key=contract-typesafe");
   assert.equal(keyed.data.totals.gateway_calls, 2);
-  const other = await get(page, "/api/spend?range=month&by=model&source=keys&key=contract-alpha");
+  const other = await get(page, "/api/spend?range=month&by=model&key=contract-alpha");
   assert.deepEqual(other.data.rows, [], "a key with no routed calls has no ledger");
 
   // Requests are countable even here, where no token count exists.
@@ -260,11 +259,12 @@ test("the API keys scope charts the real gateway ledger and keeps an unpriced co
   const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
   assert.ok(labels.some((l) => /system-one 2/.test(l)), `no request bar was drawn: ${labels.join(" | ")}`);
 
-  // The local scope is untouched by all of this.
-  const local = await get(page, "/api/spend?range=month&by=model&source=all");
-  assert.equal(local.data.totals.gateway_calls, 3, "the local view still reports the gateway separately");
-  assert.equal(local.data.rows.some((r) => r.key === "contract-typesafe"), false,
-    "gateway rows must not enter the local ledger");
+  // An older client's source=keys or source=all still names the one ledger.
+  for (const source of ["keys", "all"]) {
+    const legacy = await get(page, `/api/spend?range=month&by=model&source=${source}`);
+    assert.equal(legacy.status, 200);
+    assert.equal(legacy.data.totals.gateway_calls, 3, `source=${source} answers the gateway ledger`);
+  }
 });
 
 // ---------- create, edit, reveal, copy, delete against the real vault ----------

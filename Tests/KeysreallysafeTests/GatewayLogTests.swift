@@ -392,7 +392,7 @@ final class GatewayLogTests: XCTestCase {
             "  2026-10-20 12:03:00  glm       -           -                         -       -         upstream_auth_blocked  loopback",
         ])
 
-        let report = DoctorReport(sources: [], catalogPath: "/tmp/catalog.db", catalogSize: 1, keychainService: "keysreallysafe",
+        let report = DoctorReport(catalogPath: "/tmp/catalog.db", catalogSize: 1, keychainService: "keysreallysafe",
                                   keychainReachable: true, gatewayListening: true, gatewayPort: 12767,
                                   install: DoctorInstall(runningExecutable: URL(fileURLWithPath: "/tmp/keys")),
                                   gatewayFailures: failures)

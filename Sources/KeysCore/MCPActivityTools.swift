@@ -93,7 +93,7 @@ struct MCPActivityTools: MCPToolGroup, @unchecked Sendable {
 
         var requests: [String: Int] = [:]
         var spend: [String: KeysService.GatewayMonth] = [:]
-        for event in try catalog.usageEvents(from: UTC.iso(start), to: UTC.iso(end), source: .keys) {
+        for event in try catalog.usageEvents(from: UTC.iso(start), to: UTC.iso(end)) {
             guard let key = event.keyName else { continue }
             requests[key, default: 0] += 1
             var month = spend[key] ?? KeysService.GatewayMonth()

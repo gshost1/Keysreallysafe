@@ -63,7 +63,7 @@ still gets all of them:
 
 ## The short reference
 
-- `keys spend --week --json` — local token and estimated spend figures; never
+- `keys spend --week --json` — token and estimated spend figures for gateway calls; never
   present an absent figure as a measured zero.
 - `keys grant <key> --task "…" --minutes N --json` — one Touch ID, one scoped
   token; treat the token as a secret.

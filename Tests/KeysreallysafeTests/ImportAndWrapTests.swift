@@ -343,10 +343,6 @@ final class ImportAndWrapTests: XCTestCase {
             secrets: MemorySecretStore(),
             presence: gate,
             clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome,
-            droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
             relaySecrets: MemorySecretStore()
         )
@@ -950,10 +946,6 @@ final class ImportAndWrapTests: XCTestCase {
             secrets: MemorySecretStore(),
             presence: gate,
             clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome,
-            droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
             relaySecrets: MemorySecretStore()
         )

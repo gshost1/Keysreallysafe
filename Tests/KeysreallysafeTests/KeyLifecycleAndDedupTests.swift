@@ -123,86 +123,38 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertFalse(String(data: ok.body, encoding: .utf8)!.contains(fixtureSecret))
     }
 
-    func testDoctorListsSourcesAndDoesNotProbeInTests() throws {
+    func testDoctorReadsNoUsageLogsAndDoesNotProbeInTests() throws {
         let (db, _) = try makeDB()
         let (service, _, _) = makeService(db: db)
         // A stub install keeps this test off the live app bundle, the real command line link
         // and Installer.live.binary; the install block has its own coverage in DoctorInstallTests.
         let report = try Doctor.report(service: service, probeListener: false, install: DoctorInstall())
-        XCTAssertEqual(report.sources.map(\.id), [
-            "grok-sessions", "claude-projects", "codex-sessions",
-        ])
-        XCTAssertTrue(report.printed.contains("strip=Grok weekly $"))
+        for gone in ["grok-sessions", "claude-projects", "codex-sessions", "strip="] {
+            XCTAssertFalse(report.printed.contains(gone), "doctor no longer checks subscription logs: \(gone)")
+        }
         XCTAssertTrue(report.printed.contains("catalog"))
         XCTAssertTrue(report.printed.contains("keychain"))
         XCTAssertFalse(report.printed.contains(fixtureSecret))
     }
 
-    func testClaudeDedupKeepsLastLineOfTurn() throws {
-        let (db, _) = try makeDB()
-        let report = try ClaudeIngest.run(home: Fixtures.claudeDedupHome, db: db)
-        XCTAssertEqual(report.rowsInserted, 1)
-        XCTAssertEqual(report.rowsUpdated, 3)
-        let events = try db.allUsageEvents()
-        XCTAssertEqual(events.count, 1)
-        XCTAssertEqual(events[0].promptId, "turn-req-1")
-        XCTAssertEqual(events[0].inputTokens, 100)
-        XCTAssertEqual(events[0].outputTokens, 25)
-        XCTAssertEqual(events[0].cachedReadTokens, 4)
-    }
-
-    func testClaudeDedupUpdatesOnIncrementalAppend() throws {
-        let home = try TempDir.make()
-        let project = home.appendingPathComponent("projects/p", isDirectory: true)
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        let file = project.appendingPathComponent("session.jsonl")
-        let first = assistantLine(uuid: "a", output: 10, requestId: "r1")
-        try (first + "\n").write(to: file, atomically: true, encoding: .utf8)
-        let (db, _) = try makeDB()
-        XCTAssertEqual(try ClaudeIngest.run(home: home, db: db).rowsInserted, 1)
-        let later = assistantLine(uuid: "b", output: 22, requestId: "r1")
-        try (first + "\n" + later + "\n").write(to: file, atomically: true, encoding: .utf8)
-        let again = try ClaudeIngest.run(home: home, db: db)
-        XCTAssertEqual(again.rowsInserted, 0)
-        XCTAssertEqual(again.rowsUpdated, 1)
-        let events = try db.allUsageEvents()
-        XCTAssertEqual(events.count, 1)
-        XCTAssertEqual(events[0].outputTokens, 22)
-    }
-
-    func testSpendByProjectClaudeOnly() throws {
-        let (handler, service, _) = try makeHandler()
-        _ = try service.catalog.insertUsage(.fixture(
-            source: "claude-local", session: "s1", prompt: "p1", model: "claude-sonnet-5",
-            at: "2026-09-03T18:00:00Z", cwd: "/tmp/alpha/keysreallysafe", input: 10, output: 4
-        ))
-        _ = try service.catalog.insertUsage(.fixture(
-            source: "claude-local", session: "s2", prompt: "p2", model: "claude-sonnet-5",
-            at: "2026-09-03T19:00:00Z", cwd: "/tmp/beta/other", input: 20, output: 8
-        ))
-        let now = UTC.parse("2026-09-04T12:00:00Z")!
-        let report = try service.spend(
-            range: .month, by: .project, source: .claude, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
-        )
-        XCTAssertEqual(Set(report.rows.compactMap(\.project)), ["keysreallysafe", "other"])
-        XCTAssertEqual(Set(report.rows.compactMap(\.cwd)), ["/tmp/alpha/keysreallysafe", "/tmp/beta/other"])
-        XCTAssertEqual(Set(report.daily.compactMap(\.project)), ["keysreallysafe", "other"])
-        let bad = handle(
-            handler,
-            method: "GET",
-            path: "/api/spend",
-            query: ["range": "month", "by": "project", "source": "grok"]
-        )
-        XCTAssertEqual(bad.status, 400)
-        let ok = handle(
-            handler,
-            method: "GET",
-            path: "/api/spend",
-            query: ["range": "month", "by": "project", "source": "claude"]
-        )
-        XCTAssertEqual(ok.status, 200)
-        let obj = try JSONSerialization.jsonObject(with: ok.body) as! [String: Any]
-        XCTAssertEqual(obj["by"] as? String, "project")
+    /// The project and session groupings and the per-tool sources belonged to the subscription
+    /// logs, removed on 2026-11-04; the spend route refuses them instead of answering empty.
+    func testSpendRouteRefusesRetiredGroupingsAndSources() throws {
+        let (handler, _, _) = try makeHandler()
+        for query in [
+            ["range": "month", "by": "project"],
+            ["range": "month", "by": "session"],
+            ["range": "month", "source": "claude"],
+            ["range": "month", "source": "cloud"],
+        ] {
+            XCTAssertEqual(handle(handler, method: "GET", path: "/api/spend", query: query).status, 400, "\(query)")
+        }
+        for source in ["keys", "all", ""] {
+            let ok = handle(handler, method: "GET", path: "/api/spend", query: ["range": "month", "source": source])
+            XCTAssertEqual(ok.status, 200, "an older link's source=\(source) still answers")
+        }
+        let ingest = handle(handler, method: "POST", path: "/api/ingest").status
+        XCTAssertTrue([404, 405].contains(ingest), "/api/ingest is gone: \(ingest)")
     }
 
     func testParseAutostartRemoveAndNewCommands() throws {
@@ -241,25 +193,5 @@ final class KeyLifecycleAndDedupTests: XCTestCase {
         XCTAssertNil(try db.providerCheck(keyName: "demo"))
         XCTAssertNil(try db.metaValue("license_key"))
         XCTAssertEqual(try db.catalogVersion(), 0)
-    }
-
-    func testCodexSkipsConsecutiveDuplicateTokenCount() throws {
-        let home = try TempDir.make()
-        let dir = home.appendingPathComponent("sessions/2026/09/04", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let file = dir.appendingPathComponent(
-            "rollout-2026-09-04T12-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
-        )
-        let lines = [
-            #"{"timestamp":"2026-09-04T12:00:00.000Z","type":"session_meta","payload":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/x","config":{"model":"gpt-5.4"}}}"#,
-            #"{"timestamp":"2026-09-04T12:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
-            #"{"timestamp":"2026-09-04T12:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":8,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":30,"output_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
-            #"{"timestamp":"2026-09-04T12:00:02.100Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":8,"cached_input_tokens":0,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":30,"output_tokens":12,"cached_input_tokens":0,"reasoning_output_tokens":0}}}}"#,
-        ]
-        try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
-        let events = try CodexIngest.parseFile(file)
-        XCTAssertEqual(events.count, 2)
-        XCTAssertEqual(events.map(\.inputTokens), [10, 20])
-        XCTAssertEqual(events.map(\.outputTokens).reduce(0, +), 12)
     }
 }
