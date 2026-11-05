@@ -85,6 +85,13 @@ p { margin: 0; }
 .inote { margin-top: 8px; min-height: 20px; font-size: 13px; color: var(--ink-3); }
 .inote a { color: var(--ink-2); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
 .inote a:hover { color: var(--ink); }
+/* Agent setup follows whichever installation method is selected. */
+.step2 { margin-top: 26px; }
+.step2 .slabel { font-size: 13px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
+.istack { display: flex; flex-direction: column; gap: 8px; }
+.reg { margin-top: 6px; font-size: 13px; color: var(--ink-3); }
+.reg a { color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; }
+.irow-slash code::before { content: none; }
 .install [hidden] { display: none; }
 .alt { display: flex; flex-wrap: wrap; gap: 4px 0; margin-top: 14px; font-size: 14.5px; color: var(--ink-3); }
 .alt > * + *::before { content: "·"; padding: 0 7px; color: var(--ink-3); }
