@@ -1,0 +1,16 @@
+{
+  "name": "keysrs",
+  "displayName": "Keysrs",
+  "version": "0.15.1",
+  "description": "Agent surface for Keysrs, the local Mac API-key vault: the keysrs skill and the `keys mcp` server. Needs Keysrs.app on macOS (brew install --cask gshost1/keysrs/keysrs, or keysrs.com).",
+  "author": { "name": "Keysrs", "url": "https://keysrs.com" },
+  "homepage": "https://keysrs.com",
+  "repository": "https://github.com/gshost1/Keysreallysafe",
+  "license": "MIT",
+  "keywords": ["api-keys", "vault", "keychain", "touch-id", "mcp", "macos"],
+  "icon": "./assets/icon.png",
+  "documentationUrl": "https://github.com/gshost1/Keysreallysafe/blob/main/docs/agents.md",
+  "supportUrl": "https://github.com/gshost1/Keysreallysafe/issues",
+  "privacyPolicyUrl": "https://keysrs.com/privacy",
+  "termsOfServiceUrl": "https://keysrs.com/terms"
+}

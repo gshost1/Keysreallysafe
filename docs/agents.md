@@ -39,6 +39,25 @@ agent's skills directory: it writes agent configs only (below). Each agent
 framework owns its skills directory, so copy the skill there yourself, from a
 checkout or from the installed app.
 
+## Install as a plugin
+
+The skill and the MCP server also ship as one plugin, `plugins/keysrs`, for
+Claude Code, Claude Desktop and Codex. It needs Keysrs.app on macOS — the plugin
+installs neither the app nor the `keys` command — and its MCP entry runs
+`/Applications/Keysrs.app/Contents/MacOS/keys mcp`, the same server name and
+argument `keys setup mcp` registers, by absolute path so a GUI client with a
+bare `PATH` still finds it. If the app lives elsewhere, use `keys setup mcp`
+instead, which writes the resolved path.
+
+```sh
+/plugin marketplace add gshost1/Keysreallysafe     # in Claude Code
+/plugin install keysrs@keysrs
+codex plugin marketplace add gshost1/Keysreallysafe  # then install from /plugins
+```
+
+The plugin folder holds copies of `Skills/keysrs/SKILL.md` and the app icon
+(the directory rejects symlinks); a test keeps them identical.
+
 ## Where each agent loads skills from
 
 Each agent reads a personal skills directory in your home folder, and most also

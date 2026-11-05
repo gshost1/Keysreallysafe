@@ -15,7 +15,8 @@ to `127.0.0.1` on this Mac.
 ## Use the Keysrs MCP server
 
 The supported agent surface is the MCP server named **keysrs**, served by
-`keys mcp`. Register it once:
+`keys mcp`. Installed as a plugin, the server is already registered; otherwise
+register it once:
 
 ```sh
 keys setup mcp          # writes the resolved keys binary into Claude Code,

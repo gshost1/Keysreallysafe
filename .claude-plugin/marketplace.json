@@ -1,0 +1,12 @@
+{
+  "name": "keysrs",
+  "description": "Keysrs, the local Mac API-key vault, as an agent plugin.",
+  "owner": { "name": "Keysrs", "url": "https://keysrs.com" },
+  "plugins": [
+    {
+      "name": "keysrs",
+      "source": "./plugins/keysrs",
+      "description": "The keysrs skill and the `keys mcp` server. Needs Keysrs.app on macOS."
+    }
+  ]
+}
