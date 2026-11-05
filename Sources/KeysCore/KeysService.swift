@@ -15,17 +15,57 @@ final class KeysService: @unchecked Sendable {
     var droidHome: URL
     /// Serialises ingest passes only. A five-minute log scan must never hold up a gateway lookup.
     private let ingestLock = NSLock()
-    /// Guards `gatewayCache` and `gatewayListener`; held for dictionary access only.
+    /// Guards `gatewayCache`, `gatewayListener`, `gatewayCacheGeneration`, `gatewayRotating`
+    /// and the breaker reference; held for dictionary access only.
     private let gatewayLock = NSLock()
     private var gatewayCache: [String: GatewayTarget] = [:]
     private var gatewayListener: GatewayListener?
+    /// Bumped per key by every change that can make that key's armed target stale: enable,
+    /// disable, rotate, delete, a provider record change for the key's provider. A lookup that
+    /// read the catalog under generation N refuses to publish its snapshot once the generation
+    /// for that key has moved on, so it cannot put the pre-rotation secret back after `rotate`
+    /// succeeded. Per key, not global: one key's change must not make every other key's
+    /// lookup re-read and, after its retries, answer "gateway off".
+    private var gatewayCacheGeneration: [String: Int] = [:]
+    /// Keys whose rotation has replaced the secret but not yet moved the cached target to the
+    /// new version. A lookup in that window sees the catalog's new version against the cached
+    /// old one; that is the rotation in progress, not a changed target, so it must answer "not
+    /// now" rather than disown the gateway and revoke its grants.
+    private var gatewayRotating: [String: Int] = [:]
+
+    /// The generation guarding one key's cache entry; keys that were never armed are at 0.
+    private func gatewayGenerationLocked(_ name: String) -> Int {
+        gatewayCacheGeneration[name] ?? 0
+    }
+
+    private func bumpGatewayGenerationLocked(_ names: some Sequence<String>) {
+        for name in names { gatewayCacheGeneration[name] = gatewayGenerationLocked(name) + 1 }
+    }
+    /// Test seam: runs between a lookup's catalog read and its cache compare-and-insert (once
+    /// per attempt, since a superseded lookup retries), so a test can drive the interleaving
+    /// without sleeping. Called without `gatewayLock` held. Never set in production.
+    var afterGatewayCatalogRead: (@Sendable (KeysService) -> Void)?
+    /// Test seam, the `setGateway` sibling: runs once per attempt, before the generation is
+    /// read and before the row that attempt will publish from, so a test can land a rotation in
+    /// exactly the window where the old code published the retired secret. Called without
+    /// `gatewayLock` held. Never set in production.
+    var beforeGatewaySetRowRead: (@Sendable (KeysService) -> Void)?
+    /// Runs once per attempt, after the row this attempt will publish from was read and before
+    /// its secret. Never set in production.
+    var afterGatewaySetRowRead: (@Sendable (KeysService) -> Void)?
+    /// Test seam: runs inside `rotate`, after the catalog version moved and before the cached
+    /// target is moved to it. Never set in production.
+    var afterRotateVersionBump: (@Sendable (KeysService) -> Void)?
     let grants = GrantStore()
     /// The pending `request_grant` asks (the MCP grants surface), the wrapPending
     /// pattern: lock-guarded, memory-only, nothing token-shaped persisted. The
     /// approval threads settle its records; `MCPGrants.swift` owns its behavior.
     let mcpPendingGrants = MCPPendingGrants()
-    /// Pauses a key after consecutive upstream 401/403 answers (GatewayBreaker).
-    let breaker = GatewayBreaker()
+    /// Pauses a key after consecutive upstream 401/403 answers (GatewayBreaker). Built here
+    /// with the real clock; a test that needs a cool-down to pass replaces it through
+    /// `replaceBreaker`.
+    var breaker: GatewayBreaker { gatewayLock.withLock { breakerStorage } }
+    private var breakerStorage = GatewayBreaker()
     /// The relay secret's own store (Keychain service `keysreallysafe.relay` in the app, memory
     /// in tests). nil means this process has no relay storage, and the relay commands say so.
     let relaySecrets: (any SecretStore)?
@@ -263,8 +303,23 @@ final class KeysService: @unchecked Sendable {
     }
 
     private func reinstallOverlay() {
+        let previous = Providers.overlayRecords()
         let custom = (try? catalog.listCustomProviders()) ?? []
         Providers.setOverlay(Dictionary(custom.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
+        // Armed targets hold a copy of the provider record: an auth header, auth prefix or
+        // path-prefix edit changes the request the approved secret goes out on, so every
+        // cached target on a provider whose record changed has to be re-proved against the new
+        // one before its next call. Only those keys' generations move: a global bump would make
+        // every other key's lookup retry and then answer "gateway off" for nothing.
+        // Only the request shape counts, as in lookupGateway: a rename must not make lookups
+        // retry. One critical section, so a key armed between finding and bumping is not missed.
+        let before = Dictionary(previous.map { ($0.id, $0.requestShape) }, uniquingKeysWith: { first, _ in first })
+        let after = Dictionary(custom.map { ($0.id, $0.requestShape) }, uniquingKeysWith: { first, _ in first })
+        let changed = Set(before.keys).union(after.keys).filter { before[$0] != after[$0] }
+        guard !changed.isEmpty else { return }
+        gatewayLock.withLock {
+            bumpGatewayGenerationLocked(gatewayCache.filter { changed.contains($0.value.provider.id) }.map(\.key))
+        }
     }
 
     /// The catalog the dashboard uses: the user's providers first, then the shipped ones, with
@@ -342,6 +397,10 @@ final class KeysService: @unchecked Sendable {
         ]
     }
 
+    /// Test seam: put a breaker with a scripted clock in place, so a test can walk a cool-down
+    /// in without waiting one out. Never called in production.
+    func replaceBreaker(_ replacement: GatewayBreaker) { gatewayLock.withLock { breakerStorage = replacement } }
+
     func isGatewayEnabled(_ name: String) -> Bool {
         gatewayLock.withLock { gatewayCache[name] != nil }
     }
@@ -350,23 +409,60 @@ final class KeysService: @unchecked Sendable {
         gatewayLock.withLock { gatewayListener != nil }
     }
 
+    /// The target for `name`, or nil when the gateway is off for it, the catalog row changed
+    /// under it, or the cache can no longer be proved to match. The compare-and-publish happens
+    /// under `gatewayLock` against the generation the snapshot was taken at, so a lookup that
+    /// read the catalog while `rotate` or `setGateway` was committing can neither put the
+    /// pre-rotation secret back nor hand it to a caller: it re-reads and answers from the
+    /// committed state.
     func lookupGateway(name: String) -> GatewayTarget? {
-        guard let cached = gatewayLock.withLock({ gatewayCache[name] }) else { return nil }
-        guard let row = try? catalog.catalogRow(name: name) else {
-            disableGatewayMemory(name: name, reason: "target_changed")
-            return nil
+        for _ in 0..<3 {
+            let snapshot: (target: GatewayTarget, generation: Int)? = gatewayLock.withLock {
+                guard let cached = gatewayCache[name], gatewayRotating[name] == nil else { return nil }
+                return (cached, gatewayGenerationLocked(name))
+            }
+            guard let (cached, generation) = snapshot else { return nil }
+            guard let row = try? catalog.catalogRow(name: name) else {
+                disownStaleCache(name: name, expectedGeneration: generation, reason: "target_changed")
+                return nil
+            }
+            let provider = Providers.provider(id: row.provider)
+            let catalogHost = row.gatewayHost ?? provider?.host
+            afterGatewayCatalogRead?(self)
+            let superseded = gatewayLock.withLock { gatewayGenerationLocked(name) != generation }
+            if superseded { continue }
+            // The provider's request shape, not the whole record: a rename, a new note, a
+            // different key-prefix hint or group, or hiding it in the picker changes nothing
+            // about the request the approved secret goes out on, and disowning the gateway for
+            // one of those revoked every grant for a cosmetic edit. Host, api, auth header,
+            // auth prefix, path prefix and the gateway flag do change it.
+            guard cached.provider.requestShape == provider?.requestShape,
+                  cached.host == catalogHost, cached.version == row.version
+            else {
+                disownStaleCache(name: name, expectedGeneration: generation, reason: "target_changed")
+                return nil
+            }
+            var target = cached
+            // The stored record is refreshed on every lookup: a cosmetic edit is not a reason
+            // to disown the gateway, and it is not a reason to keep showing the old label either.
+            if let provider { target.provider = provider }
+            target.cheapest = row.gatewayCheapest && CheapestRouting.supports(provider: row.provider)
+            let published: GatewayTarget? = gatewayLock.withLock {
+                // Publish `cheapest` only over the entry that was read, never over a newer one.
+                guard gatewayGenerationLocked(name) == generation, gatewayCache[name] == cached else { return nil }
+                if target != cached { gatewayCache[name] = target }
+                return target
+            }
+            if let published { return published }
         }
-        let catalogHost = row.gatewayHost ?? Providers.provider(id: row.provider)?.host
-        if row.provider != cached.provider.id
-            || catalogHost != cached.host
-            || row.version != cached.version
-        {
-            disableGatewayMemory(name: name, reason: "target_changed")
-            return nil
-        }
-        var target = cached
-        target.cheapest = row.gatewayCheapest && CheapestRouting.supports(provider: row.provider)
-        return target
+        return nil
+    }
+
+    /// A lookup proved its snapshot stale. Take the entry out only if it is still the one the
+    /// snapshot came from: an entry published by a later enable/rotate is newer than this
+    /// lookup's evidence and must survive.
+    private func disownStaleCache(name: String, expectedGeneration: Int, reason: String) {
+        disableGatewayMemory(name: name, reason: reason, expectedGeneration: expectedGeneration)
     }
 
     /// Changes where an aggregator sends the key's calls, never what the key can reach, so it
@@ -418,19 +514,68 @@ final class KeysService: @unchecked Sendable {
             if let stillValid, !stillValid() {
                 throw AppError.usage("the request expired before it was approved")
             }
-            let target = GatewayTarget(
-                name: name, secret: try secrets.get(name: name), provider: provider, host: resolved, version: row.version
-            )
-            gatewayLock.withLock { gatewayCache[name] = target }
+            // The catalog is the commit: publish the cache only once the row agrees, and only
+            // if nothing else committed in between, so a lookup that read the old row cannot
+            // take the new target away (or hand back the old one) afterwards. Retried against
+            // the fresh row, never against this call's snapshot; the catalog read stays
+            // outside `gatewayLock`, which never holds another lock.
+            //
+            // The generation is read FIRST in each attempt, then the row, then the secret it
+            // pairs with. A rotation replaces the secret, bumps the version and bumps the
+            // generation; any order in which one of those reads straddles the rotation lets the
+            // stale one through, and reading the secret before the generation (which this did)
+            // published the retired secret under the new version, so the version check agreed
+            // and the pre-rotation value kept being sent.
+            // The key moved to another provider while the prompt was up: what was approved
+            // (this provider, this host) no longer describes the key, so nothing is written.
+            guard let current = try catalog.catalogRow(name: name), current.provider == provider.id else {
+                throw AppError.usage("\(name) changed while the gateway was being turned on")
+            }
+            var updated = try catalog.updateGatewayHost(name: name, host: resolved)
+            var published = false
+            var attempts = 0
+            while !published, attempts < 3 {
+                attempts += 1
+                beforeGatewaySetRowRead?(self)
+                let generation = gatewayLock.withLock { gatewayGenerationLocked(name) }
+                guard let fresh = try? catalog.catalogRow(name: name), fresh.provider == provider.id,
+                      let record = Providers.provider(id: fresh.provider), record.gateway
+                else { break }
+                updated = fresh
+                afterGatewaySetRowRead?(self)
+                // Read immediately before the publish, still checked against the generation
+                // taken above: a rotation that replaced the value in this window moved the
+                // generation too, so the publish is refused and the next attempt re-reads. The
+                // provider record is the one read in this attempt too: an edit made during the
+                // prompt would otherwise be published stale and disowned on the first call.
+                let secret = try secrets.get(name: name)
+                published = gatewayLock.withLock {
+                    guard gatewayGenerationLocked(name) == generation, gatewayRotating[name] == nil else { return false }
+                    gatewayCache[name] = GatewayTarget(
+                        name: name, secret: secret, provider: record, host: resolved, version: fresh.version
+                    )
+                    bumpGatewayGenerationLocked([name])
+                    return true
+                }
+            }
+            guard published else {
+                // A failed enable leaves the stored host as it was, if the key is still the
+                // one this call started from.
+                if !isGatewayEnabled(name),
+                   let after = try? catalog.catalogRow(name: name), after.provider == row.provider,
+                   after.gatewayHost == resolved, row.gatewayHost != resolved
+                {
+                    _ = try? catalog.updateGatewayHost(name: name, host: row.gatewayHost)
+                }
+                throw AppError.usage("\(name) changed while the gateway was being turned on")
+            }
             // Turning the gateway on is how a rotated key comes back into use; a pause earned
             // by the old value must not outlive it.
             breaker.reset(key: name)
-            let updated = try catalog.updateGatewayHost(name: name, host: resolved)
             try recordKeyEvent(name: name, action: "gateway_enable", caller: caller)
             return updated
         }
-        _ = gatewayLock.withLock { gatewayCache.removeValue(forKey: name) }
-        revokeGrants(key: name, reason: "gateway_off", caller: caller)
+        disableGatewayMemory(name: name, reason: "gateway_off", caller: caller, recordEvent: false, revokeAlways: true)
         try recordKeyEvent(name: name, action: "gateway_disable", caller: caller)
         return row
     }
@@ -1333,7 +1478,9 @@ final class KeysService: @unchecked Sendable {
         try? recordKeyEvent(name: name, action: "gateway_denied", caller: via ?? "gateway", detail: reason, httpStatus: status)
     }
 
-    func recordGatewayUsage(_ row: GatewayUsageRow, grantId: String? = nil, method: String = "POST") throws {
+    func recordGatewayUsage(
+        _ row: GatewayUsageRow, grantId: String? = nil, method: String = "POST"
+    ) throws {
         var event = row.usageEvent()
         if let grantId {
             grants.charge(
@@ -1814,9 +1961,11 @@ final class KeysService: @unchecked Sendable {
         // The secret goes first: if the Keychain refuses, the key is still listed, so its
         // grants and cached gateway entry must keep working rather than die for nothing.
         try secrets.delete(name: name)
-        _ = gatewayLock.withLock { gatewayCache.removeValue(forKey: name) }
-        revokeGrants(key: name, reason: "key_deleted", caller: caller)
+        _ = disableGatewayMemory(name: name, reason: "key_deleted", caller: caller, recordEvent: false, revokeAlways: true)
         try catalog.deleteCatalog(name: name)
+        // Again once the row is gone: a grant minted between the first revoke and the delete
+        // has nothing left to authorize against, but it must not stay listed as active.
+        revokeGrants(key: name, reason: "key_deleted", caller: caller)
         try? catalog.deleteProviderCheck(keyName: name)
         try recordKeyEvent(name: name, action: "rm", caller: caller)
     }
@@ -1826,14 +1975,43 @@ final class KeysService: @unchecked Sendable {
         _ = try existingRow(name)
         guard !secret.isEmpty else { throw AppError.usage("empty secret") }
         try presence.require(reason: "unlock \(name)")
+        // From here until the cached target carries the new version, lookups answer "not now"
+        // instead of reading the catalog's new version against the cached old one as a changed
+        // target, which would turn the gateway off and need another Touch ID to re-arm.
+        // Counted, not a flag: two overlapping rotations of one key must both finish first.
+        gatewayLock.withLock {
+            gatewayRotating[name, default: 0] += 1
+            bumpGatewayGenerationLocked([name])
+        }
+        defer {
+            gatewayLock.withLock {
+                let left = (gatewayRotating[name] ?? 1) - 1
+                gatewayRotating[name] = left > 0 ? left : nil
+                bumpGatewayGenerationLocked([name])
+            }
+        }
         try secrets.replace(name: name, secret: secret)
         // A rotation usually answers a leak, so grants approved against the old value die with
         // it: a token handed out before the swap must not keep spending the new secret.
         revokeGrants(key: name, reason: "key_rotated", caller: caller)
-        let version = try catalog.incrementVersion(name: name)
+        let version: Int
+        do {
+            version = try catalog.incrementVersion(name: name)
+        } catch {
+            // The Keychain already holds the new value; a cached target still carrying the old
+            // one must not go on being served once the rotation has failed.
+            disableGatewayMemory(name: name, reason: "key_rotated", caller: caller)
+            throw error
+        }
+        afterRotateVersionBump?(self)
+        // The new secret replaces the old one in the same critical section that bumps the
+        // generation, so a lookup holding the old version cannot put the old secret back.
         gatewayLock.withLock {
-            gatewayCache[name]?.secret = secret
-            gatewayCache[name]?.version = version
+            if gatewayCache[name] != nil {
+                gatewayCache[name]?.secret = secret
+                gatewayCache[name]?.version = version
+            }
+            bumpGatewayGenerationLocked([name])
         }
         // The pause was earned by the old value; the new one gets to prove itself at once.
         breaker.reset(key: name)
@@ -1859,7 +2037,10 @@ final class KeysService: @unchecked Sendable {
         try Self.removeRetiredOptimizerData(catalogDirectory: catalog.path.deletingLastPathComponent())
         try Self.removeRetiredPlanSnapshot(catalogDirectory: catalog.path.deletingLastPathComponent())
         try Self.removeRemoteImports(importsDir)
-        gatewayLock.withLock { gatewayCache.removeAll() }
+        gatewayLock.withLock {
+            bumpGatewayGenerationLocked(gatewayCache.keys)
+            gatewayCache.removeAll()
+        }
         revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
         try relaySecrets?.deleteAll()
@@ -1997,15 +2178,38 @@ final class KeysService: @unchecked Sendable {
         return row
     }
 
-    private func disableGatewayMemory(name: String, reason: String) {
-        guard gatewayLock.withLock({ gatewayCache.removeValue(forKey: name) }) != nil else { return }
-        revokeGrants(key: name, reason: reason)
-        try? recordKeyEvent(
-            name: name,
-            action: "gateway_disable",
-            caller: "dashboard",
-            detail: reason
-        )
+    /// Takes a key's armed target out of the cache and revokes its grants, reporting whether
+    /// there was anything to take out. The one path for "the gateway is off for this key now":
+    /// a lookup that proved its snapshot stale, a disable, a key change and a delete all land
+    /// here, so the generation bump and the revoke can never be forgotten separately.
+    /// `caller` and `reason` are the audit row's; `recordEvent` is false for a delete, whose
+    /// own `rm` row already says the key and its gateway are gone. `expectedGeneration` narrows
+    /// the removal to one snapshot's view: a lookup passes the generation it read, so an entry
+    /// published by a later enable/rotate survives evidence that predates it. The compare and
+    /// the removal are one critical section, or a rotation landing between them would be undone.
+    @discardableResult
+    private func disableGatewayMemory(
+        name: String, reason: String, caller: String = "dashboard", recordEvent: Bool = true,
+        expectedGeneration: Int? = nil, revokeAlways: Bool = false
+    ) -> Bool {
+        let removed: GatewayTarget? = gatewayLock.withLock {
+            if let expectedGeneration, gatewayGenerationLocked(name) != expectedGeneration { return nil }
+            bumpGatewayGenerationLocked([name])
+            return gatewayCache.removeValue(forKey: name)
+        }
+        // Delete and gateway-off revoke whether or not a target was cached: a grant minted in
+        // the window where the entry was already gone must not outlive the key.
+        if removed != nil || revokeAlways { revokeGrants(key: name, reason: reason, caller: caller) }
+        guard removed != nil else { return false }
+        if recordEvent {
+            try? recordKeyEvent(
+                name: name,
+                action: "gateway_disable",
+                caller: caller,
+                detail: reason
+            )
+        }
+        return true
     }
 
     func env(

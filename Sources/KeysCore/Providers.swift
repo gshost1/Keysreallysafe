@@ -131,6 +131,28 @@ enum ProviderID {
 }
 
 extension Providers.Record {
+    /// The fields that decide the request an approved secret travels on: where it goes, the
+    /// path it is joined to, and the header and scheme that carry it. Compared on its own
+    /// because a cosmetic edit — a rename, a new note, a different key-prefix hint, another
+    /// group, hiding it in the picker — does not change that request, and treating it as a
+    /// target change disowned the armed gateway and revoked every grant for nothing.
+    struct RequestShape: Equatable, Sendable {
+        var id: String
+        var host: String?
+        var api: String
+        var authHeader: String
+        var authPrefix: String
+        var pathPrefix: String
+        var gateway: Bool
+    }
+
+    var requestShape: RequestShape {
+        RequestShape(
+            id: id, host: host, api: api, authHeader: authHeader,
+            authPrefix: authPrefix, pathPrefix: pathPrefix, gateway: gateway
+        )
+    }
+
     /// The dashboard's catalog shape (`/api/providers`), one record. `hiddenReason` is
     /// "app" when the shipped catalog retired it and "user" when it was hidden here; the
     /// picker skips either, while the key table still resolves names from them.

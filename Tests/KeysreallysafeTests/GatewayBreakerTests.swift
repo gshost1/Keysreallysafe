@@ -13,31 +13,37 @@ final class GatewayBreakerTests: XCTestCase {
     func testTripsAfterFiveConsecutiveAuthFailuresAndRecoversAfterTheCooldown() {
         let clock = Clock()
         let breaker = GatewayBreaker(now: { clock.now })
+        func assertClosed(probe: Bool = false, comment: String = "", line: UInt = #line) {
+            guard let admission = breaker.check(key: "k").granted else {
+                return XCTFail("expected closed \(comment)", line: line)
+            }
+            XCTAssertEqual(admission.probe, probe, "probe flag \(comment)", line: line)
+        }
         for _ in 0..<4 {
             XCTAssertFalse(breaker.record(key: "k", status: 401))
-            XCTAssertEqual(breaker.check(key: "k"), .closed)
+            assertClosed()
         }
         XCTAssertTrue(breaker.record(key: "k", status: 403), "the fifth failure trips")
         XCTAssertEqual(breaker.check(key: "k"), .open(retryAfterSeconds: 60))
-        XCTAssertEqual(breaker.check(key: "other"), .closed, "per key")
+        XCTAssertEqual(breaker.check(key: "other").granted?.probe, false, "per key")
         XCTAssertFalse(breaker.record(key: "k", status: 401), "already open: no second trip")
 
         clock.advance(30)
         XCTAssertEqual(breaker.check(key: "k"), .open(retryAfterSeconds: 30))
         clock.advance(31)
-        XCTAssertEqual(breaker.check(key: "k"), .closed, "the probe call is let through")
+        assertClosed(probe: true, comment: "the probe call is let through")
         XCTAssertTrue(breaker.record(key: "k", status: 401), "one more failure re-opens at once")
         XCTAssertEqual(breaker.check(key: "k"), .open(retryAfterSeconds: 60))
 
-        breaker.record(key: "k", status: 200)
-        XCTAssertEqual(breaker.check(key: "k"), .closed)
+        breaker.reset(key: "k")
+        assertClosed()
         for _ in 0..<4 { breaker.record(key: "k", status: 401) }
         breaker.record(key: "k", status: 429)
         XCTAssertFalse(breaker.record(key: "k", status: 401), "any other status resets the count")
         for _ in 0..<3 { breaker.record(key: "k", status: 401) }
         XCTAssertTrue(breaker.record(key: "k", status: 401))
         breaker.reset(key: "k")
-        XCTAssertEqual(breaker.check(key: "k"), .closed)
+        assertClosed()
     }
 
     func testRotatingTheKeyClearsThePause() throws {
@@ -46,11 +52,11 @@ final class GatewayBreakerTests: XCTestCase {
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "old-synthetic")
         _ = try service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:9")
         for _ in 0..<GatewayBreaker.threshold { service.breaker.record(key: "demo", status: 401) }
-        XCTAssertNotEqual(service.breaker.check(key: "demo"), .closed)
+        XCTAssertNil(service.breaker.check(key: "demo").granted)
         // Rotating is the fix the pause message suggests; it must not stay paused for the
         // rest of the cool-down with a value that was never tried.
         _ = try service.rotate(name: "demo", secret: "new-synthetic")
-        XCTAssertEqual(service.breaker.check(key: "demo"), .closed)
+        XCTAssertNotNil(service.breaker.check(key: "demo").granted)
     }
 
     func testGatewayStopsForwardingAfterRepeatedUpstreamDenialsAndLogsTheTripOnce() async throws {
