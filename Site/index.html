@@ -80,6 +80,45 @@
                 <div class="irow"><a class="idl" href="https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M10 3.5v9m0 0L6.5 9m3.5 3.5L13.5 9M4 15.5h12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Download <b>Keysrs-arm64.dmg</b></span></a></div>
                 <p class="inote">macOS 14+, Apple Silicon. Open the DMG and drag Keysrs to Applications.</p>
               </div>
+              <div class="step2">
+                <p class="slabel">Then connect your agent</p>
+                <div class="itabs" role="tablist" aria-label="Agent">
+                  <button type="button" role="tab" id="tab-claude" class="itab" aria-selected="true" aria-controls="panel-claude">Claude Code</button>
+                  <button type="button" role="tab" id="tab-codex" class="itab" aria-selected="false" aria-controls="panel-codex" tabindex="-1">Codex</button>
+                  <button type="button" role="tab" id="tab-other" class="itab" aria-selected="false" aria-controls="panel-other" tabindex="-1">Any MCP client</button>
+                </div>
+                <div role="tabpanel" id="panel-claude" aria-labelledby="tab-claude">
+                  <div class="istack">
+                    <div class="irow irow-slash"><code id="claude-cmd-0">/plugin marketplace add gshost1/Keysreallysafe</code>
+                      <button type="button" class="icopy" data-copy="claude-cmd-0" aria-label="Copy command"><svg class="i-copy" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="7" y="7" width="9.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><svg class="i-ok" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 10.5l3.4 3.4L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </div>
+                    <div class="irow irow-slash"><code id="claude-cmd-1">/plugin install keysrs@keysrs</code>
+                      <button type="button" class="icopy" data-copy="claude-cmd-1" aria-label="Copy command"><svg class="i-copy" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="7" y="7" width="9.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><svg class="i-ok" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 10.5l3.4 3.4L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </div>
+                  </div>
+                  <p class="inote">Run both inside Claude Code. Adds the keysrs MCP server and skill.</p>
+                </div>
+                <div role="tabpanel" id="panel-codex" aria-labelledby="tab-codex" hidden>
+                  <div class="istack">
+                    <div class="irow"><code id="codex-cmd-0">codex plugin marketplace add gshost1/Keysreallysafe</code>
+                      <button type="button" class="icopy" data-copy="codex-cmd-0" aria-label="Copy command"><svg class="i-copy" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="7" y="7" width="9.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><svg class="i-ok" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 10.5l3.4 3.4L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </div>
+                    <div class="irow"><code id="codex-cmd-1">codex plugin add keysrs@keysrs</code>
+                      <button type="button" class="icopy" data-copy="codex-cmd-1" aria-label="Copy command"><svg class="i-copy" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="7" y="7" width="9.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><svg class="i-ok" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 10.5l3.4 3.4L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </div>
+                  </div>
+                  <p class="inote">Run in Terminal. Adds the keysrs MCP server and skill.</p>
+                </div>
+                <div role="tabpanel" id="panel-other" aria-labelledby="tab-other" hidden>
+                  <div class="istack">
+                    <div class="irow"><code id="other-cmd-0">keys setup mcp</code>
+                      <button type="button" class="icopy" data-copy="other-cmd-0" aria-label="Copy command"><svg class="i-copy" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="7" y="7" width="9.5" height="9.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><svg class="i-ok" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 10.5l3.4 3.4L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </div>
+                  </div>
+                  <p class="inote">Writes the keysrs entry into Claude Desktop, Cursor, Droid and the rest. <code>--remove</code> undoes it.</p>
+                </div>
+                <p class="reg">Also in the <a href="https://registry.modelcontextprotocol.io/v0/servers?search=io.github.gshost1/keysrs">official MCP Registry</a> as io.github.gshost1/keysrs.</p>
+              </div>
               <p class="vh" role="status" id="copy-status"></p>
               <p class="on-phone">Paste it into Terminal on your Mac.</p>
               <p class="alt"><span>macOS 14+, Apple Silicon</span><span>Free, MIT</span><a class="star" href="https://github.com/gshost1/Keysreallysafe" data-event="star_click">★ Star on GitHub</a></p>

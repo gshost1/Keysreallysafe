@@ -44,8 +44,8 @@ test('install tabs: brew, curl and DMG, with keyboard arrows and a copy button e
   await app.open('/');
   const tab = (name: string) => browser.locator(`#tab-${name}`);
   const panel = (name: string) => browser.locator(`#panel-${name}`);
-  await expect(browser.locator('[role=tablist]')).toHaveCount(1);
-  await expect(browser.locator('[role=tab]')).toHaveCount(3);
+  await expect(browser.locator('[role=tablist]')).toHaveCount(2);
+  await expect(browser.locator('[role=tab]')).toHaveCount(6);
   // brew is the default: selected, its command shown, the others hidden.
   await expect(tab('brew')).toHaveAttribute('aria-selected', 'true');
   await expect(panel('brew')).toBeVisible();
@@ -78,6 +78,25 @@ test('install tabs: brew, curl and DMG, with keyboard arrows and a copy button e
   await tab('dmg').click();
   await expect(browser.locator('#panel-dmg a.idl')).toHaveAttribute('href', 'https://github.com/gshost1/Keysreallysafe/releases/latest/download/Keysrs-arm64.dmg');
   await expect(panel('dmg')).toContainText('macOS 14+, Apple Silicon');
+  // Agent tabs operate independently of the install method.
+  await expect(panel('claude')).toBeVisible();
+  await expect(browser.locator('#panel-claude .icopy')).toHaveCount(2);
+  await expect(browser.locator('#claude-cmd-0')).toHaveText('/plugin marketplace add gshost1/Keysreallysafe');
+  await expect(browser.locator('#claude-cmd-1')).toHaveText('/plugin install keysrs@keysrs');
+  await tab('claude').focus();
+  await tab('claude').press('ArrowRight');
+  await expect(panel('codex')).toBeVisible();
+  await expect(panel('claude')).toBeHidden();
+  await expect(panel('dmg')).toBeVisible();
+  await expect(browser.locator('#codex-cmd-0')).toHaveText('codex plugin marketplace add gshost1/Keysreallysafe');
+  await expect(browser.locator('#codex-cmd-1')).toHaveText('codex plugin add keysrs@keysrs');
+  await expect(browser.locator('#panel-codex .icopy')).toHaveCount(2);
+  await tab('codex').press('End');
+  await expect(panel('other')).toBeVisible();
+  await expect(browser.locator('#other-cmd-0')).toHaveText('keys setup mcp');
+  await expect(browser.locator('#panel-other .icopy')).toHaveCount(1);
+  await tab('other').press('ArrowRight');
+  await expect(tab('claude')).toBeFocused();
   // The installer is served from the same site, as plain text.
   await app.open('/install');
   await expect(browser.locator('body')).toContainText('curl -fsSL https://keysrs.com/install | bash');
