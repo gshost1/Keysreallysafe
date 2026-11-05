@@ -1117,6 +1117,13 @@ final class CatalogDB: @unchecked Sendable {
         try run("UPDATE relay_pairings SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL;", iso, id) > 0
     }
 
+    /// Revokes every pairing not yet revoked, for the unscoped kill switch. The count is the
+    /// update's changed rows, the semantics revokeGatewayClients gives client tokens, so a
+    /// second call answers zero.
+    func revokeAllRelayPairings(at iso: String) throws -> Int {
+        try run("UPDATE relay_pairings SET revoked_at = ? WHERE revoked_at IS NULL;", iso)
+    }
+
     func touchRelayPairing(id: Int64, at iso: String) throws {
         try run("UPDATE relay_pairings SET last_used_at = ? WHERE id = ?;", iso, id)
     }

@@ -66,3 +66,19 @@ jobs:
           NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
           KEYS_BACKEND_CONTRACT_UI: "1"
         run: swift test --filter BackendContractUITests
+
+  # Most of KeysCore is @unchecked Sendable with hand-held locks, so the compiler
+  # does not check which lock guards which field. ThreadSanitizer does, at run
+  # time, over the areas where threads actually meet: the gateway, grants, the
+  # relay and the revoke paths.
+  thread-sanitizer:
+    runs-on: macos-latest
+    env:
+      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
+      GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
+      KEYS_DROID_HOME: ${{ github.workspace }}/Fixtures/droid-home
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Gateway, grants, relay and revoke under ThreadSanitizer
+        timeout-minutes: 30
+        run: swift test --sanitize=thread --filter 'Gateway|Grant|Relay|Revoke'

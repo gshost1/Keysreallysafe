@@ -96,13 +96,20 @@ final class FakeRelayDialer: RelayDialer, @unchecked Sendable {
 /// so a reconnect loop ends on its own.
 final class RecordingSleeper: @unchecked Sendable {
     private let lock = NSLock()
-    private(set) var delays: [TimeInterval] = []
-    var stopAfter: Int = .max
+    private var recorded: [TimeInterval] = []
+    private var limit: Int = .max
+    /// Read under the lock: the relay loop appends from its own task while the test asserts,
+    /// and ThreadSanitizer flagged the unguarded read.
+    var delays: [TimeInterval] { lock.withLock { recorded } }
+    var stopAfter: Int {
+        get { lock.withLock { limit } }
+        set { lock.withLock { limit = newValue } }
+    }
 
     func sleep(_ seconds: TimeInterval) async throws {
         let stop: Bool = lock.withLock {
-            delays.append(seconds)
-            return delays.count >= stopAfter
+            recorded.append(seconds)
+            return recorded.count >= limit
         }
         if stop { throw CancellationError() }
         try await Task.sleep(nanoseconds: 1_000_000)

@@ -538,9 +538,10 @@ one approved poll. `send_feedback` scrubs a feedback draft in the app (key
 values, token shapes, paths, names, emails removed first), opens the prefilled
 support mail or GitHub issue page, and never submits anything itself.
 The revoke pair `revoke_all` /
-`revoke_project` ends access in one call — every grant and client token at
-once, one key's, or one project's client tokens by label — with honest counts
-and no Touch ID. `activity` reads recent gateway use from the local catalog —
+`revoke_project` ends access in one call — every grant, client token and
+relay pairing at once (turning the relay off too), one key's grants and
+tokens, or one project's client tokens by label — with honest counts and no
+Touch ID. `activity` reads recent gateway use from the local catalog —
 per-key requests, refusals and spend for a window, with project labels — and
 needs no running app.
 `keys setup mcp` registers the server with all five

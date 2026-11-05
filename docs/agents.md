@@ -241,12 +241,14 @@ The tools the server offers:
   app; no Touch ID — scrubbing removes secrets, it never reads one out.
   Returns the scrubbed text and per-category removal counts. Keysrs never
   submits the feedback: the user reviews and sends what opens.
-- `revoke_all` — the kill switch: revoke every active grant and client token
-  at once, or only one vault key's with `key`. Requires the app; no Touch ID,
-  because revocation only removes access. Answers `{revoked_grants,
-  revoked_clients}` — counts of what was still live and is now dead, so a
-  second call answers zeros. Afterwards the grants stop authorizing and the
-  client tokens are refused. The vault's keys themselves are untouched.
+- `revoke_all` — the kill switch: revoke every active grant, client token and
+  relay pairing at once and turn the app's relay off, or only one vault key's
+  grants and client tokens with `key` (pairings and the relay are left alone).
+  Requires the app; no Touch ID, because revocation only removes access.
+  Answers `{revoked_grants, revoked_clients, revoked_pairings, relay_stopped}`
+  — counts of what was still live and is now dead, so a second call answers
+  zeros and false. Afterwards the grants stop authorizing and the client
+  tokens and pairings are refused. The vault's keys themselves are untouched.
 - `revoke_project` — revoke one project's active client tokens by their
   label — client tokens only; grants carry no project and are untouched.
   Requires the app; no Touch ID. An unknown label is a not-found error; a
@@ -294,8 +296,9 @@ printed for this one task, and never belongs in a log, a file or a message.
 
 List what is live with `keys grants --json`; end one with `keys revoke <id>`,
 one key's everything with `keys revoke --all --key <name>`, or every grant
-AND client token at once with `keys revoke --all` — it prints both counts
-(`revoked 2 grants and 1 client token`) and needs no Touch ID. The dashboard's
+AND client token and relay pairing at once with `keys revoke --all`, which
+also turns the relay off — it prints the counts (`revoked 2 grants, 1 client
+token and 0 relay pairings`) and needs no Touch ID. The dashboard's
 own Revoke-all button stays grants-only.
 
 ## Unattended and remote: a client token

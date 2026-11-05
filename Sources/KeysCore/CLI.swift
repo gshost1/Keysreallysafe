@@ -668,7 +668,7 @@ struct RevokeCommand: ParsableCommand {
     @Argument(help: "Grant id from keys grant, or omit with --all.")
     var id: String?
 
-    @Flag(help: "Revoke every active grant and client token (or one key's with --key).")
+    @Flag(help: "Revoke every active grant, client token and relay pairing and turn the relay off (or one key's grants and tokens with --key).")
     var all = false
 
     @Option(help: "With --all, only this key's grants and client tokens.")
@@ -693,7 +693,21 @@ struct RevokeCommand: ParsableCommand {
             let obj = try client.call(method: "POST", path: "/api/mcp/revoke_all", body: body, expect: 200)
             let grants = JSONValue.int(obj["revoked_grants"]) ?? 0
             let clients = JSONValue.int(obj["revoked_clients"]) ?? 0
-            print("revoked \(grants) grant\(grants == 1 ? "" : "s") and \(clients) client token\(clients == 1 ? "" : "s")")
+            let grantsText = "\(grants) grant\(grants == 1 ? "" : "s")"
+            let clientsText = "\(clients) client token\(clients == 1 ? "" : "s")"
+            guard key == nil else {
+                print("revoked \(grantsText) and \(clientsText)")
+                return
+            }
+            // An app from before pairings joined the kill switch answers without these
+            // fields and left pairings and its relay alone; a zero would read as done.
+            guard let pairings = JSONValue.int(obj["revoked_pairings"]) else {
+                print("revoked \(grantsText) and \(clientsText); this Keysrs app is older and left relay pairings and the relay alone, so update it")
+                return
+            }
+            let relayStopped = (obj["relay_stopped"] as? Bool) ?? false
+            let pairingsText = "\(pairings) relay pairing\(pairings == 1 ? "" : "s")"
+            print("revoked \(grantsText), \(clientsText) and \(pairingsText)" + (relayStopped ? "; the relay is off" : ""))
             return
         }
         guard let id, !id.isEmpty else { throw AppError.usage("give a grant id, or --all") }

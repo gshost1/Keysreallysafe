@@ -408,6 +408,42 @@ final class RelayHostTests: XCTestCase {
         XCTAssertNil(RelayLock.holder(at: service.relayLockURL))
     }
 
+    /// The unscoped kill switch closes the relay path too: the route turns this process's
+    /// relay off (socket closed, lock given back) and says so, with no Touch ID; a second call
+    /// finds it off. A key-scoped revoke leaves a running relay alone.
+    func testRevokeAllTurnsTheRelayOffAndAKeyScopedRevokeLeavesItOn() throws {
+        let (service, gate) = try gatedService()
+        let first = FakeRelaySocket()
+        service.relayHost = RelayHost(log: { _ in }, dialer: FakeRelayDialer([.success(first)]), blocker: FakeSleepBlocker())
+        _ = try service.setupRelay(url: origin.absoluteString)
+        _ = try service.startGateway(port: 0)
+        defer { service.stopGateway() }
+        let web = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let handler = APIHandler(service: service, webRoot: web)
+        func revokeAll(_ body: [String: Any]) throws -> [String: Any] {
+            let response = handle(handler, method: "POST", path: "/api/mcp/revoke_all", body: try JSONValue.data(body))
+            XCTAssertEqual(response.status, 200, String(decoding: response.body, as: UTF8.self))
+            return try JSONSerialization.jsonObject(with: response.body) as? [String: Any] ?? [:]
+        }
+
+        XCTAssertTrue(try service.setRelay(enabled: true).host.on)
+        let prompts = gate.reasons.count
+
+        let scoped = try revokeAll(["key": "demo"])
+        XCTAssertEqual(scoped["relay_stopped"] as? Bool, false)
+        XCTAssertTrue(service.relayHost.isOn, "a key-scoped revoke leaves the relay on")
+        XCTAssertFalse(first.closed)
+
+        let all = try revokeAll([:])
+        XCTAssertEqual(all["relay_stopped"] as? Bool, true)
+        XCTAssertFalse(service.relayHost.isOn)
+        XCTAssertTrue(first.closed)
+        XCTAssertNil(RelayLock.holder(at: service.relayLockURL), "the relay lock is given back")
+        XCTAssertEqual(gate.reasons.count, prompts, "turning the relay off asked for nothing")
+
+        XCTAssertEqual(try revokeAll([:])["relay_stopped"] as? Bool, false, "already off")
+    }
+
     func testCancelledTouchIDLeavesTheRelayOffAndTheLockFree() throws {
         let (db, _) = try makeDB()
         let gate = RecordingPresenceGate()

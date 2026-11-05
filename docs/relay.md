@@ -159,6 +159,14 @@ keys relay pair require on  # the enforcement switch; `keys relay status` shows 
 keys relay pair require off # one Touch ID — lowering enforcement needs you present; on needs none
 ```
 
+`keys revoke --all` and the `revoke_all` MCP tool revoke every pairing
+together with every grant and client token, and turn the app's relay off, so
+the kill switch also closes the one way in from outside the Mac. With
+`--key` they end only that key's grants and client tokens and leave
+pairings and the relay alone. A `keys relay` running in a Terminal is another
+process and keeps its socket until you stop it there; every token it carried
+is refused, but a token issued afterwards would work through it again.
+
 Because the codes are new but the frame types are not, the protocol stays
 version 1: an older Worker that predates this mapping degrades a pairing
 rejection to its default 502 with the code preserved — a refusal either way,
@@ -596,9 +604,15 @@ the credential being 24 random bytes.
 
 Someone who learns the **relay secret** can impersonate the Mac: connect to
 your Worker, replace the real Mac's socket and receive the agent's requests,
-including their tokens. They still cannot reach the gateway with those tokens
-unless they can also reach your Mac's loopback. Keep the secret out of CI
-logs; `keys relay setup` shows it once, stores it in the Mac's Keychain under
+including their `ksf_`/`ksfc_` tokens and `X-KSF-Pair` headers. That puts
+them where an attacker who controls the Worker already is: once the real Mac
+is connected again, they can send those tokens to the Worker URL like any
+agent and spend within each token's scope and caps until it expires or is
+revoked. They still never see a provider key. Treat a leaked relay secret
+like a compromised Worker: `keys revoke --all` (every token and pairing, and
+the relay off), then `keys relay setup` for a new secret and `wrangler secret
+put RELAY_SECRET` for the Worker's copy, then reissue what agents need. Keep
+the secret out of CI logs; `keys relay setup` shows it once, stores it in the Mac's Keychain under
 its own service, and `keys relay status` only ever shows its last four
 characters. While a relay is on, the secret is in the memory of the process
 running it, as a key is while the gateway holds it; the dashboard's

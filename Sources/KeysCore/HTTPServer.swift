@@ -1319,7 +1319,12 @@ final class APIHandler: @unchecked Sendable {
     /// in-memory table, the only place they live) AND client tokens (catalog
     /// rows the gateway re-reads per request, so the revoke is honored
     /// immediately), so a kill switch never needs a second call to be complete.
-    /// The optional `key` scopes both kinds to one vault key. No presence
+    /// Unscoped, it also closes the relay path: every relay pairing is revoked and
+    /// this process's relay is turned off, so the one way in from outside the Mac
+    /// does not outlive the tokens it carried. The optional `key` scopes grants
+    /// and client tokens to one vault key and leaves pairings and the relay alone:
+    /// they gate the transport for every key, and that key's tokens are already
+    /// dead. The answer always carries all four fields. No presence
     /// prompt: revocation only removes access, exactly like the revoke paths
     /// that already existed. The body may name a `caller` for the audit rows the
     /// way the grant-issuing route does (the CLI sends "cli"); without one the
@@ -1337,8 +1342,25 @@ final class APIHandler: @unchecked Sendable {
         }
         let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "mcp"
         let grants = service.revokeGrants(key: key, reason: "revoked", caller: caller)
-        let clients = try service.revokeGatewayClients(key: key, caller: caller)
-        return HTTPResponse.json(200, ["revoked_grants": grants.count, "revoked_clients": clients])
+        // Tokens first, so a relayed call already in flight meets a 401 before the socket
+        // closes under it. Stopping the relay cannot fail, so a catalog write that throws
+        // (a busy database) must not leave it running: the kill switch closes it anyway.
+        let clients: Int
+        let pairings: Int
+        do {
+            clients = try service.revokeGatewayClients(key: key, caller: caller)
+            pairings = key == nil ? try service.revokeAllRelayPairings() : 0
+        } catch {
+            if key == nil { service.stopRelayForRevoke() }
+            throw error
+        }
+        let relayStopped = key == nil ? service.stopRelayForRevoke() : false
+        return HTTPResponse.json(200, [
+            "revoked_grants": grants.count,
+            "revoked_clients": clients,
+            "revoked_pairings": pairings,
+            "relay_stopped": relayStopped,
+        ])
     }
 
     /// POST /api/mcp/revoke_project — the app side of the `revoke_project`
