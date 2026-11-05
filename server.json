@@ -1,0 +1,17 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.gshost1/keysrs",
+  "title": "Keysrs",
+  "description": "Local Mac API-key vault: Touch ID-approved, scoped grants for agents, not keys. Needs Keysrs.app.",
+  "version": "0.15.1",
+  "websiteUrl": "https://keysrs.com",
+  "repository": { "url": "https://github.com/gshost1/Keysreallysafe", "source": "github" },
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/gshost1/Keysreallysafe/releases/download/v0.15.1/Keysrs.mcpb",
+      "fileSha256": "2400625b7672ce11be3841a1569b842db7be74de76bdda8535782e1d24ad5f72",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

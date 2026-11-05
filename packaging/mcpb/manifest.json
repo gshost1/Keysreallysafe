@@ -1,0 +1,27 @@
+{
+  "manifest_version": "0.3",
+  "name": "keysrs",
+  "display_name": "Keysrs",
+  "version": "0.15.1",
+  "description": "Agent surface for Keysrs, the local Mac API-key vault: the keysrs skill and the `keys mcp` server. Needs Keysrs.app on macOS (brew install --cask gshost1/keysrs/keysrs, or keysrs.com).",
+  "long_description": "Keysrs keeps provider API keys in the macOS Keychain behind Touch ID and hands agents scoped, expiring gateway grants instead of keys. This bundle only starts the `keys mcp` server of the installed app; it contains no app, no key and no setting. It needs Keysrs.app in /Applications on macOS (brew install --cask gshost1/keysrs/keysrs, or keysrs.com).",
+  "author": { "name": "Keysrs", "url": "https://keysrs.com" },
+  "repository": { "type": "git", "url": "https://github.com/gshost1/Keysreallysafe" },
+  "homepage": "https://keysrs.com",
+  "documentation": "https://github.com/gshost1/Keysreallysafe/blob/main/docs/agents.md",
+  "support": "https://github.com/gshost1/Keysreallysafe/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/launch.sh",
+    "mcp_config": {
+      "command": "/bin/sh",
+      "args": ["${__dirname}/server/launch.sh"]
+    }
+  },
+  "tools_generated": true,
+  "keywords": ["api-keys", "vault", "keychain", "touch-id", "mcp", "macos"],
+  "license": "MIT",
+  "privacy_policies": ["https://keysrs.com/privacy"],
+  "compatibility": { "platforms": ["darwin"] }
+}

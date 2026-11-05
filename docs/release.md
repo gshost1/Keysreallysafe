@@ -138,6 +138,47 @@ copy them into the plugin folder (the same test fails until they match).
 Merging to the tracked branch is how the Anthropic directory picks up a new
 version; there is no separate publish step for the Codex marketplace.
 
+## MCP Registry (MCPB bundle)
+
+`server.json` at the repo root is the entry for the official MCP Registry
+(`io.github.gshost1/keysrs`). Keysrs is on no package manager, so the one
+package is an MCPB bundle, `Keysrs.mcpb`, hosted as an asset of the GitHub
+release. The registry stores metadata only. The bundle (`packaging/mcpb/`:
+`manifest.json`, the icon and `server/launch.sh`) holds no app, key or
+setting; its launcher runs `/Applications/Keysrs.app/Contents/MacOS/keys mcp`
+and exits 1 with a message on stderr if the app is missing. macOS only.
+
+Bump in the release PR, with the plugin manifests and the cask:
+`packaging/mcpb/manifest.json` `version`, `server.json` `version`, and the
+`v<version>` in the `server.json` package URL. They must equal
+`AppVersion.current`. Then rebuild and paste the hash:
+
+```sh
+python3 scripts/build-mcpb.py       # .build/mcpb/Keysrs.mcpb, prints its SHA-256
+# put that digest in server.json packages[0].fileSha256
+python3 -m unittest scripts/tests/test_mcpb_bundle.py
+```
+
+The zip is deterministic (stored, sorted, fixed timestamps), so the digest only
+changes when the bundle's files do, and `test_mcpb_bundle` fails until
+`fileSha256` equals a fresh build.
+
+After the release PR is merged and the release is published:
+
+1. Attach `Keysrs.mcpb` from a build of the tagged commit to the GitHub
+   release `v<version>` (next to `Keysrs-arm64.dmg`; the updater only reads
+   the DMG assets). Check that `shasum -a 256` of the uploaded asset equals
+   `fileSha256`. The URL must stay reachable: MCP clients verify the hash
+   before installing.
+2. `mcp-publisher validate server.json` (needs network: it asks the registry).
+3. `mcp-publisher login github`, a browser device flow for the `gshost1`
+   account that George runs; it grants `io.github.gshost1/*`.
+4. `mcp-publisher publish`. A version can be published once; to fix a bad
+   entry, bump the version.
+
+Optional checks: `npx @anthropic-ai/mcpb validate packaging/mcpb/manifest.json`
+and `npx @anthropic-ai/mcpb info .build/mcpb/Keysrs.mcpb`.
+
 ## Homebrew cask (unpublished tap)
 
 `packaging/homebrew/keysrs.rb` is the Keysrs cask for our own tap,
