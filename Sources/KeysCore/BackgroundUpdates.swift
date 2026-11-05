@@ -217,11 +217,10 @@ final class BackgroundUpdater {
     private let quietInterval: TimeInterval
     private let sampleInterval: TimeInterval
     private let waitLimit: TimeInterval
-    private var installing = false
-
-    /// Whether an install is underway, in its quiet wait or its installer: the
-    /// manual Update Now refuses to start a second install beside it.
-    var inFlight: Bool { installing }
+    /// The one update machine, shared with the manual flow. A second install —
+    /// manual Update Now or another scheduled one — is refused while it is
+    /// claimed, so the two can never stage beside the same bundle names.
+    let coordinator: UpdateCoordinator
 
     init(
         activity: any UpdateActivitySource,
@@ -236,17 +235,26 @@ final class BackgroundUpdater {
         log: @escaping (String) -> Void = { _ in },
         quietInterval: TimeInterval = BackgroundUpdatePolicy.quietInterval,
         sampleInterval: TimeInterval = BackgroundUpdatePolicy.sampleInterval,
-        waitLimit: TimeInterval = BackgroundUpdatePolicy.waitLimit
+        waitLimit: TimeInterval = BackgroundUpdatePolicy.waitLimit,
+        allowed: (() -> Bool)? = nil,
+        coordinator: UpdateCoordinator = UpdateCoordinator()
     ) {
         self.activity = activity
+        self.coordinator = coordinator
+        // The coordinator refuses a scheduled run unless someone says the
+        // person's setting allows it, so it fails closed. Only an explicit
+        // `allowed` changes that: the controller that owns the preference wires
+        // the seam from `updateChecks`, and a default here would quietly
+        // overwrite a coordinator that was already wired.
+        if let allowed { coordinator.backgroundAllowed = allowed }
         // The background factory: the manual flow's own installer with the
         // quiet gate's activity attached, so the swap itself is refused when the
         // Mac turned busy during the download (H2). Built in the body because
         // a default argument cannot see the sibling parameter it would capture.
         // The manual flow constructs its own installer and passes no gate: its
         // modal progress window keeps the person in charge of the timing.
-        self.makeInstaller = makeInstaller ?? { release, app in
-            let installer = UpdateInstaller(release: release, app: app)
+        self.makeInstaller = makeInstaller ?? { [coordinator] release, app in
+            let installer = UpdateInstaller(release: release, app: app, coordinator: coordinator, origin: .background)
             installer.idleGate = activity
             installer.defersRelaunch = true
             return installer
@@ -274,12 +282,29 @@ final class BackgroundUpdater {
     /// the swap defers to the next daily check; busy before the quit holds the
     /// restart helper and the quit until the next quiet window.
     func install(_ release: ReleaseInfo) {
-        guard !installing else { return }
-        installing = true
+        // The claim is the one install slot for both paths. The scheduled check
+        // already holds it in `.checking(.background)`, so this hands over; a
+        // manual install that got there first wins and this one logs instead of
+        // staging a second bundle beside the same names. The phase is `waiting`:
+        // nothing is downloading yet, and saying so keeps the manual check's
+        // "in progress" honest without pretending a download has begun.
+        guard let claim = coordinator.beginInstall(.background, waiting: true) else {
+            log("background update skipped: \(UpdateCoordinator.busyMessage)")
+            return
+        }
         Task { @MainActor in
-            defer { installing = false }
-            guard await self.waitForQuiet() else {
-                self.logDeferred()
+            defer { coordinator.finish(claim) }
+            guard await self.waitForQuiet(claim) else {
+                if let why = coordinator.stopReason(claim) { self.logStopped(why) }
+                else { self.logDeferred() }
+                return
+            }
+            // The quiet wait can take the full wait limit: a cancel or the
+            // person turning automatic updates off during it stops the run
+            // before anything is even built. The reason comes from the one place
+            // that decides it, on this run's own claim.
+            if let why = coordinator.stopReason(claim) {
+                self.logStopped(why)
                 return
             }
             let installer = self.makeInstaller(release, self.appURL())
@@ -295,9 +320,33 @@ final class BackgroundUpdater {
                 // pending, so the deferral is the whole story.
                 self.logDeferred()
                 return
+            } catch let stopped as UpdateStopped {
+                // A step boundary stopped it with nothing moved and nothing
+                // pending: cancelled, automatic updates turned off, or the
+                // person's own Check for Updates took the machine over.
+                self.logStopped(stopped.why)
+                return
             } catch {
+                // A failure after the swap is not a failure to install: the new
+                // bundle is in place and only the restart is left. The claim
+                // stays, so the next attempt is a relaunch and never a second
+                // swap beside an already-replaced bundle.
+                if coordinator.phase == .installedPendingRelaunch(.background) {
+                    self.log("background update installed but did not restart: \(error.localizedDescription)")
+                    return
+                }
                 self.log("background update did not install: \(error.localizedDescription)")
                 return
+            }
+            // The bundle in place is the new one from here. Until the helper
+            // starts, the person's Check for Updates finishes the restart
+            // instead of being told the machine is busy — the quiet wait below
+            // has no limit, and a Mac that never goes quiet would otherwise
+            // shut them out for good.
+            let quit = self.quit
+            coordinator.installedPendingRelaunch(claim) {
+                try installer.relaunch()
+                quit()
             }
             await self.notifier?.noteUpdateInstalled()
             // The quit's own re-check: a prompt or gateway call that came up
@@ -316,20 +365,54 @@ final class BackgroundUpdater {
                     if Task.isCancelled { return }
                 }
             }
-            do {
-                try installer.relaunch()
-            } catch {
-                self.log("background update installed but did not restart: \(error.localizedDescription)")
-                return
+            // A failed restart is retried here, with the claim and the helper
+            // still held: the bundle in place is the new one, so the next daily
+            // check must find this same "installed, relaunch pending" state and
+            // not stage a second swap beside an already-replaced bundle. The
+            // retries are bounded by the wait limit; past it the app stays up
+            // and a person quitting normally launches the new version.
+            var attempts = 0
+            while true {
+                do {
+                    try installer.relaunch()
+                    self.quit()
+                    return
+                } catch {
+                    attempts += 1
+                    self.log("background update installed but did not restart: \(error.localizedDescription)")
+                    if attempts < Self.relaunchAttempts, await self.waitForQuiet() { continue }
+                    // Out of attempts: the machine stays in installed-pending-
+                    // relaunch, and a later Check for Updates runs the restart.
+                    return
+                }
             }
-            self.quit()
         }
     }
+
+    /// How many times a failed restart helper start is retried before the
+    /// installed-but-not-restarted state is left for the next launch.
+    static let relaunchAttempts = 3
 
     /// The deferral the next daily check picks up, in the one wording the log
     /// already carries.
     private func logDeferred() {
         log("background update deferred: the Mac stayed busy for \(Int(self.waitLimit)) seconds")
+    }
+
+    /// A run stopped at a pre-swap boundary: the person turned automatic
+    /// updates off, cancelled, or their own Check for Updates took the machine
+    /// over. Nothing moved, and the next daily check starts from scratch only if
+    /// the setting is on again. The reason comes from the thrown error, never
+    /// from re-reading the coordinator's flags — those belong to whichever run
+    /// holds the claim now, which after a takeover is not this one.
+    private func logStopped(_ why: UpdateStopped.Why) {
+        let reason: String
+        switch why {
+        case .cancelled: reason = "it was cancelled"
+        case .disabled: reason = "automatic updates were turned off"
+        case .superseded: reason = "the person started their own update check"
+        }
+        log("background update stopped before the swap: \(reason)")
     }
 
     /// Waits for the quiet window: nothing the app must stay alive for — a
@@ -339,11 +422,14 @@ final class BackgroundUpdater {
     /// that starts and ends between two samples still restarts the window
     /// through the activity stamp. Bounded: past `waitLimit` the install defers
     /// to the next daily check.
-    private func waitForQuiet() async -> Bool {
+    private func waitForQuiet(_ claim: UpdateClaim? = nil) async -> Bool {
         let deadline = now().addingTimeInterval(waitLimit)
         var quietSince: Date?
         while true {
             if Task.isCancelled { return false }
+            // A run that was taken over or switched off stops waiting at once
+            // rather than sampling out the whole wait limit.
+            if let claim, coordinator.stopReason(claim) != nil { return false }
             let moment = now()
             guard moment <= deadline else { return false }
             if activity.busy {

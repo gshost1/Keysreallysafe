@@ -17,11 +17,27 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     private var relayAppAwakeItem: NSMenuItem?
     private var relayAppSharedAwakeItem: NSMenuItem?
     private var updateTimer: Timer?
-    private var checking = false
+    /// A short retry for a scheduled check the shared machine refused, so a
+    /// clash with the person's own check costs minutes, not the daily window.
+    private var updateRetryPending = false
+    /// Bumped whenever the schedule is rebuilt (the setting toggled, the
+    /// daily timer replaced): a retry armed under an older schedule does
+    /// nothing when it fires.
+    private var updateRetryGeneration = 0
+    /// Retries left in this daily window. A machine that stays claimed — a
+    /// manual install the person left open — must not turn into a check
+    /// every five minutes for the rest of the day.
+    private var updateRetriesLeft = AppWindowController.updateRetryLimit
+    /// How soon a refused scheduled check tries again.
+    static let updateRetryInterval: TimeInterval = 5 * 60
+    /// How many refused scheduled checks are retried per daily window.
+    static let updateRetryLimit = 3
+    /// The one update state machine, shared with `BackgroundUpdater`: which path
+    /// is checking or installing, and the phase the progress window renders.
+    private let coordinator: UpdateCoordinator
     private weak var menubar: MenubarExtra?
     private var installer: UpdateInstaller?
     private var updateWindow: UpdateProgressWindow?
-    private var updating = false
     /// App-owned alerts raised before a window existed (a failed login
     /// registration). Headless launch must present nothing, so they wait for the
     /// first window show instead of popping over a Dock-less app.
@@ -45,6 +61,9 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
     /// the manual Check for Updates never touches it.
     private let background: BackgroundUpdater?
     private let log: (String) -> Void
+    /// How soon a refused scheduled check tries again. Injected so a test can
+    /// observe the retry without waiting minutes.
+    private let scheduleRetry: (@escaping @MainActor () -> Void) -> Void
 
     init(
         url: URL,
@@ -57,7 +76,8 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         offerChoice: ((ReleaseInfo) -> UpdateChoice)? = nil,
         startManualUpdate: ((ReleaseInfo) -> Void)? = nil,
         background: BackgroundUpdater? = nil,
-        log: ((String) -> Void)? = nil
+        log: ((String) -> Void)? = nil,
+        scheduleRetry: ((@escaping @MainActor () -> Void) -> Void)? = nil
     ) {
         self.url = url
         self.preferences = preferences
@@ -71,7 +91,15 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
         self.offerChoice = offerChoice ?? AppWindowController.askUpdateChoice
         self.background = background
         self.log = log ?? { _ in }
+        self.scheduleRetry = scheduleRetry ?? AppWindowController.afterRetryInterval
+        // The background updater carries the shared machine when one is
+        // assembled; a rig without it gets a fresh one, and the two paths still
+        // cannot install at once.
+        self.coordinator = background?.coordinator ?? UpdateCoordinator()
         super.init()
+        // The scheduled path reads the person's setting at every pre-swap
+        // boundary, not just when the check began.
+        self.coordinator.backgroundAllowed = { [weak self] in self?.preferences.updateChecks ?? false }
         // The production manual install is a weak-self closure so the stored
         // closure does not retain the controller it lives on.
         self.runManualInstall = startManualUpdate ?? { [weak self] release in self?.startUpdate(release) }
@@ -184,6 +212,10 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
 
     var startsAtLogin: Bool { SMAppService.mainApp.status == .enabled }
 
+    /// The shared update phase, for the menu and for tests: `.idle` means
+    /// neither path is checking or installing.
+    var updatePhase: UpdateCoordinator.Phase { coordinator.phase }
+
     func menuWillOpen(_ menu: NSMenu) {
         loginItem?.state = startsAtLogin ? .on : .off
         menubarToggleItem?.state = preferences.menubarItem ? .on : .off
@@ -245,29 +277,63 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
 
     private func scheduleUpdates() {
         updateTimer?.invalidate()
+        updateRetryPending = false
+        updateRetryGeneration += 1
+        updateRetriesLeft = Self.updateRetryLimit
         guard preferences.updateChecks else { return }
         checkUpdates(manual: false)
         updateTimer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.checkUpdates(manual: false) }
+            Task { @MainActor in
+                guard let self else { return }
+                self.updateRetriesLeft = Self.updateRetryLimit
+                self.checkUpdates(manual: false)
+            }
         }
     }
 
     @objc func checkForUpdates() { checkUpdates(manual: true) }
 
     private func checkUpdates(manual: Bool) {
-        guard !checking else { return }
-        checking = true
+        let origin: UpdateOrigin = manual ? .manual : .background
+        // The bundle was already replaced and only the restart is left: the
+        // person's check finishes that update instead of being told the
+        // machine is busy, and the scheduled one leaves it alone.
+        if case .installedPendingRelaunch = coordinator.phase {
+            if manual { finishPendingRestart() }
+            else { log("scheduled update check skipped: an installed update is waiting for a restart") }
+            return
+        }
+        // One lookup and one install across both paths: the daily timer, the
+        // menu and the dashboard switch all come through here. A refused manual
+        // check is not a silent no-op — the person is told — and a refused
+        // scheduled one is retried in a few minutes rather than a day later,
+        // because it was refused by a run someone else started, not by the
+        // person's setting.
+        guard let claim = coordinator.beginCheck(origin) else {
+            if manual { alert("Update Already in Progress", UpdateCoordinator.busyMessage) }
+            else { scheduleUpdateRetry(reason: UpdateCoordinator.busyMessage) }
+            return
+        }
         Task {
-            defer { checking = false }
+            defer { coordinator.finishCheck(claim) }
             do {
                 let release = try await latestRelease()
                 if UpdateCheck.isNewer(release.version, than: AppVersion.current) {
                     // Only the person's Check for Updates offers the modal. The
                     // scheduled check runs over a Dock-less app, so it installs
                     // through the background path and raises no dialog; a failed
-                    // check on that path is logged, never shown.
+                    // check on that path is logged, never shown. The check may
+                    // have taken seconds, so the person's setting is re-read
+                    // here: turning automatic updates off during the lookup
+                    // means this release is not installed after all.
                     if manual { offerUpdate(release) }
-                    else { background?.install(release) }
+                    else if preferences.updateChecks {
+                        // A check the person's own run took over is not ours to
+                        // act on: they are looking at the offer for the same
+                        // release, and installing underneath it would race them.
+                        guard coordinator.isCurrent(claim) else { return }
+                        background?.install(release)
+                    }
                 } else if manual {
                     alert("Keysrs Is Up to Date", "Keysrs \(AppVersion.current) is the newest release.")
                 }
@@ -275,6 +341,35 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
                 if manual { alert("Could Not Check for Updates", error.localizedDescription) }
                 else { log("scheduled update check failed: \(error.localizedDescription)") }
             }
+        }
+    }
+
+    /// The scheduled check was refused, so the daily timer's next call is a day
+    /// away; a refused lookup is retried in a few minutes, within the same
+    /// daily window, because it was refused by a run someone else started rather
+    /// than by the person's setting. One retry is pending at a time.
+    private func scheduleUpdateRetry(reason: String) {
+        log("scheduled update check skipped: \(reason)")
+        guard !updateRetryPending, updateRetriesLeft > 0 else { return }
+        updateRetryPending = true
+        updateRetriesLeft -= 1
+        let generation = updateRetryGeneration
+        scheduleRetry { [weak self] in
+            // A retry armed before the schedule was rebuilt, or one that fires
+            // after the person turned automatic updates off, does nothing: the
+            // setting is the person's, and the rebuilt schedule owns its own
+            // check.
+            guard let self, generation == self.updateRetryGeneration else { return }
+            self.updateRetryPending = false
+            guard self.preferences.updateChecks else { return }
+            self.checkUpdates(manual: false)
+        }
+    }
+
+    /// The production retry: a one-shot timer a few minutes out.
+    private static func afterRetryInterval(_ action: @escaping @MainActor () -> Void) {
+        Timer.scheduledTimer(withTimeInterval: updateRetryInterval, repeats: false) { _ in
+            Task { @MainActor in action() }
         }
     }
 
@@ -313,27 +408,68 @@ final class AppWindowController: NSObject, WKNavigationDelegate, WKUIDelegate, W
 
     private func startUpdate(_ release: ReleaseInfo) {
         // One install at a time across both paths: the scheduled install and
-        // Update Now stage beside the same bundle names.
-        guard !updating, background?.inFlight != true else { return }
-        updating = true
-        let pending = UpdateInstaller(release: release, app: Bundle.main.bundleURL)
-        pending.report = { [weak self] phase in self?.updateWindow?.update(phase) }
+        // Update Now stage beside the same bundle names, so the claim is taken
+        // before anything is built. Losing it means the scheduled path got
+        // there first, and the person is told rather than left with a click
+        // that did nothing. A claim held in `installedPendingRelaunch` is
+        // refused the same way: the bundle in place is already the new one.
+        guard let claim = coordinator.beginInstall(.manual) else {
+            alert("Update Already in Progress", UpdateCoordinator.busyMessage)
+            return
+        }
+        let pending = UpdateInstaller(release: release, app: Bundle.main.bundleURL,
+                                      coordinator: coordinator, origin: .manual)
         pending.quit = { [weak self] in
             if let extra = self?.menubar { extra.quit() } else { NSApp.terminate(nil) }
         }
         installer = pending
-        updateWindow = UpdateProgressWindow { [weak self] in self?.installer?.cancel() }
-        updateWindow?.show()
+        let progress = UpdateProgressWindow { [weak self] in self?.installer?.cancel() }
+        updateWindow = progress
+        coordinator.onChange = { [weak progress] phase in progress?.update(phase) }
+        progress.show()
         Task {
-            do { try await pending.run() }
-            catch {
+            do {
+                try await pending.run()
+                // The hand-off quits the app, so this is only reached if the
+                // quit did not happen. The machine deliberately stays claimed:
+                // the new bundle is already in place and a relaunch helper is
+                // pending, so a second install must not start beside it.
+            } catch {
                 updateWindow?.close()
                 updateWindow = nil
                 installer = nil
-                updating = false
-                if error is CancellationError { return }
+                coordinator.onChange = nil
+                // Past the swap the claim is never released: the bundle in
+                // place is the new one, and the only retry that makes sense is
+                // another relaunch. Saying "Could Not Update" there was wrong —
+                // it was updated, it did not restart — and releasing the claim
+                // let the next check try to set the replaced bundle aside.
+                // Not retried here: the spawn just failed, and an immediate
+                // second try would hide its error. The next Check for Updates
+                // retries the restart.
+                if coordinator.phase == .installedPendingRelaunch(.manual) {
+                    alert("Keysrs Was Updated", "It could not restart (\(error.localizedDescription)). Choose Check for Updates to try again, or quit and open Keysrs.")
+                    return
+                }
+                coordinator.finish(claim)
+                if error is CancellationError || error is UpdateStopped { return }
                 alert("Could Not Update", error.localizedDescription)
             }
+        }
+    }
+
+    /// The bundle was replaced but the restart did not happen. The claim stays
+    /// held and the coordinator keeps the restart helper, so the one thing to
+    /// retry is the restart — never the install — and a later Check for
+    /// Updates comes back here. A person who just quits gets the new version
+    /// on the next launch anyway, so the failure is reported as what it is
+    /// rather than as a failed update.
+    private func finishPendingRestart() {
+        do {
+            if try coordinator.restartPending() { return }
+            alert("Keysrs Was Updated", "Quit and open Keysrs again to finish.")
+        } catch {
+            alert("Keysrs Was Updated", "\(error.localizedDescription) Quit and open Keysrs again to finish.")
         }
     }
 
