@@ -37,10 +37,9 @@
 
 <h2>What the app reads on your Mac</h2>
 <ul>
-  <li>Usage records that Claude Code, OpenAI Codex CLI and Grok CLI write to your home folder (session logs). Only counts and metadata are kept; prompt content is not stored.</li>
-  <li>The per-request usage records Droid writes to <code>~/.factory/logs/</code>: only the <code>[Agent] Streaming result</code> lines of <code>droid-log-single.log</code> and its dated rotations are read, keeping their token counts, model, session id and timestamp. Nothing under <code>~/.factory/sessions/</code> is read, and Droid's transcripts, its login files, and every other record in its log (the ones that carry message content) are never opened.</li>
   <li>API keys you add yourself. They are stored in the macOS Keychain under your login and are read back only after a Touch ID or login-password prompt.</li>
 </ul>
+<p>The app reads no other tool's session or usage logs (Claude Code, Codex, Grok and Droid included). The only usage it records is the calls made through its own local gateway: key, provider, model, token counts and the provider's cost receipt, never request or response bodies.</p>
 <p>The app never reads other tools' authentication files (for example <code>~/.codex/auth.json</code> or <code>~/.grok/auth.json</code>), never opens provider websites, and never uses browser cookies or sessions.</p>
 
 <h2>Update check</h2>

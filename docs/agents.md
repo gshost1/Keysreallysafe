@@ -94,8 +94,8 @@ An install old enough to answer exit 64 here does not know this surface yet;
 ask the user to update Keysrs instead of falling back to parsing prose.
 
 `keys status` and its plan windows were removed on 2026-11-03: Keysrs no
-longer tracks plan limits. For token and spend figures use `keys spend
---json`, and never present a number the JSON does not give you as if it were
+longer tracks plan limits. For token and spend figures on gateway calls use
+`keys spend --json`, and never present a number the JSON does not give you as if it were
 measured.
 
 ## Wire and launch an agent
@@ -390,7 +390,7 @@ the URL they already have.
 | 1 | a usage or HTTP error |
 | 2 | not found |
 | 3 | user presence or the Keychain (cancelled, failed or unavailable) |
-| 4 | ingest IO or the usage catalog |
+| 4 | the usage catalog |
 | 5 | a failed provider check |
 | 6 | no running Keysrs site owns the gateway |
 | 64 | bad arguments (a mistyped command or flag) |

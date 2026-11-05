@@ -8,7 +8,7 @@ license: MIT
 
 Keysrs is a local Mac app plus the `keys` command line tool: an API-key vault
 that keeps provider secrets in the macOS Keychain behind Touch ID, and a spend
-chart from the usage logs coding agents already write. It is not an AI
+chart of the calls made through its local gateway. It is not an AI
 subscription: it supplies no credits and no model, and everything it runs binds
 to `127.0.0.1` on this Mac.
 
@@ -62,7 +62,7 @@ still gets all of them:
 
 ## The short reference
 
-- `keys spend --week --json` — local token and estimated spend figures; never
+- `keys spend --week --json` — token and estimated spend figures for gateway calls; never
   present an absent figure as a measured zero.
 - `keys grant <key> --task "…" --minutes N --json` — one Touch ID, one scoped
   token; treat the token as a secret.
