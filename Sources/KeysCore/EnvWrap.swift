@@ -399,6 +399,56 @@ enum EnvFileWriter {
         var backup: URL
     }
 
+    /// One file's rewrite, prepared but not committed: the pre-image's backup is on
+    /// disk, the new bytes are in a temp beside the target (same directory, the file's
+    /// own mode, one `rename` away) and the target itself has not moved. The split
+    /// exists so a batch of files can be made all-or-nothing: every file is prepared
+    /// first, and only a batch whose every temp exists commits. `discard` removes the
+    /// temps and the backups, `commit` renames the temps home, `restore` puts an
+    /// already-renamed file back.
+    struct Prepared {
+        var url: URL
+        var backup: URL
+        var temp: URL
+        /// The bytes the target held when this was prepared: `commit` proves they are
+        /// still there before the rename, so the refuse-if-changed guarantee covers the
+        /// whole window (for `keys wrap`, all the way across the plan's apply), and
+        /// `restore` proves the rename landed before it puts them back.
+        var original: Data
+        /// The new bytes this call put in the temp: `restore` proves the file still
+        /// holds exactly these before it overwrites them, so a user edit made in the
+        /// rollback window is never discarded.
+        var text: Data
+        var mode: mode_t
+        /// Last path component, for the messages (never the path).
+        var name: String { url.lastPathComponent }
+    }
+
+    /// Test-only seams, nil in production: a closure that fires after every temp of a
+    /// batch exists and before the first rename (phase A is complete, nothing moved),
+    /// and one that fires before each rename by index (to fail phase B mid-batch).
+    /// Nothing in the production path reads them.
+    struct TestHooks: @unchecked Sendable {
+        var beforeCommit: (() throws -> Void)?
+        var beforeRename: ((Int) throws -> Void)?
+    }
+    nonisolated(unsafe) static var testHooks: TestHooks?
+
+    /// Why a prepared batch did not land, and exactly what it left behind. `reason`
+    /// names the file by its last component and the system error, never a path: the
+    /// sentence it ends up in is a tool result or a Terminal line.
+    struct BatchFailure: Error {
+        /// Whether anything on disk moved: `.prepared` means no file changed,
+        /// `.committed` means some renames may have happened and were undone.
+        enum Phase { case prepared, committed }
+        var phase: Phase
+        var reason: String
+        /// Files put back from the backups this batch took, by name.
+        var restored: [String] = []
+        /// Files that could NOT be put back; they still hold the new bytes.
+        var stuck: [String] = []
+    }
+
     /// Where wrap-time backups live: beside the CATALOG, like control.json and
     /// relay.lock — never inside the project (VAL-O-002). A backup holds the real
     /// secret values, so it must not sit in the tree the agent works in, where one
@@ -449,6 +499,9 @@ enum EnvFileWriter {
     /// so a reader sees the old file or the new one, never half. The new file keeps
     /// the old mode. Refuses if the file changed since it was read, naming no
     /// absolute path: the refusal is user-facing (a tool result, a Terminal line).
+    ///
+    /// This is the ONE-file case of the batch `commit`; the batch paths (the import
+    /// and `keys wrap`) prepare every file first and rename them together.
     static func rewrite(
         _ url: URL, original: Data, text: String, now: Date = Date(),
         backupRoot: URL? = nil
@@ -457,7 +510,32 @@ enum EnvFileWriter {
         // argument cannot throw), so the tripwire's refusal comes before any
         // read or write — a forgotten injection fails closed with nothing done.
         let backupRoot = try backupRoot ?? EnvFileWriter.defaultBackupsRoot()
+        let prepared = try prepare(url, original: original, text: text, now: now, backupRoot: backupRoot)
+        do {
+            try commit(prepared)
+        } catch {
+            // A rename that got through and then failed further up must not leave the
+            // new bytes behind: put the original back, then drop the scratch files.
+            try? restore(prepared)
+            discard([prepared])
+            throw error
+        }
+        return Result(backup: prepared.backup)
+    }
+
+    /// Phase A for one file: the refuse-if-changed check, the pre-wrap backup
+    /// (outside the project) and the new bytes in a temp beside the target — the
+    /// target itself untouched. The check runs FIRST, before a backup or a temp
+    /// exists: an edited file must leave no trace at all, and a backup taken just
+    /// before a refusal used to linger as a pre-image nobody asked for. A failure
+    /// after that removes whatever this call created.
+    static func prepare(
+        _ url: URL, original: Data, text: String, now: Date = Date(), backupRoot: URL
+    ) throws -> Prepared {
         let mode = try currentMode(url)
+        guard let current = FileManager.default.contents(atPath: url.path), current == original else {
+            throw AppError.usage("\(url.lastPathComponent) changed while keys wrap ran; nothing was rewritten")
+        }
         guard let dir = backupDirectory(for: url, under: backupRoot) else {
             throw AppError.usage("cannot decide where to keep the backup for \(url.lastPathComponent); nothing was rewritten")
         }
@@ -474,22 +552,190 @@ enum EnvFileWriter {
             n += 1
             backup = dir.appendingPathComponent(backupName(of: url, now: now) + "-\(n)")
         }
-        try writeNew(backup, data: original, mode: 0o600)
-        guard let current = FileManager.default.contents(atPath: url.path), current == original else {
-            throw AppError.usage("\(url.lastPathComponent) changed while keys wrap ran; nothing rewritten (the backup with the original values is kept outside the project)")
-        }
         let temp = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
         do {
             try writeNew(temp, data: Data(text.utf8), mode: mode)
-            guard Darwin.rename(temp.path, url.path) == 0 else {
-                throw AppError.usage("could not replace \(url.lastPathComponent): \(String(cString: strerror(errno)))")
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            throw AppError.usage("cannot write \(url.lastPathComponent): \(Self.systemReason(error))")
+        }
+        do {
+            try writeNew(backup, data: original, mode: 0o600)
+        } catch {
+            // writeNew may have created the backup before the write failed: a
+            // truncated pre-image would later read as the newest wrap.
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.removeItem(at: temp)
+            throw AppError.usage("cannot back up \(url.lastPathComponent): \(Self.systemReason(error))")
+        }
+        return Prepared(url: url, backup: backup, temp: temp, original: original, text: Data(text.utf8), mode: mode)
+    }
+
+    /// A write failure's reason without the temp's invented name: the caller's message
+    /// names the real file and the system error, never a scratch path.
+    private static func systemReason(_ error: Error) -> String {
+        guard case let AppError.usage(message) = error, let colon = message.firstIndex(of: ":") else {
+            return (error as? AppError)?.description ?? error.localizedDescription
+        }
+        return String(message[message.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The refuse-if-changed check and the backup location, with nothing written:
+    /// what `keys wrap` runs before the plan is applied, so an edited file costs no
+    /// key or token. The temp and the backup are only made after the apply, by
+    /// `rewrite` — a temp made now would hold the raw secrets inside the project for
+    /// the whole apply round trip, and outlive a crash there.
+    static func precheck(_ url: URL, original: Data, backupRoot: URL) throws {
+        _ = try currentMode(url)
+        guard let current = FileManager.default.contents(atPath: url.path), current == original else {
+            throw AppError.usage("\(url.lastPathComponent) changed while keys wrap ran; nothing was rewritten")
+        }
+        guard let dir = backupDirectory(for: url, under: backupRoot) else {
+            throw AppError.usage("cannot decide where to keep the backup for \(url.lastPathComponent); nothing was rewritten")
+        }
+        // The folder holds no secret yet; making it now is what proves the backup
+        // can be taken before any key or token exists.
+        do {
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            throw AppError.usage("cannot create the backup folder for \(url.lastPathComponent); nothing was rewritten")
+        }
+    }
+
+    /// Phase B for one file: prove the target still holds the bytes this was prepared
+    /// from, then one rename over it. A reader sees the old bytes or the new ones,
+    /// never half, and the mode the temp was created with carries. The byte check is
+    /// the refuse-if-changed guarantee for the gap between `prepare` and here — for
+    /// `keys wrap` that gap spans the whole plan apply, so an edit under the prompt
+    /// refuses instead of being overwritten.
+    static func commit(_ prepared: Prepared) throws {
+        guard let current = FileManager.default.contents(atPath: prepared.url.path),
+              current == prepared.original else {
+            throw AppError.usage("\(prepared.name) changed while the wrap ran; nothing was rewritten")
+        }
+        guard Darwin.rename(prepared.temp.path, prepared.url.path) == 0 else {
+            throw AppError.usage("could not replace \(prepared.name): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    /// Undoes a batch that will not commit: the temps go, and so do the backups this
+    /// batch itself took — they hold a pre-image of files that never changed, so a
+    /// later unwrap has no reason to find them. Best effort: a leftover is not worth
+    /// failing over, and the message the caller shows already says nothing changed.
+    static func discard(_ prepared: [Prepared]) {
+        for one in prepared {
+            try? FileManager.default.removeItem(at: one.temp)
+            try? FileManager.default.removeItem(at: one.backup)
+        }
+    }
+
+    /// Puts one already-committed file back from the backup this batch took, through
+    /// the same temp-and-rename so a reader never sees half a file. It refuses when the
+    /// file no longer holds the bytes this batch wrote — someone edited it in the
+    /// rollback window, and their edit wins over the rollback, which then reports that
+    /// file as stuck instead of quietly discarding their work.
+    static func restore(_ prepared: Prepared) throws {
+        guard let committed = FileManager.default.contents(atPath: prepared.url.path),
+              committed == prepared.text else {
+            // Nothing to undo is not a failure: an earlier rollback step (or the caller's
+            // own cleanup) may already have put the original back.
+            if let current = FileManager.default.contents(atPath: prepared.url.path),
+               current == prepared.original {
+                return
+            }
+            throw AppError.usage("\(prepared.name) changed again after the wrap wrote it")
+        }
+        guard let original = FileManager.default.contents(atPath: prepared.backup.path) else {
+            throw AppError.usage("cannot read the backup of \(prepared.name)")
+        }
+        let temp = prepared.url.deletingLastPathComponent()
+            .appendingPathComponent(".\(prepared.name).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
+        do {
+            try writeNew(temp, data: original, mode: prepared.mode)
+            guard Darwin.rename(temp.path, prepared.url.path) == 0 else {
+                throw AppError.usage("could not restore \(prepared.name): \(String(cString: strerror(errno)))")
             }
         } catch {
             try? FileManager.default.removeItem(at: temp)
             throw error
         }
-        return Result(backup: backup)
+    }
+
+    /// Runs a whole batch as one transaction over the files: prepare every file (in
+    /// the order given), then — only when every temp exists — commit them in that
+    /// same order. A failure while preparing deletes every temp and backup and throws
+    /// `BatchFailure(.prepared)`: no file moved, so the caller only has to undo what
+    /// IT did before the files (the vault keys, the token). A failure mid-commit
+    /// restores the files already renamed from the backups just taken and deletes the
+    /// remaining temps, then throws `BatchFailure(.committed)` naming what went back
+    /// and what could not. `afterCommit` runs once, between the last rename and the
+    /// caller's own bookkeeping; a throw there rolls the files back the same way.
+    @discardableResult
+    static func commitBatch(
+        _ files: [(url: URL, original: Data, text: String)],
+        now: Date = Date(),
+        backupRoot: URL,
+        verify: ((URL) throws -> Void)? = nil,
+        afterCommit: (() throws -> Void)? = nil
+    ) throws -> [Result] {
+        var prepared: [Prepared] = []
+        do {
+            for file in files {
+                // The caller's containment re-check runs right before each file's
+                // temp is written and again before its rename: a batch is longer
+                // than one write, and a parent directory swapped for a symlink in
+                // between must not carry the write outside the project.
+                try verify?(file.url)
+                prepared.append(try prepare(
+                    file.url, original: file.original, text: file.text, now: now, backupRoot: backupRoot
+                ))
+            }
+            try testHooks?.beforeCommit?()
+        } catch {
+            discard(prepared)
+            throw BatchFailure(phase: .prepared, reason: Self.reason(error))
+        }
+
+        var committed = 0
+        do {
+            for (index, one) in prepared.enumerated() {
+                try testHooks?.beforeRename?(index)
+                try verify?(one.url)
+                try commit(one)
+                committed += 1
+            }
+            try afterCommit?()
+        } catch {
+            // Undo in reverse: the last file renamed is the one most likely to still
+            // match its backup, and the order keeps the report readable.
+            var restored: [String] = []
+            var stuck: [String] = []
+            for one in prepared.prefix(committed).reversed() {
+                do {
+                    try restore(one)
+                    restored.append(one.name)
+                    // Back to its original bytes: the pre-image would only make a
+                    // later unwrap think this file was wrapped.
+                    try? FileManager.default.removeItem(at: one.backup)
+                } catch {
+                    // Still holds the new bytes: its backup is the way back.
+                    stuck.append(one.name)
+                }
+            }
+            discard(Array(prepared.dropFirst(committed)))
+            throw BatchFailure(phase: .committed, reason: Self.reason(error), restored: restored, stuck: stuck)
+        }
+        return prepared.map { Result(backup: $0.backup) }
+    }
+
+    /// A failure's sentence without its path: `AppError`'s own text already names
+    /// files by last component, and anything else (a POSIX error, a thrown sentinel)
+    /// is passed through as its description.
+    private static func reason(_ error: Error) -> String {
+        (error as? AppError)?.description ?? error.localizedDescription
     }
 
     /// Unwrap's half of the swap: the same refuse-if-changed, one-rename replace as
@@ -538,19 +784,25 @@ enum EnvFileWriter {
         guard fchmod(fd, mode) == 0 else {
             throw AppError.usage("cannot set permissions on \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
+        try writeAll(fd, data, name: url.lastPathComponent)
+        guard fsync(fd) == 0 else {
+            throw AppError.usage("cannot sync \(url.lastPathComponent): \(String(cString: strerror(errno)))")
+        }
+    }
+
+    /// The whole buffer, retrying a short or interrupted write. The name is the last
+    /// path component only: every message here can reach a terminal or a tool result.
+    private static func writeAll(_ fd: Int32, _ data: Data, name: String) throws {
         try data.withUnsafeBytes { buf in
             var off = 0
             while off < buf.count {
                 let n = write(fd, buf.baseAddress! + off, buf.count - off)
                 if n < 0 {
                     if errno == EINTR { continue }
-                    throw AppError.usage("cannot write \(url.lastPathComponent): \(String(cString: strerror(errno)))")
+                    throw AppError.usage("cannot write \(name): \(String(cString: strerror(errno)))")
                 }
                 off += n
             }
-        }
-        guard fsync(fd) == 0 else {
-            throw AppError.usage("cannot sync \(url.lastPathComponent): \(String(cString: strerror(errno)))")
         }
     }
 }
@@ -561,10 +813,18 @@ enum EnvFileWriter {
 /// service in this process (tests). `path` in `plan` is the file's absolute path, kept
 /// for the apply point's `wrapped_files` record — `file` stays the display name prompts
 /// and labels show.
+///
+/// `compensate` is the take-back for a file swap that could not land: the swap is the
+/// LAST step of `keys wrap`, so a failure there has to revoke the tokens the apply
+/// point just minted instead of leaving a live capability behind a file that still
+/// holds the raw secrets.
 protocol WrapBackend {
     func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan
     func apply(id: String, label: String, days: Int?) throws -> [WrapIssued]
     func cancel(id: String)
+    /// True when every issued token was revoked; the message must not claim a
+    /// revocation that did not happen.
+    func compensate(_ issued: [WrapIssued], path: String) -> Bool
 }
 
 struct ServiceWrapBackend: WrapBackend {
@@ -576,6 +836,14 @@ struct ServiceWrapBackend: WrapBackend {
         try service.wrapApply(id: id, label: label, days: days, caller: "wrap")
     }
     func cancel(id: String) { service.wrapCancel(id: id) }
+    func compensate(_ issued: [WrapIssued], path: String) -> Bool {
+        var all = true
+        for one in issued {
+            do { try service.revokeGatewayClient(name: one.key, id: one.clientID, caller: "wrap") }
+            catch { all = false }
+        }
+        return all
+    }
 }
 
 struct ControlWrapBackend: WrapBackend {
@@ -612,6 +880,22 @@ struct ControlWrapBackend: WrapBackend {
 
     func cancel(id: String) {
         _ = try? connect().call(method: "DELETE", path: "/api/wrap/\(id)", expect: 200)
+    }
+
+    /// Compensates a failed file swap: each minted token is revoked through the same
+    /// per-client route the dashboard uses. Best effort, like every rollback — the
+    /// swap's own refusal is the error the caller sees. The file's `wrapped_files`
+    /// record stays, as it does in-process (see `WrapBackend`).
+    func compensate(_ issued: [WrapIssued], path: String) -> Bool {
+        var all = true
+        for one in issued where one.clientID > 0 {
+            do {
+                _ = try connect().call(
+                    method: "DELETE", path: "/api/keys/\(one.key)/clients/\(one.clientID)", expect: 200
+                )
+            } catch { all = false }
+        }
+        return all
     }
 
     /// An app from before keys wrap answers 405 for the route; say what to do instead.
@@ -719,6 +1003,19 @@ struct WrapRunner {
             return Summary()
         }
 
+        // The refuse-if-changed check before the plan is applied, with nothing written:
+        // it is the only part of the file phase that fails for an ordinary reason (the
+        // file was edited under the prompt), so checking here means keys, tokens and
+        // the wrapped_files record are never committed for a file that cannot be
+        // written. The rewrite itself re-checks right before its rename.
+        let backupRoot = try options.backupRoot ?? EnvFileWriter.defaultBackupsRoot()
+        do {
+            try EnvFileWriter.precheck(url, original: original, backupRoot: backupRoot)
+        } catch {
+            out("\(display) is unchanged; no key was added and no token was issued")
+            throw error
+        }
+
         applied = true
         let issued = try backend.apply(id: plan.id, label: options.label, days: options.days)
         let tokens = Dictionary(issued.map { ($0.key, $0.token) }, uniquingKeysWith: { a, _ in a })
@@ -737,10 +1034,33 @@ struct WrapRunner {
         for (v, u) in baseURLs where wrapped.contains(where: { WrapDetect.baseURLVariables[$0.variable] == v }) {
             file.upsert(name: v, value: u)
         }
-        let result = try EnvFileWriter.rewrite(
-            url, original: original, text: file.render(), now: options.now,
-            backupRoot: try options.backupRoot ?? EnvFileWriter.defaultBackupsRoot()
-        )
+
+        // The tokens exist now, so the file is rewritten with them: backup, temp and
+        // one rename. A failure here must not leave live tokens behind a file that
+        // never changed: revoke what was just issued and say exactly what state
+        // remains (the keys and the gateway toggles stay in the vault, so a retry
+        // reuses them).
+        let result: EnvFileWriter.Result
+        do {
+            result = try EnvFileWriter.rewrite(
+                url, original: original, text: file.render(), now: options.now, backupRoot: backupRoot
+            )
+        } catch {
+            let revoked = backend.compensate(issued, path: url.path)
+            let reason = (error as? AppError)?.description ?? error.localizedDescription
+            let one = issued.count == 1
+            let tokens = issued.isEmpty
+                ? "no token was issued"
+                : revoked
+                    ? "the \(one ? "token" : "tokens") just issued \(one ? "was" : "were") revoked"
+                    : "the \(one ? "token" : "tokens") just issued could not all be revoked; "
+                        + "revoke \(one ? "it" : "them") in the Keysrs dashboard (Keys, clients)"
+            let added = issued.filter(\.isNew).count
+            let keys = added == 0 ? ""
+                : "; \(added) new key\(added == 1 ? " was" : "s were") added to the vault and "
+                    + "\(added == 1 ? "stays" : "stay"), so a retry reuses \(added == 1 ? "it" : "them")"
+            throw AppError.usage("\(reason); \(display) was not changed and \(tokens)\(keys)")
+        }
         out("wrapped \(wrapped.count) variable\(wrapped.count == 1 ? "" : "s") in \(display):")
         for item in wrapped {
             let client = issued.first { $0.key == item.key }.map { " client #\($0.clientID)" } ?? ""

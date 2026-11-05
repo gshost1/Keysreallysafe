@@ -347,6 +347,7 @@ final class EnvWrapTests: XCTestCase {
 private final class RecordingBackend: WrapBackend {
     let inner: ServiceWrapBackend
     var cancelled: [String] = []
+    var compensated: [[WrapIssued]] = []
     init(service: KeysService) { inner = ServiceWrapBackend(service: service) }
     func plan(file: String, path: String?, candidates: [WrapCandidate]) throws -> WrapPlan {
         try inner.plan(file: file, path: path, candidates: candidates)
@@ -355,5 +356,9 @@ private final class RecordingBackend: WrapBackend {
     func cancel(id: String) {
         cancelled.append(id)
         inner.cancel(id: id)
+    }
+    func compensate(_ issued: [WrapIssued], path: String) -> Bool {
+        compensated.append(issued)
+        return inner.compensate(issued, path: path)
     }
 }

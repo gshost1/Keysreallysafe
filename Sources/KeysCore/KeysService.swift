@@ -1212,6 +1212,10 @@ final class KeysService: @unchecked Sendable {
             }
         }
         var issued: [WrapIssued] = []
+        // A failure partway (a key retargeted between two items, a mint or record
+        // that throws) revokes the tokens already minted: the CLI only sees the
+        // error, and a token no file points at must not stay live for its 30 days.
+        do {
         for item in pending.plan.items where item.skip == nil {
             guard let key = item.key, !issued.contains(where: { $0.key == key }) else { continue }
             if item.isNew, let secret = pending.secrets[key], let provider = item.provider {
@@ -1247,6 +1251,10 @@ final class KeysService: @unchecked Sendable {
             }).sorted()
             try recordWrappedFile(path: canonical, project: folder.id, now: now, companions: companions)
         }
+        } catch {
+            for one in issued { try? revokeGatewayClient(name: one.key, id: one.clientID, caller: caller) }
+            throw error
+        }
         return issued
     }
 
@@ -1263,6 +1271,14 @@ final class KeysService: @unchecked Sendable {
     func recordWrappedFile(path: String, project: String, now: Date = Date(), companions: [String] = []) throws {
         try catalog.recordWrappedFile(
             path: Self.canonicalPath(path) ?? path, project: project, at: UTC.iso(now), companions: companions
+        )
+    }
+
+    /// Several files' records in one transaction, for the import's batch rewrite.
+    func recordWrappedFiles(_ files: [(path: String, companions: [String])], project: String, now: Date = Date()) throws {
+        try catalog.recordWrappedFiles(
+            files.map { (path: Self.canonicalPath($0.path) ?? $0.path, companions: $0.companions) },
+            project: project, at: UTC.iso(now)
         )
     }
 
