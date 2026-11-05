@@ -5,7 +5,8 @@ import XCTest
 /// scripts get a pointer instead of an unknown-subcommand error, and nothing is read.
 final class RetiredIngestCommandTests: XCTestCase {
     func testIngestAndUsageImportFailWithAPointerToSpend() throws {
-        for args in [["ingest"], ["ingest", "claude"], ["usage", "import", "/tmp/export.jsonl"], ["usage"]] {
+        for args in [["ingest"], ["ingest", "claude"], ["ingest", "claude", "grok", "--quiet"],
+                     ["usage", "import", "/tmp/export.jsonl"], ["usage"]] {
             var command = try KeysCLI.parseAsRoot(args)
             XCTAssertThrowsError(try command.run(), "\(args)") { error in
                 guard case .usage(let message) = error as? AppError else {

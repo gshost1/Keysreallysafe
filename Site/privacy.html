@@ -39,7 +39,7 @@
 <ul>
   <li>API keys you add yourself. They are stored in the macOS Keychain under your login and are read back only after a Touch ID or login-password prompt.</li>
 </ul>
-<p>The app reads no other tool's session or usage logs (Claude Code, Codex, Grok and Droid included). The only usage it records is the calls made through its own local gateway: key, provider, model, token counts and the provider's cost receipt, never request or response bodies.</p>
+<p>The app reads no other tool's session or usage logs (Claude Code, Codex, Grok and Droid included). The only usage it records is the calls made through its own local gateway: for each call the key name, provider, upstream host, model, time, HTTP status, duration, the provider's request id, whether it came through your relay, token counts, its cost receipt when it sends one, and a refusal reason when Keysrs refused it. Request and response bodies are never recorded.</p>
 <p>The app never reads other tools' authentication files (for example <code>~/.codex/auth.json</code> or <code>~/.grok/auth.json</code>), never opens provider websites, and never uses browser cookies or sessions.</p>
 
 <h2>Update check</h2>

@@ -1490,9 +1490,9 @@ final class KeysService: @unchecked Sendable {
             )
         }
         try catalog.withTransaction {
-            // The upstream request id is the prompt id so a local event with the same id can be
-            // matched. A proxy that repeats ids must not collapse two calls into one row, so a
-            // second sighting of an id gets a suffix (and then no longer correlates).
+            // The upstream request id is the prompt id, so the row names the call the provider
+            // logged. A proxy that repeats ids must not collapse two calls into one row, so a
+            // second sighting of an id gets a suffix.
             if row.requestId != nil,
                try catalog.usageExists(source: "gateway", sessionId: event.sessionId, promptId: event.promptId, model: event.model)
             {
@@ -2069,7 +2069,7 @@ final class KeysService: @unchecked Sendable {
         try relaySecrets?.deleteAll()
         // A catalog the 0.15 app never launched against still carries the meter's tables.
         _ = try catalog.removeRetiredPlanMeter()
-        _ = try catalog.removeRetiredSubscriptionUsage()
+        // wipeData empties every table, the retired subscription rows and cursors included.
         try catalog.wipeData()
     }
 

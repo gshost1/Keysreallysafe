@@ -106,8 +106,13 @@ enum AppRuntime {
         _ = try? service.catalog.removeRetiredPlanMeter()
         try? KeysService.removeRetiredPlanSnapshot(catalogDirectory: service.catalog.path.deletingLastPathComponent())
         // Upgrades from 0.15.x drop the subscription tools' usage rows, their file cursors and
-        // the cloud-import drop folder; the gateway ledger stays.
-        _ = try? service.catalog.removeRetiredSubscriptionUsage()
+        // the cloud-import drop folder; the gateway ledger stays. The delete is quick; the
+        // vacuum that clears the freed pages can take seconds on a big catalog, and a CLI that
+        // launched the app on demand is waiting for the site to bind, so it runs in the background.
+        if (try? service.catalog.removeRetiredSubscriptionUsage()) == true {
+            let catalog = service.catalog
+            DispatchQueue.global(qos: .utility).async { catalog.compact() }
+        }
         try? KeysService.removeRetiredUsageImports(catalogDirectory: service.catalog.path.deletingLastPathComponent())
         UserDefaults.standard.removeObject(forKey: "menubar.tab")
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.

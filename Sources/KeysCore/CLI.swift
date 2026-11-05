@@ -257,7 +257,7 @@ struct RetiredIngestCommand: ParsableCommand {
         shouldDisplay: false
     )
 
-    @Argument var source: String = "all"
+    @Argument(parsing: .captureForPassthrough) var rest: [String] = []
 
     func run() throws {
         throw AppError.usage(Self.message("keys ingest"))
@@ -330,10 +330,14 @@ struct SpendCommand: ParsableCommand {
     }
 
     private func printTable(_ report: SpendReport) {
-        print("\(report.by == .model ? "MODEL" : report.by.rawValue.uppercased())\tIN\tOUT\tCACHE_READ\tREASONING\tUSD\tCALLS")
+        // A by=model row is one model under one key, so the key is a column of its own;
+        // without it two keys' rows for the same model read as duplicates.
+        let byModel = report.by == .model || report.by == .hour
+        print("\(byModel ? "MODEL\tKEY" : report.by.rawValue.uppercased())\tIN\tOUT\tCACHE_READ\tREASONING\tUSD\tCALLS")
         for row in report.rows {
             let usd = usdCell(row)
-            print("\(row.model ?? "")\t\(row.inputTokens)\t\(row.outputTokens)\t\(row.cachedReadTokens)\t\(row.reasoningTokens)\t\(usd)\t\(row.modelCalls)")
+            let lead = byModel ? "\(row.model ?? "")\t\(row.key ?? "-")" : row.model ?? ""
+            print("\(lead)\t\(row.inputTokens)\t\(row.outputTokens)\t\(row.cachedReadTokens)\t\(row.reasoningTokens)\t\(usd)\t\(row.modelCalls)")
         }
         let total = report.totals.gatewayUsdEstimate.map { String(format: "est $%.4f", $0) } ?? "unknown"
         print("Calls \(report.totals.gatewayCalls)  tokens \(report.totals.tokens)  USD \(total)")

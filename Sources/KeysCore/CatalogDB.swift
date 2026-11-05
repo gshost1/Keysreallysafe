@@ -1248,7 +1248,7 @@ final class CatalogDB: @unchecked Sendable {
         try query("""
             SELECT c.model, c.slot
             FROM model_colors c
-            INNER JOIN (SELECT DISTINCT model FROM usage_events) u ON u.model = c.model
+            INNER JOIN (SELECT DISTINCT model FROM usage_events WHERE source = 'gateway') u ON u.model = c.model
             ORDER BY c.slot, c.model;
             """, row: decodeModelColor)
     }
@@ -1602,9 +1602,9 @@ final class CatalogDB: @unchecked Sendable {
     /// per-file read cursors, the last-ingest time and the chart colors of models only those
     /// rows named. The gateway ledger and its models' colors stay. Run at app
     /// launch and on purge, not from `migrate()`: a 0.15.x process still up beside the new CLI
-    /// reads and writes them. The deleted rows held working directories and session titles, so
-    /// a drop checkpoints and vacuums (best effort) to leave no page images behind. Reads
-    /// first, so a catalog with nothing left takes no write lock. True when it dropped something.
+    /// reads and writes them. The deleted rows held working directories and session titles, so a
+    /// caller follows a drop with `compact()` to leave no page images behind. Reads first, so a
+    /// catalog with nothing left takes no write lock. True when it dropped something.
     @discardableResult
     func removeRetiredSubscriptionUsage() throws -> Bool {
         let dropped: Bool = try withLock {
@@ -1634,13 +1634,17 @@ final class CatalogDB: @unchecked Sendable {
             }
             return true
         }
-        if dropped {
-            try? withLock {
-                try? exec("PRAGMA wal_checkpoint(TRUNCATE)")
-                try? exec("VACUUM")
-            }
-        }
         return dropped
+    }
+
+    /// Best-effort checkpoint and VACUUM, so deleted rows leave no page images in the file or
+    /// the WAL. It can take seconds on a large catalog, so the launch path runs it off the main
+    /// thread after the site is up.
+    func compact() {
+        try? withLock {
+            try? exec("PRAGMA wal_checkpoint(TRUNCATE)")
+            try? exec("VACUUM")
+        }
     }
 
     /// Every table is emptied, meta included, so a table or meta key added later cannot be
