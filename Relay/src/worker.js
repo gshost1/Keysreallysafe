@@ -41,6 +41,7 @@ const MAC_ERROR_STATUS = Object.freeze({
 });
 const NOT_RUNNING = "the Keysrs relay is off (Relay for Cloud Agents in its menu, or `keys relay on`) and `keys relay` is not running, or the Mac is asleep or offline";
 const NO_MAC = `no Mac is connected to this relay: ${NOT_RUNNING}`;
+const MAC_DROPPED = "the Mac dropped while this request was in flight; it may be retried";
 
 const MiB = 1024 * 1024;
 const duration = (ms) => (ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`);
@@ -58,6 +59,14 @@ class RelayError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+/// The Mac's verdict as the agent's answer. fail() stores it on the entry, so a
+/// request the Mac refused carries the Mac's own status and code whatever the
+/// body it was still uploading did next.
+function macVerdict(entry) {
+  const { status, code, message } = entry.refusal;
+  return refusal(status, code, message);
 }
 
 function bearer(request) {
@@ -106,6 +115,11 @@ export class RelayHub extends DurableObject {
     this.limits = limitsFrom(env);
     /** @type {Map<number, object>} request id -> in-flight entry, waiting ones included */
     this.pending = new Map();
+    // In-flight slots taken. Each entry's slot has two holders, its relay()
+    // call and the entry itself, and is given back when both have released it
+    // (relay()'s finally and finish(); see relay() and docs/relay.md, limits
+    // and timeouts).
+    this.active = 0;
     /** Bytes of request body kept for requests that are waiting for a Mac. */
     this.heldBytes = 0;
     /** @type {Set<() => void>} wakes the requests waiting for a Mac */
@@ -197,13 +211,35 @@ export class RelayHub extends DurableObject {
     }
   }
 
+  /// One request, from arrival to its answer. Its in-flight slot is taken when
+  /// forward() creates the entry and has two holders: this call, until it has
+  /// chosen the agent's answer, and the entry, until finish() forgets it. The
+  /// slot goes back when both have let go, so a refused body still being
+  /// drained and a response still streaming both count (docs/relay.md, limits
+  /// and timeouts).
   async relay(request, url) {
+    const ticket = { entry: null };
+    try {
+      return await this.forward(request, url, ticket);
+    } finally {
+      if (ticket.entry) this.releaseSlot(ticket.entry);
+    }
+  }
+
+  releaseSlot(entry) {
+    entry.slotHolders -= 1;
+    if (entry.slotHolders === 0) this.active -= 1;
+  }
+
+  /// The rest of relay(): the body in, END sent, then the head waited for and
+  /// the answer built.
+  async forward(request, url, ticket) {
     const arrived = Date.now();
     const mac = this.mac();
     if (!mac && this.limits.offlineGraceMs === 0) return refusal(503, "mac_offline", NO_MAC);
     // A request waiting for a Mac holds its slot like one in flight, so the
     // wait cannot grow into an unbounded queue.
-    if (this.pending.size >= this.limits.inflight) {
+    if (this.active >= this.limits.inflight) {
       return refusal(503, "relay_busy", `${this.limits.inflight} requests are already in flight or waiting for the Mac`);
     }
     const declared = Number(request.headers.get("content-length"));
@@ -216,6 +252,11 @@ export class RelayHub extends DurableObject {
 
     const id = this.allocId();
     const entry = {
+      id,
+      // The Mac's verdict, kept after it forgets the entry: forward() may
+      // still be reading the agent's body when it arrives, and that body must
+      // not replace it with a timeout or an abort.
+      refusal: null,
       // null while the request waits for a Mac; its body is then kept in
       // `upload` and sent whole once one connects.
       ws: mac,
@@ -224,10 +265,18 @@ export class RelayHub extends DurableObject {
       controller: null,
       buffered: [],
       bodyDone: false,
+      // Set when the Mac's RESPONSE head is accepted: from then on an ERROR
+      // reaches the agent through the stream, so fail() stores no verdict.
+      headResolved: false,
+      // relay() and the entry itself; see relay().
+      slotHolders: 2,
       // Set when the Mac fails the request after RESPONSE was accepted but
       // before the stream exists; start() then errors the stream instead of
       // leaving the agent with a 200 that never ends.
       failed: null,
+      // The error failAll() ended the request with when the Mac's socket
+      // dropped or was replaced; the upload loop answers with it at once.
+      dropped: null,
       headTimer: null,
       idleTimer: null,
       resolveHead: null,
@@ -240,8 +289,6 @@ export class RelayHub extends DurableObject {
     // A rejection nobody awaits yet (the body is still streaming in) must not
     // surface as an unhandled rejection.
     entry.head.catch(() => {});
-    this.pending.set(id, entry);
-
     const headers = [];
     for (const [name, value] of request.headers) {
       if (!stripRequestHeader(name)) headers.push([name, value]);
@@ -259,6 +306,11 @@ export class RelayHub extends DurableObject {
       target: url.pathname + url.search,
       headers,
     }));
+    // The slot is taken only now, with nothing left that can throw before the
+    // try below, whose every exit reaches finish().
+    this.pending.set(id, entry);
+    this.active += 1;
+    ticket.entry = entry;
     const toMac = (frame) => {
       try {
         entry.ws.send(frame);
@@ -284,24 +336,54 @@ export class RelayHub extends DurableObject {
         });
         deadline.catch(() => {});
         let total = 0;
-        for (;;) {
-          let step;
-          try {
-            step = await Promise.race([reader.read(), deadline]);
-          } catch (error) {
-            if (error instanceof RelayError) throw error;
-            throw new RelayError(400, "client_gone", "the request body ended before it was complete");
+        // The Mac can refuse a request at REQUEST time, before any of its body
+        // is buffered, and finish() then drops the entry while this loop is
+        // still reading. From then on the body is drained, not forwarded and
+        // not cancelled: an HTTP/1.1 client writes its whole body before it
+        // reads the answer, and a reader cancelled underneath it turns the
+        // Mac's refusal into a connection reset. The Mac's verdict answers.
+        //
+        // The drain keeps a forwarded body's bounds. Past the body limit or
+        // the upload deadline, or once the agent aborts, the body is not read
+        // any further, as for any request, and the verdict still answers.
+        const abandonBody = () => {
+          reader.cancel().catch(() => {});
+          return macVerdict(entry);
+        };
+        try {
+          for (;;) {
+            let step;
+            try {
+              // The refusal is checked between reads rather than raced
+              // against, so a long body leaves no reaction per chunk on a
+              // promise that only settles when the entry ends.
+              step = await Promise.race([reader.read(), deadline]);
+            } catch (error) {
+              // The Mac's verdict outranks the body's own fate: a body that
+              // aborts, or overruns its deadline, after the refusal is still
+              // answered with the Mac's word.
+              if (entry.refusal) return abandonBody();
+              if (error instanceof RelayError) throw error;
+              throw new RelayError(400, "client_gone", "the request body ended before it was complete");
+            }
+            // A dropped or replaced socket fails the upload now, whether or not
+            // a send into it would have thrown.
+            if (entry.dropped) throw entry.dropped;
+            if (step.done) break;
+            total += step.value.byteLength;
+            if (total > this.limits.requestBody) {
+              if (entry.refusal) return abandonBody();
+              throw new RelayError(413, "payload_too_large", `request body over ${this.limits.requestBody} bytes`);
+            }
+            if (entry.refusal) continue;
+            if (entry.ws) bodyToMac(step.value);
+            else this.hold(entry, step.value);
           }
-          if (step.done) break;
-          total += step.value.byteLength;
-          if (total > this.limits.requestBody) {
-            throw new RelayError(413, "payload_too_large", `request body over ${this.limits.requestBody} bytes`);
-          }
-          if (entry.ws) bodyToMac(step.value);
-          else this.hold(entry, step.value);
+        } finally {
+          clearTimeout(uploadTimer);
         }
+        if (entry.refusal) return macVerdict(entry);
       }
-      clearTimeout(uploadTimer);
       if (!entry.ws) {
         // The whole body is here; what is missing is a Mac to give it to. It
         // goes over in one piece, so the Mac never buffers it half-finished.
@@ -318,7 +400,7 @@ export class RelayHub extends DurableObject {
       clearTimeout(uploadTimer);
       if (reader) reader.cancel().catch(() => {});
       const relayError = error instanceof RelayError ? error : new RelayError(500, "relay_error", "the relay could not forward this request");
-      this.cancel(id, relayError.code);
+      if (this.pending.get(id) === entry) this.cancel(id, relayError.code);
       return refusal(relayError.status, relayError.code, relayError.message);
     }
 
@@ -329,9 +411,11 @@ export class RelayHub extends DurableObject {
     try {
       head = await entry.head;
     } catch (error) {
-      this.cancel(id, error.code || "error");
+      // An entry the Mac already ended is gone from `pending`, so this asks
+      // for a CANCEL only for one still in it.
+      if (this.pending.get(id) === entry) this.cancel(id, error.code || "error");
       if (error instanceof RelayError) return refusal(error.status, error.code, error.message);
-      return refusal(502, "mac_disconnected", "the Mac dropped while this request was in flight; it may be retried");
+      return refusal(502, "mac_disconnected", MAC_DROPPED);
     } finally {
       clearTimeout(entry.headTimer);
     }
@@ -390,13 +474,21 @@ export class RelayHub extends DurableObject {
   /// Ends the agent's side of a request with `code`, whichever stage it is in:
   /// still waiting for the head, streaming, or between the two (RESPONSE
   /// accepted, stream not yet constructed), which is the window `failed` covers.
-  fail(entry, code, status, message) {
-    entry.rejectHead(new RelayError(status || 502, code, message || code));
-    const error = new Error(code);
+  fail(entry, code, status, message, verdict = false) {
+    const error = new RelayError(status || 502, code, message || code);
+    // A Mac ERROR (`verdict`) is kept on the entry as well, because the frame
+    // that sees it may not be the one that answers: a request still uploading
+    // its body is inside forward() when it lands, and forward() must answer
+    // with it rather than with whatever its body did next. A dropped socket is
+    // not a verdict: the next send fails at once and the agent can retry.
+    // Once a head is accepted the stream is the answer, so nothing is stored.
+    if (verdict && !entry.headResolved) entry.refusal = { status: error.status, code, message: error.message };
+    entry.rejectHead(error);
+    const streamError = new Error(code);
     if (entry.controller) {
-      try { entry.controller.error(error); } catch { /* already closed */ }
+      try { entry.controller.error(streamError); } catch { /* already closed */ }
     } else {
-      entry.failed = error;
+      entry.failed = streamError;
     }
   }
 
@@ -417,7 +509,11 @@ export class RelayHub extends DurableObject {
     clearTimeout(entry.headTimer);
     clearTimeout(entry.idleTimer);
     this.release(entry);
+    // The id is forgotten here, but forward() may still be draining the
+    // agent's body; it has the verdict on the entry, and the slot stays taken
+    // until relay() has answered too.
     this.pending.delete(id);
+    this.releaseSlot(entry);
   }
 
   /// Keeps a chunk of a waiting request's body, within the budget every waiting
@@ -445,6 +541,7 @@ export class RelayHub extends DurableObject {
   failAll(ws, status, code, message) {
     for (const [id, entry] of [...this.pending]) {
       if (entry.ws !== ws) continue;
+      entry.dropped = new RelayError(status, code, message);
       this.fail(entry, code, status, message);
       this.finish(id);
     }
@@ -479,6 +576,7 @@ export class RelayHub extends DurableObject {
           return;
         }
         clearTimeout(entry.headTimer);
+        entry.headResolved = true;
         entry.resolveHead({ status, headers: head.headers.filter((h) => Array.isArray(h) && h.length === 2) });
         return;
       }
@@ -510,7 +608,7 @@ export class RelayHub extends DurableObject {
         }
         const code = typeof detail?.code === "string" && detail.code.length <= 64 ? detail.code : "mac_error";
         const text = typeof detail?.message === "string" && detail.message.length <= 512 ? detail.message : "the Mac could not serve this request";
-        this.fail(entry, code, MAC_ERROR_STATUS[code] ?? 502, text);
+        this.fail(entry, code, MAC_ERROR_STATUS[code] ?? 502, text, true);
         this.finish(frame.id);
         return;
       }
@@ -520,7 +618,7 @@ export class RelayHub extends DurableObject {
   }
 
   webSocketClose(ws) {
-    this.failAll(ws, 502, "mac_disconnected", "the Mac dropped while this request was in flight; it may be retried");
+    this.failAll(ws, 502, "mac_disconnected", MAC_DROPPED);
   }
 
   webSocketError(ws) {
