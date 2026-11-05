@@ -107,13 +107,17 @@
   }
   // Copying an install command: brew_copy as before for brew, and install_copy
   // for either, naming only which of the two ("brew" or "curl").
-  function trackCopy(method, via) {
+  // Only the two install rows count: the agent plugin rows below them are
+  // not installs, and privacy.html lists no event for them.
+  var installIds = { "brew-cmd": "brew", "curl-cmd": "curl" };
+  function trackCopy(id, via) {
+    var method = installIds[id]; if (!method) return;
     if (method === "brew") track("brew_copy", { via: via });
     track("install_copy", { method: method, via: via });
   }
   document.addEventListener("click", function (e) {
     var cp = e.target.closest("[data-copy]");
-    if (cp) return trackCopy(cp.getAttribute("data-copy") === "curl-cmd" ? "curl" : "brew", "button");
+    if (cp) return trackCopy(cp.getAttribute("data-copy"), "button");
     var a = e.target.closest("a[href]"); if (!a) return;
     var h = a.getAttribute("href") || "";
     var named = a.getAttribute("data-event");
@@ -128,6 +132,6 @@
   document.addEventListener("copy", function (e) {
     var n = getSelection().anchorNode;
     var code = n && (n.nodeType === 1 ? n : n.parentElement).closest(".irow code");
-    if (code) trackCopy(code.id === "curl-cmd" ? "curl" : "brew", "select");
+    if (code) trackCopy(code.id, "select");
   });
 })();
