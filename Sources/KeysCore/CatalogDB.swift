@@ -829,26 +829,35 @@ final class CatalogDB: @unchecked Sendable {
     /// referenced it, and nothing but raw SQL can remove one.
     func upsertProject(canonicalPath: String, now: String) throws -> ProjectRow {
         try withLock {
-            if let existing = try project(path: canonicalPath) { return try settledLabel(existing, now: now) }
-            var id = Project.newID()
-            while true {
-                do {
-                    try run(
-                        "INSERT INTO projects (id, path, label, created_at, updated_at) VALUES (?, ?, '', ?, ?);",
-                        id, canonicalPath, now, now
-                    )
-                    break
-                } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
-                    if let winner = try project(path: canonicalPath) {
-                        return try settledLabel(winner, now: now)
-                    }
-                    // The collision was on the id, not the path: mint another.
-                    id = Project.newID()
-                }
+            if let existing = try project(path: canonicalPath) {
+                return try settledLabel(existing, now: now)
             }
-            try relabelProjects(now: now)
-            guard let row = try project(id: id) else { throw AppError.sqlite("project row vanished after insert") }
-            return row
+            // One transaction for the insert and the relabel: they used to be two
+            // autocommits, so a crash between them left a row whose label is `""` — and a
+            // blank label is not a display name (`revokeProjectClients` looks a project up
+            // by label). The relabel reads the whole table, so committing it with the
+            // insert also means no other process can read the half-written row.
+            return try withTransaction {
+                var id = Project.newID()
+                while true {
+                    do {
+                        try run(
+                            "INSERT INTO projects (id, path, label, created_at, updated_at) VALUES (?, ?, '', ?, ?);",
+                            id, canonicalPath, now, now
+                        )
+                        break
+                    } catch where sqlite3_errcode(db) == SQLITE_CONSTRAINT {
+                        if let winner = try project(path: canonicalPath) {
+                            return try settledLabel(winner, now: now)
+                        }
+                        // The collision was on the id, not the path: mint another.
+                        id = Project.newID()
+                    }
+                }
+                try relabelProjects(now: now)
+                guard let row = try project(id: id) else { throw AppError.sqlite("project row vanished after insert") }
+                return row
+            }
         }
     }
 
@@ -878,13 +887,23 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     func projects() throws -> [ProjectRow] {
-        try query(
+        let rows = try query(
             "SELECT \(Self.projectColumns) FROM projects ORDER BY rowid;", row: decodeProject
         )
+        // A blank label is a row a crash left between its insert and its relabel (or a row
+        // another process is between). Reading settles it, so no reader ever sees "". One
+        // immediate transaction, so two processes cannot interleave their relabels either.
+        guard rows.contains(where: { $0.label.isEmpty }) else { return rows }
+        let now = UTC.iso(Date())
+        return try withTransaction {
+            try relabelProjects(now: now)
+            return try query("SELECT \(Self.projectColumns) FROM projects ORDER BY rowid;", row: decodeProject)
+        }
     }
 
     func project(id: String) throws -> ProjectRow? {
-        try one("SELECT \(Self.projectColumns) FROM projects WHERE id = ?;", id, row: decodeProject)
+        let row = try one("SELECT \(Self.projectColumns) FROM projects WHERE id = ?;", id, row: decodeProject)
+        return try row.flatMap { try settledLabel($0, now: UTC.iso(Date())) }
     }
 
     /// The project at a canonical path, or nil. The lookup form `keys unwrap`'s

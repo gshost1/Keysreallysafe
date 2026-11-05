@@ -46,6 +46,40 @@ enum CodexIngest {
         var lastTurnId: String?
         var lastTotalsFingerprint: String?
         var turnIndex: Int = 0
+        /// Calls stored since the last line that carried totals, with their summed bucket
+        /// counts. The stored baseline plus this gap is every call the parser accounts for,
+        /// so a totals line equal to that sum is a repeat emission and anything larger is a
+        /// call not yet stored. Stored JSON from before these fields decodes with a zero
+        /// gap, which is exactly the pre-totals upgrade case.
+        var untrackedCalls: Int = 0
+        var untrackedInput: Int = 0
+        var untrackedOutput: Int = 0
+        var untrackedCached: Int = 0
+        var untrackedReasoning: Int = 0
+
+        /// Stored `parser_json` is read back forever, so every field added after the first
+        /// release has to decode when it is missing: an older build wrote only the fields
+        /// it knew, and a state that fails to decode is replaced by a fresh parser, which
+        /// mints prompt ids that collide with the rows already stored.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            sessionId = try container.decode(String.self, forKey: .sessionId)
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+            model = try container.decodeIfPresent(String.self, forKey: .model)
+            lastUsageFingerprint = try container.decodeIfPresent(String.self, forKey: .lastUsageFingerprint)
+            lastTurnId = try container.decodeIfPresent(String.self, forKey: .lastTurnId)
+            lastTotalsFingerprint = try container.decodeIfPresent(String.self, forKey: .lastTotalsFingerprint)
+            turnIndex = try container.decodeIfPresent(Int.self, forKey: .turnIndex) ?? 0
+            untrackedCalls = try container.decodeIfPresent(Int.self, forKey: .untrackedCalls) ?? 0
+            untrackedInput = try container.decodeIfPresent(Int.self, forKey: .untrackedInput) ?? 0
+            untrackedOutput = try container.decodeIfPresent(Int.self, forKey: .untrackedOutput) ?? 0
+            untrackedCached = try container.decodeIfPresent(Int.self, forKey: .untrackedCached) ?? 0
+            untrackedReasoning = try container.decodeIfPresent(Int.self, forKey: .untrackedReasoning) ?? 0
+        }
+
+        init(sessionId: String) {
+            self.sessionId = sessionId
+        }
 
         mutating func consume(_ line: String) -> UsageEvent? {
             guard let root = try? JSONValue.line(line) else { return nil }
@@ -72,19 +106,30 @@ enum CodexIngest {
                 ) else { return nil }
                 let fingerprint =
                     "\(event.model)|\(event.inputTokens)|\(event.outputTokens)|\(event.cachedReadTokens)|\(event.reasoningTokens)"
-                let totalsFingerprint = CodexIngest.totalsFingerprint(payload: payload, model: event.model)
+                let totals = CodexIngest.totals(payload: payload, model: event.model)
                 // Real rollouts carry no turn/event id, so two distinct calls can share a
-                // per-call fingerprint. The cumulative totals disambiguate: unchanged totals
-                // are a repeat emission of the same call, advancing totals are a new call.
+                // per-call fingerprint. The cumulative totals disambiguate, and they can
+                // only grow: a line whose totals do not exceed what is already accounted
+                // for adds no call, and one that does exceed it is a call not yet stored.
+                // Comparing against turnIndex x this call's spend instead counted a repeat
+                // emission as new whenever the earlier calls had spent differently, and
+                // stored it twice.
                 if let turnId {
                     if turnId == lastTurnId { return nil }
-                } else if let totalsFingerprint {
-                    if let lastTotals = lastTotalsFingerprint {
-                        if totalsFingerprint == lastTotals { return nil }
+                } else if let totals {
+                    if let accounted = accountedTotals {
+                        if !totals.exceeds(accounted) { return nil }
+                    } else if untrackedCalls > 0 {
+                        // No totals line yet, so the calls stored since the start are the
+                        // whole account. A line whose totals do not exceed their sum
+                        // re-emits one of them.
+                        if !totals.exceeds(untrackedTotals) { return nil }
                     } else if fingerprint == lastUsageFingerprint {
-                        // State saved by a build that never recorded totals: the line may re-emit
-                        // the call already ingested, so apply the old rule once and start tracking.
-                        lastTotalsFingerprint = totalsFingerprint
+                        // State saved by a build that recorded neither totals nor per-call
+                        // sums, so nothing here can be checked against the totals. The line
+                        // may re-emit the call that build already ingested, so drop it once
+                        // and start tracking from its totals.
+                        lastTotalsFingerprint = totals.fingerprint(model: event.model)
                         return nil
                     }
                 } else if fingerprint == lastUsageFingerprint {
@@ -96,23 +141,96 @@ enum CodexIngest {
                 event.promptId = turnId ?? "turn-\(turnIndex)"
                 lastTurnId = turnId ?? event.promptId
                 lastUsageFingerprint = fingerprint
-                lastTotalsFingerprint = totalsFingerprint
+                if let totals {
+                    lastTotalsFingerprint = totals.fingerprint(model: event.model)
+                    untrackedCalls = 0
+                    untrackedInput = 0
+                    untrackedOutput = 0
+                    untrackedCached = 0
+                    untrackedReasoning = 0
+                } else {
+                    // A totalless line says nothing about the cumulative count, so the stored
+                    // baseline stays and only this call joins the gap. Clearing it here made
+                    // the next totals line look like pre-totals state and dropped a call.
+                    untrackedCalls += 1
+                    untrackedInput += event.inputTokens
+                    untrackedOutput += event.outputTokens
+                    untrackedCached += event.cachedReadTokens
+                    untrackedReasoning += event.reasoningTokens
+                }
                 return event
             }
             return nil
         }
+
+        /// The stored baseline plus every call accepted since it, or nil when no totals line
+        /// has been seen. A line whose totals do not exceed this adds no call.
+        var accountedTotals: Totals? {
+            guard let baseline = lastTotalsFingerprint.flatMap(CodexIngest.parseTotalsFingerprint) else {
+                return nil
+            }
+            var sum = untrackedTotals
+            sum.input += baseline.input
+            sum.output += baseline.output
+            sum.cached += baseline.cached
+            sum.reasoning += baseline.reasoning
+            return sum
+        }
+
+        /// Every call accepted since the last totals line, summed. This is the whole account
+        /// before the first totals line of a session, which is why a totals line is checked
+        /// against it rather than against `turnIndex x` one call's spend.
+        var untrackedTotals: Totals {
+            Totals(input: untrackedInput, output: untrackedOutput, cached: untrackedCached, reasoning: untrackedReasoning)
+        }
+    }
+
+    /// One session-cumulative reading of `total_token_usage`.
+    struct Totals: Equatable {
+        var input: Int
+        var output: Int
+        var cached: Int
+        var reasoning: Int
+
+        func fingerprint(model: String) -> String {
+            "\(model)|\(input)|\(output)|\(cached)|\(reasoning)"
+        }
+
+        /// Whether this reading covers more calls than `other`: one bucket larger and none
+        /// smaller. A re-emission repeats the whole reading exactly, so equality is the
+        /// repeat, and a strictly larger one is a call not yet stored.
+        func exceeds(_ other: Totals) -> Bool {
+            input >= other.input && output >= other.output && cached >= other.cached
+                && reasoning >= other.reasoning && self != other
+        }
+    }
+
+    /// The session-cumulative reading on this line, or nil when it carries none.
+    /// Used only to tell an advancing call apart from a repeat emission; never summed.
+    static func totals(payload: [String: Any], model: String) -> Totals? {
+        let info = JSONValue.object(payload["info"]) ?? [:]
+        guard let totals = JSONValue.object(info["total_token_usage"]) else { return nil }
+        return Totals(
+            input: JSONValue.int(totals["input_tokens"]) ?? 0,
+            output: JSONValue.int(totals["output_tokens"]) ?? 0,
+            cached: JSONValue.int(totals["cached_input_tokens"]) ?? 0,
+            reasoning: JSONValue.int(totals["reasoning_output_tokens"]) ?? 0
+        )
+    }
+
+    /// Reads a stored `model|in|out|cached|reasoning` fingerprint back into its totals.
+    static func parseTotalsFingerprint(_ text: String) -> Totals? {
+        let parts = text.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 5, let input = Int(parts[1]), let output = Int(parts[2]),
+              let cached = Int(parts[3]), let reasoning = Int(parts[4])
+        else { return nil }
+        return Totals(input: input, output: output, cached: cached, reasoning: reasoning)
     }
 
     /// Fingerprint of the session-cumulative `total_token_usage`, or nil when absent.
     /// Used only to tell an advancing call apart from a repeat emission; never summed.
     static func totalsFingerprint(payload: [String: Any], model: String) -> String? {
-        let info = JSONValue.object(payload["info"]) ?? [:]
-        guard let totals = JSONValue.object(info["total_token_usage"]) else { return nil }
-        let input = JSONValue.int(totals["input_tokens"]) ?? 0
-        let output = JSONValue.int(totals["output_tokens"]) ?? 0
-        let cached = JSONValue.int(totals["cached_input_tokens"]) ?? 0
-        let reasoning = JSONValue.int(totals["reasoning_output_tokens"]) ?? 0
-        return "\(model)|\(input)|\(output)|\(cached)|\(reasoning)"
+        totals(payload: payload, model: model)?.fingerprint(model: model)
     }
 
     static func turnIdentity(root: [String: Any], payload: [String: Any]) -> String? {
