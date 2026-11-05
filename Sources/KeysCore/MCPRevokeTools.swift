@@ -46,12 +46,14 @@ struct MCPRevokeTools: MCPToolGroup, @unchecked Sendable {
         MCPTool(
             name: "revoke_all",
             title: "Revoke everything",
-            description: "The kill switch: revoke every active grant and client token at once, or — with "
-                + "key — only that vault key's grants and client tokens. Requires the app; no Touch ID, "
-                + "because revocation only removes access. Answers {revoked_grants, revoked_clients}: counts "
-                + "of what was still live and is now dead, so a second call answers zeros. Afterwards the "
-                + "grants stop authorizing and the client tokens are refused. The vault's keys themselves "
-                + "are untouched — this ends access, it never deletes a key.",
+            description: "The kill switch: revoke every active grant, client token and relay pairing at "
+                + "once and turn the app's relay off, or — with key — only that vault key's grants and "
+                + "client tokens (pairings and the relay are left alone). Requires the app; no Touch ID, "
+                + "because revocation only removes access. Answers {revoked_grants, revoked_clients, "
+                + "revoked_pairings, relay_stopped}: counts of what was still live and is now dead, so a "
+                + "second call answers zeros and false. Afterwards the grants stop authorizing and the "
+                + "client tokens and pairings are refused. The vault's keys themselves are untouched — "
+                + "this ends access, it never deletes a key.",
             inputSchema: [
                 "type": "object",
                 "properties": ["key": ["type": "string"]] as [String: Any],

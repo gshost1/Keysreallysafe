@@ -1743,6 +1743,29 @@ final class KeysService: @unchecked Sendable {
         return try catalog.relayPairings().first { $0.id == match.id } ?? match
     }
 
+    /// Revokes every live pairing at once, the relay half of the unscoped revoke_all. No
+    /// presence prompt: like every revoke it only removes access. The relay verifier reads
+    /// the catalog per request, so a relayed call carrying one of these credentials is
+    /// refused from its next REQUEST frame, in this process and in a `keys relay` Terminal.
+    @discardableResult
+    func revokeAllRelayPairings(now: Date = Date()) throws -> Int {
+        try catalog.revokeAllRelayPairings(at: UTC.iso(now))
+    }
+
+    /// Turns this process's relay off for the kill switch and says whether it was on. No
+    /// owner or presence check, like `stopRelay`: closing the inbound path only removes
+    /// access, and turning it back on still costs a Touch ID. A `keys relay` running in a
+    /// Terminal is another process and keeps its socket, but every token it could carry was
+    /// just revoked and the gateway refuses it.
+    @discardableResult
+    func stopRelayForRevoke() -> Bool {
+        relayToggleLock.withLock {
+            let wasOn = relayHost.isOn
+            relayHost.stop()
+            return wasOn
+        }
+    }
+
     /// The relay as the menu, the dashboard and `keys relay status` show it.
     struct RelayReport: Equatable {
         var configured: Bool

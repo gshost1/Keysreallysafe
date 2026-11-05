@@ -183,6 +183,10 @@ final class RevokeToolsTests: XCTestCase {
         let c1 = try token(site.service, key: "demo", label: "agent a")
         let c2 = try token(site.service, key: "demo", label: "agent b")
         let c3 = try token(site.service, key: "other", label: "agent c")
+        let p1 = try site.service.issueRelayPairing(label: "ci", keys: ["demo"])
+        let p2 = try site.service.issueRelayPairing(label: "box")
+        let p3 = try site.service.issueRelayPairing(label: "old")
+        try site.service.revokeRelayPairing("old")
 
         let prompts = site.gate.reasons.count
         let answer = try post(site, "/api/mcp/revoke_all", [:])
@@ -190,7 +194,12 @@ final class RevokeToolsTests: XCTestCase {
         let body = try json(answer)
         XCTAssertEqual(body["revoked_grants"] as? Int, 3)
         XCTAssertEqual(body["revoked_clients"] as? Int, 3)
-        XCTAssertEqual(Set(body.keys), ["revoked_grants", "revoked_clients"], "the answer is exactly the two counts")
+        XCTAssertEqual(body["revoked_pairings"] as? Int, 2, "the already-revoked pairing is not counted again")
+        XCTAssertEqual(body["relay_stopped"] as? Bool, false, "no relay was running in this process")
+        XCTAssertEqual(
+            Set(body.keys), ["revoked_grants", "revoked_clients", "revoked_pairings", "relay_stopped"],
+            "the answer is exactly the three counts and the relay flag"
+        )
         XCTAssertEqual(site.gate.reasons.count, prompts, "no Touch ID on the revoke path")
 
         // Both kinds are refused afterwards.
@@ -215,12 +224,20 @@ final class RevokeToolsTests: XCTestCase {
         XCTAssertEqual(other.filter { $0.action == "grant_revoke" }.count, 1)
         XCTAssertEqual(other.filter { $0.action == "client_revoke" }.count, 1)
 
+        // Every pairing is refused afterwards, through the same verifier the relay runs.
+        try site.service.setRelayPairingRequired(true)
+        let verify = site.service.relayPairingVerifier()
+        for credential in [p1.credential, p2.credential, p3.credential] {
+            XCTAssertEqual(verify(credential, "demo", Date()), .revoked, "a revoked pairing is refused")
+        }
+
         // Idempotent: the second call answers zeros, exit-0 counts for the CLI.
         let again = try post(site, "/api/mcp/revoke_all", [:])
         XCTAssertEqual(again.status, 200)
         let zeros = try json(again)
         XCTAssertEqual(zeros["revoked_grants"] as? Int, 0)
         XCTAssertEqual(zeros["revoked_clients"] as? Int, 0)
+        XCTAssertEqual(zeros["revoked_pairings"] as? Int, 0)
         XCTAssertEqual(site.gate.reasons.count, prompts, "the zero-count call prompted nothing either")
     }
 
@@ -234,6 +251,7 @@ final class RevokeToolsTests: XCTestCase {
         let liveGrant = try grant(site.service, key: "other", task: "live")
         let doomedToken = try token(site.service, key: "demo", label: "agent a")
         let liveToken = try token(site.service, key: "other", label: "agent c")
+        let pairing = try site.service.issueRelayPairing(label: "ci", keys: ["demo"])
 
         let prompts = site.gate.reasons.count
         let answer = try post(site, "/api/mcp/revoke_all", ["key": "demo"])
@@ -241,6 +259,11 @@ final class RevokeToolsTests: XCTestCase {
         let body = try json(answer)
         XCTAssertEqual(body["revoked_grants"] as? Int, 1)
         XCTAssertEqual(body["revoked_clients"] as? Int, 1)
+        XCTAssertEqual(body["revoked_pairings"] as? Int, 0, "a key-scoped revoke leaves pairings alone")
+        XCTAssertEqual(body["relay_stopped"] as? Bool, false)
+        try site.service.setRelayPairingRequired(true)
+        XCTAssertEqual(site.service.relayPairingVerifier()(pairing.credential, "demo", Date()), .ok,
+                       "the pairing still verifies after a key-scoped revoke")
         XCTAssertEqual(site.gate.reasons.count, prompts, "no Touch ID on the scoped revoke path")
 
         XCTAssertEqual(authorizeGrant(site, doomedGrant.token, key: "demo"), .failure(.revoked))
@@ -401,7 +424,7 @@ final class RevokeToolsTests: XCTestCase {
         var body = try counts(scoped)
         XCTAssertEqual(body["revoked_grants"] as? Int, 1)
         XCTAssertEqual(body["revoked_clients"] as? Int, 1)
-        XCTAssertEqual(Set(body.keys), ["revoked_grants", "revoked_clients"])
+        XCTAssertEqual(Set(body.keys), ["revoked_grants", "revoked_clients", "revoked_pairings", "relay_stopped"])
         XCTAssertNoThrow(try authorizeGrant(site, survivorGrant.token, key: "other").get(),
                          "the named-out key's grant survives the scoped tool call")
         guard case .allowed = authorizeClient(site, survivorToken.token, key: "other") else {
@@ -615,7 +638,7 @@ final class RevokeCLIPathTests: XCTestCase {
 
         let first = try runCLI(site, ["revoke", "--all"])
         XCTAssertEqual(first.exit, 0, first.err)
-        XCTAssertEqual(first.out, "revoked 1 grant and 1 client token\n")
+        XCTAssertEqual(first.out, "revoked 1 grant, 1 client token and 0 relay pairings\n")
         XCTAssertEqual(site.gate.reasons.count, prompts, "the CLI's --all path consumed no presence prompt")
         XCTAssertEqual(authorizeGrant(site, doomed.token, key: "demo"), .failure(.revoked))
         guard case .denied("revoked") = authorizeClient(site, doomedClient.token, key: "demo") else {
@@ -624,15 +647,16 @@ final class RevokeCLIPathTests: XCTestCase {
 
         let zero = try runCLI(site, ["revoke", "--all"])
         XCTAssertEqual(zero.exit, 0, zero.err)
-        XCTAssertEqual(zero.out, "revoked 0 grants and 0 client tokens\n")
+        XCTAssertEqual(zero.out, "revoked 0 grants, 0 client tokens and 0 relay pairings\n")
 
         // The house plural style names both counts.
         _ = try grant(site.service, key: "demo", task: "pair one")
         _ = try grant(site.service, key: "demo", task: "pair two")
         _ = try site.service.issueGatewayClient(name: "demo", label: "another", methods: ["GET"])
+        _ = try site.service.issueRelayPairing(label: "ci")
         let plural = try runCLI(site, ["revoke", "--all"])
         XCTAssertEqual(plural.exit, 0, plural.err)
-        XCTAssertEqual(plural.out, "revoked 2 grants and 1 client token\n")
+        XCTAssertEqual(plural.out, "revoked 2 grants, 1 client token and 1 relay pairing\n")
     }
 
     /// `--key` scopes the CLI's revoke-all to one key, and the single-id path is

@@ -41,7 +41,8 @@ and Claude Desktop. Restart the agent, then ask it in plain words:
 - "Ask me for a Keysrs grant for the key anthropic, 30 minutes." You approve
   with Touch ID; the agent gets a token scoped to one key, one host and a time
   limit.
-- "Revoke everything." Ends every grant and project token at once.
+- "Revoke everything." Ends every grant, project token and relay pairing at
+  once, and turns the relay off.
 
 `keys unwrap` puts the original values back.
 
