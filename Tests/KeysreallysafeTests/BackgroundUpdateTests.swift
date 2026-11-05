@@ -196,7 +196,8 @@ extension AppUpdaterTests {
     func testTheAutomaticPathRunsTheManualsInstallerWithNoQuitHookOfItsOwn() throws {
         let clock = FakeClock()
         let activity = ScriptedUpdateActivity(clock: clock)
-        let updater = BackgroundUpdater(activity: activity)
+        let coordinator = UpdateCoordinator()
+        let updater = BackgroundUpdater(activity: activity, coordinator: coordinator)
         let app = URL(fileURLWithPath: "/Applications/Keysrs.app")
         let release = newerRelease()
 
@@ -208,8 +209,11 @@ extension AppUpdaterTests {
         XCTAssertNil(installer.quit, "the installer never quits by itself on the background path")
         XCTAssertTrue(installer.idleGate as? ScriptedUpdateActivity === activity,
                       "the background factory hands the installer the quiet gate's activity: the pre-swap re-check (H2)")
+        XCTAssertTrue(installer.coordinator === coordinator,
+                      "the automatic installer claims the one shared update machine")
+        XCTAssertEqual(installer.origin, .background)
 
-        let manual = UpdateInstaller(release: release, app: app)
+        let manual = UpdateInstaller(release: release, app: app, coordinator: coordinator, origin: .manual)
         XCTAssertNil(manual.idleGate, "the manual Update Now keeps its modal window in charge of the timing")
     }
 
@@ -490,7 +494,8 @@ extension AppUpdaterTests {
             quit: { order.record("quit") },
             now: { clock.now },
             pause: { seconds in clock.advance(seconds) },
-            log: { line in logs.record(line) }
+            log: { line in logs.record(line) },
+            allowed: { true }
         )
 
         updater.install(release)
@@ -502,7 +507,7 @@ extension AppUpdaterTests {
         XCTAssertEqual(spawnedAt.count, 1)
         XCTAssertGreaterThanOrEqual(spawnedAt.first ?? 0, busyUntil + BackgroundUpdatePolicy.quietInterval,
                                     "the helper waited out the busy stretch and a full quiet window")
-        XCTAssertFalse(updater.inFlight, "the install is over once the app hands off")
+        XCTAssertFalse(updater.coordinator.isInstalling(.background), "the install is over once the app hands off")
     }
 
     /// S2 at the installer: the background hand-off neither spawns nor quits, and
@@ -513,7 +518,8 @@ extension AppUpdaterTests {
         let release = newerRelease()
         var spawns = 0
         var quits = 0
-        let background = UpdateInstaller(release: release, app: URL(fileURLWithPath: "/nonexistent/Keysrs.app"))
+        let background = UpdateInstaller(release: release, app: URL(fileURLWithPath: "/nonexistent/Keysrs.app"),
+                                         coordinator: UpdateCoordinator(), origin: .background)
         background.defersRelaunch = true
         background.spawn = { _ in spawns += 1 }
         background.quit = { quits += 1 }
@@ -525,7 +531,8 @@ extension AppUpdaterTests {
         XCTAssertEqual(spawns, 1, "relaunch starts the pending helper once")
         XCTAssertEqual(quits, 0, "the background updater quits by itself")
 
-        let manual = UpdateInstaller(release: release, app: URL(fileURLWithPath: "/nonexistent/Keysrs.app"))
+        let manual = UpdateInstaller(release: release, app: URL(fileURLWithPath: "/nonexistent/Keysrs.app"),
+                                     coordinator: UpdateCoordinator(), origin: .manual)
         manual.spawn = { _ in spawns += 1 }
         manual.quit = { quits += 1 }
         try manual.handOff(["/bin/sh"])
@@ -743,6 +750,250 @@ extension AppUpdaterTests {
         )
     }
 
+    // MARK: - VAL-UPDATE-006: the shared update machine
+
+    /// A scheduled check that found a newer release must not install it after
+    /// the person turned automatic updates off during the lookup. The check
+    /// passed its own `updateChecks` guard when the timer armed it; the setting
+    /// is the person's, and it is read again once the lookup returns.
+    @MainActor
+    func testTurningTheSettingOffDuringTheLookupNeverInstallsTheRelease() async throws {
+        var rig: UpdateRig!
+        rig = try makeUpdateRig(release: {
+            // The person turns automatic updates off while GitHub is being asked.
+            try? rig.preferences.setUpdateChecks(false)
+            return self.newerRelease()
+        })
+
+        rig.controller.didLaunch()
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertFalse(rig.preferences.updateChecks, "the rig turned the setting off during the lookup")
+        XCTAssertEqual(rig.checks.calls, 1, "the lookup that was already running did complete")
+        XCTAssertEqual(rig.installer.installCalls, 0, "the release found by that lookup is not installed once the setting is off")
+        XCTAssertEqual(rig.installer.runCount, 0, "no installer ran")
+        XCTAssertEqual(rig.quits.calls, 0, "nothing quits or relaunches")
+        XCTAssertEqual(rig.delivery.notifications, [], "nothing is notified")
+        XCTAssertTrue(rig.alerts.all.isEmpty, "the scheduled path stays silent")
+        XCTAssertEqual(rig.controller.updatePhase, .idle, "the machine is released once the check ends")
+    }
+
+    /// Turning the setting off mid-install stops the scheduled run at its next
+    /// pre-swap boundary: the installer is built, the download may even have
+    /// finished, and the swap still does not happen.
+    @MainActor
+    func testTurningTheSettingOffDuringTheScheduledInstallStopsItBeforeTheSwap() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        // The install begins at the quiet window, then the person turns the
+        // setting off while the download would be running.
+        rig.installer.onRun = {
+            try? rig.preferences.setUpdateChecks(false)
+        }
+        rig.installer.failWith(UpdateStopped(why: .disabled))
+
+        rig.controller.didLaunch()
+        await drain(until: !rig.logs.all.isEmpty)
+
+        XCTAssertFalse(rig.preferences.updateChecks)
+        XCTAssertEqual(rig.installer.runCount, 1, "the installer had already started")
+        XCTAssertEqual(rig.quits.calls, 0, "a stopped run never quits or relaunches")
+        XCTAssertEqual(rig.delivery.notifications, [], "a stopped run notifies nothing")
+        XCTAssertTrue(rig.alerts.all.isEmpty, "and shows no modal")
+        XCTAssertTrue(rig.logs.all.contains { $0.contains("stopped before the swap") },
+                      "the stop is logged for the next daily check")
+    }
+
+    /// Bug 1 at the controller: while the scheduled install holds the machine,
+    /// the menu's manual check does not start a second lookup (which could then
+    /// start a second installer beside the same staging names). The person is
+    /// told, rather than left with a click that did nothing. The claim is taken
+    /// directly, so the test is independent of the quiet wait's timing.
+    @MainActor
+    func testAManualCheckDuringAScheduledInstallIsToldAndStartsNothing() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let held = try XCTUnwrap(rig.coordinator.beginInstall(.background),
+                                 "the scheduled install holds the one machine")
+
+        rig.controller.checkForUpdates()
+
+        XCTAssertEqual(rig.checks.calls, 0, "the manual check did not run a lookup")
+        XCTAssertEqual(rig.manualChoice.calls, 0, "and never reached the offer")
+        XCTAssertEqual(rig.manualInstalls.calls, 0, "and never started a manual install")
+        XCTAssertTrue(rig.alerts.all.contains { $0.contains("Update Already in Progress") },
+                      "the refusal is shown to the person")
+        XCTAssertTrue(rig.alerts.all.contains { $0.contains(UpdateCoordinator.busyMessage) })
+        XCTAssertTrue(rig.coordinator.isInstalling(.background), "the scheduled claim is untouched")
+        XCTAssertEqual(rig.quits.calls, 0)
+        rig.coordinator.finish(held)
+    }
+
+    /// The other order: a manual lookup already in flight refuses the daily
+    /// check's claim, and the scheduled path logs it instead of installing.
+    @MainActor
+    func testAScheduledCheckDuringAManualLookupIsLoggedAndInstallsNothing() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let held = try XCTUnwrap(rig.coordinator.beginCheck(.manual),
+                                 "the person's Check for Updates holds the one machine")
+
+        rig.controller.applyUpdateChecks(true)
+
+        XCTAssertEqual(rig.checks.calls, 0, "the daily check did not run a second lookup")
+        XCTAssertEqual(rig.installer.installCalls, 0, "nothing installed while the manual lookup held the machine")
+        XCTAssertTrue(rig.logs.all.contains { $0.contains("scheduled update check skipped") },
+                      "the scheduled path logs the refusal instead of installing")
+        XCTAssertTrue(rig.alerts.all.isEmpty, "and raises no modal over the headless app")
+        rig.coordinator.finishCheck(held)
+    }
+
+    /// A scheduled check refused by the person's own run is retried in a few
+    /// minutes, not a day later: the daily timer's next tick is 24 hours away,
+    /// and the refusal was a clash, not the person's setting.
+    @MainActor
+    func testARefusedScheduledCheckIsRetriedSoonNotInADay() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let held = try XCTUnwrap(rig.coordinator.beginCheck(.manual),
+                                 "the person's Check for Updates holds the machine")
+
+        rig.controller.applyUpdateChecks(true)
+        XCTAssertEqual(rig.checks.calls, 0, "the refused check ran no lookup")
+        XCTAssertEqual(rig.retries.pending, 1, "it armed one short retry")
+
+        // The person's lookup ends, and the retry fires: the scheduled check runs
+        // then, well inside the day the daily timer would otherwise wait.
+        rig.coordinator.finishCheck(held)
+        rig.retries.fire()
+        await drain(until: rig.checks.calls == 1)
+
+        XCTAssertEqual(rig.checks.calls, 1, "the retried check ran its own lookup")
+        XCTAssertEqual(rig.retries.pending, 0, "and did not arm a second retry")
+        XCTAssertLessThan(AppWindowController.updateRetryInterval, 24 * 60 * 60,
+                          "the retry is minutes away, not the daily window")
+    }
+
+    /// One retry is pending at a time: a second refused tick inside the same
+    /// window does not stack a second timer.
+    @MainActor
+    func testRefusedScheduledChecksDoNotStackRetries() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let held = try XCTUnwrap(rig.coordinator.beginCheck(.manual))
+
+        rig.controller.applyUpdateChecks(true)
+        rig.controller.applyUpdateChecks(true)
+        XCTAssertEqual(rig.retries.pending, 1, "one retry, whatever the number of refusals")
+        rig.coordinator.finishCheck(held)
+    }
+
+    /// A retry armed before the person turned automatic updates off does
+    /// nothing when it fires: the setting is read again, not the one that held
+    /// when the retry was armed.
+    @MainActor
+    func testARetryThatFiresAfterTheSettingWasTurnedOffChecksNothing() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let held = try XCTUnwrap(rig.coordinator.beginCheck(.manual))
+        rig.controller.applyUpdateChecks(true)
+        XCTAssertEqual(rig.retries.pending, 1)
+        rig.coordinator.finishCheck(held)
+
+        try rig.preferences.setUpdateChecks(false)
+        rig.retries.fire()
+        await drain(until: rig.checks.calls > 0)
+        XCTAssertEqual(rig.checks.calls, 0, "no GitHub lookup with automatic updates off")
+    }
+
+    /// A retry armed under a schedule that was since rebuilt belongs to the
+    /// old schedule and does nothing.
+    @MainActor
+    func testARetryFromAReplacedScheduleDoesNothing() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let held = try XCTUnwrap(rig.coordinator.beginCheck(.manual))
+        rig.controller.applyUpdateChecks(true)
+        let stale = rig.retries.take()
+        rig.coordinator.finishCheck(held)
+        rig.controller.applyUpdateChecks(false)
+
+        stale?()
+        await drain(until: rig.checks.calls > 0)
+        XCTAssertEqual(rig.checks.calls, 0, "the stale retry ran no lookup")
+    }
+
+    /// A machine that stays claimed gets a bounded number of retries per daily
+    /// window, not a check every five minutes for the rest of the day.
+    @MainActor
+    func testRetriesOfARefusedScheduledCheckAreBounded() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let held = try XCTUnwrap(rig.coordinator.beginInstall(.manual), "a manual install the person left open")
+        rig.controller.applyUpdateChecks(true)
+        var armed = 0
+        while rig.retries.pending == 1, armed < 10 {
+            armed += 1
+            rig.retries.fire()
+        }
+        XCTAssertEqual(armed, AppWindowController.updateRetryLimit, "the retries stop at the limit")
+        XCTAssertEqual(rig.retries.pending, 0)
+        XCTAssertEqual(rig.checks.calls, 0)
+        rig.coordinator.finish(held)
+    }
+
+    /// The bundle is already replaced and only the restart is left. The
+    /// person's Check for Updates finishes that update instead of saying the
+    /// machine is busy, and the scheduled check leaves it alone without
+    /// arming retries.
+    @MainActor
+    func testACheckFinishesAnInstalledUpdateWaitingForItsRestart() async throws {
+        let rig = try makeUpdateRig(release: { self.newerRelease() })
+        let claim = try XCTUnwrap(rig.coordinator.beginInstall(.background))
+        rig.coordinator.step(.relaunching(.background), for: claim)
+        var restarts = 0
+        rig.coordinator.installedPendingRelaunch(claim) { restarts += 1 }
+
+        rig.controller.applyUpdateChecks(true)
+        XCTAssertEqual(restarts, 0, "the scheduled check does not restart under the person")
+        XCTAssertEqual(rig.retries.pending, 0, "and arms no retry against a machine that cannot release")
+        XCTAssertTrue(rig.logs.all.contains { $0.contains("waiting for a restart") })
+
+        rig.controller.checkForUpdates()
+        XCTAssertEqual(restarts, 1, "the person's check finishes the installed update")
+        XCTAssertEqual(rig.checks.calls, 0, "without a second lookup")
+        XCTAssertFalse(rig.alerts.all.contains { $0.contains("Update Already in Progress") })
+    }
+
+    /// The scheduled path ran out of restart attempts. The bundle is the new
+    /// one, so the machine moves to installed-pending-relaunch and keeps the
+    /// restart, rather than sitting in `.relaunching` and refusing every
+    /// later check.
+    @MainActor
+    func testABackgroundRestartThatKeepsFailingIsLeftForTheNextCheck() async throws {
+        let clock = FakeClock()
+        let activity = ScriptedUpdateActivity(clock: clock)
+        let coordinator = UpdateCoordinator()
+        let stand = FailingRestartInstaller(coordinator: coordinator)
+        let quits = CallCounter()
+        let updater = BackgroundUpdater(
+            activity: activity,
+            makeInstaller: { _, _ in stand },
+            appURL: { URL(fileURLWithPath: "/nonexistent/Keysrs.app") },
+            quit: { quits.record() },
+            now: { clock.now },
+            pause: { seconds in clock.advance(seconds) },
+            allowed: { true },
+            coordinator: coordinator
+        )
+
+        updater.install(newerRelease())
+        // The phase reads installed-pending-relaunch from the moment the swap is
+        // done, so the wait is on the attempts; the third failure ends the loop in
+        // the same main-actor turn.
+        await drain(until: stand.attempts == BackgroundUpdater.relaunchAttempts)
+
+        XCTAssertEqual(coordinator.phase, .installedPendingRelaunch(.background))
+        XCTAssertEqual(stand.attempts, BackgroundUpdater.relaunchAttempts)
+        XCTAssertEqual(quits.calls, 0)
+
+        stand.failing = false
+        XCTAssertTrue(try coordinator.restartPending(), "the held restart is what a later check runs")
+        XCTAssertEqual(quits.calls, 1, "and it quits for the helper")
+    }
+
     // MARK: - fixtures
 
     private func newerRelease() -> ReleaseInfo {
@@ -801,11 +1052,14 @@ extension AppUpdaterTests {
         let alerts = LineBag()
         let logs = LineBag()
         let window = FakeDashboardWindow()
+        let retries = RetrySeam()
         let notifier = AppNotifier(
             preferences: preferences,
             authorizer: RecordingNotificationAuthorizer(),
             delivery: delivery
         )
+        // One machine for both paths, exactly as the assembled app wires it.
+        let coordinator = UpdateCoordinator()
         let background = BackgroundUpdater(
             activity: activity ?? scripted,
             makeInstaller: installer.factory,
@@ -815,7 +1069,8 @@ extension AppUpdaterTests {
             now: { clock.now },
             pause: { seconds in clock.advance(seconds) },
             log: { line in logs.record(line) },
-            waitLimit: waitLimit
+            waitLimit: waitLimit,
+            coordinator: coordinator
         )
         let controller = AppWindowController(
             url: URL(string: "http://127.0.0.1:1/")!,
@@ -834,7 +1089,8 @@ extension AppUpdaterTests {
                 manualVersions.record(offered.version)
             },
             background: background,
-            log: { line in logs.record(line) }
+            log: { line in logs.record(line) },
+            scheduleRetry: { action in retries.arm(action) }
         )
         return UpdateRig(
             controller: controller,
@@ -853,7 +1109,9 @@ extension AppUpdaterTests {
             quits: quits,
             alerts: alerts,
             logs: logs,
-            window: window
+            window: window,
+            coordinator: coordinator,
+            retries: retries
         )
     }
 }
@@ -878,6 +1136,27 @@ private struct UpdateRig {
     let alerts: LineBag
     let logs: LineBag
     let window: FakeDashboardWindow
+    let coordinator: UpdateCoordinator
+    let retries: RetrySeam
+}
+
+/// The controller's short retry for a refused scheduled check, captured instead
+/// of scheduled on a real timer: a test fires it when it wants.
+@MainActor
+private final class RetrySeam {
+    private var action: (@MainActor () -> Void)?
+    var pending: Int { action == nil ? 0 : 1 }
+    func arm(_ action: @escaping @MainActor () -> Void) { self.action = action }
+    /// Takes the armed action without running it, so a test can fire it late.
+    func take() -> (@MainActor () -> Void)? {
+        defer { action = nil }
+        return action
+    }
+    func fire() {
+        let run = action
+        action = nil
+        run?()
+    }
 }
 
 /// A clock the quiet gate reads; the injected pause advances it, so the whole
@@ -1007,6 +1286,28 @@ private final class RecordingUpdateInstaller: BackgroundInstallRunning, @uncheck
 /// The background stand-in around a real `UpdateInstaller`: its run marks the
 /// Mac busy, as a Touch ID ask arriving mid-install would, and then performs the
 /// real installer's post-swap hand-off; the relaunch is the real one.
+@MainActor
+/// Stands in for an installer whose swap succeeded and whose restart helper
+/// never starts: it moves the shared machine past the swap the way the real
+/// run does, and every `relaunch()` throws until told otherwise.
+private final class FailingRestartInstaller: BackgroundInstallRunning {
+    let coordinator: UpdateCoordinator
+    var failing = true
+    private(set) var attempts = 0
+
+    init(coordinator: UpdateCoordinator) { self.coordinator = coordinator }
+
+    func run() async throws {
+        let claim = try XCTUnwrap(coordinator.currentClaim(for: .background))
+        coordinator.step(.relaunching(.background), for: claim)
+    }
+
+    func relaunch() throws {
+        attempts += 1
+        if failing { throw AppError.http("the restart helper could not start") }
+    }
+}
+
 @MainActor
 private final class SwappingInstaller: BackgroundInstallRunning {
     let real: UpdateInstaller
