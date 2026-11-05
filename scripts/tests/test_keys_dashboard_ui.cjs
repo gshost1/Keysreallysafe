@@ -70,7 +70,7 @@ const baseLedger = () => [
 
 // The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
 // fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, failures, delays, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, grants, profiles, preferences;
+let keys, ledger, localRows, failures, delays, replies, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, grants, profiles, preferences;
 
 function reset() {
   keys = baseKeys();
@@ -80,8 +80,12 @@ function reset() {
   hiddenUsers = new Set();
   ledger = baseLedger();
   localRows = [];
-  failures = new Map();   // "METHOD /path" -> {status, body} | "drop"
-  delays = new Map();     // "METHOD /path" -> milliseconds
+  failures = new Map();   // "METHOD /path" -> {status, body, after, drop} | "drop"
+  delays = new Map();     // "METHOD /path" -> milliseconds, or a queue of them
+  // Whole answers to hand out in order, keyed by "METHOD /path?query": [{status, body, after}].
+  // A case uses this when the reply itself is the thing under test and the fixture's live state
+  // would move before the request is served.
+  replies = new Map();
   requests = [];
   unexpected = [];
   // The active grants GET /api/grants answers. Empty unless a test fills it.
@@ -307,6 +311,17 @@ function handle(method, pathname, body, params) {
     key.last_check = { ok: true, checked_at: result.checked_at, summary: "2 models" };
     return [200, result];
   }
+  // The cached result a row already carries (GET /api/keys/<name>/check).
+  if (keyMatch && leaf === "/check" && method === "GET") {
+    const key = found();
+    if (!key) return [404, { error: "not_found" }];
+    if (!key.last_check) return [404, { error: "not_checked", message: "no check recorded for " + name }];
+    return [200, {
+      ok: key.last_check.ok, provider: key.provider, host: key.host || "api.example.test",
+      endpoint: "/v1/models", checked_at: key.last_check.checked_at,
+      model_count: key.last_check.model_count, models: key.last_check.models || [],
+    }];
+  }
   if (keyMatch && leaf === "/events") return [200, { events: keyEvents }];
   if (keyMatch && leaf === "/clients") return [200, { clients: [] }];
   // Mirrors the engine: a plain GET lists active grants only; ?all=1 keeps the expired
@@ -454,18 +469,31 @@ const server = http.createServer((request, response) => {
       return json(response, 200, { rotations });
     }
     const failure = failures.get(key);
-    if (failure === "drop") return request.socket.destroy();
-    if (failure && failure.raw !== undefined) {
-      response.writeHead(failure.status, { "Content-Type": "text/plain" });
-      return response.end(failure.raw);
+    if (failure) {
+      // A failure can be held back too, so one request can fail after a later one has answered.
+      if (failure.after) await sleep(failure.after);
+      if (failure === "drop" || failure.drop) return request.socket.destroy();
+      if (failure.raw !== undefined) {
+        response.writeHead(failure.status, { "Content-Type": "text/plain" });
+        return response.end(failure.raw);
+      }
+      return json(response, failure.status, failure.body);
     }
-    if (failure) return json(response, failure.status, failure.body);
 
     // The answer is computed now and delivered late, which is how a slow reply
     // carries a view of the vault that has since moved on.
-    const [status, value] = handle(method, url.pathname, body, url.searchParams);
-    const wait = delays.get(key);
-    if (wait) await sleep(wait);
+    // A scripted answer is handed over as it stands, so the reply does not depend on the fixture's
+    // live state by the time it is sent.
+    const scripted = replies.get(rule(method, url.pathname + url.search));
+    const fixed = scripted && scripted.length ? scripted.shift() : null;
+    const [status, value] = fixed
+      ? [fixed.status || 200, fixed.body]
+      : handle(method, url.pathname, body, url.searchParams);
+    const wait = fixed && fixed.after != null ? fixed.after : delays.get(key);
+    // A list waits in order, one entry per request of that call, so an earlier reply can be held
+    // back while a newer one of the same call overtakes it. A plain number holds back every reply.
+    const ms = Array.isArray(wait) ? wait.shift() : wait;
+    if (ms) await sleep(ms);
     json(response, status, value);
   });
 });
@@ -3924,6 +3952,542 @@ test("repeated reveals of different keys never show the wrong secret", async (pa
   assert.equal(await page.locator("#dlg-reveal").evaluate((d) => d.open), true);
   await page.clock.runFor(2000);
   await waitDialog(page, "dlg-reveal", false);
+});
+
+test("changing the range drops a model filter the new rows may not carry", async (page, origin) => {
+  await openKeysSource(page, origin, "range=week");
+  await page.locator("#mix .mix-row").first().click();
+  assert.equal(await page.locator('#mix .mix-row[aria-selected="true"]').count(), 1, "a clicked model row is the filter");
+
+  // The range decides which rows exist, so a model picked in one range need not be in the next.
+  // Left standing, the filter names a series the report no longer has: no row is selected, every
+  // bar is skipped, and the plot reads as an empty range with nothing on screen saying why.
+  ledger = [baseLedger().find((r) => r.model === "system-one")];
+  await page.getByRole("radio", { name: "This month" }).click();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("#mix .mix-name")].map((n) => n.textContent).join() === "system-one");
+  await page.waitForTimeout(200);
+  const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
+  assert.ok(labels.length > 0, "the plot still has its buckets");
+  assert.ok(labels.every((l) => l && !/: nothing$/.test(l)),
+    `the new range's bars are drawn, not blanked by the old filter: ${labels.join(" | ")}`);
+  assert.equal(await page.locator('#mix .mix-row[aria-selected="true"]').count(), 0);
+});
+
+test("the Keys switch's label, its hint and the unit it stores are one value", async (page, origin) => {
+  // The API keys scope is where requests is a legal page unit, and so where the switch can store
+  // the unit it announces.
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.getByRole("radio", { name: "API keys" }).click();
+  await page.waitForFunction(inKeysScope);
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  const label = async () => (await page.locator("#keys-unit").textContent()).trim();
+  const hint = () => page.locator("#keys-unit").getAttribute("aria-label");
+  // Tokens are the page's unit, but a key's row has no token count of its own: it counts requests,
+  // so the switch says requests and offers the dollars instead.
+  assert.equal(await label(), "requests");
+  assert.equal(await hint(), "Showing requests; switch the gateway figures to USD");
+  assert.equal(await gatewayText(page, "alpha"), "3 requests", "the figure matches the label");
+
+  await page.locator("#keys-unit").click();
+  await page.waitForFunction(() => /\$/.test(document.getElementById("keys-list").textContent));
+  assert.equal(await label(), "USD");
+  assert.equal(await hint(), "Showing USD; switch the gateway figures to requests");
+
+  // From USD the click announces requests, so requests is what it must store. Tokens is a unit
+  // this row cannot answer for, and the label never named it.
+  await page.locator("#keys-unit").click();
+  await page.waitForFunction(() => !/\$/.test(document.getElementById("keys-list").textContent));
+  assert.equal(await label(), "requests");
+  assert.equal(await gatewayText(page, "alpha"), "3 requests");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  assert.equal(await page.locator('[data-unit="requests"]').getAttribute("aria-checked"), "true",
+    "the stored unit is the one the switch announced");
+});
+
+test("an export waits for the range it describes instead of shipping the previous rows", async (page, origin) => {
+  localRows = [
+    { model: "grok-4", source: "grok-local", input_tokens: 100000, output_tokens: 0, cached_read_tokens: 0,
+      cache_creation_tokens: 0, reasoning_tokens: 0, usd: 1, usd_estimate: null },
+  ];
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction(() => /100K tokens/.test(document.getElementById("totals").textContent));
+  await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
+
+  // The month's report differs, and its request is slow enough that the week's rows are still in
+  // hand when the export is asked for. The heading and the filename would name the new range.
+  localRows = [
+    { model: "gpt-5", source: "codex-local", input_tokens: 5000, output_tokens: 0, cached_read_tokens: 0,
+      cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: 0.01 },
+  ];
+  delays.set(rule("GET", "/api/spend"), 700);
+  await page.getByRole("radio", { name: "This month" }).click();
+  await page.keyboard.press("Shift+C");
+  await page.waitForFunction(() => window.__copied, null, { timeout: 8000 });
+  const copied = await page.evaluate(() => window.__copied);
+  assert.match(copied, /This month/, `the line names the range asked for: ${copied}`);
+  assert.match(copied, /5K tokens/, `and carries that range's rows: ${copied}`);
+  assert.doesNotMatch(copied, /100K tokens/, `not the previous range's: ${copied}`);
+  // The same snapshot the chart shows, so the pane and the export agree.
+  assert.match(await totalsText(page), /5K tokens/);
+  assert.deepEqual((await page.locator("#mix .mix-name").allTextContents()).sort(), ["gpt-5"]);
+});
+
+test("the grant dialog refuses every dismissal while the issue is in flight, then clears the token on close", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await openKeys(page, origin);
+  await settleKeys(page);
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: 800, body: {
+    id: "g1", key: "alpha", provider: "openai", host: "api.openai.com", methods: ["GET", "POST"], paths: [],
+    expires_at: "2026-09-20T13:00:00Z", base_url: "http://127.0.0.1:12767/g/g1", token: "ksf-grant-fixture", auth_header: "Authorization",
+  } });
+  await rowAct(page, "alpha", "grant");
+  await waitDialog(page, "dlg-grant", true);
+  await page.locator("#grant-form [name=task]").fill("fixture task");
+  await page.locator("#grant-submit").click();
+  await page.waitForFunction(() => document.getElementById("grant-submit").disabled);
+  // The kind, the field block and the submit label are one state: none of them moves mid-issue.
+  assert.equal(await page.locator('.kind-switch [data-kind="client"]').isDisabled(), true,
+    "the kind cannot change under an issue in flight");
+  assert.equal(await page.locator("#grant-form [data-close]").isDisabled(), true,
+    "Cancel is disabled while the issue is in flight");
+
+  // Touch ID is still up. Escape and a backdrop click are both refused: closing here would throw
+  // away the one-time token for a credential the engine has already issued, and the person who
+  // approved it would never learn a live client existed.
+  await page.keyboard.press("Escape");
+  assert.equal(await dialogOpen(page, "dlg-grant"), true, "Escape cannot close the dialog mid-issue");
+  await page.mouse.click(8, 8);
+  assert.equal(await dialogOpen(page, "dlg-grant"), true, "the backdrop cannot close the dialog mid-issue");
+  await page.locator("#grant-form [data-close]").click({ force: true });
+  assert.equal(await dialogOpen(page, "dlg-grant"), true, "Cancel cannot close the dialog mid-issue");
+
+  // The reply lands in the dialog the user is still looking at, and its token is shown there.
+  await page.locator("#grant-result").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#grant-submit").isDisabled(), false, "the issue settled");
+  assert.equal(await page.locator("#gr-token").textContent(), "ksf-grant-fixture",
+    "the one-time token is shown to the person holding it");
+  assert.equal(await page.locator("#gr-id").textContent(), "g1");
+
+  // Closing now clears the token from the DOM. The close event, and the wipe it runs, land after
+  // `open` turns false.
+  await page.locator("#grant-result [data-close]").click();
+  await waitDialog(page, "dlg-grant", false);
+  await page.waitForFunction(() => document.getElementById("gr-token").textContent === "");
+  assert.equal(await page.locator("#gr-token").textContent(), "", "no token in the closed dialog");
+  assert.doesNotMatch(await page.evaluate(() => document.body.innerHTML), /ksf-grant-fixture/,
+    "the one-time token does not stay in the DOM");
+
+  // A refused issue leaves the form showing, and the button names the kind the form is in.
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 403, body: { error: "forbidden" } });
+  await rowAct(page, "alpha", "grant");
+  await waitDialog(page, "dlg-grant", true);
+  await page.locator("#grant-form [name=task]").fill("fixture task");
+  await page.locator("#grant-submit").click();
+  await page.waitForFunction(() => document.getElementById("grant-err").textContent !== "");
+  assert.equal(await page.locator("#grant-submit").textContent(), "Grant");
+  assert.equal(await page.locator("#grant-fields").isVisible(), true);
+  // The dialog's own flag is what disabled it; a settled issue re-enables both controls.
+  assert.equal(await page.locator("#grant-form [data-close]").isDisabled(), false);
+  assert.equal(await page.locator("#grant-submit").isDisabled(), false);
+  await page.locator('.kind-switch [data-kind="client"]').click();
+  assert.equal(await page.locator("#grant-submit").textContent(), "Issue client", "the label follows the kind");
+  assert.equal(await page.locator("#client-fields").isVisible(), true);
+  assert.equal(await page.locator("#grant-fields").isVisible(), false);
+});
+
+// Another pane's operation takes and releases the page-wide busy flag. The grant dialog draws its
+// own in-flight state, and nothing re-renders the dialog when a stranger clears `busy`, so reading
+// the page-wide flag there left the form disabled for good.
+test("another pane's operation cannot leave the grant dialog disabled", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await openKeys(page, origin);
+  await settleKeys(page);
+  // The reveal holds the page-wide busy flag while its Touch ID is up. The grant dialog opens
+  // during that window, so it is drawn while `busy` is true; the reveal then settles and clears the
+  // flag, and nothing redraws the dialog — reading the page-wide flag left the form disabled for
+  // good.
+  delays.set(rule("POST", "/api/keys/bravo/reveal"), 900);
+  await rowAct(page, "bravo", "reveal");
+  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys/bravo/reveal"); i++) await page.waitForTimeout(10);
+  assert.ok(requests.some((r) => r.pathname === "/api/keys/bravo/reveal"), "the reveal is in flight");
+  await rowAct(page, "alpha", "grant");
+  await waitDialog(page, "dlg-grant", true);
+  assert.equal(await page.locator("#grant-submit").textContent(), "Grant",
+    "the dialog does not claim an issue of its own is running");
+  // The reveal settles: its busy flag clears and the grant form is usable.
+  await page.waitForTimeout(1200);
+  assert.equal(await page.locator("#grant-submit").isDisabled(), false,
+    "the other op settling leaves the grant form usable");
+  assert.equal(await page.locator('.kind-switch [data-kind="client"]').isDisabled(), false);
+  // And it really works: the kind switch moves the form's fields and label.
+  await page.locator('.kind-switch [data-kind="client"]').click();
+  assert.equal(await page.locator("#grant-submit").textContent(), "Issue client");
+});
+
+test("two cached connection checks cannot paint in the order they were asked", async (page, origin) => {
+  for (const name of ["alpha", "bravo"]) {
+    const k = keys.find((x) => x.name === name);
+    k.checkable = true;
+    k.host = "api.example.test";
+    k.last_check = { ok: true, checked_at: "2026-10-20T09:00:00Z", model_count: 1, models: [name + "-cached"] };
+  }
+  await openKeys(page, origin);
+  await settleKeys(page);
+  // alpha's cached read is held back; bravo's lands first. The slower reply is stale and must not
+  // repaint the dialog the newer press opened, or swap the key it names.
+  delays.set(rule("GET", "/api/keys/alpha/check"), 900);
+  await rowAct(page, "alpha", "check");
+  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys/alpha/check"); i++) await page.waitForTimeout(10);
+  await rowAct(page, "bravo", "check");
+  await waitDialog(page, "dlg-check", true);
+  await page.waitForFunction(() => /bravo/.test(document.getElementById("check-name").textContent));
+  await page.waitForTimeout(1200);
+  assert.equal(await page.locator("#check-name").textContent(), "bravo", "the newer check owns the dialog");
+  assert.deepEqual(await page.locator("#check-models li").allTextContents(), ["bravo-cached"]);
+});
+
+test("a slower grants list cannot revive a grant a newer revoke killed", async (page, origin) => {
+  const soon = new Date(Date.now() + 3600_000).toISOString();
+  grants = [fixtureGrant({ id: "ee55ff66", task: "racy task", expires_at: soon, profile: null, unattended: false })];
+  await openKeys(page, origin);
+  await page.locator("#grants-list li").first().waitFor();
+
+  // Re-entering the pane starts a slow round trip. The revoke that follows starts a fast one, and
+  // its revoked row is already painted when the earlier reply lands carrying "active".
+  delays.set(rule("GET", "/api/grants"), [900, 0]);
+  const before = requests.filter((r) => r.pathname === "/api/grants").length;
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.getByRole("tab", { name: "Keys" }).click();
+  for (let i = 0; i < 200 && requests.filter((r) => r.pathname === "/api/grants").length === before; i++) await page.waitForTimeout(10);
+  await page.locator('[aria-label="Revoke grant ee55ff66"]').click();
+  await page.waitForFunction(() => /revoked/.test(document.querySelector("#grants-list li").textContent));
+  await page.waitForTimeout(1200);
+  assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.",
+    "the revoked row stays revoked");
+  assert.equal(await page.locator('[aria-label="Revoke grant ee55ff66"]').count(), 0);
+});
+
+test("a slower month total cannot stick over a newer one", async (page, origin) => {
+  const day = localDay(new Date());
+  const month = (tokens, model) => JSON.stringify({
+    range: "month", by: "model", source: "all", start_day: day, end_day: day, totals: { remote_tokens: 0 },
+    rows: [{ model, input_tokens: tokens, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0,
+      reasoning_tokens: 0, usd: null, usd_estimate: null }],
+    daily: [], points: [], models: [model],
+  });
+  // The month line is asked for again on every catalog bump. The boot read and the first bump
+  // see 1K tokens; the first bump's answer is held back past the second bump's, and would
+  // otherwise be the last word on the Usage line until the catalog moved again. Every body is
+  // fixed here, so arrival order is the only variable.
+  let served = 0;
+  await page.route("**/api/spend*range=month*", async (route) => {
+    served += 1;
+    if (served === 2) {
+      await new Promise((r) => setTimeout(r, 900));
+      return route.fulfill({ status: 200, contentType: "application/json", body: month(1000, "grok-4") });
+    }
+    const body = served >= 3 ? month(5000, "gpt-5") : month(1000, "grok-4");
+    return route.fulfill({ status: 200, contentType: "application/json", body });
+  });
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.waitForFunction(() => /1K tokens/.test(document.getElementById("usage-totals").textContent));
+
+  // A catalog change while Settings is open asks for the month (the slow answer, no. 2)…
+  catalogVersion += 1;
+  await page.getByRole("tab", { name: "Settings" }).click();
+  for (let i = 0; i < 300 && served < 2; i++) await page.waitForTimeout(10);
+  // …and a second one answers at once with the newer figures.
+  catalogVersion += 1;
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForFunction(() => /5K tokens/.test(document.getElementById("usage-totals").textContent));
+  await page.waitForTimeout(1400);
+  assert.match(await page.locator("#usage-totals").textContent(), /5K tokens/, "the newer month total stands");
+});
+
+test("a settings read that returns after a toggle cannot paint the old value", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  // Opening Settings starts the read; the toggle answers first, and the older body then lands.
+  delays.set(rule("GET", "/api/preferences"), 900);
+  const before = requests.filter((r) => r.pathname === "/api/preferences").length;
+  await page.getByRole("tab", { name: "Settings" }).click();
+  for (let i = 0; i < 200 && requests.filter((r) => r.pathname === "/api/preferences").length === before; i++) await page.waitForTimeout(10);
+  await page.locator("#menubar-item-switch").click();
+  await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
+  await page.waitForTimeout(1200);
+  assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "true",
+    "the older read must not paint the value the toggle replaced");
+  assert.equal(preferences.menubar_item, true);
+});
+
+// Two different preference writes share one persisted state, and each reply is the whole of it.
+// Ticket ordering by request start let two overlapping toggles paint whichever reply the engine
+// happened to answer last, so a switch could show the value the user had just changed away from.
+// One write at a time: the second starts only after the first settles.
+// Chromium honours a cancelled Escape only once without new user activation, so a dialog can still
+// be closed mid-issue. The credential exists once the reply lands, so the dialog comes back to
+// show its one-time token instead of writing it into a closed dialog.
+test("a grant dialog forced closed during Touch ID reopens to show the token", async (page, origin) => {
+  keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await openKeys(page, origin);
+  await settleKeys(page);
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: 800, body: {
+    id: "g2", key: "alpha", provider: "openai", host: "api.openai.com", methods: ["GET"], paths: [],
+    expires_at: "2026-09-20T13:00:00Z", base_url: "http://127.0.0.1:12767/g/g2", token: "ksf-grant-forced", auth_header: "Authorization",
+  } });
+  await rowAct(page, "alpha", "grant");
+  await waitDialog(page, "dlg-grant", true);
+  await page.locator("#grant-form [name=task]").fill("forced close task");
+  await page.locator("#grant-submit").click();
+  await page.waitForFunction(() => document.getElementById("grant-submit").disabled);
+  await page.evaluate(() => document.getElementById("dlg-grant").close());
+  await waitDialog(page, "dlg-grant", false);
+  await page.locator("#grant-result").waitFor({ state: "visible" });
+  assert.equal(await dialogOpen(page, "dlg-grant"), true, "the dialog is back to show the token");
+  assert.equal(await page.locator("#gr-token").textContent(), "ksf-grant-forced");
+  await page.locator("#grant-result [data-close]").click();
+  await waitDialog(page, "dlg-grant", false);
+  await page.waitForFunction(() => document.getElementById("gr-token").textContent === "");
+});
+
+// Two quick clicks on one switch mean on, then off. Reading the last reply's state sent the same
+// value twice and left the switch the opposite of the last click.
+test("two quick clicks on one preference switch send on and then off", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "false");
+  delays.set(rule("POST", "/api/preferences/menubar-item"), 500);
+  await page.locator("#menubar-item-switch").click();
+  await page.locator("#menubar-item-switch").click();
+  for (let i = 0; i < 400 && requests.filter((r) => r.pathname === "/api/preferences/menubar-item").length < 2; i++) await page.waitForTimeout(10);
+  await page.waitForTimeout(700);
+  const sent = requests.filter((r) => r.pathname === "/api/preferences/menubar-item").map((r) => r.body && r.body.on);
+  assert.deepEqual(sent, [true, false], "the second click sends the opposite of the first");
+  assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "false");
+  assert.equal(preferences.menubar_item, false);
+});
+
+test("two preference toggles cannot paint each other's values", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
+  // The first write is held back; the second press lands while it is still open.
+  delays.set(rule("POST", "/api/preferences/menubar-item"), 900);
+  await page.locator("#menubar-item-switch").click();
+  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/menubar-item"); i++) await page.waitForTimeout(10);
+  await page.locator("#auto-update-switch").click();
+  // The second write must not start before the first has settled: one POST at a time.
+  await page.waitForTimeout(400);
+  assert.equal(requests.filter((r) => r.pathname === "/api/preferences/update-checks").length, 0,
+    "the second write waits for the first");
+  await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "false");
+  await page.waitForTimeout(1200);
+  assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "true",
+    "the first toggle's value stands");
+  assert.equal(await page.locator("#auto-update-switch").getAttribute("aria-checked"), "false",
+    "and so does the second's, not the first reply's snapshot of it");
+  assert.deepEqual(preferences, { menubar_item: true, update_checks: false });
+});
+
+// A superseded write's failure used to be swallowed: the user pressed the switch, the engine
+// refused, and the switch silently went back with nothing said. The error is always reported.
+test("a preference write that fails says so even after a newer read superseded it", async (page, origin) => {
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
+  // The write is refused, and held long enough that a Settings re-read (a pane change) starts and
+  // takes the newer ticket while it is still open.
+  failures.set(rule("POST", "/api/preferences/menubar-item"), { status: 400, after: 700, body: { error: "send on" } });
+  await page.locator("#menubar-item-switch").click();
+  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/menubar-item"); i++) await page.waitForTimeout(10);
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForTimeout(1200);
+  assert.match(await status(page), /send on/, "the failed write is reported");
+  assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "false",
+    "and the switch shows the value the engine still holds");
+});
+
+// A key-list round that fails says nothing about the grants pane. The grants read belongs to its
+// own round, so a revoke that landed while a newer key list failed is not left on screen as an
+// active grant.
+test("a failed key refresh still refreshes the grants pane", async (page, origin) => {
+  const soon = new Date(Date.now() + 3600_000).toISOString();
+  grants = [fixtureGrant({ id: "aa11bb22", task: "failing round task", expires_at: soon, profile: null, unattended: false })];
+  await openKeys(page, origin);
+  await page.locator("#grants-list li").first().waitFor();
+  assert.equal(await page.locator('[aria-label="Revoke grant aa11bb22"]').count(), 1, "the grant starts out active");
+
+  // The next key list is slow and fails; the revoke lands in between and its own refresh answers.
+  failures.set(rule("GET", "/api/keys"), { status: 500, after: 1200, body: { error: "boom" } });
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.getByRole("tab", { name: "Keys" }).click();
+  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys" && r.method === "GET" && failures.get(rule("GET", "/api/keys"))); i++) {
+    await page.waitForTimeout(10);
+  }
+  await page.waitForTimeout(100);
+  await page.locator('[aria-label="Revoke grant aa11bb22"]').click();
+  // The failed round settles after the revoke did. The revoked row must stay revoked; a pane that
+  // still lists it as active is the bug.
+  await page.waitForTimeout(2000);
+  assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.",
+    "the failed key round does not leave the revoked grant looking active");
+  assert.equal(await page.locator('[aria-label="Revoke grant aa11bb22"]').count(), 0);
+  assert.equal(await page.locator('[aria-label="Renew grant aa11bb22"]').count(), 0,
+    "a killed grant offers neither Renew nor Revoke");
+});
+
+// An error reply from /api/spend is the real answer; retrying it three times only delays the
+// message, and the export then says "still loading", which names the wrong problem.
+test("an export reports a chart error instead of calling it still loading", async (page, origin) => {
+  localRows = subscriptionRows();
+  await page.goto(`${origin}/?range=week`);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.waitForFunction(() => /2\.4K tokens/.test(document.getElementById("totals").textContent));
+  // The range moves to a report the engine refuses, so the export has no report for the filters on
+  // screen and has to ask for one itself.
+  failures.set(rule("GET", "/api/spend"), { status: 500, body: { error: "report unavailable" } });
+  await page.getByRole("radio", { name: "This month" }).click();
+  await page.waitForFunction(() => /report unavailable/.test(document.getElementById("chart-error").textContent));
+  const before = requests.filter((r) => r.pathname === "/api/spend").length;
+  await page.keyboard.press("Shift+C");
+  await page.waitForTimeout(1200);
+  assert.match(await status(page), /report unavailable/, "the export says what the engine said");
+  assert.doesNotMatch(await status(page), /still loading/, "and never calls an error a slow load");
+  assert.equal(requests.filter((r) => r.pathname === "/api/spend").length - before, 1,
+    "an error reply is not retried");
+});
+
+// Leaving the API keys scope with requests chosen falls back to the remembered unit. The fallback
+// used to write `state.unit` directly, so the chips changed while the Keys rows and the Usage
+// summary kept printing requests.
+test("leaving the API keys scope redraws every place that prints the unit", async (page, origin) => {
+  localRows = subscriptionRows();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.getByRole("radio", { name: "API keys" }).click();
+  await page.waitForFunction(inKeysScope);
+  await page.getByRole("radio", { name: "Requests" }).click();
+  assert.equal(await page.locator('[data-unit="requests"]').getAttribute("aria-checked"), "true");
+  // Back to the subscription scope: requests is not offered there.
+  await page.getByRole("radio", { name: "Subscriptions" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-unit="tokens"]').getAttribute("aria-checked") === "true");
+  // The chart is redrawn by the new scope's report, not from the previous scope's rows.
+  await page.waitForFunction(() => !/requests/.test(document.getElementById("totals").textContent));
+  assert.match(await totalsText(page), /tokens/, "the chart's totals follow the fallback unit");
+  assert.doesNotMatch(await totalsText(page), /requests/);
+  // The Keys pane's figure follows too, so the page never prints two units at once.
+  await page.getByRole("tab", { name: "Keys" }).click();
+  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
+  assert.equal((await page.locator("#keys-unit").textContent()).trim(), "requests",
+    "the gateway figures still answer in requests, and say so");
+  await page.getByRole("tab", { name: "Usage" }).click();
+  await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
+  assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/,
+    "the month summary is in the fallback unit too");
+});
+
+test("a slow failure cannot raise the outage banner over a newer reply", async (page, origin) => {
+  await openKeys(page, origin);
+  // One key-list request is held at the browser, then fails as a dropped connection would, while
+  // the Settings pane's requests answer in between. Only the newest request may speak for the
+  // engine, so an older failure must not raise an outage notice over a reply already in hand.
+  let held = null;
+  await page.route("**/api/keys", (route) => { held = route; });
+  const before = requests.filter((r) => r.pathname === "/api/keys" && r.method === "GET").length;
+  await page.getByRole("tab", { name: "Chart" }).click();
+  await page.getByRole("tab", { name: "Keys" }).click();
+  for (let i = 0; i < 300 && !held; i++) await page.waitForTimeout(10);
+  assert.ok(held, "the key list is in flight");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
+  assert.equal(await page.locator("#engine-down").isHidden(), true, "the engine answered");
+
+  await held.abort("failed");
+  held = null;
+  await page.unroute("**/api/keys");
+  await page.waitForTimeout(400);
+  assert.equal(await page.locator("#engine-down").isHidden(), true,
+    "the older failure must not raise the banner after a newer request succeeded");
+});
+
+test("a second copy restarts its own confirmation instead of the first timer ending it", async (page, origin) => {
+  await page.clock.install();
+  await page.goto(origin);
+  await page.waitForLoadState("networkidle");
+  await page.evaluate(() => { navigator.clipboard.writeText = async () => {}; });
+  await page.locator("#btn-help").click();
+  await waitDialog(page, "dlg-help", true);
+  const btn = page.locator("#dlg-help [data-copy-cmd]").first();
+  await btn.click();
+  await page.clock.runFor(1000);
+  await btn.click();
+  await page.clock.runFor(700);
+  assert.equal((await btn.textContent()).trim(), "Copied", "the newer confirmation is still showing");
+  await page.clock.runFor(700);
+  assert.equal((await btn.textContent()).trim(), "Copy", "and it ends when its own 1.2 s is up");
+});
+
+// Site/site.js has no other browser harness, and its copy confirmation is the same machine as the
+// dashboard's: one timer per button, cleared before re-arming. Checked here on a bare page.
+test("the site's install buttons restart their own copy confirmation", async (page) => {
+  const siteJs = fs.readFileSync(path.join(root, "Site", "site.js"), "utf8");
+  await page.clock.install();
+  await page.setContent(`<!doctype html><html><body>
+    <button type="button" id="icopy" class="icopy" data-copy="brew-cmd" aria-label="Copy command">Copy</button>
+    <pre><code id="brew-cmd">brew install keysrs</code></pre>
+    <p id="copy-status" role="status"></p>
+  </body></html>`);
+  await page.addScriptTag({ content: siteJs });
+  const btn = page.locator("#icopy");
+  await btn.click();
+  assert.equal(await btn.evaluate((n) => n.classList.contains("copied")), true, "the first copy confirms");
+  await page.clock.runFor(1000);
+  await btn.click();
+  await page.clock.runFor(700);
+  assert.equal(await btn.evaluate((n) => n.classList.contains("copied")), true,
+    "the newer confirmation is not ended by the first timer");
+  await page.clock.runFor(1000);
+  assert.equal(await btn.evaluate((n) => n.classList.contains("copied")), false, "and it ends by itself");
+
+  // The status line is shared by every button, and two buttons say the same word. A label-only
+  // guard let the first button's timer wipe the second button's confirmation, because both had
+  // "Copied" there. Clearing follows the copy that wrote the line.
+  await page.setContent(`<!doctype html><html><body>
+    <button type="button" id="c1" class="icopy" data-copy="cmd1" aria-label="Copy command">Copy</button>
+    <button type="button" id="c2" class="icopy" data-copy="cmd2" aria-label="Copy command">Copy</button>
+    <pre><code id="cmd1">brew install keysrs</code><code id="cmd2">curl -fsSL keysrs.com/install.sh</code></pre>
+    <p id="copy-status" role="status"></p>
+  </body></html>`);
+  await page.addScriptTag({ content: siteJs });
+  const saidBy = () => page.locator("#copy-status").textContent();
+  await page.locator("#c1").click();
+  await page.clock.runFor(1000);
+  await page.locator("#c2").click();
+  const said = await saidBy();
+  assert.ok(said.length > 0, "the second copy writes the shared status line");
+  // The first button's 1.6 s is up. Its timer must not clear the line the second copy just wrote,
+  // which says exactly the same thing: the two labels are identical, so only the writer tells them
+  // apart.
+  await page.clock.runFor(700);
+  assert.equal(await saidBy(), said, "one button's timer leaves another button's status alone");
+  assert.equal(await page.locator("#c2").evaluate((n) => n.classList.contains("copied")), true);
+  // The second copy's own timer ends the line when its 1.6 s is up.
+  await page.clock.runFor(1000);
+  assert.equal(await saidBy(), "", "the line clears when the copy that wrote it ends");
 });
 
 test("key sort orders the flat list across providers and survives a reload", async (page, origin) => {

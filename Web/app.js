@@ -43,6 +43,9 @@
     group: "model",
     eventsOpen: null,
     spend: null,
+    // Why the last chart load failed, when it did. The export needs it: "still loading" would
+    // hide an engine error behind a waiting message.
+    spendError: null,
     monthSpend: null,
     series: [],
     keys: [],
@@ -203,9 +206,26 @@
     if (msg && !sticky) statusTimer = setTimeout(() => { if (node.textContent === msg) node.textContent = ""; }, 4000);
   }
 
+  // ---------- newest reply wins ----------
+
+  // A loader can overlap another run of itself: two presses of the same key, a filter change
+  // beside the 60 s poll, a refresh after a write. Each run records a ticket and returns without
+  // painting once a newer run of the same key has begun, so a slow reply carrying an older view
+  // cannot land on top of a newer one. A write takes a ticket the same way, which is what
+  // invalidates the reads already in flight: their answers were read before the write.
+  const latest = (() => {
+    const seen = new Map();
+    return {
+      begin: (key) => { const seq = (seen.get(key) || 0) + 1; seen.set(key, seq); return seq; },
+      isCurrent: (key, seq) => seen.get(key) === seq,
+    };
+  })();
+
   // ---------- api (same origin only) ----------
 
   const UNREACHABLE = "Can't reach the local site. Is keys dashboard still running?";
+  let engineStarted = 0;
+  let engineDecided = 0;
   // Every mutating call carries the per-launch token the server printed into index.html.
   async function api(path, options) {
     options = options || {};
@@ -213,14 +233,21 @@
     if (method !== "GET") {
       options.headers = Object.assign({ "X-KSF-Token": TOKEN }, options.headers || {});
     }
+    // The banner is one fact about the engine, not about this call: requests overlap (the status
+    // poll, the chart's, Settings'). An answer may set it only if it started after the answer that
+    // set it last, so a slower failure cannot raise an outage notice over a reply that already
+    // arrived, while a request still waiting (a Touch ID POST) does not keep a finished poll's
+    // failure from showing.
+    const seq = ++engineStarted;
+    const decide = (down) => { if (seq > engineDecided) { engineDecided = seq; setEngineDown(down); } };
     let res;
     try {
       res = await fetch(path, options);
     } catch {
-      setEngineDown(true);
+      decide(true);
       throw new Error(UNREACHABLE);
     }
-    setEngineDown(false);
+    decide(false);
     const text = await res.text();
     let data = null;
     if (text) {
@@ -360,7 +387,6 @@
     state.provider = null;
     state.keyIndex = [];
     state.mixFilter = null;
-    if (!keysMode() && state.unit === "requests") state.unit = readUnit();
     syncScopeChips();
     writeChartUrl();
     loadSpend();
@@ -402,11 +428,7 @@
   // The gateway filters an explicit local source refused above are struck from the URL now, so the
   // address bar says what the page is actually showing.
   if (boot.dropped) writeChartUrl();
-  const rangeChips = wireChips("data-range", (value) => {
-    state.range = value;
-    writeChartUrl();
-    loadSpend();
-  });
+  const rangeChips = wireChips("data-range", (value) => setRange(value));
   rangeChips.sync(state.range);
   // A key filter narrows both charts and the model list to calls that went through the gateway
   // with that key. It only means anything in the API keys source, so it takes the view there.
@@ -453,7 +475,14 @@
   function syncUnitChips() {
     const chip = document.querySelector('[data-unit="requests"]');
     if (chip) chip.hidden = !keysMode();
-    if (!keysMode() && state.unit === "requests") state.unit = readUnit();
+    // Leaving the API keys scope with requests chosen: requests is not offered there, so the page
+    // falls back to the remembered non-USD unit. Through setUnit, so the key rows and the Usage
+    // summary are redrawn as well — writing `state.unit` here left both showing the old unit while
+    // the chips announced the new one. Every scope change comes through here, so this is the one
+    // place that has to know the rule.
+    // The chart itself is not redrawn here: `state.spend` is still the previous scope's report,
+    // and the load the scope change starts redraws it.
+    if (!keysMode() && state.unit === "requests") setUnit(readUnit(), { chart: false });
     unitChips.sync(state.unit);
   }
   syncUnitChips();
@@ -546,11 +575,16 @@
   function setRange(value) {
     rangeChips.sync(value);
     state.range = value;
+    // The range decides which rows exist, so a model picked in the old range need not be in the
+    // new one. A filter naming a series that is gone draws nothing at all, and the plot reads as
+    // an empty range with no row selected to explain it. Range is one more control that drops it,
+    // as the scope, source, key, provider and group already do.
+    state.mixFilter = null;
     writeChartUrl();
     loadSpend();
   }
 
-  function setUnit(value) {
+  function setUnit(value, { chart = true } = {}) {
     const wanted = value === "requests" && !keysMode() ? "tokens" : value;
     state.unit = wanted === "usd" ? "usd" : wanted === "requests" ? "requests" : "tokens";
     // "requests" belongs to the API keys source only, so it is not remembered for the next visit.
@@ -561,17 +595,34 @@
     syncKeysUnit();
     if (state.keys.length) renderKeys();
     renderUsageTotals();
-    if (state.spend) { renderTotals(state.spend); renderMix(); drawChart(); }
+    if (chart && state.spend) { renderTotals(state.spend); renderMix(); drawChart(); }
   }
-  // The Keys pane has no chart chips, so it carries its own switch: without it the figures
-  // would silently follow whatever was last picked on Usage or Chart.
+  // Tokens → USD → requests, with requests only where every call is countable. The chart's `t`
+  // key steps the page unit through this.
+  function cycleUnit() {
+    const cycle = keysMode() ? ["tokens", "usd", "requests"] : ["tokens", "usd"];
+    setUnit(cycle[(cycle.indexOf(state.unit) + 1) % cycle.length]);
+  }
+  // The Keys pane has no chart chips, so it carries its own switch: without it the figures would
+  // silently follow whatever was last picked on Usage or Chart. A gateway cell prints exactly two
+  // things — the requests the engine counted, and their dollars (a key's row records no token
+  // count) — so the label, the hint and the click are all that one pair. The click stores the
+  // unit it announced: `requests` in the API keys scope, where requests is a legal page unit. It
+  // used to store `tokens` there — a unit the label never mentioned and the rows cannot show.
+  // Outside that scope the page keeps a non-USD unit instead (requests is not offered there), and
+  // the cells still print the requests the label names, so the promise stays true.
+  const keysUnitNext = () => (usdMode() ? (keysMode() ? "requests" : "tokens") : "usd");
+  const GATEWAY_UNIT = { usd: "USD", requests: "requests" };
   function syncKeysUnit() {
     const btn = $("keys-unit");
-    btn.textContent = usdMode() ? "USD" : "requests";
-    btn.setAttribute("aria-label", usdMode() ? "Showing USD; switch the gateway figures to requests" : "Showing requests; switch the gateway figures to USD");
+    // The label describes the gateway figures, which answer in requests unless the page is in USD.
+    const unit = usdMode() ? "usd" : "requests";
+    const next = unit === "usd" ? "requests" : "usd";
+    btn.textContent = GATEWAY_UNIT[unit];
+    btn.setAttribute("aria-label", `Showing ${GATEWAY_UNIT[unit]}; switch the gateway figures to ${GATEWAY_UNIT[next]}`);
     btn.title = btn.getAttribute("aria-label");
   }
-  $("keys-unit").addEventListener("click", () => setUnit(usdMode() ? "tokens" : "usd"));
+  $("keys-unit").addEventListener("click", () => setUnit(keysUnitNext()));
   $("keys-sort").addEventListener("change", (e) => {
     state.keySort = keySorts[e.target.value] ? e.target.value : "name";
     try { localStorage.setItem("ksf.keysort", state.keySort); } catch { /* fine */ }
@@ -604,13 +655,28 @@
 
   // ---------- spend ----------
 
-  let spendSeq = 0;
+  // The report on screen answers `<spendKey>`, the query it was fetched for. Export compares it
+  // with the filters' current query, so a CSV can never describe a range whose rows are older.
+  let spendKey = null;
+  const currentSpendQuery = () => new URLSearchParams({
+    range: state.range,
+    by: routeGroup() || (todayMode() ? "hour" : projectMode() ? "project" : "model"),
+    source: state.source,
+    ...(state.key ? { key: state.key } : {}),
+    ...(keysMode() && state.provider ? { provider: state.provider } : {}),
+  }).toString();
+  let spendErrorKey = null;
+  // The load in flight and the query it answers, so an export waits for it instead of starting a
+  // rival that would turn its reply stale.
+  let spendInflight = null;
   async function loadSpend() {
-    const seq = ++spendSeq;
-    // A by=hour report carries the same model rows as by=model plus the hourly points Today draws.
-    const q = new URLSearchParams({ range: state.range, by: routeGroup() || (todayMode() ? "hour" : projectMode() ? "project" : "model"), source: state.source });
-    if (state.key) q.set("key", state.key);
-    if (keysMode() && state.provider) q.set("provider", state.provider);
+    const seq = latest.begin("spend");
+    // One definition of "the report this page is showing": the export compares the same string,
+    // so a change to the query cannot reach one of them and not the other.
+    const q = currentSpendQuery();
+    // An error describes the query that produced it; a new query starts without one.
+    if (q !== spendErrorKey) { state.spendError = null; spendErrorKey = null; }
+    const run = (async () => {
     try {
       // A filtered report only names the provider and key already chosen, so the pickers would
       // narrow to the current choice and strand the user there. The unfiltered report over the
@@ -620,9 +686,11 @@
       const indexReq = filtered
         ? api("/api/spend?" + new URLSearchParams({ range: state.range, by: "model", source: "keys" }).toString()).catch(() => null)
         : null;
-      const [data, index] = await Promise.all([api("/api/spend?" + q.toString()), indexReq]);
-      if (seq !== spendSeq) return;
+      const [data, index] = await Promise.all([api("/api/spend?" + q), indexReq]);
+      if (!latest.isCurrent("spend", seq)) return "stale";
       state.spend = data;
+      state.spendError = null;
+      spendKey = q;
       const indexReport = keysMode() ? (filtered ? index : data) : null;
       const indexRows = indexReport ? indexReport.rows || [] : null;
       if (indexRows) {
@@ -634,10 +702,18 @@
       renderKeysFilter();
       paneError("chart-error");
       renderSpend();
+      return "ok";
     } catch (e) {
-      if (seq !== spendSeq) return;
+      if (!latest.isCurrent("spend", seq)) return "stale";
       paneError("chart-error", e);
+      state.spendError = e.message;
+      spendErrorKey = q;
+      return "error";
     }
+    })();
+    spendInflight = { key: q, run };
+    run.finally(() => { if (spendInflight && spendInflight.run === run) spendInflight = null; });
+    return run;
   }
 
   async function loadModels() {
@@ -849,6 +925,10 @@
     renderInterval(data);
     if (empty) return;
     state.series = buildSeries(rows);
+    // A series can also go while the range stays put (the poll, another pane's write). Drop a
+    // filter the new rows no longer carry rather than leaving the bars blank under no selected
+    // row; the chart then shows everything the range holds.
+    if (state.mixFilter && !state.series.some((s) => s.model === state.mixFilter)) state.mixFilter = null;
     renderTotals(data);
     renderMix();
     drawChart();
@@ -1508,20 +1588,29 @@
   // vault as it was when the engine answered, so landing it after a newer reply
   // would resurrect a deleted key or drop one just added. Only the newest wins,
   // as in loadSpend.
-  let keysSeq = 0;
   async function loadKeys(opts = {}) {
-    const seq = ++keysSeq;
+    const seq = latest.begin("keys");
     try {
       const data = await api("/api/keys");
-      if (seq !== keysSeq) return;
+      if (!latest.isCurrent("keys", seq)) return;
       state.keys = data.keys || [];
       paneError("keys-error");
       renderKeys(opts);
-      loadGrants();
+      // The grants list belongs to the same round trip: it starts its own round, so a slower
+      // earlier reply cannot repaint a newer revoke or renewal away.
+      if (opts.grants !== false) await loadGrants();
+      return true;
     } catch (e) {
-      if (seq !== keysSeq) return;
+      if (!latest.isCurrent("keys", seq)) return false;
       if (!opts.quiet) paneError("keys-error", e);
+      return false;
     }
+  }
+  // After a grant or client changes: the key list and one grants round of its own, started at
+  // once, so the change shows without waiting on the key list and a failed key round cannot leave
+  // the pane stale. The key round skips its own grants refresh, so the grants are fetched once.
+  async function refreshKeysAndGrants() {
+    await Promise.all([loadKeys({ grants: false }), loadGrants()]);
   }
 
   // Per-viewer convenience only; the page works the same without storage.
@@ -2266,9 +2355,16 @@
 
   // ---------- agents (per-agent setup recipes) ----------
 
+  // One confirmation timer per button. Two quick copies each armed their own, and the first to
+  // fire put the resting label back while the second confirmation was still running.
+  const copyTimers = new WeakMap();
   function copyText(text, btn) {
     navigator.clipboard?.writeText(text).then(
-      () => { btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1200); },
+      () => {
+        clearTimeout(copyTimers.get(btn));
+        btn.textContent = "Copied";
+        copyTimers.set(btn, setTimeout(() => { btn.textContent = "Copy"; }, 1200));
+      },
       () => say("Clipboard blocked by the browser. Select the text and copy by hand."),
     );
   }
@@ -2607,21 +2703,26 @@
   // The same span wording the Touch ID prompt uses, for saved bounds and pickers.
   const fmtSpan = (m) => (m % 60 === 0 && m >= 60 ? (m / 60) + " h" : m + " min");
 
+  // The grants list, the profiles and the active clients are read as one round with a ticket of
+  // their own: the key list and every grant mutation (revoke, renew, remove) start a round, so a
+  // slower earlier reply can never repaint a newer revoke or renewal as active. The ticket is not
+  // the key list's: a key list that fails says nothing about the grants, and a round dropped for
+  // want of a newer key ticket it never got would leave a revoked grant on screen as active. One
+  // key's clients fetch failing costs only that key's rows.
   async function loadGrants() {
-    try {
-      // ?all=1 keeps the expired (still renewable) and revoked rows visible beside the
-      // active ones; each row's status badge says which is which.
-      const r = await api("/api/grants?all=1");
-      state.grants = (r && r.grants) || [];
-    } catch { state.grants = []; }
-    try {
-      const p = await api("/api/profiles");
-      state.profiles = (p && p.profiles) || [];
-    } catch { state.profiles = []; }
-    try {
-      const lists = await Promise.all(state.keys.map((k) => api("/api/keys/" + encodeURIComponent(k.name) + "/clients").then((r) => (r && r.clients) || []).catch(() => [])));
-      state.clients = lists.flat().filter((c) => c.active);
-    } catch { state.clients = []; }
+    const seq = latest.begin("grants");
+    const ask = (path) => api(path).catch(() => null);
+    const [grantsAnswer, profilesAnswer, ...clientAnswers] = await Promise.all([
+      ask("/api/grants?all=1"),
+      ask("/api/profiles"),
+      ...state.keys.map((k) => ask("/api/keys/" + encodeURIComponent(k.name) + "/clients")),
+    ]);
+    if (!latest.isCurrent("grants", seq)) return;
+    // ?all=1 keeps the expired (still renewable) and revoked rows visible beside the active
+    // ones; each row's status badge says which is which.
+    state.grants = (grantsAnswer && grantsAnswer.grants) || [];
+    state.profiles = (profilesAnswer && profilesAnswer.profiles) || [];
+    state.clients = clientAnswers.flatMap((r) => (r && r.clients) || []).filter((c) => c.active);
     renderGrants();
   }
   function renderGrants() {
@@ -2688,14 +2789,18 @@
     try {
       await api("/api/keys/" + encodeURIComponent(key) + "/clients/" + encodeURIComponent(id), { method: "DELETE" });
       say(`Client #${id} revoked.`);
-      await loadKeys();
+      // The grants pane is refreshed from here, not only through loadKeys: a key list that fails
+      // must not be the reason a revoked row stays on screen as active.
+      await refreshKeysAndGrants();
     } catch (e) { say(e.message); }
   }
   async function revokeGrant(id) {
     try {
       await api("/api/grants/" + encodeURIComponent(id), { method: "DELETE" });
       say(`Grant ${id} revoked.`);
-      await loadKeys();
+      // Its own round as well as loadKeys': the revoke is a fact about the grants pane, and the
+      // key list is another reader of it.
+      await refreshKeysAndGrants();
     } catch (e) { say(e.message); }
   }
   // Renewal re-approves the grant in place — same id, token and scope — for one more
@@ -2705,7 +2810,7 @@
     try {
       const g = await api("/api/grants/" + encodeURIComponent(id) + "/renew", { method: "POST" });
       say(`Grant ${id} renewed until ${fmtWhenShort(g.expires_at)}.`);
-      await loadKeys();
+      await refreshKeysAndGrants();
     } catch (e) { say(e.message); }
   }
   // Removing a profile changes nothing about grants already issued under it: a grant keeps the
@@ -2714,7 +2819,7 @@
     try {
       await api("/api/profiles/" + encodeURIComponent(id), { method: "DELETE" });
       say(`Profile ${name} removed. Grants issued under it keep the scope they were issued with.`);
-      await loadKeys();
+      await refreshKeysAndGrants();
     } catch (e) { say(e.message); }
   }
 
@@ -2729,10 +2834,15 @@
     $("grant-form").reset();
     restoreGrantChoices();
     fillGrantProfileOptions(name);
-    setGrantKind("grant");
+    // The kind is reset in one place, and drawn from that same value: the field blocks, the
+    // switch's marks and the submit label all follow `dataset.kind`.
+    dlg.dataset.kind = "grant";
+    renderGrantKind();
     $("grant-form").hidden = false;
     $("grant-result").hidden = true;
     $("grant-err").textContent = "";
+    // The one-time token is shown in this dialog only; a reopen starts from an empty result.
+    clearGrantToken();
     $("grant-name").textContent = name;
     $("grant-target").textContent = `${providerName(k.provider)} at ${k.host}. Requests to any other host are refused and redirects are never followed.`;
     dlg.showModal();
@@ -2790,17 +2900,48 @@
     if (p) fillGrantFromProfile(p);
   });
   function grantKind() { return $("dlg-grant").dataset.kind || "grant"; }
-  function setGrantKind(kind) {
-    $("dlg-grant").dataset.kind = kind;
-    document.querySelectorAll(".kind-switch [data-kind]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.kind === kind)));
+  // The dialog's own in-flight flag, not the page-wide `state.busy`: another pane's operation
+  // setting and clearing `busy` used to leave this dialog disabled (or enabled mid-issue) because
+  // nothing re-rendered it. This one is written only by the issue itself and drawn here.
+  const granting = () => $("dlg-grant").dataset.issuing === "1";
+  // One state value (`dataset.kind`) is the only source for the switch's marks, which field block
+  // shows and what the submit button says. Writing them apart let a kind click during the in-flight
+  // issue leave the form showing client fields under a "Grant" button.
+  function renderGrantKind() {
+    const kind = grantKind();
+    const busy = granting();
+    for (const b of document.querySelectorAll(".kind-switch [data-kind]")) {
+      b.setAttribute("aria-checked", String(b.dataset.kind === kind));
+      b.disabled = busy;
+    }
     $("grant-fields").hidden = kind !== "grant";
     $("client-fields").hidden = kind !== "client";
-    $("grant-submit").textContent = kind === "client" ? "Issue client" : "Grant";
+    $("grant-submit").textContent = busy ? "Touch ID…" : kind === "client" ? "Issue client" : "Grant";
+    $("grant-submit").disabled = busy;
+    for (const b of $("grant-form").querySelectorAll("[data-close]")) b.disabled = busy;
+    // Escape, the backdrop and Cancel all leave the dialog through a close; while the issue is in
+    // flight there must be no way out of it, or the one-time token it is about to produce would be
+    // shown to nobody while a live credential existed.
+    $("dlg-grant").dataset.locked = busy ? "1" : "";
+  }
+  function setGrantKind(kind) {
+    if (granting()) return;
+    $("dlg-grant").dataset.kind = kind;
+    renderGrantKind();
     const f = $("grant-form").elements;
     (kind === "client" ? f.label : f.task).focus();
   }
   document.querySelectorAll(".kind-switch [data-kind]").forEach((b) => b.addEventListener("click", () => setGrantKind(b.dataset.kind)));
+  // The token is a one-time secret. It lives in this dialog only, so every path out of the dialog
+  // that does not deliberately show it clears it.
+  function clearGrantToken() {
+    $("gr-token").textContent = "";
+    $("gr-base").textContent = "";
+  }
 
+  // Each issuer paints the result screen itself. Nothing else can happen to this dialog while it
+  // runs: the submit is disabled and every way out is refused until it settles, so the reply always
+  // lands in the dialog the user is looking at and its one-time token is always shown.
   async function issueClient(name, f) {
     const methods = [...f.cm].filter((c) => c.checked).map((c) => c.value);
     if (!methods.length) throw new Error("Pick at least one method.");
@@ -2847,22 +2988,40 @@
 
   $("grant-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    if (state.busy) return;
+    if (granting()) return;
     const client = grantKind() === "client";
+    // The dialog cannot be dismissed while the issue is in flight, so the issue itself is the only
+    // thing that ends it. Nothing else can race the reply into a closed dialog, which is why there
+    // is no "drop the reply if the dialog closed" path any more: an Escape during Touch ID is
+    // refused instead, and the one-time token is always shown to the person who holds it.
+    $("dlg-grant").dataset.issuing = "1";
+    // The page-wide flag still holds off the other Touch ID actions (reveal, copy, check); it just
+    // cannot paint this dialog, whose own state is the flag above.
     state.busy = true;
     $("grant-err").textContent = "";
-    setBtn($("grant-submit"), "Touch ID…", true);
+    renderGrantKind();
+    let issued = false;
     try {
       await (client ? issueClient : issueGrant)($("dlg-grant").dataset.name, e.target.elements);
+      issued = true;
       $("grant-form").hidden = true;
       $("grant-result").hidden = false;
-      await loadKeys();
+      // Chromium honours a cancelled Escape only once without fresh user activation, so a second
+      // Escape during Touch ID can still close the dialog. The credential exists by now and its
+      // token is shown once, so the dialog comes back to show it rather than leaving it in a
+      // closed dialog or with nobody.
+      if (!$("dlg-grant").open) $("dlg-grant").showModal();
     } catch (err) {
       $("grant-err").textContent = err.message;
+      if (!$("dlg-grant").open) say(err.message);
     } finally {
-      setBtn($("grant-submit"), client ? "Issue client" : "Grant", false);
+      $("dlg-grant").dataset.issuing = "";
       state.busy = false;
+      renderGrantKind();
     }
+    // Outside the lock: the token is already on screen, and a slow key list must not keep the
+    // user from closing the dialog that holds it.
+    if (issued) refreshKeysAndGrants();
   });
   $("gr-revoke").addEventListener("click", async () => {
     const id = $("dlg-grant").dataset.grantId;
@@ -2871,9 +3030,15 @@
     else if (cid) await revokeClient($("dlg-grant").dataset.name, cid);
     $("dlg-grant").close();
   });
+  // While an issue is in flight the dialog refuses every dismissal: Escape would otherwise close it
+  // and throw away the one-time token for a credential the engine has already issued. The close
+  // button is disabled by renderGrantKind, the backdrop click is refused in the shared dialog
+  // handler, and Escape's `cancel` event is cancelled here before it reaches the dialog's close.
+  $("dlg-grant").addEventListener("cancel", (e) => { if (granting()) e.preventDefault(); });
   $("dlg-grant").addEventListener("close", () => {
-    $("gr-token").textContent = "";
-    $("gr-base").textContent = "";
+    // Nothing may be left in a closed dialog's DOM: the token is a one-time secret, shown there
+    // and nowhere else.
+    clearGrantToken();
     restoreKeysFocus($("dlg-grant").dataset.name, "grant");
   });
 
@@ -2917,23 +3082,34 @@
     const dlg = $("dlg-check");
     dlg.dataset.name = name;
     $("check-err").textContent = "";
+    // The cached read takes no `busy` (it never asks for Touch ID), so two presses of T overlap.
+    // Each run is ticketed: only the newest may paint the dialog, whatever order the replies land
+    // in, and a cached GET cannot overwrite the fresh POST a later press started.
+    const seq = latest.begin("check");
+    const current = () => latest.isCurrent("check", seq) && dlg.dataset.name === name;
     if (!force && k.last_check) {
       try {
         const cached = await api("/api/keys/" + encodeURIComponent(name) + "/check");
+        if (!current()) return;
         renderCheck(cached, name);
         if (!dlg.open) dlg.showModal();
         return;
-      } catch {}
+      } catch {
+        // A newer press owns the dialog now; this one must not go on to a Touch ID POST.
+        if (!current()) return;
+      }
     }
     state.busy = true;
     const btn = btnFor(name, "check");
     setBtn(btn, k.gateway_enabled ? "Checking…" : "Touch ID…", true);
     try {
       const r = await api("/api/keys/" + encodeURIComponent(name) + "/check", { method: "POST" });
+      if (!current()) return;
       renderCheck(r, name);
       if (!dlg.open) dlg.showModal();
       loadKeys({ quiet: true });
     } catch (e) {
+      if (!current()) return;
       if (dlg.open) $("check-err").textContent = e.message; else say(e.message);
       if (!dlg.open && menuFocusReturn?.name === name && menuFocusReturn.act === "check") restoreKeysFocus(name, "menu");
     } finally {
@@ -2954,12 +3130,29 @@
     const s = String(v);
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
-  // From Settings the Chart may never have loaded; fetch its current view first.
+  // From Settings the Chart may never have loaded; fetch its current view first. The report is
+  // only trustworthy once it answers the filters as they are now: a filter changed while a
+  // request was in flight would otherwise let the export pair the new range (in the filename and
+  // the header) with the previous rows. So the load is retried until the report's query matches,
+  // and an export that still cannot get a matching report says why rather than shipping the old
+  // one. An error reply is the caller's to report: retrying it only delays the real message and
+  // ends with a "still loading" line that names the wrong problem.
   async function ensureSpend() {
-    if (!state.spend) await loadSpend();
+    for (let i = 0; i < 3; i++) {
+      if (state.spend && spendKey === currentSpendQuery()) return true;
+      const pending = spendInflight && spendInflight.key === currentSpendQuery() ? spendInflight.run : null;
+      const result = await (pending || loadSpend());
+      // A stale round is another load's answer to give; an error reply is final for this attempt.
+      if (result === "error") return false;
+    }
+    return Boolean(state.spend) && spendKey === currentSpendQuery();
+  }
+  // What the pane says when the report it needs is not on screen.
+  function spendMissingLine() {
+    return state.spendError ? state.spendError : "The chart is still loading this range. Try again in a moment.";
   }
   async function exportCsv() {
-    await ensureSpend();
+    if (!(await ensureSpend())) { say(spendMissingLine()); return; }
     const data = state.spend;
     if (!data || !(data.rows || []).length) { say("Nothing to export in this range."); return; }
     const cols = projectMode()
@@ -3057,7 +3250,7 @@
     return `${head}\n${line}\n${foot}\n`;
   }
   async function copyTotals() {
-    await ensureSpend();
+    if (!(await ensureSpend())) { say(spendMissingLine()); return; }
     const md = totalsMarkdown();
     if (!md) { say("Nothing to copy yet."); return; }
     try {
@@ -3103,10 +3296,10 @@
   // ---------- dialogs ----------
 
   document.querySelectorAll("dialog [data-close]").forEach((b) => {
-    b.addEventListener("click", () => b.closest("dialog").close());
+    b.addEventListener("click", () => { if (!b.closest("dialog").dataset.locked) b.closest("dialog").close(); });
   });
   document.querySelectorAll("dialog").forEach((d) => {
-    d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+    d.addEventListener("click", (e) => { if (e.target === d && !d.dataset.locked) d.close(); });
   });
   const openHelp = () => { if (!$("dlg-help").open) $("dlg-help").showModal(); };
   $("btn-help").addEventListener("click", openHelp);
@@ -3175,8 +3368,7 @@
       // Tokens → USD → requests, with requests only where every call is countable.
       if (e.key === "t") {
         e.preventDefault();
-        const cycle = keysMode() ? ["tokens", "usd", "requests"] : ["tokens", "usd"];
-        setUnit(cycle[(cycle.indexOf(state.unit) + 1) % cycle.length]);
+        cycleUnit();
         return;
       }
       // The top-level choice gets a key of its own: it is the one that decides what the rest mean.
@@ -3267,24 +3459,54 @@
   }
 
   async function loadPreferences() {
+    const seq = latest.begin("prefs");
     try {
-      state.preferences = await api("/api/preferences");
+      const data = await api("/api/preferences");
+      // Opening Settings starts this read. A toggle pressed while it is in flight answers first,
+      // and the older body would paint the value the write just replaced back over it.
+      if (!latest.isCurrent("prefs", seq)) return;
+      state.preferences = data;
     } catch { /* the switches keep their last state; the status line reports the outage */ }
-    renderSettings();
+    // A toggle still queued shows what was clicked; the last write's answer paints it.
+    if (prefsPending === 0) renderSettings();
   }
 
-  async function setPreference(path, on) {
-    try {
-      state.preferences = await api(path, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }),
-      });
-    } catch (e) { say(e.message); }
-    renderSettings();
+  // One preference write at a time. Each answer is the whole persisted state, so two writes in
+  // flight would paint whichever reply the engine happened to send last — a toggle could show the
+  // value the user had just changed away from. The queue starts the next write only after the
+  // previous one settles, and a write takes its ticket when it starts, so a read already in flight
+  // from the same click cannot land afterwards. A failure is always reported: the user pressed the
+  // switch, and a silent revert to the old value reads as the switch being broken.
+  let prefsQueue = Promise.resolve();
+  let prefsPending = 0;
+  function setPreference(path, on) {
+    prefsPending += 1;
+    const run = prefsQueue.then(async () => {
+      const seq = latest.begin("prefs");
+      try {
+        const data = await api(path, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }),
+        });
+        if (latest.isCurrent("prefs", seq)) state.preferences = data;
+      } catch (e) { say(e.message); }
+      prefsPending -= 1;
+      // The switches show what was clicked until every queued write has answered; painting an
+      // intermediate reply would flip a switch back under a click still waiting its turn.
+      if (prefsPending === 0) renderSettings();
+    });
+    prefsQueue = run.catch(() => {});
+    return run;
   }
 
-  const switchOn = (id) => $(id).getAttribute("aria-checked") !== "true";
-  $("menubar-item-switch").addEventListener("click", () => setPreference("/api/preferences/menubar-item", switchOn("menubar-item-switch")));
-  $("auto-update-switch").addEventListener("click", () => setPreference("/api/preferences/update-checks", switchOn("auto-update-switch")));
+  // The click flips what the switch shows at once, and the write sends that value: reading the
+  // last reply's state instead made two quick clicks send the same value twice.
+  function togglePreference(id, path) {
+    const on = $(id).getAttribute("aria-checked") !== "true";
+    setSwitch($(id), on);
+    setPreference(path, on);
+  }
+  $("menubar-item-switch").addEventListener("click", () => togglePreference("menubar-item-switch", "/api/preferences/menubar-item"));
+  $("auto-update-switch").addEventListener("click", () => togglePreference("auto-update-switch", "/api/preferences/update-checks"));
 
   // Quit is the app's own shutdown, the same path the Keysrs menu uses. The route answers before
   // it terminates, so this fetch sees its 200 instead of a dropped connection.
@@ -3389,10 +3611,17 @@
   // One quiet line on the Usage pane: this month from the local logs, in the unit this page is
   // in. It is never a subscription invoice, and no dollar figure appears unless USD was chosen.
   async function loadUsageTotals() {
+    const seq = latest.begin("usage");
     try {
-      state.monthSpend = await api("/api/spend?range=month");
+      const data = await api("/api/spend?range=month");
+      if (!latest.isCurrent("usage", seq)) return;
+      state.monthSpend = data;
       renderUsageTotals();
-    } catch { state.monthSpend = null; $("usage-totals").replaceChildren(); }
+    } catch {
+      if (!latest.isCurrent("usage", seq)) return;
+      state.monthSpend = null;
+      $("usage-totals").replaceChildren();
+    }
   }
   function renderUsageTotals() {
     const data = state.monthSpend;
