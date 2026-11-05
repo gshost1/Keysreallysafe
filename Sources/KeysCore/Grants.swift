@@ -492,6 +492,12 @@ final class GrantStore: @unchecked Sendable {
     /// Add a finished call's cost: the provider's receipt, else a list-price estimate, else
     /// nil. Enforcement is post-hoc, so one call (or several in flight together) can overshoot.
     /// An unpriced call counts only when it could have been billed (`billable`).
+    ///
+    /// The charge goes to the grant's CURRENT window, even when the call was authorized
+    /// before a renewal replaced that window: the money was spent, and the renewal only
+    /// re-opens the clock — it does not forgive spending. Dropping a straddling completion
+    /// let real spend escape `maxUsd` entirely and threw away the unpriced strike that keeps
+    /// a capped grant fail-closed, so a caller that renews does not launder its own overspend.
     func charge(id: String, usd: Double?, billable: Bool = true) {
         lock.lock()
         if var g = grants[id] {

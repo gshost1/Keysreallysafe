@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-struct GatewayTarget {
+struct GatewayTarget: Equatable {
     var name: String
     var secret: String
     var provider: Providers.Record
@@ -176,7 +176,25 @@ final class GatewayListener: @unchecked Sendable {
                 return
             }
         }
-        if case .open(let retryAfter) = service.breaker.check(key: target.name) {
+        // The breaker is checked only once the request is known to be buildable: a call that
+        // is answered 400 here never went upstream, so it must not consume the one probe a
+        // cool-down allows (the probe is spent by `check`, and an unbuildable request would
+        // leave the key paused for a full deadline with nothing tried).
+        let path = GatewayPath.join(prefix: target.provider.pathPrefix, rest: request.rest)
+        var headers = request.headers.filter { !Self.dropIncoming.contains($0.key.lowercased()) }
+        headers["Host"] = target.host
+        guard let template = target.provider.upstreamRequest(
+            host: target.host, path: path, query: rawQuery, method: request.method, headers: headers,
+            secret: target.secret, timeout: requestTimeout
+        ) else {
+            Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
+            return
+        }
+        // One breaker for the whole call: check, the head-time record and abandon must all
+        // reach the instance that admitted it.
+        let breaker = service.breaker
+        let breakerVerdict = breaker.check(key: target.name)
+        if case .open(let retryAfter) = breakerVerdict {
             Self.writeJSON(fd: client, status: 503, object: [
                 "error": GatewayBreaker.code,
                 "message": GatewayBreaker.message(key: keyName, retryAfterSeconds: retryAfter),
@@ -186,16 +204,7 @@ final class GatewayListener: @unchecked Sendable {
             return
         }
         if let gatewayClient { service.noteGatewayClientUse(gatewayClient) }
-        let path = GatewayPath.join(prefix: target.provider.pathPrefix, rest: request.rest)
-        var headers = request.headers.filter { !Self.dropIncoming.contains($0.key.lowercased()) }
-        headers["Host"] = target.host
-        guard var urlRequest = target.provider.upstreamRequest(
-            host: target.host, path: path, query: rawQuery, method: request.method, headers: headers,
-            secret: target.secret, timeout: requestTimeout
-        ) else {
-            Self.writeJSON(fd: client, status: 400, object: ["error": "bad request"])
-            return
-        }
+        var urlRequest = template
         // The caller's body is still what usage is parsed against below; only the upstream
         // copy carries the added routing field.
         urlRequest.httpBody = target.cheapest
@@ -214,6 +223,25 @@ final class GatewayListener: @unchecked Sendable {
         let tee = GatewayTee(api: usageAPI)
         let started = Date()
         let proxy = GatewayProxyTask(clientFD: client, tee: tee)
+        // The breaker hears the answer as soon as the provider's head arrives, not when the
+        // stream ends. A probe that answered `200 OK` and then streams for longer than the
+        // cool-down is a working key, but recording at stream end treated it as an abandoned
+        // probe: the deadline passed, a sibling was admitted, and this 200 was then ignored as
+        // history while the key stayed paused. Only the provider's own status is fed. The
+        // bindings are copies so the closure never reads `target` after the call moves on.
+        let breakerKey = target.name
+        let admission = breakerVerdict.granted
+        let recordDenial: @Sendable () -> Void = { [service] in
+            service.recordGatewayDenial(name: breakerKey, reason: GatewayBreaker.code, via: via)
+        }
+        let noteTrip: @Sendable () -> Void = { [service] in service.noteBreakerTrip() }
+        proxy.onUpstreamStatus = { status in
+            if breaker.record(key: breakerKey, status: status, admitting: admission) {
+                recordDenial()
+                // The trip is an app-owned event: the app warns once per trip.
+                noteTrip()
+            }
+        }
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = requestTimeout
         config.timeoutIntervalForResource = requestTimeout
@@ -245,10 +273,14 @@ final class GatewayListener: @unchecked Sendable {
             requestBody: request.body,
             requestModel: vercel ? request.headers["ai-language-model-id"] ?? request.headers["ai-model-id"] : nil
         )
-        if service.breaker.record(key: target.name, status: status) {
-            service.recordGatewayDenial(name: target.name, reason: GatewayBreaker.code, via: via)
-            // The trip is an app-owned event: the app warns once per trip.
-            service.noteBreakerTrip()
+        if proxy.statusCode == nil {
+            // No provider status arrived at all: every byte this caller got was the gateway's
+            // own answer (a refused connection, an unresolvable host, a timeout). That says
+            // nothing about the key, so it must not count toward a trip, and an admitted probe
+            // is released to the next caller rather than closing the pause on evidence about
+            // this Mac's network or waiting out its deadline for an attempt that never reached
+            // the provider.
+            breaker.abandon(key: target.name, admitting: breakerVerdict.granted)
         }
         do {
             try service.recordGatewayUsage(
@@ -404,6 +436,10 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
     private var failureError: NSError?
     /// Writing to the caller failed, so the gateway cancelled the upstream call.
     private var clientClosed = false
+    /// The provider's own status, delivered once as soon as the response head arrives. The
+    /// breaker needs it then, not at stream end: a probe that answered and then streamed for
+    /// longer than the cool-down would otherwise be judged abandoned.
+    var onUpstreamStatus: (@Sendable (Int) -> Void)?
 
     init(clientFD: Int32, tee: GatewayTee) {
         self.clientFD = clientFD
@@ -446,6 +482,16 @@ private final class GatewayProxyTask: NSObject, URLSessionDataDelegate, @uncheck
         let contentType = http?.value(forHTTPHeaderField: "Content-Type")
         requestId = Self.requestId(from: http)
         if let contentType { tee.setContentType(contentType) }
+        let reported = http?.statusCode
+        lock.unlock()
+        // The provider's own answer, told to the breaker before it is relayed: the stream can
+        // run for minutes, and the breaker must not wait for it. Reporting first also means a
+        // caller that receives this head can rely on the breaker having already seen the
+        // status, which is what the head-timing test asserts without polling. It covers the
+        // caller-gone case too: the provider answered, so the status counts even when this Mac
+        // can no longer deliver it.
+        if let reported { onUpstreamStatus?(reported) }
+        lock.lock()
         if !wroteHead {
             wroteHead = writeHead(http)
             if !wroteHead {
