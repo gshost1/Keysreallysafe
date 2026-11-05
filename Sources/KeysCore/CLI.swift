@@ -1273,7 +1273,7 @@ struct WrapCommand: ParsableCommand {
             gets the gateway turned on and one client token, the value in the file becomes that \
             token, and OPENAI_BASE_URL, ANTHROPIC_BASE_URL or GROQ_BASE_URL is set to the \
             gateway (or to the relay with --relay) where the key's variable has one. The file is \
-            backed up first beside itself (0600, holding the original values), replaced in one \
+            backed up first outside the project (0600, holding the original values), replaced in one \
             rename with its permissions kept, and always ends with a newline. Comments, blank \
             lines, export and quotes stay as written. The Touch ID comes before the plan, because \
             telling an existing key from a new one means reading the vault; --dry-run stops after \

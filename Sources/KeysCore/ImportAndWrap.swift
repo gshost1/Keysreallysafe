@@ -62,7 +62,19 @@ extension KeysService {
 
         // Nothing left to import: no prompt, no token, no rewrite. The result still
         // answers honestly, per variable, including every not-found requested name.
+        // `docker: true` on a project whose lines are all wrapped already still means
+        // what it says — the gateway has to be reachable from a container — so the
+        // preference is applied here too. It is a global loosening of the gateway's
+        // Host check, so it gets its own prompt (VAL-O-003): with no import there is
+        // no other prompt to announce it. Without this the result reported
+        // `base_url_host: host.docker.internal` while the stored preference stayed off.
         guard !imports.isEmpty else {
+            if docker, !preferences.dockerAccess {
+                try presence.require(
+                    reason: "let Docker containers reach the Keysrs gateway (project \(project.label))"
+                )
+                try preferences.setDockerAccess(true)
+            }
             let outcomes = Self.mergedOutcomes(
                 report: report, wanted: wanted, decisions: [], alreadyWrapped: alreadyWrapped,
                 notFound: Self.notFoundOutcomes(requested: variables, candidates: report.candidates, wanted: wanted)
@@ -114,8 +126,11 @@ extension KeysService {
 
         // Store the new keys under the one prompt. A name already holding a different
         // value (a Keychain item without a catalog row, or a concurrent add) skips its
-        // variables and reports itself; the existing key is never overwritten.
+        // variables and reports itself; the existing key is never overwritten. The
+        // names stored here are what a later refusal has to own up to: they stay in
+        // the vault, and a retry reuses them.
         var conflicted: Set<String> = []
+        var storedKeys: [String] = []
         for key in Self.newKeysFor(decisions) {
             do {
                 try add(
@@ -123,6 +138,7 @@ extension KeysService {
                     notes: "imported by import_and_wrap for \(project.label)",
                     secret: key.value, caller: caller
                 )
+                storedKeys.append(key.name)
             } catch AppError.alreadyExists {
                 conflicted.insert(key.name)
             }
@@ -164,8 +180,10 @@ extension KeysService {
         // and the SDK's BASE_URL companion is set to the gateway URL for its key. The
         // fresh bytes from the verify pass are the originals, so EnvFileWriter's
         // refuse-if-changed still guards the window between that read and this write.
-        // Each rewrite keeps a backup under the catalog's own backups tree — never
-        // inside the project (VAL-O-002) — and the result says so without a path.
+        // The files land as ONE batch — every temp and backup first, then the renames —
+        // so a refusal on one file cannot leave another holding a token this call then
+        // revokes. Each rewrite keeps a backup under the catalog's own backups tree,
+        // never inside the project (VAL-O-002), and the result says so without a path.
         var backupsKeptOutsideProject = false
         if let token {
             do {
@@ -174,8 +192,10 @@ extension KeysService {
                     conflicted: conflicted,
                     root: report.root,
                     backupRoot: EnvFileWriter.backupsRoot(beside: catalog.path)
-                ) { path, companions in
-                    try recordWrappedFile(path: path, project: project.id, now: now, companions: companions)
+                ) { files in
+                    // One transaction: a failure partway must not leave rows for
+                    // files the batch then rolled back.
+                    try self.recordWrappedFiles(files, project: project.id, now: now)
                 }
                 backupsKeptOutsideProject = rewritten > 0
             } catch {
@@ -183,14 +203,15 @@ extension KeysService {
                 // pointing at it; a rewrite that cannot land must not strand a live
                 // 30-day capability (VAL-O-007). The same idempotent revocation call
                 // unwrap makes, with its client_revoke audit row; best effort, because
-                // the rewrite's refusal is the failure the caller needs to see. Every
-                // message this path can throw is lastPathComponent-based — no
-                // absolute path rides the rethrown error.
+                // the rewrite's refusal is the failure the caller needs to see. The
+                // files themselves are all-or-nothing (EnvFileWriter.commit), so the
+                // only state this message has to describe is the vault and the token —
+                // no absolute path rides it (VAL-O-007).
                 if let client = try? catalog.gatewayClient(tokenHash: GatewayClientToken.hash(token)),
                    (try? catalog.revokeGatewayClient(id: client.id, keyName: client.keyName, at: UTC.iso(now))) == true {
                     try? recordKeyEvent(name: client.keyName, action: "client_revoke", caller: caller, detail: "#\(client.id)")
                 }
-                throw error
+                throw AppError.usage(Self.filePhaseMessage(error, stored: storedKeys))
             }
         }
 
@@ -455,15 +476,32 @@ extension KeysService {
         return fresh
     }
 
-    /// Rewrites each file holding a wrapped line: the value span becomes the one project
-    /// token, the BASE_URL companions for the three wrap-detected SDK variables are set
-    /// to the gateway URL for their key, and the rewritten file is recorded in
-    /// `wrapped_files` through `record` — together with the companion names it wrote,
-    /// so unwrap later removes exactly those. Each rewrite keeps its pre-wrap backup
-    /// under `backupRoot` — the catalog-sibling backups tree, never beside the file
-    /// (VAL-O-002). Files whose every wrap was conflicted away are left untouched —
-    /// nothing in them was ever rewritten. Answers the number of files rewritten, so
-    /// the result can state honestly whether a backup was kept at all.
+    /// One file's rewritten bytes, computed but not written: the resolved path (what
+    /// gets renamed and recorded), the original bytes the write must still find, the
+    /// new text, and the companion names the rewrite sets — so unwrap later removes
+    /// exactly those. Files whose every wrap was conflicted away never appear here:
+    /// nothing in them was rewritten.
+    private struct PendingRewrite {
+        var resolved: String
+        var original: Data
+        var text: String
+        var companions: [String]
+    }
+
+    /// Computes every file's rewrite, then lands them as ONE batch: the value span of
+    /// each wrapped line becomes the one project token, the BASE_URL companion for the
+    /// three wrap-detected SDK variables points at the gateway for its key, each file
+    /// keeps a pre-wrap backup under `backupRoot` (the catalog-sibling backups tree,
+    /// never beside the file — VAL-O-002), and the rewritten files are recorded in
+    /// `wrapped_files` through `record`. Answers the number of files rewritten, so the
+    /// result can state honestly whether a backup was kept at all.
+    ///
+    /// All-or-nothing is the point. Preparing every file before renaming any of them
+    /// means a refusal on the second file cannot leave the first holding a token the
+    /// caller then revokes; a rename that fails mid-batch restores the files already
+    /// renamed from the backups this batch just took. Only when every file is in place
+    /// do the `wrapped_files` rows land, through `afterCommit` — so the records never
+    /// describe a rewrite that did not happen.
     ///
     /// The write goes through the file's realpath-resolved form with the containment
     /// re-checked immediately before it (VAL-O-009): the verify pass resolved and
@@ -481,10 +519,10 @@ extension KeysService {
         conflicted: Set<String>,
         root: String,
         backupRoot: URL,
-        record: (String, [String]) throws -> Void
+        record: @escaping ([(path: String, companions: [String])]) throws -> Void
     ) throws -> Int {
         let host = baseURLHost(docker: docker)
-        var rewritten = 0
+        var pending: [PendingRewrite] = []
         for file in fresh.keys.sorted() {
             guard let read = fresh[file] else { continue }
             guard decisions.contains(where: {
@@ -496,7 +534,7 @@ extension KeysService {
             for decision in decisions {
                 guard case let .wrap(candidate, key, _, _) = decision, decision.file == file else { continue }
                 guard let index = entryIndex(name: candidate.name, value: candidate.value, in: read.parsed, claimed: &read.claimed) else {
-                    throw AppError.usage("a file in the project changed while the import ran; nothing further was rewritten")
+                    throw AppError.usage("a file in the project changed while the import ran")
                 }
                 read.parsed.setValue(at: index, token)
                 if let baseVar = WrapDetect.baseURLVariables[candidate.name] {
@@ -508,16 +546,58 @@ extension KeysService {
             }
             guard let resolved = EnvScan.resolve(read.spelling.path),
                   EnvScan.isInside(resolved, root: root) else {
-                throw AppError.usage("a file in the project could not be read; nothing was imported")
+                throw AppError.usage("a file in the project could not be read")
             }
-            _ = try EnvFileWriter.rewrite(
-                URL(fileURLWithPath: resolved), original: read.data, text: read.parsed.render(),
-                now: now, backupRoot: backupRoot
-            )
-            try record(resolved, companions.keys.sorted())
-            rewritten += 1
+            pending.append(PendingRewrite(
+                resolved: resolved, original: read.data, text: read.parsed.render(),
+                companions: companions.keys.sorted()
+            ))
         }
-        return rewritten
+        guard !pending.isEmpty else { return 0 }
+
+        try EnvFileWriter.commitBatch(
+            pending.map { (url: URL(fileURLWithPath: $0.resolved), original: $0.original, text: $0.text) },
+            now: now, backupRoot: backupRoot,
+            verify: { url in
+                guard let again = EnvScan.resolve(url.path), again == url.path,
+                      EnvScan.isInside(again, root: root) else {
+                    throw AppError.usage("a file in the project could not be read")
+                }
+            }
+        ) {
+            try record(pending.map { (path: $0.resolved, companions: $0.companions) })
+        }
+        return pending.count
+    }
+
+    /// What the import says when the file phase could not land: the cause first, then
+    /// exactly what state it left behind, because "nothing was imported" once covered a
+    /// run that had already written keys, a token and some files. The file phase is
+    /// all-or-nothing now (EnvFileWriter.commit), so the only durable state left is the
+    /// vault and, for the narrow window where a restore could not land, a named file
+    /// still holding a token that was revoked.
+    private static func filePhaseMessage(_ error: Error, stored: [String]) -> String {
+        let cause: String
+        var files = "no file was changed"
+        if let failure = error as? EnvFileWriter.BatchFailure {
+            cause = failure.reason
+            if failure.phase == .committed {
+                if failure.stuck.isEmpty {
+                    files = "no file was changed (every file was put back from its backup)"
+                } else {
+                    files = "\(failure.stuck.joined(separator: ", ")) could not be put back and still holds a token "
+                        + "that is now revoked; no other file was changed"
+                }
+            }
+        } else {
+            cause = (error as? AppError)?.description ?? error.localizedDescription
+        }
+        let vault = stored.isEmpty
+            ? "nothing was added to the vault"
+            : "\(stored.count == 1 ? "the key" : "the keys") \(stored.joined(separator: ", ")) "
+                + "\(stored.count == 1 ? "was" : "were") added to the vault and \(stored.count == 1 ? "stays" : "stay"), "
+                + "so a retry reuses \(stored.count == 1 ? "it" : "them")"
+        return "\(cause); \(files); \(vault)"
     }
 
     /// The line index of one candidate's assignment, claimed in order: the name AND the

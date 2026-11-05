@@ -739,6 +739,25 @@ final class CatalogDB: @unchecked Sendable {
         )
     }
 
+    /// Several rows at once, all or none: the import records its whole batch here.
+    func recordWrappedFiles(_ files: [(path: String, companions: [String])], project: String, at iso: String) throws {
+        try withLock {
+            try exec("BEGIN IMMEDIATE")
+            do {
+                for file in files {
+                    try run(
+                        "INSERT OR REPLACE INTO wrapped_files (path, project, wrapped_at, companions) VALUES (?, ?, ?, ?);",
+                        file.path, project, iso, try Self.encodeCompanions(file.companions)
+                    )
+                }
+                try exec("COMMIT")
+            } catch {
+                try? exec("ROLLBACK")
+                throw error
+            }
+        }
+    }
+
     /// Companion names are env-variable names, but the array lives as JSON like
     /// grant_profiles.paths so a corrupted row fails loudly instead of silently losing
     /// half a list.
