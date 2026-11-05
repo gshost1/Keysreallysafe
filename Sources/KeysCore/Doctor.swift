@@ -159,10 +159,9 @@ enum Doctor {
         if i.legacyPlistExists || i.legacyBinaryExists {
             let installed = i.legacyBinarySHA256
             let running = i.runningBinarySHA256
-            let same = installed != nil && installed == running
             return [
                 "autostart  \(i.legacyPlist.path)  \(i.legacyPlistExists ? "present" : "missing")",
-                "binary  installed sha256=\(installed ?? "missing")  running sha256=\(running ?? "missing")  \(same ? "match" : "differs")",
+                "binary  installed sha256=\(installed ?? "missing")  running sha256=\(running ?? "missing")  \(shaVerdict(installed, running))",
             ]
         }
         return ["app  not installed (running from \(i.runningExecutable?.path ?? "unknown"))"]
@@ -184,17 +183,35 @@ enum Doctor {
         }
         var line = "command  \(command.path)"
         if let target = i.commandTarget { line += " -> \(target)" }
-        let verdict: String
-        if i.commandSHA256 == nil { verdict = "missing" }
-        else if i.commandSHA256 == i.bundleBinarySHA256 { verdict = "match" }
-        else { verdict = "differs" }
-        line += "  sha256=\(i.commandSHA256 ?? "missing")  \(verdict)"
+        line += "  sha256=\(i.commandSHA256 ?? "missing")  \(commandVerdict(i))"
         return line
     }
 
+    /// A PATH binary this process could not read is missing, not "unknown": the link is
+    /// there and its hash is nil, which is the case this line has always worded that way.
+    /// Only the comparison between two hashes is unknown, so only that part uses
+    /// `shaVerdict`.
+    private static func commandVerdict(_ i: DoctorInstall) -> String {
+        guard i.commandSHA256 != nil else { return "missing" }
+        return shaVerdict(i.commandSHA256, i.bundleBinarySHA256)
+    }
+
     private static func runningLine(_ i: DoctorInstall) -> String {
-        let same = i.runningBinarySHA256 != nil && i.runningBinarySHA256 == i.bundleBinarySHA256
-        return "running  \(i.runningExecutable?.path ?? "unknown")  sha256=\(i.runningBinarySHA256 ?? "missing")  \(same ? "match" : "differs")"
+        let verdict = shaVerdict(i.runningBinarySHA256, i.bundleBinarySHA256)
+        return "running  \(i.runningExecutable?.path ?? "unknown")  sha256=\(i.runningBinarySHA256 ?? "missing")  \(verdict)"
+    }
+
+    /// One verdict vocabulary for all three comparisons. A hash the probe could not read
+    /// is missing, and one unreadable side is unknown: only two hashes that were both
+    /// read can be said to differ. Before this, an unreadable bundle binary and an
+    /// unreadable running binary printed "missing  missing  differs", while the command
+    /// line beside it called the same absence "missing".
+    static func shaVerdict(_ installed: String?, _ other: String?) -> String {
+        switch (installed, other) {
+        case (nil, nil): return "missing"
+        case (nil, _), (_, nil): return "unknown"
+        case let (installed?, other?): return installed == other ? "match" : "differs"
+        }
     }
 
     private static func legacyLine(_ i: DoctorInstall) -> String {

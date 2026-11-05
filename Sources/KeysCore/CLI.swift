@@ -953,7 +953,7 @@ struct ModelsCommand: ParsableCommand {
             obj["models"] = ids
             obj["model_count"] = ids.count
             try JSONValue.printLine(obj)
-            if !result.ok { Darwin.exit(5) }
+            if !result.ok { Darwin.exit(result.outcome.cliExitCode) }
             return
         }
         guard result.ok else {
@@ -2372,22 +2372,56 @@ struct RelayOnCommand: ParsableCommand {
         abstract: "Run the relay inside the running Keysrs app (one Touch ID there) until off or quit."
     )
 
+    /// How long the first dial is watched for. Longer and a dead Worker holds the
+    /// command; shorter and a slow TLS handshake reads as a failure.
+    static let firstDialBudget: TimeInterval = 10
+
     func run() throws { try run(launch: .production) }
 
     /// The toggle with the app-discovery seam and control file injectable
     /// (`AppConnection.connect()` owns the launch policy; tests drive recording
     /// fakes over a temp catalog).
     func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        try run(launch: launch, control: control, budget: Self.firstDialBudget,
+                sleep: { Thread.sleep(forTimeInterval: $0) }, out: { print($0) })
+    }
+
+    /// The wait and its printer injectable, so a test drives the three outcomes the
+    /// 10 s poll can reach without spending 10 s.
+    ///
+    /// The sentence after the state has to match it. "it stays on until keys relay off"
+    /// was printed unconditionally, so a status that said `off` — another `keys relay
+    /// off` during the wait, or a site that answered `on: false` — produced "relay off;
+    /// it stays on …". And a dial still connecting when the budget ran out said
+    /// "connecting", with nothing to say it had timed out.
+    func run(
+        launch: AppLaunchSeam, control: URL?, budget: TimeInterval,
+        sleep: (TimeInterval) -> Void, now: () -> Date = Date.init, out: (String) -> Void
+    ) throws {
         let control = try AppConnection.connect(control: control, launch: launch).controlClient
         fputs("Touch ID in Keysrs…\n", stderr)
         var obj = try control.call(method: "POST", path: "/api/relay", body: ["enabled": true], expect: 200)
         // The first dial says whether the Worker takes the secret; wait for it, briefly.
-        let deadline = Date().addingTimeInterval(10)
-        while JSONValue.string(obj["state"]) == "connecting", Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.25)
+        let deadline = now().addingTimeInterval(budget)
+        while Self.isConnecting(obj), now() < deadline {
+            sleep(0.25)
             obj = try control.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5)
         }
-        print("relay \(RelayCommand.appLine(obj)); it stays on until keys relay off or Keysrs quits, and logs to menubar.log")
+        let line = "relay \(RelayCommand.appLine(obj))"
+        if JSONValue.bool(obj["on"]) != true {
+            // Something turned it off while we watched. Nothing is left running, so the
+            // staying-on sentence would be a promise about a relay that is not there.
+            out("\(line); nothing is relaying calls now (keys relay status shows where it stands)")
+        } else if Self.isConnecting(obj) {
+            out("\(line); the first dial has not finished after \(Int(budget))s, so it has not reached the Worker yet — "
+                + "it stays on until keys relay off or Keysrs quits, and logs to menubar.log")
+        } else {
+            out("\(line); it stays on until keys relay off or Keysrs quits, and logs to menubar.log")
+        }
+    }
+
+    static func isConnecting(_ obj: [String: Any]) -> Bool {
+        JSONValue.bool(obj["on"]) == true && JSONValue.string(obj["state"]) == "connecting"
     }
 }
 
