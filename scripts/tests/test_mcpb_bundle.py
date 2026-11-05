@@ -43,10 +43,12 @@ class McpbBundleTests(unittest.TestCase):
     def test_manifest_carries_the_app_version_and_plugin_identity(self):
         manifest, plugin = load(MANIFEST), load(PLUGIN_MANIFEST)
         self.assertEqual(manifest["version"], app_version(), "bump packaging/mcpb/manifest.json with AppVersion")
-        for key in ("name", "description", "license", "keywords", "homepage"):
+        # description differs on purpose: the bundle ships the server, not the skill.
+        for key in ("name", "license", "keywords", "homepage"):
             self.assertEqual(manifest[key], plugin[key], key)
         self.assertEqual(manifest["display_name"], plugin["displayName"])
         self.assertEqual(manifest["repository"]["url"], plugin["repository"])
+        self.assertNotIn("skill", manifest["description"].lower())
 
     def test_icon_is_the_brand_png(self):
         self.assertEqual((BUNDLE / load(MANIFEST)["icon"]).read_bytes(),

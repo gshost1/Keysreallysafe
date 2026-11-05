@@ -10,7 +10,7 @@
     {
       "registryType": "mcpb",
       "identifier": "https://github.com/gshost1/Keysreallysafe/releases/download/v0.15.1/Keysrs.mcpb",
-      "fileSha256": "2400625b7672ce11be3841a1569b842db7be74de76bdda8535782e1d24ad5f72",
+      "fileSha256": "a556ef61f7b0d49bc0b35272b4e4faa2bf5ba17ccde70741d8ba25941185e0aa",
       "transport": { "type": "stdio" }
     }
   ]
