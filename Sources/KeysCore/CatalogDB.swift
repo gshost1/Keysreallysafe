@@ -180,8 +180,14 @@ final class CatalogDB: @unchecked Sendable {
         // column existed get the key's current host once, at the first start that knows the
         // provider table (KeysService), so they keep working only while the host stays put.
         if try !tableHasColumn("gateway_clients", "host") {
-            try exec("ALTER TABLE gateway_clients ADD COLUMN host TEXT;")
-            try exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('\(Self.clientHostBackfillKey)', 'pending');")
+            // One transaction: the ALTER committing without the flag (a crash between two
+            // autocommits) left a catalog whose clients were never bound and never retried.
+            try withTransaction {
+                try exec("ALTER TABLE gateway_clients ADD COLUMN host TEXT;")
+                try beginBackfillRun()
+            }
+        } else {
+            try rearmBackfillIfNeeded()
         }
         // The project (a folder) a client token was issued for, by projects.id. Nullable
         // and deliberately not a foreign key: clients from before projects existed keep
@@ -546,19 +552,154 @@ final class CatalogDB: @unchecked Sendable {
     }
 
     static let clientHostBackfillKey = "gateway_clients_host_backfill"
+    /// The client ids the host backfill is responsible for: the ones that existed when the
+    /// column was added. A client issued after that carries NULL on purpose (its key had no
+    /// host), and binding it later would silently widen a target nobody approved.
+    static let clientHostBackfillCandidatesKey = "gateway_clients_host_backfill_candidates"
+    /// What each candidate's own attempt resolved to, as `id=host` pairs joined with `;`.
+    /// An empty host means the key had none and the client is settled as refused; a
+    /// non-empty one is the host the client was bound to — or, while the row still has a
+    /// NULL host, the host the failed write has to be retried with. A candidate with no
+    /// pair has not been resolved yet and must be offered again.
+    static let clientHostBackfillAttemptsKey = "gateway_clients_host_backfill_attempts"
 
-    /// Clients with no stored host, i.e. issued before host binding existed.
-    func unboundGatewayClients() throws -> [GatewayClient] {
-        try query(
-            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.host IS NULL ORDER BY gc.id;",
-            row: decodeGatewayClient
-        )
+    /// The candidates, or nil when no run was ever recorded. An empty list is a run that
+    /// was recorded and claimed nothing: the catalog had already been migrated when this
+    /// binary first opened it, so its NULL-host clients were issued that way on purpose.
+    func backfillCandidateIDs() throws -> [Int64]? {
+        guard let raw = try metaValue(Self.clientHostBackfillCandidatesKey) else { return nil }
+        return raw.split(separator: ",").compactMap { Int64($0) }
     }
 
+    /// The first-pass decision for each candidate, by id. Absent id = not decided yet.
+    func backfillAttempts() throws -> [Int64: String] {
+        guard let raw = try metaValue(Self.clientHostBackfillAttemptsKey) else { return [:] }
+        var out: [Int64: String] = [:]
+        for pair in raw.split(separator: ";") {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let id = Int64(parts[0]) else { continue }
+            out[id] = parts.count > 1 ? String(parts[1]) : ""
+        }
+        return out
+    }
+
+    private func setBackfillAttempts(_ attempts: [Int64: String]) throws {
+        let text = attempts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ";")
+        try setMeta(Self.clientHostBackfillAttemptsKey, text)
+    }
+
+    /// Records the unbound clients as this run's candidates and arms it. Called when the
+    /// column is added, and when a catalog arrives with the column and no record.
+    private func beginBackfillRun(onlyIfUnrecorded: Bool = false) throws {
+        try withTransaction {
+            // The rearm path re-checks under BEGIN IMMEDIATE: a second process opening the
+            // same catalog may have started the run and already recorded decisions, and
+            // resetting them would let a refused client be decided again against a newer
+            // host. The open that adds the column starts a fresh run regardless.
+            if onlyIfUnrecorded, try backfillCandidateIDs() != nil { return }
+            let unbound = try query("SELECT id FROM gateway_clients WHERE host IS NULL ORDER BY id;") {
+                Int64(sqlite3_column_int64($0, 0))
+            }
+            try setMeta(Self.clientHostBackfillCandidatesKey, unbound.map(String.init).joined(separator: ","))
+            try setBackfillAttempts([:])
+            try setMeta(Self.clientHostBackfillKey, "pending")
+        }
+    }
+
+    /// The flag is a hint, not the record. Every open checks the catalog's own state and
+    /// re-arms the run for a candidate that is still unresolved or whose bind did not
+    /// land. A candidate settled as having no host is not retried: a host its key gains
+    /// later must not be adopted, because that would retarget a token the user was given
+    /// for no host at all.
+    private func rearmBackfillIfNeeded() throws {
+        guard try tableHasColumn("gateway_clients", "host") else { return }
+        guard let candidates = try backfillCandidateIDs() else {
+            // This open did not add the column, so the catalog was migrated before and the
+            // run either never recorded itself or finished. Only a run that never happened
+            // may claim the unbound clients: main's migration wrote `pending` before the
+            // bind and deleted it after, so a pending flag with no record is that window,
+            // while no flag at all means the catalog was migrated and settled — and a
+            // client issued since then carries NULL on purpose. Claiming that catalog would
+            // bind a token to a host nobody approved, so it is recorded as claimed by
+            // nobody instead.
+            guard try metaValue(Self.clientHostBackfillKey) == "pending" else {
+                try setMeta(Self.clientHostBackfillCandidatesKey, "")
+                return
+            }
+            try beginBackfillRun(onlyIfUnrecorded: true)
+            return
+        }
+        guard !candidates.isEmpty else { return }
+        let attempts = try backfillAttempts()
+        // A decision that names a host with the row still NULL is a write that did not
+        // land; no decision at all means the pass never resolved that client, because the
+        // catalog read it needs failed. Both are retried. A client settled as hostless is
+        // not, and neither is one that is bound.
+        let retry = candidates.filter { attempts[$0].map { !$0.isEmpty } ?? true }
+        guard !retry.isEmpty else { return }
+        let placeholders = retry.map { _ in "?" }.joined(separator: ", ")
+        let stillUnbound = try query(
+            "SELECT 1 FROM gateway_clients WHERE host IS NULL AND id IN (\(placeholders)) LIMIT 1;",
+            retry.map { Int($0) }
+        ) { _ in true }
+        if !stillUnbound.isEmpty { try setMeta(Self.clientHostBackfillKey, "pending") }
+    }
+
+    /// The host a backfill may bind this key to: the per-key host, else the provider's
+    /// one host — `KeysService.effectiveHost`'s rule. Nil when there is none, or when
+    /// this process cannot name the provider.
+    private func backfillHost(_ row: CatalogRow) -> String? {
+        row.gatewayHost ?? Providers.provider(id: row.provider)?.host
+    }
+
+    /// The clients this run may still bind, each with the host it must be bound to.
+    ///
+    /// Every candidate is decided the first time it is looked at, in one transaction,
+    /// and the decision is final: the host its key resolves to right now, or "" (refused
+    /// for good) when there is none or this process cannot name it — its catalog read
+    /// failed, or its provider is not loaded. Leaving a candidate undecided would let a
+    /// later open bind it to whatever host its key has gained by then, a target nobody
+    /// approved; a refused client only means its token answers `target_changed` and a
+    /// new one has to be issued. A decided host whose row is still NULL is a write that
+    /// did not land and is returned again with the same host. The transaction (BEGIN
+    /// IMMEDIATE) keeps two processes opening the catalog at once from overwriting each
+    /// other's decisions.
+    func unboundGatewayClients() throws -> [(client: GatewayClient, host: String)] {
+        try withTransaction {
+            guard let candidates = try backfillCandidateIDs(), !candidates.isEmpty else { return [] }
+            let placeholders = candidates.map { _ in "?" }.joined(separator: ", ")
+            let rows = try query(
+                "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.host IS NULL AND gc.id IN (\(placeholders)) ORDER BY gc.id;",
+                candidates.map { Int($0) },
+                row: decodeGatewayClient
+            )
+            let before = try backfillAttempts()
+            var attempts = before
+            var out: [(client: GatewayClient, host: String)] = []
+            for client in rows {
+                let decision: String
+                if let decided = attempts[client.id] {
+                    decision = decided
+                } else {
+                    decision = ((try? catalogRow(name: client.keyName)) ?? nil).flatMap(backfillHost) ?? ""
+                    attempts[client.id] = decision
+                }
+                if !decision.isEmpty { out.append((client, decision)) }
+            }
+            if attempts != before { try setBackfillAttempts(attempts) }
+            return out
+        }
+    }
+
+    /// Binds one client to the host its first look decided. The record is what was
+    /// approved: a host passed here that differs from it loses, and a client with no
+    /// decision, or one refused for good, is not bound at all.
     func bindGatewayClient(id: Int64, host: String) throws {
-        try run("UPDATE gateway_clients SET host = ? WHERE id = ? AND host IS NULL;", host, id)
+        try withTransaction {
+            guard let target = try backfillAttempts()[id], !target.isEmpty else { return }
+            try run("UPDATE gateway_clients SET host = ? WHERE id = ? AND host IS NULL;", target, id)
+        }
     }
-
     // The client's project label joins in here so every reader (and only readers) sees
     // the display label next to the id it stored; a dangling project reference joins
     // NULL instead of failing, which is why the label is soft, not a foreign key.
