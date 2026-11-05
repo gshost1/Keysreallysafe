@@ -11,10 +11,13 @@ const utf8e = new TextEncoder();
 const open = [];
 const hub = () => env.RELAY.get(env.RELAY.idFromName("mac"));
 
-afterEach(() => {
+afterEach(async () => {
   for (const ws of open.splice(0)) {
     try { ws.close(1000, "test done"); } catch { /* already closed */ }
   }
+  // Whatever a test left in flight must still give its slot back; a counter
+  // that drifts would quietly shrink the cap below the documented 32.
+  await until(async () => (await hubActive()) === 0, "every in-flight slot to be given back");
 });
 
 function withTimeout(promise, ms, what) {
@@ -98,6 +101,11 @@ async function withLimits(changes, body) {
 }
 
 const hubState = () => runInDurableObject(hub(), (h) => ({ pending: h.pending.size, heldBytes: h.heldBytes }));
+
+/// The in-flight slots still spoken for. Every test must end with none: a slot
+/// that comes back late is a request the cap does not count, and one that never
+/// comes back shrinks the cap for good.
+const hubActive = () => runInDurableObject(hub(), (h) => h.active);
 
 async function until(check, what, ms = 5000) {
   const deadline = Date.now() + ms;
@@ -501,6 +509,183 @@ describe("relaying", () => {
     const again = await mac.next(FRAME.REQUEST);
     mac.send(FRAME.RESPONSE, again.id, JSON.stringify({ status: 204, headers: [] }));
     expect((await withTimeout(next, 5000, "next response")).status).toBe(204);
+  });
+
+  it("answers with the Mac's refusal, not its own deadline, when the Mac refuses mid-upload", async () => {
+    // The Mac refuses a pairing at REQUEST time, before any body is buffered,
+    // so the ERROR lands while the agent is still sending. The Worker must
+    // answer with the refusal: its own 408 (the body never finishes) or 400
+    // (the agent gives up) would replace the Mac's verdict.
+    const mac = await connectMac();
+    const body = new ReadableStream({ start(controller) { controller.enqueue(utf8e.encode('{"model":')); } });
+    const agent = SELF.fetch(`${ORIGIN}/router/v1/messages`, { method: "POST", body, duplex: "half" });
+    const req = await mac.next(FRAME.REQUEST);
+    const message = "this relay requires a paired agent; issue one with keys relay pair issue and send the credential as x-ksf-pair";
+    mac.send(FRAME.ERROR, req.id, JSON.stringify({ code: "pairing_required", message }));
+    const res = await withTimeout(agent, 3000, "agent response");
+    expect(res.status).toBe(403);
+    expect(res.headers.get("retry-after")).toBeNull();
+    expect(await res.json()).toEqual({ error: "pairing_required", message });
+    // Nothing was left behind, and the socket is still good for the next one.
+    expect(await hubState()).toEqual({ pending: 0, heldBytes: 0 });
+    const next = SELF.fetch(`${ORIGIN}/router/v1/models`);
+    const again = await mac.next(FRAME.REQUEST);
+    mac.send(FRAME.RESPONSE, again.id, JSON.stringify({ status: 204, headers: [] }));
+    expect((await withTimeout(next, 5000, "next response")).status).toBe(204);
+  });
+
+  it("stops forwarding a refused request's body and drains it instead", async () => {
+    // Before the fix the Worker sat on the body until the upload deadline and
+    // answered 408 upload_timeout over the Mac's 403. It must not cancel the
+    // reader either: an HTTP/1.1 client writes its whole body before it reads
+    // the answer, and a reader cancelled underneath it turns the refusal into
+    // a connection reset. So the bytes stop going to the Mac, the rest of the
+    // body is read and dropped, and the Mac's verdict is the answer.
+    const mac = await connectMac();
+    const out = await runInDurableObject(hub(), async (h) => {
+      let feed;
+      let cancelled = false;
+      const body = new ReadableStream({
+        start(controller) { feed = controller; },
+        cancel() { cancelled = true; },
+      });
+      feed.enqueue(utf8e.encode('{"model":'));
+      const url = new URL(`${ORIGIN}/router/v1/messages`);
+      const answer = h.relay(new Request(url, { method: "POST", body, duplex: "half" }), url);
+      await new Promise((r) => setTimeout(r, 50));
+      const [[id]] = [...h.pending];
+      const [ws] = h.ctx.getWebSockets();
+      h.webSocketMessage(ws, encodeFrame(FRAME.ERROR, id, JSON.stringify({ code: "pairing_required", message: "unpaired" })));
+      const gone = h.pending.size === 0;
+      const held = h.active;
+      // The agent goes on sending into a body nobody wants now.
+      feed.enqueue(utf8e.encode('"claude-3":{}'));
+      await new Promise((r) => setTimeout(r, 50));
+      feed.enqueue(utf8e.encode("}"));
+      feed.close();
+      const refused = await answer;
+      return {
+        gone, held, cancelled, id,
+        status: refused.status,
+        error: (await refused.json()).error,
+        active: h.active,
+      };
+    });
+    expect(out).toMatchObject({ gone: true, held: 1, cancelled: false, status: 403, error: "pairing_required", active: 0 });
+    // Only the chunk that arrived before the refusal reached the Mac, and the
+    // Mac is sent no CANCEL because it has already forgotten the request.
+    expect(mac.frames.filter((f) => f.type === FRAME.BODY && f.id === out.id)).toHaveLength(1);
+    expect(mac.frames.filter((f) => f.type === FRAME.CANCEL)).toHaveLength(0);
+  });
+
+  it("answers with the Mac's verdict when the agent's refused body then aborts", async () => {
+    // The other half of draining: a body that errors after the Mac refused the
+    // request must not replace the verdict with this side's 400 client_gone.
+    const mac = await connectMac();
+    const out = await runInDurableObject(hub(), async (h) => {
+      let feed;
+      const body = new ReadableStream({ start(controller) { feed = controller; } });
+      feed.enqueue(utf8e.encode('{"model":'));
+      const url = new URL(`${ORIGIN}/router/v1/messages`);
+      const answer = h.relay(new Request(url, { method: "POST", body, duplex: "half" }), url);
+      await new Promise((r) => setTimeout(r, 50));
+      const [[id]] = [...h.pending];
+      const [ws] = h.ctx.getWebSockets();
+      h.webSocketMessage(ws, encodeFrame(FRAME.ERROR, id, JSON.stringify({ code: "pairing_required", message: "unpaired" })));
+      // The agent gives up on the body the Worker is still draining.
+      feed.error(new Error("connection reset"));
+      const refused = await answer;
+      return { status: refused.status, error: (await refused.json()).error, active: h.active };
+    });
+    expect(out).toEqual({ status: 403, error: "pairing_required", active: 0 });
+    expect(mac.frames.filter((f) => f.type === FRAME.CANCEL)).toHaveLength(0);
+  });
+
+  it("keeps a refused request's in-flight slot until the agent has its answer", async () => {
+    // The entry leaves `pending` the moment the Mac refuses it, but the agent
+    // is still uploading: the slot it took on arrival stays spoken for until
+    // relay() has answered, or the documented cap of 32 would not count these
+    // at all. The cap is one, so a second request is the whole measurement:
+    // 503 busy while the refused body is still open, served once that body has
+    // ended and the first agent has its 403.
+    const mac = await connectMac();
+    await withLimits({ inflight: 1 }, async () => {
+      const url = new URL(`${ORIGIN}/router/v1/messages`);
+      const out = await runInDurableObject(hub(), async (h) => {
+        let feed;
+        // A body the test keeps open across the awaits below: the agent has
+        // not finished sending when the Mac refuses it.
+        const body = new ReadableStream({ start(controller) { feed = controller; } });
+        feed.enqueue(utf8e.encode('{"model":'));
+        const answer = h.relay(new Request(url, { method: "POST", body, duplex: "half" }), url);
+        await new Promise((r) => setTimeout(r, 50));
+        const [[id]] = [...h.pending];
+        const [ws] = h.ctx.getWebSockets();
+        h.webSocketMessage(ws, encodeFrame(FRAME.ERROR, id, JSON.stringify({ code: "pairing_required", message: "unpaired" })));
+        const gone = h.pending.size === 0;
+        // Still uploading, so still holding the only slot there is.
+        const busy = (await h.relay(new Request(url, { method: "GET" }), url)).status;
+        // The agent finishes; the drain ends and the 403 goes out.
+        feed.close();
+        const refused = await answer;
+        const error = (await refused.json()).error;
+        // Answered, so the slot is back and this one reaches the Mac, whose
+        // silence the short head timeout in the test config turns into 504.
+        const after = (await h.relay(new Request(url, { method: "GET" }), url)).status;
+        return { gone, busy, status: refused.status, error, after, active: h.active };
+      });
+      expect(out).toEqual({ gone: true, busy: 503, status: 403, error: "pairing_required", after: 504, active: 0 });
+    });
+  });
+
+  it("keeps a streaming response's in-flight slot until its stream ends", async () => {
+    // The other half of the slot: relay() has answered with the head, but the
+    // Mac is still streaming the body, so the request is still in flight.
+    const mac = await connectMac();
+    await withLimits({ inflight: 1 }, async () => {
+      const url = new URL(`${ORIGIN}/router/v1/messages`);
+      const out = await runInDurableObject(hub(), async (h) => {
+        const answer = h.relay(new Request(url, { method: "GET" }), url);
+        await new Promise((r) => setTimeout(r, 50));
+        const [[id]] = [...h.pending];
+        const [ws] = h.ctx.getWebSockets();
+        h.webSocketMessage(ws, encodeFrame(FRAME.RESPONSE, id, JSON.stringify({ status: 200, headers: [["content-type", "text/event-stream"]] })));
+        const streaming = await answer;
+        h.webSocketMessage(ws, encodeFrame(FRAME.BODY, id, utf8e.encode("data: 1\n\n")));
+        const mid = h.active;
+        const busy = (await h.relay(new Request(url, { method: "GET" }), url)).status;
+        h.webSocketMessage(ws, encodeFrame(FRAME.END, id));
+        const text = await streaming.text();
+        const after = (await h.relay(new Request(url, { method: "GET" }), url)).status;
+        return { status: streaming.status, text, mid, busy, after, active: h.active };
+      });
+      expect(out).toEqual({ status: 200, text: "data: 1\n\n", mid: 1, busy: 503, after: 504, active: 0 });
+    });
+  });
+
+  it("fails an upload at once when the Mac drops mid-body instead of draining it", async () => {
+    // A dropped socket is not the Mac's verdict: the agent gets the retryable
+    // 502 as soon as the next chunk cannot be sent, not after its whole body.
+    await connectMac();
+    const url = new URL(`${ORIGIN}/router/v1/messages`);
+    const out = await runInDurableObject(hub(), async (h) => {
+      let feed;
+      const body = new ReadableStream({ start(controller) { feed = controller; } });
+      feed.enqueue(utf8e.encode('{"model":'));
+      const answer = h.relay(new Request(url, { method: "POST", body, duplex: "half" }), url);
+      await new Promise((r) => setTimeout(r, 50));
+      const [ws] = h.ctx.getWebSockets();
+      h.webSocketClose(ws);
+      ws.close(1000, "gone");
+      feed.enqueue(utf8e.encode('"x"}'));
+      // Well inside the test config's 400 ms upload deadline, so a drain that
+      // waits the body out cannot pass by timing out into the same 502.
+      const res = await withTimeout(answer, 150, "the 502 before the body ends");
+      // The Worker gave up on the body, so the agent's side is already closed.
+      try { feed.close(); } catch { /* cancelled */ }
+      return { status: res.status, error: (await res.json()).error };
+    });
+    expect(out).toEqual({ status: 502, error: "mac_disconnected" });
   });
 
   it("closes the socket on an unexpected text frame", async () => {

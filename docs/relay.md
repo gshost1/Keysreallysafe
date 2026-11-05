@@ -143,9 +143,12 @@ parses and before the body is buffered, then strips the header before the
 request is replayed, so the gateway, the provider and the audit log never
 see the credential. A refused request costs the Mac no memory and the gateway
 is never contacted; the Worker's answer is one of the four 403 codes in the
-error table below. An accepted pairing's scope is a list of key names (empty
-means every key), matched against the first path segment of the target, and
-its `last_used_at` is updated on each accepted request.
+error table below, and it arrives even if the agent is still sending the body:
+the Worker stops passing the body on, drains the rest and answers, rather than
+wait for a body the Mac will never buffer (the framing section below). An
+accepted pairing's scope is a list of key names (empty means every key),
+matched against the first path segment of the target, and its `last_used_at`
+is updated on each accepted request.
 
 ```sh
 keys relay pair issue "github actions" --key router --days 30
@@ -277,8 +280,22 @@ END. If the Mac cannot reach the gateway it sends ERROR with code
 `gateway_unreachable` and the Worker answers the agent with 502. After
 RESPONSE has been sent, an ERROR aborts the stream mid-body; the Worker
 fails the agent's download at once whether the stream is already being read
-or is still being set up. A RESPONSE with status 204, 205 or 304, or to a
-HEAD request, is answered without a body and needs no END. Statuses below
+or is still being set up. An ERROR sent in place of RESPONSE — a refused
+pairing, a head that did not parse, a body the Mac would not buffer — is the
+request's answer, even when it lands while the agent's body is still arriving.
+The Worker stops forwarding the body from then on and drains the rest —
+reading and discarding it — before answering with the Mac's error. It does
+not cut the agent off mid-upload, because an HTTP/1.1 client writes its whole
+body before it reads the answer and a reset connection would replace the
+Mac's verdict. The drain keeps a forwarded body's bounds: past the body limit
+or the upload deadline the Worker stops reading, as it would for any request,
+and answers with the Mac's error at that point. The body's own fate does not
+stand in for that verdict either: a drained body that aborts, or outruns its
+deadline, still gets the Mac's answer. A dropped or replaced Mac socket is not
+a verdict: an upload in progress fails at its next chunk with the retryable
+502 `mac_disconnected` rather than being drained. A RESPONSE
+with status 204, 205 or 304, or to a HEAD request, is answered without a body
+and needs no END. Statuses below
 200 are not part of the protocol (the gateway never produces one) and are
 refused as a malformed head.
 
@@ -351,6 +368,21 @@ past its window, so a slot is never held longer than the longer of the
 window and the upload deadline before its request is sent. Once sent, the
 Mac's own buffer bounds apply as for any request.
 
+A slot belongs to the request, not to its id in the Worker's table, and is
+given back only when both are done: the Worker has answered the agent, and
+the request has ended on the Mac's side (its response stream finished, or the
+Mac refused or dropped it). A streaming response therefore keeps its slot
+until its last byte. The same rule covers a request the Mac refuses before
+its body has finished arriving: the Mac's ERROR ends the request at REQUEST
+time, so the Worker stops forwarding the body and answers with the Mac's
+refusal — the 403 of a pairing code, or the 502 of `bad_request_frame`,
+`payload_too_large` and the like — instead of reading a body nobody wants to
+its deadline (408 `upload_timeout`) or relaying the agent's own abort (400
+`client_gone`). The refused body is drained rather than cut off, so the slot
+counts until the agent has that answer, and a handful of agents that keep
+sending slow bodies to a Mac that is refusing them cannot occupy more slots
+than anyone else.
+
 The window is for new requests only. A request already sent to a Mac whose
 socket then drops cannot be resumed: the gateway's call to the provider died
 with that socket, and the provider may already have started, and billed,
@@ -389,7 +421,10 @@ RELAY_OFFLINE_GRACE_MS:0`, or a `vars` entry in `Relay/wrangler.jsonc`.
 Response bodies are streamed and not capped; the idle timeout bounds a stalled
 stream. The in-flight slot is taken when the request arrives, before its body,
 which is why the upload has its own deadline: without it, 32 agents sending a
-byte a minute would hold every slot. A request waiting for the Mac keeps its
+byte a minute would hold every slot. It is given back once the agent has its
+answer and the request has ended on the Mac's side, so a response still
+streaming counts, and so does a request the Mac refused at REQUEST time while
+its refused body is being drained and the refusal answered. A request waiting for the Mac keeps its
 slot too, which is what stops the wait from growing into a queue. The Mac's
 bounds exist because the Worker
 checks no grant, so anyone who knows its URL can start uploads; whatever the

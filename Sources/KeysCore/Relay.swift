@@ -810,10 +810,12 @@ final class RelayClient: @unchecked Sendable {
                 return
             }
             // Pairing is checked after the head parses (a framing error stays a framing error)
-            // and before the id enters the buffer: a refused request costs no memory, the
-            // gateway is never contacted, and its late BODY/END frames land in the existing
-            // unknown-id path. The refusal names expired/revoked/out-of-scope but never whether
-            // a credential exists — pairing_required covers missing, malformed and unknown.
+            // and before the id enters the buffer: a refused request costs no memory and the
+            // gateway is never contacted. The Worker stops forwarding the body when this ERROR
+            // arrives, drains the rest and then answers with it; any BODY/END frames already
+            // in flight land in the existing unknown-id path and are ignored. The
+            // refusal names expired/revoked/out-of-scope but never whether a credential
+            // exists — pairing_required covers missing, malformed and unknown.
             if let pairing = options.pairing {
                 switch pairing(request.pairingCredential, request.keyName, now()) {
                 case .notRequired, .ok:
