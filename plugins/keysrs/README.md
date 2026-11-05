@@ -39,9 +39,12 @@ Codex:
 
 ```sh
 codex plugin marketplace add gshost1/Keysreallysafe
+codex plugin add keysrs@keysrs
 ```
 
-then install `keysrs` from `/plugins`. Details: the agent manual,
+Start a new session afterwards. The MCP entry assumes the app is in
+`/Applications`; if you keep it elsewhere, run `keys setup mcp` instead, which
+writes the real path. Details: the agent manual,
 [docs/agents.md](https://github.com/gshost1/Keysreallysafe/blob/main/docs/agents.md).
 
 MIT licensed. Privacy: [keysrs.com/privacy](https://keysrs.com/privacy).

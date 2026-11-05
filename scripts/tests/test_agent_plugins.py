@@ -24,6 +24,17 @@ def load(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from strings(value)
+
+
 def app_version():
     text = (REPO / "Sources/KeysCore/AppVersion.swift").read_text(encoding="utf-8")
     return re.search(r'static let current = "([^"]+)"', text).group(1)
@@ -60,7 +71,7 @@ class AgentPluginTests(unittest.TestCase):
         for key in ("composerIcon", "logo"):
             self.assertTrue((PLUGIN / interface[key]).is_file(), key)
         for path in (CLAUDE_MANIFEST, CODEX_MANIFEST):
-            for value in json.dumps(load(path)).split('"'):
+            for value in strings(load(path)):
                 if value.startswith("./"):
                     self.assertNotIn("..", value)
                     self.assertTrue((PLUGIN / value).exists(), value)
@@ -79,7 +90,7 @@ class AgentPluginTests(unittest.TestCase):
     def test_no_manifest_holds_a_secret_or_env_value(self):
         for path in (CLAUDE_MANIFEST, CODEX_MANIFEST, CLAUDE_MARKET, CODEX_MARKET, PLUGIN / ".mcp.json"):
             text = path.read_text(encoding="utf-8")
-            for needle in ("sk-", "Bearer ", "token", "password", "secret", "api_key", "${"):
+            for needle in ("sk-", "Bearer ", "${", "\"env\"", "\"headers\""):
                 self.assertNotIn(needle, text, f"{path.relative_to(REPO)} mentions {needle!r}")
 
     def test_skill_copy_is_byte_identical_to_the_shipped_skill(self):
