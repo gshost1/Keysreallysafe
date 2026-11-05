@@ -4,7 +4,7 @@
 # placeholder; scripts/prepare-release.py rewrites it (and the version line)
 # from the release DMG at release time — see docs/release.md.
 cask "keysrs" do
-  version "0.15.1"
+  version "0.16.0"
   sha256 :no
 
   # The frozen DMG name and the versioned release-download URL the app's own
