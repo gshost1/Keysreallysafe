@@ -106,16 +106,6 @@ final class CatalogDB: @unchecked Sendable {
         try exec("CREATE INDEX IF NOT EXISTS usage_events_occurred ON usage_events (occurred_at);")
         try exec("CREATE INDEX IF NOT EXISTS usage_events_model ON usage_events (model);")
         try exec("""
-            CREATE TABLE IF NOT EXISTS ingest_files (
-              path TEXT PRIMARY KEY,
-              size INTEGER NOT NULL,
-              mtime INTEGER NOT NULL,
-              byte_offset INTEGER NOT NULL,
-              tail_sig TEXT,
-              parser_json TEXT
-            );
-            """)
-        try exec("""
             CREATE TABLE IF NOT EXISTS meta (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL
@@ -294,62 +284,6 @@ final class CatalogDB: @unchecked Sendable {
         if try !tableHasColumn("wrapped_files", "companions") {
             try exec("ALTER TABLE wrapped_files ADD COLUMN companions TEXT;")
         }
-        // Cursors written before 0.2 held the last 32 raw bytes of a log as hex, which could include
-        // a fragment of a user message. Clear any that remain, and checkpoint and vacuum so neither
-        // the main file nor the WAL keeps the old page images. The vacuum is best effort.
-        try exec("UPDATE ingest_files SET tail_sig = NULL WHERE tail_sig != '' AND tail_sig NOT LIKE 'v2:%';")
-        if sqlite3_changes(db) > 0 {
-            try? exec("PRAGMA wal_checkpoint(TRUNCATE)")
-            try? exec("VACUUM")
-        }
-    }
-
-    struct IngestFileCursor: Equatable {
-        var size: Int64
-        var mtimeMs: Int64
-        var byteOffset: Int64
-        var tailSig: String? = nil
-        var parserJSON: String? = nil
-    }
-
-    func ingestFile(path: String) throws -> IngestFileCursor? {
-        try one("SELECT size, mtime, byte_offset, tail_sig, parser_json FROM ingest_files WHERE path = ?;", path) {
-            IngestFileCursor(
-                size: sqlite3_column_int64($0, 0),
-                mtimeMs: sqlite3_column_int64($0, 1),
-                byteOffset: sqlite3_column_int64($0, 2),
-                tailSig: columnText($0, 3),
-                parserJSON: columnText($0, 4)
-            )
-        }
-    }
-
-    func upsertIngestFile(
-        path: String,
-        size: Int64,
-        mtimeMs: Int64,
-        byteOffset: Int64,
-        tailSig: String? = nil,
-        parserJSON: String? = nil
-    ) throws {
-        try run("""
-            INSERT INTO ingest_files (path, size, mtime, byte_offset, tail_sig, parser_json)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(path) DO UPDATE SET
-              size = excluded.size,
-              mtime = excluded.mtime,
-              byte_offset = excluded.byte_offset,
-              tail_sig = excluded.tail_sig,
-              parser_json = excluded.parser_json;
-            """, path, size, mtimeMs, byteOffset, tailSig, parserJSON)
-    }
-
-    func lastIngestAt() throws -> String? {
-        try metaValue("last_ingest_at")
-    }
-
-    func setLastIngestAt(_ iso: String) throws {
-        try setMeta("last_ingest_at", iso)
     }
 
     func catalogVersion() throws -> Int {
@@ -1286,6 +1220,7 @@ final class CatalogDB: @unchecked Sendable {
             var assignedCount = known.count
             let pending = try query("""
                 SELECT model FROM usage_events
+                WHERE source = 'gateway'
                 GROUP BY model
                 ORDER BY MIN(occurred_at), model;
                 """) { columnText($0, 0) ?? "" }
@@ -1334,72 +1269,9 @@ final class CatalogDB: @unchecked Sendable {
         ) { _ in true } ?? false
     }
 
-    /// Whether a session has any row under `source` besides `promptId`; remote import asks it
-    /// before storing a session total next to that session's per-request rows.
-    func usageSessionHasRows(source: String, sessionId: String, excludingPromptId promptId: String) throws -> Bool {
-        try one(
-            "SELECT 1 FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id != ? LIMIT 1;",
-            source, sessionId, promptId
-        ) { _ in true } ?? false
-    }
-
-    func deleteUsage(source: String, sessionId: String, promptId: String, model: String) throws {
-        try withLock {
-            _ = try run(
-                "DELETE FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ?;",
-                source, sessionId, promptId, model
-            )
-        }
-    }
-
     /// What a reader stores for a line that carried no time. A re-import of the same row must
     /// not push a row that has a real time back to it, where it would leave every window.
     private static let epochSentinel = "1970-01-01T00:00:00Z"
-
-    enum Upsert { case inserted, updated, unchanged }
-
-    /// `insertUsage` that tells a real change from a replay of identical values, so a re-import
-    /// neither counts rows as updated nor bumps the catalog version for nothing. The epoch
-    /// sentinel is compared the way the upsert applies it: it never replaces a real time.
-    func upsertUsage(_ event: UsageEvent) throws -> Upsert {
-        try withLock {
-            let old = try one(
-                "SELECT \(Self.usageColumns) FROM usage_events WHERE source = ? AND session_id = ? AND prompt_id = ? AND model = ?;",
-                event.source, event.sessionId, event.promptId, event.model, row: event(from:)
-            )
-            guard let old else {
-                try insertUsage(event)
-                return .inserted
-            }
-            var merged = event
-            if merged.occurredAt == Self.epochSentinel && old.occurredAt != Self.epochSentinel {
-                merged.occurredAt = old.occurredAt
-            }
-            if merged == old { return .unchanged }
-            try insertUsage(event)
-            return .updated
-        }
-    }
-
-    /// Every row under `source`.
-    func usageRows(source: String) throws -> [UsageEvent] {
-        try query("SELECT \(Self.usageColumns) FROM usage_events WHERE source = ?;", source, row: event(from:))
-    }
-
-    /// Every row a session has under `source`, for remote import's residual arithmetic.
-    func usageRows(source: String, sessionId: String) throws -> [UsageEvent] {
-        try query("SELECT \(Self.usageColumns) FROM usage_events WHERE source = ? AND session_id = ?;",
-                  source, sessionId, row: event(from:))
-    }
-
-    /// The (prompt id, model) pairs among `promptIds` that `source` already holds, whatever the session.
-    func usagePromptModels(source: String, promptIds: [String]) throws -> [(prompt: String, model: String)] {
-        guard !promptIds.isEmpty else { return [] }
-        let marks = promptIds.map { _ in "?" }.joined(separator: ", ")
-        let args: [any SQLBindable] = [source] + promptIds
-        return try query("SELECT prompt_id, model FROM usage_events WHERE source = ? AND prompt_id IN (\(marks));",
-                         args) { (columnText($0, 0) ?? "", columnText($0, 1) ?? "") }
-    }
 
     private static let usageColumns = """
         source, session_id, prompt_id, model, occurred_at, provider,
@@ -1449,19 +1321,16 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
+    /// The gateway ledger between two instants. Only `gateway` rows: a catalog an older app
+    /// shared may still hold subscription-tool rows until `removeRetiredSubscriptionUsage()` runs.
     func usageEvents(
         from startISO: String,
         to endISO: String,
-        source: SourceFilter,
         key: String? = nil,
         provider: String? = nil
     ) throws -> [UsageEvent] {
-        var sql = "SELECT \(Self.usageColumns) FROM usage_events WHERE occurred_at >= ? AND occurred_at < ?"
+        var sql = "SELECT \(Self.usageColumns) FROM usage_events WHERE source = 'gateway' AND occurred_at >= ? AND occurred_at < ?"
         var args: [any SQLBindable] = [startISO, endISO]
-        if let values = source.sqlValues, !values.isEmpty {
-            sql += " AND source IN (" + values.map { _ in "?" }.joined(separator: ", ") + ")"
-            args += values as [any SQLBindable]
-        }
         if let key {
             sql += " AND key_name = ?"
             args.append(key)
@@ -1696,10 +1565,6 @@ final class CatalogDB: @unchecked Sendable {
         }
     }
 
-    func newestUsage(source: String) throws -> String? {
-        try one("SELECT MAX(occurred_at) FROM usage_events WHERE source = ?;", source) { columnText($0, 0) } ?? nil
-    }
-
     /// Drops what the plan-window meter (removed 2026-11-03) left in an upgraded catalog: the
     /// user-set Droid limits, the pinned subscriptions, the OpenRouter credit snapshots and the
     /// meter's preferences. Run at app launch, not from `migrate()`: a 0.14.x process still up
@@ -1730,6 +1595,52 @@ final class CatalogDB: @unchecked Sendable {
             }
             return true
         }
+    }
+
+    /// Drops what subscription tracking (removed 2026-11-04) left in an upgraded catalog: the
+    /// rows the Claude Code, Codex, Grok and Droid log readers and the cloud import stored, the
+    /// per-file read cursors, the last-ingest time and the chart colors of models only those
+    /// rows named. The gateway ledger and its models' colors stay. Run at app
+    /// launch and on purge, not from `migrate()`: a 0.15.x process still up beside the new CLI
+    /// reads and writes them. The deleted rows held working directories and session titles, so
+    /// a drop checkpoints and vacuums (best effort) to leave no page images behind. Reads
+    /// first, so a catalog with nothing left takes no write lock. True when it dropped something.
+    @discardableResult
+    func removeRetiredSubscriptionUsage() throws -> Bool {
+        let dropped: Bool = try withLock {
+            let rows = try one("SELECT 1 FROM usage_events WHERE source != 'gateway' LIMIT 1;") { _ in true } ?? false
+            let cursors = try one(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_files';"
+            ) { _ in true } ?? false
+            let stamp = try metaValue("last_ingest_at") != nil
+            guard rows || cursors || stamp else { return false }
+            try exec("BEGIN IMMEDIATE")
+            do {
+                try exec("DELETE FROM usage_events WHERE source != 'gateway';")
+                try exec("""
+                    DELETE FROM model_colors
+                    WHERE model NOT IN (SELECT model FROM usage_events WHERE source = 'gateway');
+                    """)
+                try exec("DROP TABLE IF EXISTS ingest_files;")
+                try exec("DELETE FROM meta WHERE key = 'last_ingest_at';")
+                // Open dashboards reload on a version change and stop showing the dropped rows.
+                try exec(
+                    "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'catalog_version';"
+                )
+                try exec("COMMIT")
+            } catch {
+                try? exec("ROLLBACK")
+                throw error
+            }
+            return true
+        }
+        if dropped {
+            try? withLock {
+                try? exec("PRAGMA wal_checkpoint(TRUNCATE)")
+                try? exec("VACUUM")
+            }
+        }
+        return dropped
     }
 
     /// Every table is emptied, meta included, so a table or meta key added later cannot be

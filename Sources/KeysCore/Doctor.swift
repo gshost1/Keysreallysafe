@@ -4,7 +4,6 @@ import Foundation
 import Security
 
 struct DoctorReport: Equatable {
-    var sources: [DoctorSource]
     var catalogPath: String
     var catalogSize: Int64?
     var keychainService: String
@@ -18,15 +17,6 @@ struct DoctorReport: Equatable {
 
     var printed: String {
         var lines: [String] = []
-        for src in sources {
-            var line =
-                "\(src.id)  \(src.path)  \(src.state)"
-            if let mtime = src.mtime { line += "  mtime=\(mtime)" }
-            if let newest = src.newestEvent { line += "  newest_event=\(newest)" }
-            line += "  strip=\(src.strip)"
-            if let why = src.emptyReason { line += "  why=\(why)" }
-            lines.append(line)
-        }
         let size = catalogSize.map(String.init) ?? "missing"
         lines.append("catalog  \(catalogPath)  size=\(size)")
         lines.append(
@@ -42,58 +32,10 @@ struct DoctorReport: Equatable {
     }
 }
 
-struct DoctorSource: Equatable {
-    var id: String
-    var path: String
-    var state: String
-    var mtime: String?
-    var newestEvent: String?
-    var strip: String
-    var emptyReason: String?
-}
-
 enum Doctor {
     static func report(
         service: KeysService, probeListener: Bool = true, probeAgent: Bool = true, install: DoctorInstall? = nil
     ) throws -> DoctorReport {
-        let grokSessions = service.grokHome.appendingPathComponent("sessions", isDirectory: true)
-        let claudeProjects = service.claudeHome.appendingPathComponent("projects", isDirectory: true)
-        let codexSessions = service.codexHome.appendingPathComponent("sessions", isDirectory: true)
-
-        var sources: [DoctorSource] = []
-        sources.append(
-            source(
-                id: "grok-sessions",
-                path: grokSessions,
-                directory: true,
-                newestEvent: try service.catalog.newestUsage(source: "grok-local"),
-                strip: "Grok weekly $",
-                emptyReason: nil
-            )
-        )
-        sources.append(
-            source(
-                id: "claude-projects",
-                path: claudeProjects,
-                directory: true,
-                newestEvent: try service.catalog.newestUsage(source: "claude-local"),
-                strip: "Claude tokens / estimate",
-                emptyReason: FileManager.default.fileExists(atPath: claudeProjects.path)
-                    ? nil
-                    : "missing file"
-            )
-        )
-        sources.append(
-            source(
-                id: "codex-sessions",
-                path: codexSessions,
-                directory: true,
-                newestEvent: try service.catalog.newestUsage(source: "codex-local"),
-                strip: "OpenAI · Codex tokens",
-                emptyReason: nil
-            )
-        )
-
         let catalogPath = service.catalog.path
         let catalogSize = fileSize(catalogPath)
 
@@ -104,7 +46,6 @@ enum Doctor {
         )) ?? []
 
         return DoctorReport(
-            sources: sources,
             catalogPath: catalogPath.path,
             catalogSize: catalogSize,
             keychainService: "keysreallysafe",
@@ -222,35 +163,6 @@ enum Doctor {
         case .none: agent = "not probed"
         }
         return "legacy  plist \(i.legacyPlistExists ? "present" : "absent")  bin \(i.legacyBinaryExists ? "present" : "absent")  agent \(agent)  remove with: keys autostart --remove"
-    }
-
-    private static func source(
-        id: String,
-        path: URL,
-        directory: Bool,
-        newestEvent: String?,
-        strip: String,
-        emptyReason: String?
-    ) -> DoctorSource {
-        let exists = directory
-            ? FileManager.default.fileExists(atPath: path.path)
-            : FileManager.default.isReadableFile(atPath: path.path)
-        return DoctorSource(
-            id: id,
-            path: path.path,
-            state: exists ? "found" : "missing",
-            mtime: exists ? isoMtime(path) : nil,
-            newestEvent: newestEvent,
-            strip: strip,
-            emptyReason: exists ? emptyReason : "missing file"
-        )
-    }
-
-    private static func isoMtime(_ url: URL) -> String? {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        else { return nil }
-        return UTC.iso(date)
     }
 
     static func fileSHA256(_ url: URL) -> String? {

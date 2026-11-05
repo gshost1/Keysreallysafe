@@ -45,19 +45,18 @@ final class PriceTableTests: XCTestCase {
 
         let (db, _) = try makeDB()
         _ = try db.insertUsage(.fixture(
-            source: "claude-local", session: "price", prompt: "only", model: "priced-only",
+            session: "price", prompt: "only", model: "priced-only", provider: "anthropic",
             input: 1_000_000, output: 0
         ))
         let report = try SpendQueries(db: db).report(
             range: .month,
             by: .model,
-            source: .claude,
             now: UTC.parse("2026-01-20T00:00:00Z")!,
             timeZone: TimeZone(secondsFromGMT: 0)!
         )
-        XCTAssertEqual(report.totals.claudeUsdEstimate ?? 0, 4, accuracy: 1e-9)
+        XCTAssertEqual(report.totals.gatewayUsdEstimate ?? 0, 4, accuracy: 1e-9)
         XCTAssertEqual(report.rows.first?.usdEstimate ?? 0, 4, accuracy: 1e-9)
-        XCTAssertTrue(report.totals.claudeUnpricedModels.isEmpty)
+        XCTAssertTrue(report.totals.gatewayUnpricedModels.isEmpty)
     }
 
     func testPrefixMatchesOnlyAtTheStartOfTheId() {

@@ -20,10 +20,10 @@ public struct KeysCLI: ParsableCommand {
             CopyCommand.self,
             RmCommand.self,
             RotateCommand.self,
-            IngestCommand.self,
-            UsageCommand.self,
             SpendCommand.self,
             RetiredStatusCommand.self,
+            RetiredIngestCommand.self,
+            RetiredUsageCommand.self,
             VersionCommand.self,
             DoctorCommand.self,
             LogCommand.self,
@@ -83,7 +83,7 @@ public enum KeysMain {
             var command = try KeysCLI.parseAsRoot()
             try command.run()
         } catch let error as AppError {
-            // Own exit codes: 2 not found, 3 presence or Keychain, 4 ingest or catalog,
+            // Own exit codes: 2 not found, 3 presence or Keychain, 4 catalog,
             // 6 no running site.
             FileHandle.standardError.write(Data((error.description + "\n").utf8))
             Darwin.exit(error.exitCode)
@@ -247,77 +247,39 @@ struct RotateCommand: ParsableCommand {
     }
 }
 
-struct IngestCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "ingest", abstract: "Scan local Grok, Claude Code, Codex, and Droid usage logs.")
+/// `keys ingest` read the Claude Code, Codex, Grok and Droid logs and `keys usage import` took
+/// cloud exports, both removed with subscription tracking on 2026-11-04. The hidden stubs keep
+/// old scripts failing with a pointer instead of an "unknown subcommand" error.
+struct RetiredIngestCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ingest",
+        abstract: "Removed: Keysrs no longer reads subscription tools' usage logs.",
+        shouldDisplay: false
+    )
 
     @Argument var source: String = "all"
 
     func run() throws {
-        guard let parsed = Ingest.Source(rawValue: source) else {
-            throw AppError.usage("ingest source must be all, grok, claude, openai, or droid")
-        }
-        let service = try AppFactory.makeService()
-        let reports = try service.ingest(parsed)
-        for (name, report) in reports {
-            print("\(name): \(report.line)")
-        }
+        throw AppError.usage(Self.message("keys ingest"))
+    }
+
+    static func message(_ command: String) -> String {
+        "\(command) was removed on 2026-11-04: Keysrs no longer reads subscription tools' usage logs; "
+            + "keys spend shows the calls made through the gateway"
     }
 }
 
-struct UsageCommand: ParsableCommand {
+struct RetiredUsageCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "usage",
-        abstract: "Bring in usage recorded off this Mac.",
-        subcommands: [UsageImportCommand.self]
-    )
-}
-
-struct UsageImportCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(
-        commandName: "import",
-        abstract: "Import a remote usage export (droid log lines, droid stream-json, Claude Code transcripts).",
-        discussion: """
-            Make the file where the usage happened with scripts/export-remote-usage.py, which keeps \
-            only usage fields. Rows are stored as droid-remote and claude-remote and charted under Cloud. \
-            Files dropped into the imports folder beside the catalog are imported on the next ingest.
-
-            Every path is attempted, in order, and each prints one line: "<name>: <counts>" or \
-            "<name>: <error>". The exit status is non-zero if any path failed (missing, not a regular \
-            file, unreadable, over the size limit) or any file stored nothing while having lines it \
-            could not read; an empty file or one with no usage lines is not a failure.
-            """
+        abstract: "Removed: Keysrs no longer imports cloud usage.",
+        shouldDisplay: false
     )
 
-    @Argument(help: "Export files to import.") var files: [String]
+    @Argument(parsing: .captureForPassthrough) var rest: [String] = []
 
     func run() throws {
-        let service = try AppFactory.makeService()
-        if UsageImportRun.run(paths: files, importer: { try service.importRemote($0) }, emit: { print($0) }) {
-            throw ExitCode.failure
-        }
-    }
-}
-
-/// The per-path loop of `keys usage import`, apart from the command so a test can drive it.
-/// A bad path never stops the ones after it; the result says whether any path failed.
-enum UsageImportRun {
-    static func run(paths: [String], importer: (URL) throws -> IngestReport, emit: (String) -> Void) -> Bool {
-        var failed = false
-        for path in paths {
-            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-            let name = url.lastPathComponent.isEmpty ? path : url.lastPathComponent
-            do {
-                let report = try importer(url)
-                emit("\(name): \(report.line)")
-                if report.parseErrors > 0 && report.handledRows == 0 { failed = true }
-            } catch {
-                // An AppError is already a sentence; anything else would print a type name.
-                let reason = (error as? AppError)?.description ?? "could not be imported"
-                emit("\(name): \(reason)")
-                failed = true
-            }
-        }
-        return failed
+        throw AppError.usage(RetiredIngestCommand.message("keys usage import"))
     }
 }
 
@@ -338,7 +300,7 @@ struct RetiredStatusCommand: ParsableCommand {
 }
 
 struct SpendCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "spend", abstract: "Show local token spend.")
+    static let configuration = CommandConfiguration(commandName: "spend", abstract: "Show the calls made through the gateway with vault keys.")
 
     @Flag var month = false
     @Flag var week = false
@@ -348,53 +310,33 @@ struct SpendCommand: ParsableCommand {
     func run() throws {
         if month && week { throw AppError.usage("choose --month or --week") }
         let range: SpendRange = week ? .week : .month
-        guard let group = SpendGroup(rawValue: by), [.model, .session, .project].contains(group) else {
-            throw AppError.usage("--by must be model, session, or project")
+        guard let group = SpendGroup(rawValue: by), [.model, .key, .provider].contains(group) else {
+            throw AppError.usage("--by must be model, key, or provider")
         }
         let service = try AppFactory.makeService()
-        let source: SourceFilter = group == .project ? .claude : .all
-        let report = try service.spend(range: range, by: group, source: source)
+        let report = try service.spend(range: range, by: group)
         if json {
             try JSONValue.printLine(report.jsonObject())
             return
         }
         printTable(report)
         print(report.caption)
-        if report.totals.claudeUsdEstimate != nil {
-            print("Claude USD is an estimate, not an invoice. Grok totals use costUsdTicks only.")
-        }
     }
 
-    /// A reported cost, else an estimate marked "est …*", else "-" for unknown.
+    /// A receipt or list-price estimate marked "est …*", else "-" for unknown.
     private func usdCell(_ row: SpendRow) -> String {
-        if let v = row.usd { return String(format: "%.4f", v) }
         if let e = row.usdEstimate { return String(format: "est %.4f*", e) }
         return "-"
     }
 
     private func printTable(_ report: SpendReport) {
-        switch report.by {
-        case .model, .hour, .key, .provider:
-            print("MODEL\tIN\tOUT\tCACHE_READ\tREASONING\tUSD\tCALLS")
-            for row in report.rows {
-                let usd = usdCell(row)
-                print("\(row.model ?? "")\t\(row.inputTokens)\t\(row.outputTokens)\t\(row.cachedReadTokens)\t\(row.reasoningTokens)\t\(usd)\t\(row.modelCalls)")
-            }
-        case .session:
-            print("SESSION\tCWD\tTITLE\tMODELS\tUSD")
-            for row in report.rows {
-                let usd = usdCell(row)
-                let models = row.models.joined(separator: ",")
-                print("\(row.sessionId ?? "")\t\(row.cwd ?? "")\t\(row.title ?? "")\t\(models)\t\(usd)")
-            }
-        case .project:
-            print("PROJECT\tCWD\tIN\tOUT\tUSD")
-            for row in report.rows {
-                let usd = usdCell(row)
-                print("\(row.project ?? "")\t\(row.cwd ?? "")\t\(row.inputTokens)\t\(row.outputTokens)\t\(usd)")
-            }
+        print("\(report.by == .model ? "MODEL" : report.by.rawValue.uppercased())\tIN\tOUT\tCACHE_READ\tREASONING\tUSD\tCALLS")
+        for row in report.rows {
+            let usd = usdCell(row)
+            print("\(row.model ?? "")\t\(row.inputTokens)\t\(row.outputTokens)\t\(row.cachedReadTokens)\t\(row.reasoningTokens)\t\(usd)\t\(row.modelCalls)")
         }
-        print(String(format: "Grok $%.4f  Claude tokens %d  OpenAI tokens %d", report.totals.grokUsd, report.totals.claudeTokens, report.totals.openaiTokens))
+        let total = report.totals.gatewayUsdEstimate.map { String(format: "est $%.4f", $0) } ?? "unknown"
+        print("Calls \(report.totals.gatewayCalls)  tokens \(report.totals.tokens)  USD \(total)")
     }
 }
 
@@ -427,7 +369,7 @@ struct VersionCommand: ParsableCommand {
 struct DoctorCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "doctor",
-        abstract: "Show local sources, catalog, Keychain, gateway, the app install, its login item, and the command line link."
+        abstract: "Show the catalog, Keychain, gateway, the app install, its login item, and the command line link."
     )
 
     func run() throws {
@@ -1021,20 +963,14 @@ struct DashboardCommand: ParsableCommand {
             try LoopbackSite.bind(service: service, preferredPort: port)
         },
         openBrowser: (URL) -> Void = { NSWorkspace.shared.open($0) },
-        serveLoop: (KeysService) -> Void = { service in
-            DispatchQueue.global(qos: .utility).async {
-                _ = try? service.ingest(.all)
-            }
-            IngestScheduler.scheduleRepeating(service: service)
-            RunLoop.main.run()
-        }
+        serveLoop: (KeysService) -> Void = { _ in RunLoop.main.run() }
     ) throws {
         if month && week { throw AppError.usage("choose --month or --week") }
         switch build {
         case .checkout:
             // The dev copy: this checkout's Web/ on the documented dev port, the
             // browser open skipped whenever KEYS_NO_OPEN asks for it, then the
-            // ingest pass, the schedulers and the server loop.
+            // server loop.
             let service = try makeService()
             let server = try bind(service, LoginItem.dashboardPort)
             let range = week ? "week" : "month"
@@ -1079,13 +1015,9 @@ struct MenubarCommand: ParsableCommand {
         let line = "Keysrs menubar  \(url.absoluteString)\n"
         FileHandle.standardOutput.write(Data(line.utf8))
         fflush(stdout)
-        DispatchQueue.global(qos: .utility).async {
-            _ = try? service.ingest(.all)
-        }
         runOnMainActor {
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
-            IngestScheduler.scheduleRepeating(service: service)
             // The explicit command always creates its requested status item,
             // independent of the app-mode menu-bar preference (off by default).
             let extra = MenubarExtra(service: service, server: server, url: url, itemVisible: true)

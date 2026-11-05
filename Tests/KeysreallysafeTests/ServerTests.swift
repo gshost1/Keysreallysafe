@@ -8,10 +8,7 @@ final class ServerTests: XCTestCase {
             catalog: db,
             secrets: ThrowingSecretStore(.keychain("add failed (-25308)")),
             presence: RecordingPresenceGate(),
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            droidHome: Fixtures.droidHome
+            clipboard: FakeClipboard()
         )
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
@@ -42,10 +39,7 @@ final class ServerTests: XCTestCase {
             catalog: db,
             secrets: ThrowingSecretStore(.authFailed),
             presence: RecordingPresenceGate(),
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            droidHome: Fixtures.droidHome
+            clipboard: FakeClipboard()
         )
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
@@ -274,8 +268,8 @@ final class ServerTests: XCTestCase {
         XCTAssertNotNil(spendObj["end_day"] as? String)
         XCTAssertNotNil(spendObj["start"] as? String)
         XCTAssertNotNil(spendObj["end"] as? String)
-        XCTAssertNotNil(spendObj["last_ingest_at"] as? String)
-        XCTAssertGreaterThan(spendObj["catalog_version"] as? Int ?? 0, 0)
+        XCTAssertNil(spendObj["last_ingest_at"], "nothing reads usage logs any more")
+        XCTAssertNotNil(spendObj["catalog_version"] as? Int)
     }
 
     func testHTMLResponsesSendCSPAndReferrerPolicy() throws {
@@ -401,9 +395,9 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(badKind.status, 400)
     }
 
-    func testOriginTokenRequiredOnPOSTIngest() throws {
+    func testOriginTokenRequiredOnPOST() throws {
         let (handler, _, _) = try makeHandler()
-        let without = handle(handler, method: "POST", path: "/api/ingest", token: false)
+        let without = handle(handler, method: "POST", path: "/api/expiring_tokens", token: false)
         XCTAssertEqual(without.status, 403)
         XCTAssertEqual(
             String(data: without.body, encoding: .utf8),
@@ -413,13 +407,13 @@ final class ServerTests: XCTestCase {
         let wrong = handle(
             handler,
             method: "POST",
-            path: "/api/ingest",
+            path: "/api/expiring_tokens",
             headers: ["x-ksf-token": "deadbeef"],
             token: false
         )
         XCTAssertEqual(wrong.status, 403)
 
-        let ok = handle(handler, method: "POST", path: "/api/ingest")
+        let ok = handle(handler, method: "POST", path: "/api/expiring_tokens")
         XCTAssertEqual(ok.status, 200)
     }
 
@@ -441,12 +435,13 @@ final class ServerTests: XCTestCase {
             inputTokens: nil, outputTokens: nil, cacheReadTokens: nil, cacheWriteTokens: nil,
             status: 200, durationMs: 9, requestId: "systemone-1"
         ))
-        _ = try service.catalog.insertUsage(grokEvent(at: day, usd: 3, prompt: "local-only"))
+        // A row a pre-0.16 log reader stored must never reach the ledger.
+        _ = try service.catalog.insertUsage(.fixture(source: "grok-local", prompt: "local-only", at: day, key: nil, ticks: 3))
 
         let all = handle(handler, method: "GET", path: "/api/spend", query: ["range": "month", "source": "keys"])
         XCTAssertEqual(all.status, 200)
         let obj = try JSONSerialization.jsonObject(with: all.body) as! [String: Any]
-        XCTAssertEqual(obj["source"] as? String, "keys")
+        XCTAssertNil(obj["source"], "there is one ledger, so the report names no source")
         let rows = obj["rows"] as! [[String: Any]]
         XCTAssertEqual(Set(rows.compactMap { $0["key"] as? String }), ["alpha", "systemone"])
         XCTAssertFalse(rows.contains { ($0["model"] as? String) == "grok-4.6-build" }, "local rows stay out")
@@ -500,11 +495,11 @@ final class ServerTests: XCTestCase {
             "a key of one provider under another provider is an empty intersection, not an error"
         )
 
-        let wrongScope = handle(
+        let retired = handle(
             handler, method: "GET", path: "/api/spend",
-            query: ["range": "month", "source": "all", "provider": "typesafe"]
+            query: ["range": "month", "source": "claude", "provider": "typesafe"]
         )
-        XCTAssertEqual(wrongScope.status, 400, "a provider means nothing outside the gateway ledger")
+        XCTAssertEqual(retired.status, 400, "a subscription tool's source is gone, not an empty view")
     }
 
     func testSpendTodayByHourAndInvalidBy() throws {
@@ -522,14 +517,14 @@ final class ServerTests: XCTestCase {
         )
 
         let report = try service.spend(
-            range: .today, by: .hour, source: .grok, now: now, timeZone: tz
+            range: .today, by: .hour, now: now, timeZone: tz
         )
         XCTAssertEqual(report.points.map(\.hour), ["2026-09-04T10:00", "2026-09-04T14:00"])
         XCTAssertEqual(report.points.last?.hour, "2026-09-04T14:00")
-        XCTAssertEqual(report.points.last?.usd ?? 0, 2, accuracy: 1e-9)
+        XCTAssertEqual(report.points.last?.usdEstimate ?? 0, 2, accuracy: 1e-9)
 
         let daily = try service.spend(
-            range: .today, by: .model, source: .grok, now: now, timeZone: tz
+            range: .today, by: .model, now: now, timeZone: tz
         )
         XCTAssertEqual(Set(daily.daily.map(\.day)), ["2026-09-04"])
         XCTAssertTrue(daily.points.isEmpty)
@@ -553,16 +548,11 @@ final class ServerTests: XCTestCase {
 
     func testGetModelsAssignsStableSlots() throws {
         let (db, dir) = try makeDB()
-        let empty = try TempDir.make()
         let service = KeysService(
             catalog: db,
             secrets: MemorySecretStore(),
             presence: RecordingPresenceGate(),
-            clipboard: FakeClipboard(),
-            grokHome: empty,
-            claudeHome: empty,
-            codexHome: empty,
-            droidHome: empty
+            clipboard: FakeClipboard()
         )
         let web = dir.appendingPathComponent("Web", isDirectory: true)
         try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
@@ -570,7 +560,6 @@ final class ServerTests: XCTestCase {
         _ = try service.catalog.insertUsage(grokEvent(at: "2026-09-01T12:00:00Z", usd: 1, prompt: "a", model: "model-a"))
         _ = try service.catalog.insertUsage(grokEvent(at: "2026-09-01T13:00:00Z", usd: 1, prompt: "b", model: "model-b"))
 
-        _ = try service.ingest(.all)
         let first = handle(handler, method: "GET", path: "/api/models")
         XCTAssertEqual(first.status, 200)
         let rows1 = try JSONSerialization.jsonObject(with: first.body) as! [[String: Any]]
@@ -579,14 +568,12 @@ final class ServerTests: XCTestCase {
         XCTAssertNotNil(rows1[0]["priced"])
         XCTAssertTrue(rows1[0].keys.contains("input_per_mtok"))
 
-        _ = try service.ingest(.all)
         let second = handle(handler, method: "GET", path: "/api/models")
         let rows2 = try JSONSerialization.jsonObject(with: second.body) as! [[String: Any]]
         XCTAssertEqual(rows2.map { $0["model"] as? String }, ["model-a", "model-b"])
         XCTAssertEqual(rows2.map { $0["slot"] as? Int }, [0, 1])
 
         _ = try service.catalog.insertUsage(grokEvent(at: "2026-09-01T14:00:00Z", usd: 1, prompt: "c", model: "model-c"))
-        _ = try service.ingest(.all)
         let third = handle(handler, method: "GET", path: "/api/models")
         let rows3 = try JSONSerialization.jsonObject(with: third.body) as! [[String: Any]]
         let c = try XCTUnwrap(rows3.first { $0["model"] as? String == "model-c" })

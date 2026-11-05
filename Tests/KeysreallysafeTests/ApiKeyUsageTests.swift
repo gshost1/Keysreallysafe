@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
-/// `source=keys` is the gateway's own ledger: every call this Mac routed through a vault key,
+/// The spend report is the gateway's own ledger: every call this Mac routed through a vault key,
 /// named by key, counted as requests, and honest about a cost the provider never reported.
 /// Every secret and every row below is invented here; nothing reaches a provider.
 final class ApiKeyUsageTests: XCTestCase {
@@ -11,14 +11,13 @@ final class ApiKeyUsageTests: XCTestCase {
 
     private func report(
         _ db: CatalogDB,
-        source: SourceFilter = .keys,
         by: SpendGroup = .model,
         range: SpendRange = .month,
         key: String? = nil,
         provider: String? = nil
     ) throws -> SpendReport {
         try SpendQueries(db: db).report(
-            range: range, by: by, source: source, now: now, timeZone: utc, key: key, provider: provider
+            range: range, by: by, now: now, timeZone: utc, key: key, provider: provider
         )
     }
 
@@ -46,62 +45,26 @@ final class ApiKeyUsageTests: XCTestCase {
         )
     }
 
-    private let claudeLine = #"{"type":"assistant","sessionId":"same-call","requestId":"req_shared","timestamp":"2026-09-05T12:00:00Z","message":{"id":"msg-1","model":"claude-sonnet-5","usage":{"input_tokens":100,"output_tokens":50}}}"#
-
-    /// The gateway ledger is complete on its own terms: a call a local log also recorded is
-    /// still a call this key paid for, so `source=keys` keeps it. The local scope still drops
-    /// that copy, which is what stops one upstream call being counted twice there.
-    func testKeysSourceKeepsCorrelatedCallsThatTheLocalScopeDrops() throws {
+    /// Every call is a call this key paid for, and a proxy that repeats request ids must not
+    /// collapse two calls into one.
+    func testEveryGatewayCallCountsEvenWithARepeatedRequestId() throws {
         let (db, _) = try makeDB()
         let service = try service(db, keys: [("alpha", "anthropic")])
-        _ = try db.insertUsage(try XCTUnwrap(ClaudeIngest.parseLine(claudeLine)))
         try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "req_shared"))
         try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "req_other"))
+        try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "req_other"))
+        // The same call seen with no request id is still one more call.
+        try service.recordGatewayUsage(gatewayRow(key: "alpha"))
 
         let keys = try report(db)
-        XCTAssertEqual(keys.totals.gatewayCalls, 2, "the gateway ledger keeps the correlated call")
-        XCTAssertEqual(keys.totals.gatewayCorrelatedCalls, 0)
-        XCTAssertEqual(keys.totals.gatewayTokens, 300)
-        XCTAssertEqual(keys.rows.reduce(0) { $0 + $1.modelCalls }, 2)
+        XCTAssertEqual(keys.totals.gatewayCalls, 4)
+        XCTAssertEqual(keys.totals.gatewayTokens, 600)
+        XCTAssertEqual(keys.totals.tokens, 600, "the headline is the gateway ledger")
+        XCTAssertEqual(keys.rows.reduce(0) { $0 + $1.modelCalls }, 4)
         XCTAssertTrue(keys.rows.allSatisfy { $0.key == "alpha" }, "every row names the key it went through")
-
-        let local = try report(db, source: .all)
-        XCTAssertEqual(local.totals.gatewayCorrelatedCalls, 1, "the local scope still drops the duplicate")
-        XCTAssertEqual(local.totals.gatewayCalls, 1)
-        XCTAssertEqual(local.totals.tokens, 150, "gateway tokens must not enter the local headline")
-        XCTAssertTrue(local.rows.allSatisfy { $0.key == nil }, "an unkeyed local report charts local rows only")
-        XCTAssertEqual(local.rows.reduce(0) { $0 + $1.inputTokens + $1.outputTokens }, local.totals.tokens, "rows agree with the headline")
-        XCTAssertEqual(local.daily.reduce(0) { $0 + $1.tokens }, local.totals.tokens)
-
-        // A keyed report is the gateway's own ledger even from the local scope, and a proxy that
-        // repeats request ids must not collapse two calls into one.
-        try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "req_other"))
-        let keyed = try report(db, source: .all, key: "alpha")
-        XCTAssertEqual(keyed.totals.gatewayCalls, 3)
-        XCTAssertEqual(keyed.totals.gatewayCorrelatedCalls, 0)
-        XCTAssertEqual(keyed.totals.gatewayTokens, 450)
-        XCTAssertEqual(keyed.rows.first?.key, "alpha", "a keyed report is the gateway ledger and still charts")
-    }
-
-    /// Switching to the API keys source must not quietly add the gateway to the local ledger,
-    /// nor drop local usage from it.
-    func testLocalScopeIsUnchangedByTheKeysSource() throws {
-        let (db, _) = try makeDB()
-        let service = try service(db, keys: [("alpha", "anthropic")])
-        _ = try db.insertUsage(try XCTUnwrap(ClaudeIngest.parseLine(claudeLine)))
-        let before = try report(db, source: .all)
-        try service.recordGatewayUsage(gatewayRow(key: "alpha", requestId: "req_unrelated"))
-        // The same call seen with no request id cannot be proved a duplicate, so it never correlates.
-        try service.recordGatewayUsage(gatewayRow(key: "alpha"))
-        let after = try report(db, source: .all)
-        XCTAssertEqual(after.totals.tokens, before.totals.tokens)
-        XCTAssertEqual(after.totals.usdEstimate ?? -1, before.totals.usdEstimate ?? -1, accuracy: 1e-12)
-        XCTAssertEqual(after.rows.count, before.rows.count, "a gateway call adds no row to the local ledger")
-        XCTAssertEqual(after.totals.gatewayCalls, 2)
-        XCTAssertEqual(after.totals.gatewayCorrelatedCalls, 0)
-        XCTAssertEqual(after.totals.gatewayTokens, 300)
-        XCTAssertNotNil(after.totals.gatewayUsdEstimate)
-        XCTAssertEqual((after.jsonObject()["totals"] as? [String: Any])?["gateway_calls"] as? Int, 2)
+        XCTAssertEqual(keys.daily.reduce(0) { $0 + $1.tokens }, keys.totals.tokens, "buckets agree with the headline")
+        XCTAssertNotNil(keys.totals.gatewayUsdEstimate)
+        XCTAssertEqual((keys.jsonObject()["totals"] as? [String: Any])?["gateway_calls"] as? Int, 4)
     }
 
     /// A key's month is "none" before any call, "unknown" (null, never $0) when no call could be
@@ -130,7 +93,7 @@ final class ApiKeyUsageTests: XCTestCase {
         XCTAssertEqual(partial.kind, "partial")
         XCTAssertNotNil(partial.usd)
         XCTAssertEqual(partial.calls, 2)
-        let totals = try report(db, source: .all, key: "probe").totals
+        let totals = try report(db, key: "probe").totals
         XCTAssertEqual(totals.gatewayUnpricedCalls, 1)
         XCTAssertEqual(totals.gatewayUnpricedTokens, 150)
         XCTAssertEqual(totals.gatewayUnpricedModels, ["unknown"])
@@ -172,7 +135,7 @@ final class ApiKeyUsageTests: XCTestCase {
             row.via = "relay"
             try service.recordGatewayUsage(row)
         }
-        let events = try db.usageEvents(from: "2026-09-01T00:00:00Z", to: "2026-10-01T00:00:00Z", source: .keys)
+        let events = try db.usageEvents(from: "2026-09-01T00:00:00Z", to: "2026-10-01T00:00:00Z")
         XCTAssertEqual(events.map(\.sessionId), ["gw-relay:swarm", "gw-relay:swarm"])
         XCTAssertEqual(events.map(\.keyName), ["swarm", "swarm"])
 
@@ -298,8 +261,8 @@ final class ApiKeyUsageTests: XCTestCase {
     func testNoGatewayCallsIsAnEmptyLedgerNotAZeroOne() throws {
         let (db, _) = try makeDB()
         let service = try service(db, keys: [("idle", "anthropic")])
-        // A local session in the same range must not leak into the API keys view.
-        _ = try db.insertUsage(try XCTUnwrap(ClaudeIngest.parseLine(claudeLine)))
+        // A row an older log reader left in the same range must not leak into the ledger.
+        _ = try db.insertUsage(.fixture(source: "claude-local", at: "2026-09-05T12:00:00Z", provider: "anthropic", key: nil))
         _ = service
 
         let keys = try report(db)
@@ -309,7 +272,7 @@ final class ApiKeyUsageTests: XCTestCase {
         XCTAssertNil(keys.totals.gatewayUsdEstimate)
         XCTAssertEqual(keys.totals.gatewayTokens, 0)
         let totals = keys.jsonObject()["totals"] as! [String: Any]
-        XCTAssertTrue(totals["usd_estimate"] is NSNull)
+        XCTAssertTrue(totals["gateway_usd_estimate"] is NSNull)
 
         let filtered = try report(db, key: "idle")
         XCTAssertTrue(filtered.rows.isEmpty)
@@ -433,18 +396,6 @@ final class ApiKeyUsageTests: XCTestCase {
 
         XCTAssertEqual(try report(db, provider: "typesafe").totals.gatewayCalls, 1)
         XCTAssertEqual(try report(db, provider: "vercel-ai-gateway").totals.gatewayCalls, 1)
-    }
-
-    /// The provider column belongs to gateway rows. Local log rows must not acquire one, or a
-    /// model's local row would split in the existing All view.
-    func testLocalRowsCarryNoProviderAndAreNotSplitByIt() throws {
-        let (db, _) = try makeDB()
-        _ = try db.insertUsage(try XCTUnwrap(ClaudeIngest.parseLine(claudeLine)))
-        let local = try report(db, source: .all)
-        XCTAssertFalse(local.rows.isEmpty)
-        XCTAssertTrue(local.rows.allSatisfy { $0.provider == nil })
-        let json = String(data: try JSONValue.data(local.jsonObject()), encoding: .utf8)!
-        XCTAssertFalse(json.contains("\"provider\""), "a local row has no provider to name")
     }
 
     /// The wire shape the chart reads for two facts it cannot guess: a call the provider priced at

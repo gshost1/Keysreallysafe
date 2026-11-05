@@ -666,11 +666,7 @@ final class RelayPairingTests: XCTestCase {
             catalog: rig.db,
             secrets: ThrowingSecretStore(.keychain("pairing verification touched the secret store")),
             presence: gate,
-            clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome,
-            droidHome: Fixtures.droidHome
+            clipboard: FakeClipboard()
         )
         let socket = FakeRelaySocket()
         let client = makeClient(port: rig.gateway.boundPort, dialer: FakeRelayDialer([.success(socket)]), pairing: verifierService.relayPairingVerifier(), clock: clock)

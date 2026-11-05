@@ -253,10 +253,6 @@ enum Paths {
         env("GROK_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
     }
 
-    static var claudeHome: URL {
-        env("CLAUDE_CONFIG_DIR") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
-    }
-
     static var codexHome: URL {
         env("CODEX_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     }

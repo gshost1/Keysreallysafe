@@ -42,8 +42,6 @@ final class AppActivationPolicyTests: XCTestCase {
         XCTAssertEqual(rig.appliedPolicies, [.accessory], "launch applies accessory, nothing more")
         XCTAssertFalse(rig.window.orderedFront, "no dashboard window is shown at launch")
         XCTAssertFalse(rig.welcomeShown, "the first-run welcome is deferred, not raised over the headless launch")
-        XCTAssertTrue(rig.ingestScheduled, "the ingest scheduler starts although the window is hidden")
-        XCTAssertTrue(rig.initialIngestQueued)
         // The headless defaults are in force after the launch migration.
         XCTAssertFalse(rig.preferences.menubarItem)
         XCTAssertTrue(rig.preferences.updateChecks, "Install updates automatically is on by default")
@@ -240,8 +238,6 @@ final class HeadlessAppRig {
     private let quitCounter: CallCounter
     var extra: MenubarExtra!
     var appliedPolicies: [AppActivation.Policy] = []
-    var ingestScheduled = false
-    var initialIngestQueued = false
     var welcomeShown = false
     /// The notification notifier a launch may start; nil (the default) proves a
     /// headless launch raises no notification work at all.
@@ -311,8 +307,6 @@ final class HeadlessAppRig {
                 MenubarItemController(workspaceCenter: itemCenter, appCenter: itemCenter,
                                       recoveryDelay: .milliseconds(20), defaults: MemoryDefaults())
             },
-            scheduleIngest: { [weak self] _ in self?.ingestScheduled = true },
-            ingestInitially: { [weak self] _ in self?.initialIngestQueued = true },
             notifications: notifier,
             startNotifications: { [weak self] _, _ in self?.notificationsStarted = true },
             latestRelease: latestRelease,

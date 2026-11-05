@@ -103,10 +103,6 @@ final class MCPGrantTests: XCTestCase {
             secrets: secrets,
             presence: gate,
             clipboard: FakeClipboard(),
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome,
-            droidHome: Fixtures.droidHome,
             runner: SpawnCommandRunner(restoresHandlers: true),
             relaySecrets: relaySecrets
         )
@@ -1550,8 +1546,8 @@ final class MCPGrantTests: XCTestCase {
         let reopened = try CatalogDB(path: site.db.path)
         let restarted = KeysService(
             catalog: reopened, secrets: MemorySecretStore(), presence: BlockingPresenceGate(),
-            clipboard: FakeClipboard(), grokHome: Fixtures.grokHome, claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome, droidHome: Fixtures.droidHome,
+            clipboard: FakeClipboard(),
+           
             runner: SpawnCommandRunner(restoresHandlers: true),
             relaySecrets: MemorySecretStore()
         )

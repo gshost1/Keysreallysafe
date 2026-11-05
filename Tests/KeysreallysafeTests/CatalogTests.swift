@@ -93,7 +93,7 @@ final class CatalogTests: XCTestCase {
         let reasoning = 3_000_000_004
         XCTAssertGreaterThan(input, 2_147_483_647)
         let event = UsageEvent(
-            source: "grok-local", sessionId: "big", promptId: "p1", model: "grok-4.6-build",
+            source: "gateway", sessionId: "gw:big", promptId: "p1", model: "grok-4.6-build",
             occurredAt: "2026-01-15T12:00:00Z", provider: "xai", cwd: nil, sessionTitle: nil,
             modelCalls: 1,
             inputTokens: input, outputTokens: output, cachedReadTokens: cachedRead,
@@ -101,7 +101,7 @@ final class CatalogTests: XCTestCase {
         )
         try db.insertUsage(event)
 
-        let stored = try db.allUsageEvents()
+        let stored = try db.gatewayEvents()
         XCTAssertEqual(stored.count, 1)
         let got = stored[0]
         XCTAssertEqual(got.inputTokens, input)
@@ -111,7 +111,7 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(got.reasoningTokens, reasoning)
 
         let report = try SpendQueries(db: db).report(
-            range: .month, by: .model, source: .grok,
+            range: .month, by: .model,
             now: UTC.parse("2026-01-20T00:00:00Z")!, timeZone: TimeZone(secondsFromGMT: 0)!
         )
         XCTAssertEqual(report.totals.inputTokens, input)
@@ -210,5 +210,48 @@ final class RetiredPlanMeterMigrationTests: XCTestCase {
         XCTAssertFalse(try db.removeRetiredPlanMeter())
         try db.wipeData()
         XCTAssertNil(try db.metaValue(AppPreferences.welcomeKey))
+    }
+
+    /// A 0.15-shaped catalog: rows from the four log readers and the cloud import beside the
+    /// gateway ledger, the per-file cursors, the last-ingest stamp and colors for both kinds of
+    /// model. Opening it changes nothing (a 0.15 process may still be using it); the launch
+    /// cleanup keeps only the gateway's rows and colors, and a second run is a no-op.
+    func testLaunchRetiresSubscriptionUsageAndKeepsTheGatewayLedger() throws {
+        let dir = try TempDir.make()
+        let path = dir.appendingPathComponent("catalog.db")
+        do {
+            let db = try CatalogDB(path: path)
+            for source in ["claude-local", "codex-local", "grok-local", "droid-local", "claude-remote", "droid-remote"] {
+                try db.insertUsage(.fixture(source: source, session: source, prompt: "p", model: "sub-\(source)", key: nil))
+            }
+            try db.insertUsage(.fixture(prompt: "gw-1", model: "gw-model", key: "alpha"))
+            try db.setMeta("last_ingest_at", "2026-10-01T00:00:00Z")
+            try db.setMeta(AppPreferences.welcomeKey, "2026-10-01T00:00:00Z")
+        }
+        try rawExec(path, """
+            INSERT INTO model_colors (model, slot) VALUES ('sub-claude-local', 0), ('gw-model', 1), ('sub-grok-local', 2);
+            CREATE TABLE ingest_files (path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
+              byte_offset INTEGER NOT NULL, tail_sig TEXT, parser_json TEXT);
+            INSERT INTO ingest_files VALUES ('/Users/someone/.claude/projects/p/s.jsonl', 10, 1, 10, 'v2:00', NULL);
+            """)
+
+        let db = try CatalogDB(path: path)
+        XCTAssertTrue(tableNames(path).contains("ingest_files"), "open alone leaves the cursors")
+        XCTAssertTrue(try db.usageExists(source: "claude-local", sessionId: "claude-local", promptId: "p", model: "sub-claude-local"))
+        let before = try db.catalogVersion()
+
+        XCTAssertTrue(try db.removeRetiredSubscriptionUsage())
+        XCTAssertFalse(tableNames(path).contains("ingest_files"))
+        for source in ["claude-local", "codex-local", "grok-local", "droid-local", "claude-remote", "droid-remote"] {
+            XCTAssertFalse(try db.usageExists(source: source, sessionId: source, promptId: "p", model: "sub-\(source)"), source)
+        }
+        XCTAssertEqual(try db.gatewayEvents().map(\.promptId), ["gw-1"], "the gateway ledger stays")
+        XCTAssertEqual(try db.listModelColors().map(\.model), ["gw-model"], "colors of log-only models go")
+        XCTAssertNil(try db.metaValue("last_ingest_at"))
+        XCTAssertEqual(try db.metaValue(AppPreferences.welcomeKey), "2026-10-01T00:00:00Z", "other meta survives")
+        XCTAssertEqual(try db.catalogVersion(), before + 1, "open dashboards reload")
+
+        XCTAssertFalse(try db.removeRetiredSubscriptionUsage(), "the second launch finds nothing to do")
+        XCTAssertEqual(try db.catalogVersion(), before + 1)
     }
 }
