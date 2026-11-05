@@ -53,7 +53,13 @@ document.addEventListener("keydown", function (e) {
 });
 
 // The copy icon swaps to a check and a short tag for 1.6 s; a status line
-// says it for screen readers.
+// says it for screen readers. Each button owns one timer: a second copy
+// restarts that confirmation instead of leaving the first timer to end it
+// early. The status line is shared by every button, so its clearing is
+// guarded by the copy that wrote it, not by the label: two buttons say
+// "Copied" too, and an older timer must not wipe a newer confirmation.
+var copyTimers = new WeakMap();
+var copySaidBy = null;
 document.addEventListener("click", function (e) {
   var b = e.target.closest("[data-copy]"); if (!b) return;
   var el = document.getElementById(b.getAttribute("data-copy")); if (!el) return;
@@ -61,11 +67,12 @@ document.addEventListener("click", function (e) {
   var status = document.getElementById("copy-status");
   function done(label) {
     b.classList.add("copied"); b.setAttribute("data-tip", label); b.setAttribute("aria-label", label);
-    if (status) status.textContent = label;
-    setTimeout(function () {
+    if (status) { status.textContent = label; copySaidBy = b; }
+    clearTimeout(copyTimers.get(b));
+    copyTimers.set(b, setTimeout(function () {
       b.classList.remove("copied"); b.removeAttribute("data-tip"); b.setAttribute("aria-label", "Copy command");
-      if (status) status.textContent = "";
-    }, 1600);
+      if (status && copySaidBy === b) { status.textContent = ""; copySaidBy = null; }
+    }, 1600));
   }
   // Without the clipboard API (old browsers, insecure origins) select the
   // text so one more keystroke copies it.
