@@ -115,6 +115,9 @@ enum AppRuntime {
         }
         try? KeysService.removeRetiredUsageImports(catalogDirectory: service.catalog.path.deletingLastPathComponent())
         UserDefaults.standard.removeObject(forKey: "menubar.tab")
+        // Held client tokens that expired while the app was closed leave the Keychain. Off the
+        // launch path: a slow Keychain delete must not hold up the site and the gateway.
+        DispatchQueue.global(qos: .utility).async { service.sweepHeldTokens() }
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.
         service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
         // The app owns notifications: the authorization ask and the local-state poll

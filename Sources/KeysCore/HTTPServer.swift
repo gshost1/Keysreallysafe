@@ -297,6 +297,11 @@ final class APIHandler: @unchecked Sendable {
                 return try mcpRevokeAll(request)
             case ("POST", "/api/mcp/revoke_project"):
                 return try mcpRevokeProject(request)
+            // A held client token handed back to the CLI (`keys client token`). POST so it
+            // inherits the origin-token gate: a GET under /api/ is not gated, and this answer
+            // carries a token.
+            case ("POST", "/api/clients/held/token"):
+                return try heldClientToken(request)
             case ("GET", "/api/profiles"):
                 return try profilesList()
             case ("POST", "/api/profiles"):
@@ -777,14 +782,41 @@ final class APIHandler: @unchecked Sendable {
         // `keys client issue` asks for the gateway too, under the same prompt; the dashboard's
         // own Issue button leaves the toggle to the user.
         let enable = JSONValue.bool(obj["gateway"]) ?? false
+        let hold = JSONValue.bool(obj["hold"]) ?? false
         let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "dashboard"
         let issued = try service.issueGatewayClient(
             name: name, label: label, days: days, methods: methods, pathPrefix: prefix, caller: caller,
-            enableGateway: enable
+            enableGateway: enable, hold: hold
         )
-        return HTTPResponse.json(201, [
-            "token": issued.token, "client": issued.client.jsonObject(), "gateway_enabled": service.isGatewayEnabled(name),
-        ])
+        var out: [String: Any] = [
+            "client": issued.client.jsonObject(), "gateway_enabled": service.isGatewayEnabled(name),
+        ]
+        // A held token stays in the app and is fetched when it is used; it does not travel now.
+        if !hold { out["token"] = issued.token }
+        return HTTPResponse.json(201, out)
+    }
+
+    /// POST /api/clients/held/token — the newest held client under `label`, with its token,
+    /// or 404 naming why not (`not_found`, `expired`, `revoked`). `gateway_on` says whether
+    /// the app has the key loaded: after a restart the token is valid but every call is
+    /// refused until `keys gateway on <key>`.
+    private func heldClientToken(_ request: HTTPRequest) throws -> HTTPResponse {
+        let obj = try jsonBody(request)
+        guard let label = JSONValue.string(obj["label"]) else {
+            return HTTPResponse.json(400, ["error": "label is required"])
+        }
+        let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "cli"
+        switch try service.heldClientToken(label: label, caller: caller) {
+        case .unavailable(let reason):
+            return HTTPResponse.json(404, ["error": "not_found", "detail": reason])
+        case .active(let token, let client):
+            return HTTPResponse.json(200, [
+                "token": token,
+                "client": client.jsonObject(),
+                "base_url": "http://127.0.0.1:\(GatewayListener.port)/\(client.keyName)",
+                "gateway_on": service.isGatewayEnabled(client.keyName),
+            ])
+        }
     }
 
     /// The values arrive here only to be compared with the vault and, for the ones the user

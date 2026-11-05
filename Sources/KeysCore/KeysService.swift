@@ -63,6 +63,9 @@ final class KeysService: @unchecked Sendable {
     /// The relay secret's own store (Keychain service `keysreallysafe.relay` in the app, memory
     /// in tests). nil means this process has no relay storage, and the relay commands say so.
     let relaySecrets: (any SecretStore)?
+    /// Held client tokens (Keychain service `keysreallysafe.held` in the app, memory in tests),
+    /// one item per held client, named `client-<id>`. nil means this process cannot hold one.
+    let heldTokens: (any SecretStore)?
     /// The relay this process runs when it is turned on from the menu, the dashboard or
     /// `keys relay on`. AppRuntime swaps in one that logs to menubar.log before the site serves.
     var relayHost = RelayHost()
@@ -98,11 +101,13 @@ final class KeysService: @unchecked Sendable {
         clipboard: any ClipboardClient,
         runner: any CommandRunner = SpawnCommandRunner(),
         relaySecrets: (any SecretStore)? = nil,
+        heldTokens: (any SecretStore)? = nil,
         presencePrompts: InFlightWork = InFlightWork()
     ) {
         self.catalog = catalog
         self.secrets = secrets
         self.relaySecrets = relaySecrets
+        self.heldTokens = heldTokens
         self.presence = presence
         self.presencePrompts = presencePrompts
         self.clipboard = clipboard
@@ -1039,9 +1044,16 @@ final class KeysService: @unchecked Sendable {
         project: String? = nil,
         caller: String = "dashboard",
         enableGateway: Bool = false,
+        hold: Bool = false,
         now: Date = Date()
     ) throws -> (token: String, client: GatewayClient) {
         let row = try existingRow(name)
+        if hold {
+            // The label is the lookup handle, so it must be one exact, path-safe spelling.
+            try Self.validateHeldLabel(label)
+            guard heldTokens != nil else { throw AppError.usage("this process cannot hold a client token; run it with Keysrs open") }
+            guard project == nil else { throw AppError.usage("a project token cannot be held") }
+        }
         let ttlDays = try GatewayClientToken.validateDays(days)
         let allowed = try GatewayClientToken.validateMethods(methods ?? GatewayClientToken.defaultMethods)
         let prefix = try GatewayClientToken.validatePathPrefix(pathPrefix)
@@ -1054,14 +1066,120 @@ final class KeysService: @unchecked Sendable {
         guard let host = Self.effectiveHost(row) else {
             throw AppError.usage("set a gateway host for \(name) first (this provider has one host per account)")
         }
-        try presence.require(reason: "issue gateway client for \(name) at \(host)")
+        // A held token is handed back later without asking again, so this one prompt says so.
+        try presence.require(reason: hold
+            ? "issue gateway client for \(name) at \(host), held for \(label) for \(ttlDays) days"
+            : "issue gateway client for \(name) at \(host)")
         if enableGateway {
             _ = try setGateway(name: name, enabled: true, host: nil, caller: caller, presenceChecked: true)
         }
-        return try mintGatewayClient(
+        let issued = try mintGatewayClient(
             name: name, label: label, days: ttlDays, methods: allowed, pathPrefix: prefix, project: project,
-            host: host, caller: caller, now: now
+            host: host, caller: caller, now: now, held: hold
         )
+        if hold { try storeHeldToken(issued, caller: caller) }
+        return issued
+    }
+
+    // MARK: held client tokens
+
+    static let heldKeychainService = "keysreallysafe.held"
+
+    static func heldAccount(_ id: Int64) -> String { "client-\(id)" }
+
+    /// Labels are stored cut to 80 characters, so a longer held label could never be found again.
+    static func validateHeldLabel(_ label: String) throws {
+        guard label.count <= 80, (try? KeyName.validate(label)) != nil else {
+            throw AppError.usage("a held token needs a --label like hermes ([a-z0-9][a-z0-9._-]*, at most 80 characters)")
+        }
+    }
+
+    enum HeldTokenLookup: Equatable {
+        case active(token: String, client: GatewayClient)
+        /// `not_found`, `expired` or `revoked`: why the newest held client under the label cannot answer.
+        case unavailable(String)
+    }
+
+    /// Keeps the just-minted token under the app's held service, then retires every earlier
+    /// held client with the same label, so re-running setup replaces rather than accumulates.
+    /// A token the Keychain would not take is revoked at once: an unheld `--hold` token would
+    /// be a live capability nobody can ever read back.
+    func storeHeldToken(_ issued: (token: String, client: GatewayClient), caller: String) throws {
+        guard let store = heldTokens else { throw AppError.usage("this process cannot hold a client token") }
+        do {
+            // A leftover item under this id (a catalog recreated beside an old Keychain) is
+            // not this client's token; it must not make a just-approved issue fail.
+            forgetHeldToken(issued.client.id)
+            try store.add(name: Self.heldAccount(issued.client.id), secret: issued.token)
+        } catch {
+            _ = try? catalog.revokeGatewayClient(id: issued.client.id, keyName: issued.client.keyName, at: UTC.iso(Date()))
+            try? recordKeyEvent(name: issued.client.keyName, action: "client_revoke", caller: caller, detail: "#\(issued.client.id) not held")
+            throw error
+        }
+        // Only older rows: two issues racing under one label must not revoke each other.
+        for old in try catalog.heldGatewayClients(label: issued.client.label) where old.id < issued.client.id {
+            if old.revokedAt == nil,
+               try catalog.revokeGatewayClient(id: old.id, keyName: old.keyName, at: UTC.iso(Date())) {
+                try? recordKeyEvent(name: old.keyName, action: "client_revoke", caller: caller, detail: "#\(old.id) replaced by #\(issued.client.id)")
+            }
+            forgetHeldToken(old.id)
+        }
+    }
+
+    /// Hands back the newest held token under `label` without a prompt: the caller already
+    /// proved itself with the control token, and the user approved this exact capability
+    /// (key, host, scope, expiry) under one Touch ID when it was issued. A revoked or expired
+    /// newest row answers why and drops its Keychain copy; an older row never stands in.
+    func heldClientToken(label: String, caller: String = "cli", now: Date = Date()) throws -> HeldTokenLookup {
+        try Self.validateHeldLabel(label)
+        guard let store = heldTokens else { throw AppError.usage("this process cannot hold a client token") }
+        guard let newest = try catalog.heldGatewayClients(label: label).first else { return .unavailable("not_found") }
+        if newest.revokedAt != nil {
+            forgetHeldToken(newest.id)
+            return .unavailable("revoked")
+        }
+        guard newest.isActive(now: now) else {
+            forgetHeldToken(newest.id)
+            return .unavailable("expired")
+        }
+        let token: String
+        do { token = try store.get(name: Self.heldAccount(newest.id)) } catch AppError.notFound { return .unavailable("not_found") }
+        // A copy that no longer matches its row (a restored Keychain, a reused id) is not this
+        // client's token and must not be handed out under its name.
+        guard GatewayClientToken.hash(token) == (try catalog.tokenHash(clientID: newest.id)) else {
+            forgetHeldToken(newest.id)
+            return .unavailable("not_found")
+        }
+        if heldReadAuditDue(newest.id, now: now) {
+            try? recordKeyEvent(name: newest.keyName, action: "client_held_read", caller: caller, detail: "#\(newest.id) \(label)")
+        }
+        return .active(token: token, client: newest)
+    }
+
+    /// A secret source can read on every start or cron fire; one audit row per client per
+    /// hour keeps the read visible without pushing issue and revoke rows out of `keys log`.
+    private let heldReadAuditLock = NSLock()
+    private var heldReadAudited: [Int64: Date] = [:]
+    static let heldReadAuditWindow: TimeInterval = 3600
+
+    private func heldReadAuditDue(_ id: Int64, now: Date) -> Bool {
+        heldReadAuditLock.withLock {
+            if let last = heldReadAudited[id], now.timeIntervalSince(last) < Self.heldReadAuditWindow { return false }
+            heldReadAudited[id] = now
+            return true
+        }
+    }
+
+    private func forgetHeldToken(_ id: Int64) {
+        guard let store = heldTokens else { return }
+        do { try store.delete(name: Self.heldAccount(id)) } catch {}
+    }
+
+    /// Drops the Keychain copy of every held client that can no longer authorize. Revocation
+    /// alone already makes a copy useless; this keeps a dead token from lingering on disk.
+    func sweepHeldTokens(now: Date = Date()) {
+        guard heldTokens != nil, let all = try? catalog.allGatewayClients() else { return }
+        for c in all where c.held && !c.isActive(now: now) { forgetHeldToken(c.id) }
     }
 
     /// Mints after presence was already taken by the caller; arguments are validated and `host`
@@ -1070,7 +1188,7 @@ final class KeysService: @unchecked Sendable {
     /// unbound, as every client issued before projects existed is.
     private func mintGatewayClient(
         name: String, label: String, days ttlDays: Int, methods allowed: [String], pathPrefix prefix: String?,
-        project: String?, host: String, caller: String, now: Date
+        project: String?, host: String, caller: String, now: Date, held: Bool = false
     ) throws -> (token: String, client: GatewayClient) {
         let trimmedLabel = String(label.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
         let token = GatewayClientToken.generate()
@@ -1084,13 +1202,14 @@ final class KeysService: @unchecked Sendable {
             host: host,
             createdAt: UTC.iso(now),
             expiresAt: UTC.iso(now.addingTimeInterval(TimeInterval(ttlDays) * 86_400)),
-            project: project
+            project: project,
+            held: held
         )
         try recordKeyEvent(
             name: name,
             action: "client_issue",
             caller: caller,
-            detail: "#\(client.id) \(trimmedLabel) \(ttlDays)d \(allowed.joined(separator: "/"))"
+            detail: "#\(client.id) \(trimmedLabel) \(ttlDays)d \(allowed.joined(separator: "/"))\(held ? " held" : "")"
         )
         return (token, client)
     }
@@ -1286,6 +1405,7 @@ final class KeysService: @unchecked Sendable {
             throw AppError.notFound("client \(id)")
         }
         try recordKeyEvent(name: name, action: "client_revoke", caller: caller, detail: "#\(id)")
+        forgetHeldToken(id)
         guard let client = try catalog.gatewayClients(keyName: name).first(where: { $0.id == id }) else {
             throw AppError.notFound("client \(id)")
         }
@@ -1409,6 +1529,7 @@ final class KeysService: @unchecked Sendable {
         let affected = try catalog.activeGatewayClients(key: key)
         let count = try catalog.revokeGatewayClients(key: key, at: UTC.iso(now))
         auditClientRevokes(affected, caller: caller)
+        for c in affected where c.held { forgetHeldToken(c.id) }
         return count
     }
 
@@ -1419,6 +1540,7 @@ final class KeysService: @unchecked Sendable {
         let affected = try catalog.activeGatewayClients(project: project)
         let count = try catalog.revokeGatewayClients(project: project, at: UTC.iso(now))
         auditClientRevokes(affected, caller: caller)
+        for c in affected where c.held { forgetHeldToken(c.id) }
         return count
     }
 
@@ -1985,7 +2107,10 @@ final class KeysService: @unchecked Sendable {
         // grants and cached gateway entry must keep working rather than die for nothing.
         try secrets.delete(name: name)
         _ = disableGatewayMemory(name: name, reason: "key_deleted", caller: caller, recordEvent: false, revokeAlways: true)
+        // The rows go with the key, so the held copies are found while the rows still exist.
+        let heldIDs = ((try? catalog.gatewayClients(keyName: name)) ?? []).filter(\.held).map(\.id)
         try catalog.deleteCatalog(name: name)
+        for id in heldIDs { forgetHeldToken(id) }
         // Again once the row is gone: a grant minted between the first revoke and the delete
         // has nothing left to authorize against, but it must not stay listed as active.
         revokeGrants(key: name, reason: "key_deleted", caller: caller)
@@ -2067,6 +2192,7 @@ final class KeysService: @unchecked Sendable {
         revokeGrants(reason: "purge", caller: "purge")
         try secrets.deleteAll()
         try relaySecrets?.deleteAll()
+        try heldTokens?.deleteAll()
         // A catalog the 0.15 app never launched against still carries the meter's tables.
         _ = try catalog.removeRetiredPlanMeter()
         // wipeData empties every table, the retired subscription rows and cursors included.
@@ -2286,6 +2412,7 @@ enum AppFactory {
             presence: CountingPresenceGate(inner: LocalPresenceGate(), activity: prompts),
             clipboard: AppKitClipboard(),
             relaySecrets: try KeychainStore(service: KeysService.relayKeychainService),
+            heldTokens: try KeychainStore(service: KeysService.heldKeychainService),
             presencePrompts: prompts
         )
         service.observeScreenLock()

@@ -85,6 +85,15 @@ final class AppLaunchSeamTests: XCTestCase {
                     try KeysCLI.parseAsRoot(["tunnel", "user@server.example.com", "--print-only"]) as? TunnelCommand
                 ).run(launch: seam.seam, control: nowhere, gatewayListening: { true })
             }),
+            ("keys client token", { seam in
+                try XCTUnwrap(try KeysCLI.parseAsRoot(["client", "token", "--label", "hermes"]) as? ClientTokenCommand)
+                    .run(launch: seam.seam, control: nowhere)
+            }),
+            ("keys client issue --hold", { seam in
+                try XCTUnwrap(
+                    try KeysCLI.parseAsRoot(["client", "issue", "demo", "--label", "hermes", "--hold"]) as? ClientIssueCommand
+                ).runHeld(launch: seam.seam, control: nowhere)
+            }),
             ("the grant path of keys agent", { seam in
                 try AgentCommand.issueGrant(
                     agent: .claude, key: "demo", minutes: nil, profile: nil,
@@ -380,7 +389,7 @@ final class AppLaunchSeamTests: XCTestCase {
             Set(seamRouted.keys),
             ["GrantCommand", "GrantsCommand", "RevokeCommand", "RenewCommand", "GatewayCommand", "WrapCommand",
              "AgentCommand", "RelayOnCommand", "RelayOffCommand", "TunnelCommand", "RelayRunCommand",
-             "DashboardCommand"],
+             "DashboardCommand", "ClientTokenCommand", "ClientIssueCommand"],
             "exactly the eligible population routes through AppConnection.connect"
         )
 

@@ -76,7 +76,8 @@ func makeGatedService(
         presence: gate,
         clipboard: clipboard,
         runner: runner,
-        relaySecrets: MemorySecretStore()
+        relaySecrets: MemorySecretStore(),
+        heldTokens: MemorySecretStore()
     )
     return (service, gate)
 }

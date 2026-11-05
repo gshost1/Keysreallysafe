@@ -27,6 +27,9 @@ struct GatewayClient: Equatable {
     /// The project's display label, joined in at decode time. nil when `project` is nil
     /// or its row is gone. The label is the only project fact that ever leaves the Mac.
     var projectLabel: String? = nil
+    /// Issued with `--hold`: the app keeps this token in its own Keychain service and hands
+    /// it back to a control-channel caller without a prompt (`keys client token`).
+    var held: Bool = false
 
     func isActive(now: Date) -> Bool {
         if revokedAt != nil { return false }
@@ -70,6 +73,7 @@ struct GatewayClient: Equatable {
             // The project as readers show it: id and label, never the path.
             "project": project as Any? ?? NSNull(),
             "project_label": projectLabel as Any? ?? NSNull(),
+            "held": held,
         ]
     }
 }
