@@ -13,22 +13,50 @@ enum MenubarRuntime {
 }
 
 enum LoopbackSite {
-    static func bind(service: KeysService, preferredPort: UInt16 = LoginItem.dashboardPort, requireGateway: Bool = false) throws -> LoopbackHTTPServer {
+    static func bind(
+        service: KeysService,
+        preferredPort: UInt16 = LoginItem.dashboardPort,
+        requireGateway: Bool = false,
+        gatewayPort: UInt16 = GatewayListener.port
+    ) throws -> LoopbackHTTPServer {
+        let control = ControlFile.url(beside: service.catalog.path)
+        // The ownership check comes before anything is started. Publishing the file is
+        // what raised this before, and by then the gateway was already listening with no
+        // file that could point at it. A site that needs the gateway refuses outright; a
+        // checkout dashboard beside the running app still serves its pages, without the
+        // gateway (the app owns that port) and without publishing or removing the app's
+        // control file.
+        var held: ControlFile.OwnerHeld?
+        do {
+            try ControlFile.assertPublishable(at: control, takeover: isAppBundle)
+        } catch let owner as ControlFile.OwnerHeld {
+            if requireGateway { throw owner }
+            held = owner
+        }
         let web = try WebRoot.find()
         let handler = APIHandler(service: service, webRoot: web)
         let server = try LoopbackHTTPServer(port: preferredPort) { request in
             handler.handle(request)
         }
         server.start()
+        if let held {
+            FileHandle.standardError.write(Data("\(held.description). Serving this dashboard without the gateway.\n".utf8))
+            return server
+        }
         do {
-            _ = try service.startGateway()
+            _ = try service.startGateway(port: gatewayPort)
+            // The installed app is the owner of record: a relaunch or an explicit start
+            // replaces the file. A checkout process (the 12765 dev copy) does not, so it
+            // cannot point the CLIs at itself and then delete their file on exit.
             try ControlFile.write(
-                port: server.boundPort, token: handler.originToken, to: ControlFile.url(beside: service.catalog.path)
+                port: server.boundPort, token: handler.originToken, takeover: isAppBundle, to: control
             )
             atexit { ControlFile.remove() }
         } catch {
+            // Another site may have published between the check and the write: then no
+            // control file points at this gateway, so it must not keep listening.
+            if requireGateway || error is ControlFile.OwnerHeld { service.stopGateway() }
             if requireGateway {
-                service.stopGateway()
                 server.stop()
                 throw error
             }
@@ -37,6 +65,9 @@ enum LoopbackSite {
         }
         return server
     }
+
+    /// Whether this binary is the installed app, and so the file's owner of record.
+    static var isAppBundle: Bool { AppResources.applicationBundle() != nil }
 }
 
 @MainActor

@@ -386,6 +386,10 @@ final class AppLaunchSeamTests: XCTestCase {
 
         // Who stays on the graceful control client. ProviderUnhideCommand routes
         // through ProviderHideCommand.setHidden, so it has no connect of its own.
+        // The provider verbs route through `ProviderWrite.connect`, which is that same
+        // plain client (no auto-launch) shared by add, rm and hide, so the site's answer
+        // stands and no launch is attempted; the set below names the commands with the
+        // call inline, and the pin below covers the shared helper.
         // UnwrapCommand is the onboarding slice's `keys unwrap`: it deliberately
         // keeps the plain client and never auto-launches (a script gets exit 6).
         // The `keys share` verbs mirror client and pair issue: the running app when
@@ -393,11 +397,23 @@ final class AppLaunchSeamTests: XCTestCase {
         let graceful = blocks.filter { _, body in body.contains("ControlClient.connect") }
         XCTAssertEqual(
             Set(graceful.keys),
-            ["ListCommand", "ClientIssueCommand", "ProviderAddCommand", "ProviderRmCommand", "ProviderHideCommand",
-             "AgentCommand", "RelayPairIssueCommand", "RelayPairRequireCommand", "RelayStatusCommand",
-             "RelayResetCommand", "UnwrapCommand", "ShareIssueCommand", "ShareRevokeCommand", "ShareAwakeCommand"],
+            ["ListCommand", "ProvidersCommand", "ClientIssueCommand", "AgentCommand", "RelayPairIssueCommand",
+             "RelayPairRequireCommand", "RelayStatusCommand", "UnwrapCommand",
+             "ShareIssueCommand", "ShareRevokeCommand", "ShareAwakeCommand"],
             "exactly the graceful population keeps the plain control client"
         )
+        XCTAssertTrue(Self.cliSource.contains("enum ProviderWrite"),
+                      "the provider writes share one plain-client seam")
+        // `keys relay reset` uses the same probed plain client: it must not auto-launch
+        // the app it is about to reset, and a stale control file must not block it.
+        XCTAssertTrue((blocks["RelayResetCommand"] ?? "").contains("ProviderWrite.connect"),
+                      "relay reset asks the running site through the probed seam")
+        for name in ["ProviderAddCommand", "ProviderRmCommand", "ProviderHideCommand"] {
+            let body = blocks[name] ?? ""
+            XCTAssertTrue(body.contains("ProviderWrite.connect"), "\(name) asks the running site through the shared seam")
+            XCTAssertFalse(body.contains("try? client.call"),
+                           "\(name) reports the site's refusal instead of falling through to a local write")
+        }
     }
 
     // MARK: - Rigs

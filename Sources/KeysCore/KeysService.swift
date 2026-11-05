@@ -102,9 +102,8 @@ final class KeysService: @unchecked Sendable {
     /// migration has no access to. A client left unbound (its key had no host) is refused.
     private func bindLegacyGatewayClients() {
         guard (try? catalog.metaValue(CatalogDB.clientHostBackfillKey)) == "pending" else { return }
-        for client in (try? catalog.unboundGatewayClients()) ?? [] {
-            guard let row = try? catalog.catalogRow(name: client.keyName), let host = Self.effectiveHost(row) else { continue }
-            try? catalog.bindGatewayClient(id: client.id, host: host)
+        for pending in (try? catalog.unboundGatewayClients()) ?? [] {
+            try? catalog.bindGatewayClient(id: pending.client.id, host: pending.host)
         }
         try? catalog.deleteMeta(CatalogDB.clientHostBackfillKey)
     }

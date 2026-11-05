@@ -1410,6 +1410,38 @@ struct ProvidersCommand: ParsableCommand {
     }
 }
 
+/// Who answers a provider write. A running site owns its view of the catalog, so its
+/// refusal is final; only "no site is up" falls through to the direct catalog write.
+enum ProviderWrite {
+    /// The live site's client, or nil when there is none to ask.
+    ///
+    /// A control file's pid can be recycled: `ControlFile.live` says a process exists, not
+    /// that it is the site that wrote the file. The old code took that file at face value,
+    /// so a stale one turned every provider write into a failed HTTP call and the command
+    /// failed instead of writing the catalog directly. The probe is the health read the app
+    /// seam already uses: a token-gated status route, which a stranger's port refuses and a
+    /// real site answers.
+    ///
+    /// A probe that fails is only a stale file when the pid is not a running Keysrs
+    /// binary (or is this very process). A Keysrs process that does not answer — busy
+    /// with an ingest pass, or stuck — is still the site: writing the catalog behind it
+    /// is the refusal bypass this exists to prevent, so that case throws instead.
+    /// `keys relay reset` uses the same answer before it deletes a secret.
+    static func connect(control: URL?) throws -> ControlClient? {
+        let control = try control ?? ControlFile.url()
+        guard let info = ControlFile.live(at: control),
+              let client = try? ControlClient.connect(control: control) else { return nil }
+        if (try? client.call(method: "POST", path: AppConnection.launchHealthPath, body: [:],
+                             expect: 200, timeout: AppConnection.launchProbeTimeout)) != nil {
+            return client
+        }
+        guard info.pid != getpid(), ControlFile.isRunningSite(info.pid) else { return nil }
+        throw AppError.usage(
+            "Keysrs (process \(info.pid)) is running but did not answer; try again in a moment, or quit it and retry"
+        )
+    }
+}
+
 struct ProviderCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "provider",
@@ -1461,20 +1493,50 @@ struct ProviderAddCommand: ParsableCommand {
             "note": note as Any? ?? NSNull(),
             "gateway": !noGateway,
         ]
-        let service = try AppFactory.makeService()
-        if let client = try? ControlClient.connect(),
-           (try? client.call(method: "POST", path: "/api/providers", body: payload, expect: 201)) != nil {
-            print("added provider \(id)")
+        try ProviderAddCommand.run(
+            id: id, name: name, host: host, api: api, authHeader: authHeader, authPrefix: authPrefix,
+            pathPrefix: pathPrefix, keyPrefix: keyPrefix, note: note, gateway: !noGateway,
+            control: nil, service: { try AppFactory.makeService() },
+            out: { print($0) }, advise: { fputs($0 + "\n", stderr) }
+        )
+    }
+
+    /// The write with the control file, the local service and both printers injectable.
+    ///
+    /// A live site owns the catalog view, so its answer is final: a refusal is reported as
+    /// it is, never retried as a direct write behind its back. The old `try?` around the
+    /// call turned a refusal into "no site is running", wrote the catalog locally and said
+    /// so — for a site that was running all along.
+    static func run(
+        id: String, name: String, host: String?, api: String, authHeader: String, authPrefix: String,
+        pathPrefix: String, keyPrefix: String?, note: String?, gateway: Bool,
+        control: URL?, service: () throws -> KeysService,
+        out: (String) -> Void, advise noteOut: (String) -> Void = { _ in }
+    ) throws {
+        let payload: [String: Any] = [
+            "id": id,
+            "name": name,
+            "host": host as Any? ?? NSNull(),
+            "api": api,
+            "auth_header": authHeader,
+            "auth_prefix": authPrefix,
+            "path_prefix": pathPrefix,
+            "key_prefix": keyPrefix as Any? ?? NSNull(),
+            "note": note as Any? ?? NSNull(),
+            "gateway": gateway,
+        ]
+        if let client = try ProviderWrite.connect(control: control) {
+            _ = try client.call(method: "POST", path: "/api/providers", body: payload, expect: 201)
+            out("added provider \(id)")
             return
         }
-        // A live site that answered with an error would have thrown above; either way the
-        // direct write reports the real problem.
+        let service = try service()
         _ = try service.addProvider(
             id: id, name: name, host: host, api: api, authHeader: authHeader, authPrefix: authPrefix,
-            pathPrefix: pathPrefix, keyPrefix: keyPrefix, note: note, gateway: !noGateway
+            pathPrefix: pathPrefix, keyPrefix: keyPrefix, note: note, gateway: gateway
         )
-        print("added provider \(id)")
-        fputs("no Keysrs site is running; it takes effect when one next starts\n", stderr)
+        out("added provider \(id)")
+        noteOut("no Keysrs site is running; it takes effect when one next starts")
     }
 }
 
@@ -1487,15 +1549,27 @@ struct ProviderRmCommand: ParsableCommand {
     @Argument(help: "Provider id.") var id: String
 
     func run() throws {
-        let service = try AppFactory.makeService()
-        if let client = try? ControlClient.connect(),
-           (try? client.call(method: "DELETE", path: "/api/providers/\(id)", expect: 200)) != nil {
-            print("removed provider \(id)")
+        try ProviderRmCommand.run(
+            id: id, control: nil, service: { try AppFactory.makeService() },
+            out: { print($0) }, note: { fputs($0 + "\n", stderr) }
+        )
+    }
+
+    /// Same policy as add: a live site's refusal is the command's error, and the direct
+    /// write only happens when there is no site to ask.
+    static func run(
+        id: String, control: URL?, service: () throws -> KeysService,
+        out: (String) -> Void, note noteOut: (String) -> Void = { _ in }
+    ) throws {
+        if let client = try ProviderWrite.connect(control: control) {
+            _ = try client.call(method: "DELETE", path: "/api/providers/\(id)", expect: 200)
+            out("removed provider \(id)")
             return
         }
+        let service = try service()
         try service.removeProvider(id: id)
-        print("removed provider \(id)")
-        fputs("no Keysrs site is running; it takes effect when one next starts\n", stderr)
+        out("removed provider \(id)")
+        noteOut("no Keysrs site is running; it takes effect when one next starts")
     }
 }
 
@@ -1514,14 +1588,26 @@ struct ProviderHideCommand: ParsableCommand {
     /// A hide change goes through the running site when one is up, the same way grants do,
     /// so its view of the catalog changes with the database.
     static func setHidden(_ hidden: Bool, id: String) throws {
-        let service = try AppFactory.makeService()
-        if let client = try? ControlClient.connect(),
-           (try? client.call(method: "PATCH", path: "/api/providers/\(id)", body: ["hidden": hidden], expect: 200)) != nil {
-            print(hidden ? "hid provider \(id)" : "unhid provider \(id)")
+        try ProviderHideCommand.setHidden(
+            hidden, id: id, control: nil, service: { try AppFactory.makeService() }, out: { print($0) }
+        )
+    }
+
+    /// The running app's view of the catalog moves with the database, so a hide goes
+    /// through it when one is up. Its refusal is reported, not written around: the old
+    /// `try?` fell through and printed "hid" as if the app had applied it.
+    static func setHidden(
+        _ hidden: Bool, id: String, control: URL?, service: () throws -> KeysService, out: (String) -> Void
+    ) throws {
+        let word = hidden ? "hid" : "unhid"
+        if let client = try ProviderWrite.connect(control: control) {
+            _ = try client.call(method: "PATCH", path: "/api/providers/\(id)", body: ["hidden": hidden], expect: 200)
+            out("\(word) provider \(id)")
             return
         }
+        let service = try service()
         try service.setProviderHidden(id: id, hidden: hidden)
-        print(hidden ? "hid provider \(id)" : "unhid provider \(id)")
+        out("\(word) provider \(id)")
     }
 }
 
@@ -2470,17 +2556,50 @@ struct RelayResetCommand: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "reset", abstract: "Forget the Worker URL and delete the relay secret from the Keychain.")
 
     func run() throws {
-        let service = try AppFactory.makeService()
-        // The app's relay holds the secret in memory; forgetting it must not leave that running.
-        if let client = try? ControlClient.connect(control: ControlFile.url(beside: service.catalog.path)),
-           let obj = try? client.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5),
-           JSONValue.bool(obj["on"]) == true
-        {
-            _ = try client.call(method: "POST", path: "/api/relay", body: ["enabled": false], expect: 200)
-            print("turned off the relay in Keysrs")
+        try RelayResetCommand.run(service: try AppFactory.makeService(), out: { print($0) })
+    }
+
+    /// The sequence with the service and the printer injectable, so a test drives it
+    /// over a temp catalog and a synthetic site.
+    ///
+    /// The order is the whole point: a relay that is already running keeps its secret in
+    /// memory for the life of its process, so forgetting the secret must not leave that
+    /// process dialing with a credential this Mac no longer has. A Terminal `keys relay`
+    /// holds the one relay lock and reset cannot stop it remotely, so it refuses; the
+    /// app's relay is turned off first; and a live site whose status read fails is a
+    /// failure, not "not on" — the old `try?` chain deleted the secret and left the app
+    /// running with it.
+    static func run(service: KeysService, out: (String) -> Void) throws {
+        let control = ControlFile.url(beside: service.catalog.path)
+        // The lock is checked whether or not a site answers. A Terminal `keys relay` holds
+        // the same lock with no control file behind it, so gating this on a live site let
+        // reset delete the secret under a relay that was still dialing with it.
+        let elsewhere = RelayLock.holder(at: service.relayLockURL)
+        if let held = elsewhere, !held.isApp(control: control) {
+            throw AppError.usage(
+                "keys relay is running in a Terminal on this Mac\(held.pid.map { " (process \($0))" } ?? ""), "
+                    + "and it keeps the old secret until it stops; press Ctrl-C there, then run keys relay reset again"
+            )
+        }
+        // A control file left by a crashed app whose pid was recycled is no site; a
+        // Keysrs process that does not answer is, and reset refuses rather than delete
+        // the secret under a relay it cannot see.
+        let client = try ProviderWrite.connect(control: control)
+        // The lock says the app is running the relay, but no client could be built to
+        // turn it off: deleting the secret now would leave that relay dialing with it.
+        if client == nil, let held = elsewhere, held.isApp(control: control) {
+            throw AppError.usage("Keysrs is running the relay but could not be reached to turn it off; turn the relay off in Keysrs, then run keys relay reset again")
+        }
+        if let client {
+            // A live site answers or fails: both are answers, and both decide here.
+            let obj = try client.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5)
+            if JSONValue.bool(obj["on"]) == true {
+                _ = try client.call(method: "POST", path: "/api/relay", body: ["enabled": false], expect: 200)
+                out("turned off the relay in Keysrs")
+            }
         }
         try service.resetRelay()
-        print("relay forgotten on this Mac; on the Cloudflare side run: cd Relay && npx wrangler secret delete RELAY_SECRET (or npx wrangler delete)")
+        out("relay forgotten on this Mac; on the Cloudflare side run: cd Relay && npx wrangler secret delete RELAY_SECRET (or npx wrangler delete)")
     }
 }
 

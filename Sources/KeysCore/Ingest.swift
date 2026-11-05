@@ -102,24 +102,34 @@ enum IngestFiles {
     ) throws -> IngestReport {
         var report = IngestReport()
         var pending: [UsageEvent] = []
-        func flush(_ partial: JsonlCursor) throws {
+        func flush(_ partial: JsonlCursor, final: Bool) throws {
             var cursor = partial
             cursor.parserJSON = state?()
+            var stored = false
             try db.withTransaction {
                 for event in pending {
                     if try db.insertUsage(event) { report.rowsInserted += 1 } else { report.rowsUpdated += 1 }
+                    stored = true
                 }
+                // The freshness token moves in every transaction that stores rows, not
+                // after the pass: a kill between a commit and a later bump left the rows and
+                // cursors durable with the old version, so the next pass found nothing new,
+                // bumped nothing, and the dashboard never reloaded. Bumping only in a file's
+                // first or last batch leaves the same hole for the batches in between. The
+                // dashboard polls the version, so several bumps between two polls are one
+                // reload.
+                if stored { try db.bumpCatalogVersion() }
                 try commit(cursor, url: url, db: db)
             }
             pending.removeAll(keepingCapacity: true)
         }
         guard let cursor = try processNewBytes(
-            url: url, db: db, keepLine: keepLine, restore: restore, flush: flush,
+            url: url, db: db, keepLine: keepLine, restore: restore, flush: { try flush($0, final: false) },
             each: { line in
                 do { pending.append(contentsOf: try parse(line)) } catch { report.parseErrors += 1 }
             }
         ) else { return report }
-        try flush(cursor)
+        try flush(cursor, final: true)
         return report
     }
 
