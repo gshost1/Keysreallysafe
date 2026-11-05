@@ -195,7 +195,7 @@ final class ApiKeyUsageTests: XCTestCase {
         let obj = keys.jsonObject()
         let totals = obj["totals"] as! [String: Any]
         XCTAssertTrue(totals["gateway_usd_estimate"] is NSNull)
-        XCTAssertTrue(totals["usd_estimate"] is NSNull, "there is no local figure to headline here")
+        XCTAssertNil(totals["usd_estimate"], "the subscription headline left with the log readers")
         let daily = obj["daily"] as! [[String: Any]]
         XCTAssertEqual(daily.reduce(0) { $0 + ($1["model_calls"] as? Int ?? 0) }, 2)
     }

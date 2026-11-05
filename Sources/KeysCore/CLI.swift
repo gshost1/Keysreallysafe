@@ -1370,7 +1370,7 @@ enum ProviderWrite {
     ///
     /// A probe that fails is only a stale file when the pid is not a running Keysrs
     /// binary (or is this very process). A Keysrs process that does not answer — busy
-    /// with an ingest pass, or stuck — is still the site: writing the catalog behind it
+    /// with a long request, or stuck — is still the site: writing the catalog behind it
     /// is the refusal bypass this exists to prevent, so that case throws instead.
     /// `keys relay reset` uses the same answer before it deletes a secret.
     static func connect(control: URL?) throws -> ControlClient? {
