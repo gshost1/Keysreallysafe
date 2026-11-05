@@ -10,7 +10,6 @@ server.json is updated). Nothing is published or installed.
 import hashlib
 import importlib.util
 import json
-import re
 import subprocess
 import tempfile
 import unittest
@@ -37,8 +36,7 @@ def load_builder():
 
 
 def app_version():
-    text = (REPO / "Sources/KeysCore/AppVersion.swift").read_text(encoding="utf-8")
-    return re.search(r'static let current = "([^"]+)"', text).group(1)
+    return load_builder().app_version()
 
 
 class McpbBundleTests(unittest.TestCase):
@@ -103,7 +101,6 @@ class McpbBundleTests(unittest.TestCase):
         self.assertEqual(package["transport"], {"type": "stdio"})
         self.assertEqual(package["identifier"],
                          f"https://github.com/gshost1/Keysreallysafe/releases/download/v{version}/Keysrs.mcpb")
-        self.assertIn("mcp", package["identifier"])
 
     def test_server_json_names_the_github_namespace_and_the_same_product(self):
         server, plugin = load(SERVER_JSON), load(PLUGIN_MANIFEST)

@@ -42,6 +42,10 @@ def build(output: Path) -> str:
     version = app_version()
     if manifest["version"] != version:
         raise BuildError(f"manifest.json version {manifest['version']} != AppVersion.current {version}")
+    server = json.loads((REPO / "server.json").read_text(encoding="utf-8"))
+    asset = f"/releases/download/v{version}/Keysrs.mcpb"
+    if server["version"] != version or not server["packages"][0]["identifier"].endswith(asset):
+        raise BuildError(f"server.json version and package URL must name v{version} (AppVersion.current)")
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", zipfile.ZIP_STORED) as bundle:
         for name in sorted(FILES):

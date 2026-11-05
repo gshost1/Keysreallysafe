@@ -165,11 +165,13 @@ changes when the bundle's files do, and `test_mcpb_bundle` fails until
 
 After the release PR is merged and the release is published:
 
-1. Attach `Keysrs.mcpb` from a build of the tagged commit to the GitHub
-   release `v<version>` (next to `Keysrs-arm64.dmg`; the updater only reads
-   the DMG assets). Check that `shasum -a 256` of the uploaded asset equals
-   `fileSha256`. The URL must stay reachable: MCP clients verify the hash
-   before installing.
+1. Attach `Keysrs.mcpb`, built from the merge commit (or the tagged commit
+   once it contains `packaging/mcpb`), to the GitHub release `v<version>`
+   next to `Keysrs-arm64.dmg`; the updater only reads the DMG assets. The
+   bundle does not depend on the app build, so the first publish can attach
+   it to the already-published release `v0.15.1`. Check that `shasum -a 256`
+   of the uploaded asset equals `fileSha256`. The URL must stay reachable:
+   MCP clients verify the hash before installing.
 2. `mcp-publisher validate server.json` (needs network: it asks the registry).
 3. `mcp-publisher login github`, a browser device flow for the `gshost1`
    account that George runs; it grants `io.github.gshost1/*`.
