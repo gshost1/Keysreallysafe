@@ -173,7 +173,8 @@ final class CatalogDB: @unchecked Sendable {
               revoked_at TEXT,
               last_used_at TEXT,
               host TEXT,
-              project TEXT
+              project TEXT,
+              held INTEGER NOT NULL DEFAULT 0
             );
             """)
         // A client is bound to the upstream host it was issued for. Clients from before the
@@ -195,6 +196,13 @@ final class CatalogDB: @unchecked Sendable {
         // a live reference must not break the reader that decodes it.
         if try !tableHasColumn("gateway_clients", "project") {
             try exec("ALTER TABLE gateway_clients ADD COLUMN project TEXT;")
+        }
+        // A held client's token also sits in the app's own Keychain service so a caller with
+        // the control token can have it handed back without another prompt (`keys client
+        // token`). The flag is what the lookup reads; the Keychain item is never the record.
+        // An older binary on the same catalog ignores the column and issues held = 0.
+        if try !tableHasColumn("gateway_clients", "held") {
+            try exec("ALTER TABLE gateway_clients ADD COLUMN held INTEGER NOT NULL DEFAULT 0;")
         }
         try exec("CREATE INDEX IF NOT EXISTS gateway_clients_key ON gateway_clients (key_name, id);")
         // A project client token serves several keys; this table is its membership list:
@@ -520,15 +528,16 @@ final class CatalogDB: @unchecked Sendable {
         host: String,
         createdAt: String,
         expiresAt: String,
-        project: String? = nil
+        project: String? = nil,
+        held: Bool = false
     ) throws -> GatewayClient {
         try withLock {
             try run("""
                 INSERT INTO gateway_clients
-                  (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at, host, project)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                  (key_name, label, token_hash, hint, methods, path_prefix, created_at, expires_at, host, project, held)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """, keyName, label, tokenHash, hint, methods.joined(separator: ","), pathPrefix, createdAt, expiresAt,
-                host, project)
+                host, project, held ? 1 : 0)
             var projectLabel: String? = nil
             if let project, let row = try self.project(id: project) {
                 projectLabel = row.label
@@ -546,7 +555,8 @@ final class CatalogDB: @unchecked Sendable {
                 hint: hint,
                 host: host,
                 project: project,
-                projectLabel: projectLabel
+                projectLabel: projectLabel,
+                held: held
             )
         }
     }
@@ -704,7 +714,7 @@ final class CatalogDB: @unchecked Sendable {
     // the display label next to the id it stored; a dangling project reference joins
     // NULL instead of failing, which is why the label is soft, not a foreign key.
     private static let gatewayClientColumns =
-        "gc.id, gc.key_name, gc.label, gc.hint, gc.methods, gc.path_prefix, gc.created_at, gc.expires_at, gc.revoked_at, gc.last_used_at, gc.host, gc.project, p.label AS project_label"
+        "gc.id, gc.key_name, gc.label, gc.hint, gc.methods, gc.path_prefix, gc.created_at, gc.expires_at, gc.revoked_at, gc.last_used_at, gc.host, gc.project, p.label AS project_label, gc.held"
 
     private func decodeGatewayClient(_ stmt: OpaquePointer) -> GatewayClient {
         GatewayClient(
@@ -720,7 +730,18 @@ final class CatalogDB: @unchecked Sendable {
             hint: columnText(stmt, 3) ?? "",
             host: columnText(stmt, 10),
             project: columnText(stmt, 11),
-            projectLabel: columnText(stmt, 12)
+            projectLabel: columnText(stmt, 12),
+            held: sqlite3_column_int64(stmt, 13) != 0
+        )
+    }
+
+    /// Every held client issued under `label`, newest first, active or not: the lookup
+    /// answers from the newest one, so a revoked or expired newest row is reported as such
+    /// instead of an older token quietly standing in for it.
+    func heldGatewayClients(label: String) throws -> [GatewayClient] {
+        try query(
+            "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project WHERE gc.held = 1 AND gc.label = ? ORDER BY gc.id DESC;",
+            label, row: decodeGatewayClient
         )
     }
 
@@ -738,6 +759,11 @@ final class CatalogDB: @unchecked Sendable {
             "SELECT \(Self.gatewayClientColumns) FROM gateway_clients gc LEFT JOIN projects p ON p.id = gc.project ORDER BY gc.id;",
             row: decodeGatewayClient
         )
+    }
+
+    /// The stored hash of one client's token, to check a held copy still belongs to its row.
+    func tokenHash(clientID: Int64) throws -> String? {
+        try one("SELECT token_hash FROM gateway_clients WHERE id = ? LIMIT 1;", clientID) { columnText($0, 0) ?? "" }
     }
 
     func gatewayClient(tokenHash: String) throws -> GatewayClient? {

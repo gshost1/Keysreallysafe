@@ -1123,7 +1123,7 @@ struct ClientCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "client",
         abstract: "Issue, list or revoke gateway client capabilities for a key.",
-        subcommands: [ClientIssueCommand.self, ClientListCommand.self, ClientRevokeCommand.self],
+        subcommands: [ClientIssueCommand.self, ClientListCommand.self, ClientRevokeCommand.self, ClientTokenCommand.self],
         defaultSubcommand: ClientListCommand.self
     )
 }
@@ -1131,7 +1131,15 @@ struct ClientCommand: ParsableCommand {
 struct ClientIssueCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "issue",
-        abstract: "Mint a revocable, expiring token an SDK presents to the gateway (user presence). Shown once."
+        abstract: "Mint a revocable, expiring token an SDK presents to the gateway (user presence). Shown once.",
+        discussion: """
+            With --hold the running Keysrs keeps the token in its own Keychain item instead of \
+            printing it, and `keys client token --label <label>` hands it back later without \
+            another prompt, until it expires or is revoked. That is for a program that starts \
+            unattended and cannot show Touch ID (an agent's secret source). Anything running as \
+            you can then read that token while it lives, so keep its scope and days small. \
+            A new held token replaces (revokes) the earlier one with the same label.
+            """
     )
 
     @Argument(help: "Key name.") var name: String
@@ -1139,9 +1147,12 @@ struct ClientIssueCommand: ParsableCommand {
     @Option(help: "Days until the token expires (1 to \(GatewayClientToken.maxDays)).") var days: Int = GatewayClientToken.defaultDays
     @Option(name: .customLong("method"), help: "Allowed HTTP method; repeat for more. Default POST.") var methods: [String] = []
     @Option(name: .customLong("path-prefix"), help: "Only this upstream path prefix, e.g. v1/messages.") var pathPrefix: String?
+    @Flag(help: "Keep the token in Keysrs for `keys client token` instead of printing it (needs --label).") var hold = false
+    @Flag(help: "Print one JSON line (with --hold it never carries the token).") var json = false
 
     func run() throws {
         try KeyName.validate(name)
+        if hold { return try runHeld() }
         // A token is only useful once the gateway holds the key, and only the process that
         // owns the gateway can turn it on, so the running app issues it under one prompt.
         let token: String, id: Int64, scope: String, expires: String
@@ -1174,10 +1185,92 @@ struct ClientIssueCommand: ParsableCommand {
             expires = issued.client.expiresAt
             note = " Keysrs is not running, so the gateway is off; open it, then run: keys gateway on \(name)"
         }
-        print(token)
+        if json {
+            try JSONValue.printLine([
+                "token": token, "client_id": id, "key": name, "expires_at": expires,
+                "base_url": "http://127.0.0.1:\(GatewayListener.port)/\(name)",
+            ])
+        } else {
+            print(token)
+        }
         FileHandle.standardError.write(Data(
             "client #\(id) for \(name), \(scope), expires \(expires). Put it where the SDK expects the API key; base URL http://127.0.0.1:\(GatewayListener.port)/\(name).\(note)\n".utf8
         ))
+    }
+
+    /// The held path needs the running app: it owns the held Keychain service and the gateway.
+    func runHeld(launch: AppLaunchSeam = .production, control: URL? = nil) throws {
+        try KeysService.validateHeldLabel(label)
+        let client = try AppConnection.connect(control: control, launch: launch).controlClient
+        FileHandle.standardError.write(Data("Touch ID in Keysrs…\n".utf8))
+        var body: [String: Any] = ["label": label, "days": days, "gateway": true, "hold": true, "caller": "cli"]
+        if !methods.isEmpty { body["methods"] = methods }
+        if let pathPrefix { body["path_prefix"] = pathPrefix }
+        let obj = try client.call(method: "POST", path: "/api/keys/\(name)/clients", body: body, expect: 201)
+        let c = JSONValue.object(obj["client"]) ?? [:]
+        let base = "http://127.0.0.1:\(GatewayListener.port)/\(name)"
+        let methodsOut = (c["methods"] as? [Any])?.compactMap { $0 as? String } ?? []
+        if json {
+            try JSONValue.printLine([
+                "client_id": JSONValue.int(c["id"]) ?? 0, "key": name, "label": label, "held": true,
+                "expires_at": JSONValue.string(c["expires_at"]) ?? "", "base_url": base,
+                "methods": methodsOut, "path_prefix": c["path_prefix"] ?? NSNull(),
+            ])
+        } else {
+            print("held client #\(JSONValue.int(c["id"]) ?? 0) for \(name) as \(label), \(methodsOut.joined(separator: ",")) \(JSONValue.string(c["path_prefix"]) ?? "*"), expires \(JSONValue.string(c["expires_at"]) ?? ""). Read it with: keys client token --label \(label)")
+        }
+        if JSONValue.bool(obj["gateway_enabled"]) != true {
+            FileHandle.standardError.write(Data("The running Keysrs did not turn the gateway on; run: keys gateway on \(name)\n".utf8))
+        }
+    }
+}
+
+struct ClientTokenCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "token",
+        abstract: "Hand back a held client token without Touch ID (see keys client issue --hold).",
+        discussion: """
+            Prints the newest token held under --label while it is active. Exit 2 when there is \
+            none, or it expired or was revoked (--json says which); exit 6 when Keysrs is not \
+            running. gateway_on false means Keysrs restarted and the key is not loaded yet: \
+            run keys gateway on <key>. Treat stdout as a secret.
+            """
+    )
+
+    @Option(help: "The label the token was held under.") var label: String
+    @Flag(help: "Print one JSON line: token, base_url, key, expires_at, gateway_on, scope.") var json = false
+
+    func run() throws { try run(launch: .production) }
+
+    func run(launch: AppLaunchSeam, control: URL? = nil) throws {
+        try KeysService.validateHeldLabel(label)
+        let client = try AppConnection.connect(control: control, launch: launch).controlClient
+        let obj: [String: Any]
+        do {
+            obj = try client.call(method: "POST", path: "/api/clients/held/token", body: ["label": label, "caller": "cli"], expect: 200)
+        } catch AppError.notFound(let reason) {
+            if json { try JSONValue.printLine(["error": reason, "label": label]) }
+            throw AppError.notFound("held token \(label) (\(reason)); issue one with: keys client issue <key> --label \(label) --hold")
+        }
+        guard let token = JSONValue.string(obj["token"]), GatewayClientToken.looksLikeToken(token) else {
+            throw AppError.usage("the site returned no token")
+        }
+        let c = JSONValue.object(obj["client"]) ?? [:]
+        let key = JSONValue.string(c["key"]) ?? ""
+        let gatewayOn = JSONValue.bool(obj["gateway_on"]) ?? false
+        if json {
+            try JSONValue.printLine([
+                "token": token, "client_id": JSONValue.int(c["id"]) ?? 0, "key": key, "label": label,
+                "base_url": JSONValue.string(obj["base_url"]) ?? "", "expires_at": JSONValue.string(c["expires_at"]) ?? "",
+                "methods": (c["methods"] as? [Any])?.compactMap { $0 as? String } ?? [],
+                "path_prefix": c["path_prefix"] ?? NSNull(), "gateway_on": gatewayOn,
+            ])
+        } else {
+            print(token)
+            if !gatewayOn {
+                FileHandle.standardError.write(Data("The gateway is off for \(key); run: keys gateway on \(key)\n".utf8))
+            }
+        }
     }
 }
 

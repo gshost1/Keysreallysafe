@@ -657,7 +657,8 @@ keys dashboard [--month|--week]
 keys menubar
 keys mcp
 keys autostart --remove
-keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path-prefix <prefix>]
+keys client issue <name> [--label <text>] [--days 30] [--method POST]... [--path-prefix <prefix>] [--hold] [--json]
+keys client token --label <label> [--json]
 keys client list <name>
 keys client revoke <name> <id>
 keys gateway on|off <name>

@@ -319,6 +319,37 @@ stdout as a single-use secret, capture it where the SDK expects the API key,
 and never echo or log it. Point the program at the gateway,
 `http://127.0.0.1:12767/<key name>`, with the token as its API key.
 
+### A held client token: one Touch ID, then read back without a prompt
+
+A program that starts on its own — an agent framework's secret source at
+startup, a cron job — cannot show Touch ID and has nowhere safe to keep a
+printed token. `--hold` covers that: the running Keysrs keeps the token in its
+own Keychain item (service `keysreallysafe.held`) instead of printing it, and
+`keys client token` hands it back with no prompt while it is active.
+
+```sh
+keys client issue router --label hermes --days 7 --path-prefix chat/completions --hold --json  # one Touch ID
+keys client token --label hermes --json    # no prompt; stdout carries the token
+```
+
+The issue prompt names the label and the days, and its `--json` line never
+carries the token. The label must match `[a-z0-9][a-z0-9._-]*`; a new held
+token replaces (revokes) the earlier one with the same label. `keys client
+token --json` prints one line: `token`, `base_url`, `key`, `label`,
+`client_id`, `expires_at`, `methods`, `path_prefix` and `gateway_on`. It exits
+2 when the newest held token under the label is missing, expired or revoked
+(the `--json` line is `{"error":"not_found"|"expired"|"revoked","label":…}`),
+and 6 when Keysrs cannot be reached. `gateway_on: false` means Keysrs restarted
+and has not loaded the key yet: the token is valid, but calls are refused until
+`keys gateway on <key>` (one Touch ID).
+
+The trade-off is stated plainly: while it lives, any process running as you
+can read a held token without Touch ID, exactly as it could read a token
+`keys wrap` wrote into an env file. Keep the scope (methods, path prefix) and
+the days small. Revoking — `keys client revoke`, `keys revoke --all`, deleting
+the key, purge — deletes the held copy too, and each read is in `keys log` as
+`client_held_read`.
+
 For a machine you can SSH to, `keys tunnel` carries the loopback gateway there
 without opening a port on the Mac. For a managed agent that accepts no inbound
 SSH — GitHub Actions, Claude Code or Codex cloud sessions, Modal, E2B — the
@@ -431,6 +462,8 @@ keys list --json
 keys spend --json
 keys grant … --json
 keys grants --json
+keys client issue … --hold --json
+keys client token --label … --json
 keys test … --json
 keys models … --json
 keys providers --json

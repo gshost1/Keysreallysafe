@@ -329,7 +329,7 @@ final class ProjectIdentityTests: XCTestCase {
         // every pre-existing field keeps its shape, so the dashboard listing still works.
         let object = decoded.jsonObject()
         XCTAssertEqual(object.keys.sorted(), [
-            "active", "created_at", "expires_at", "hint", "id", "key", "label", "last_used_at",
+            "active", "created_at", "expires_at", "held", "hint", "id", "key", "label", "last_used_at",
             "methods", "path_prefix", "project", "project_label", "revoked_at",
         ])
         XCTAssertEqual(object["project"] as? String, project.id)
