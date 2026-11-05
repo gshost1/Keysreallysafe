@@ -700,8 +700,11 @@ struct RevokeCommand: ParsableCommand {
                 return
             }
             // An app from before pairings joined the kill switch answers without these
-            // fields; it revoked none, so zero and "not stopped" are the truth there.
-            let pairings = JSONValue.int(obj["revoked_pairings"]) ?? 0
+            // fields and left pairings and its relay alone; a zero would read as done.
+            guard let pairings = JSONValue.int(obj["revoked_pairings"]) else {
+                print("revoked \(grantsText) and \(clientsText); this Keysrs app is older and left relay pairings and the relay alone, so update it")
+                return
+            }
             let relayStopped = (obj["relay_stopped"] as? Bool) ?? false
             let pairingsText = "\(pairings) relay pairing\(pairings == 1 ? "" : "s")"
             print("revoked \(grantsText), \(clientsText) and \(pairingsText)" + (relayStopped ? "; the relay is off" : ""))

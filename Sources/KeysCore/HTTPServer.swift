@@ -1342,10 +1342,18 @@ final class APIHandler: @unchecked Sendable {
         }
         let caller = JSONValue.string(obj["caller"]).map { String($0.prefix(32)) } ?? "mcp"
         let grants = service.revokeGrants(key: key, reason: "revoked", caller: caller)
-        let clients = try service.revokeGatewayClients(key: key, caller: caller)
         // Tokens first, so a relayed call already in flight meets a 401 before the socket
-        // closes under it.
-        let pairings = key == nil ? try service.revokeAllRelayPairings() : 0
+        // closes under it. Stopping the relay cannot fail, so a catalog write that throws
+        // (a busy database) must not leave it running: the kill switch closes it anyway.
+        let clients: Int
+        let pairings: Int
+        do {
+            clients = try service.revokeGatewayClients(key: key, caller: caller)
+            pairings = key == nil ? try service.revokeAllRelayPairings() : 0
+        } catch {
+            if key == nil { service.stopRelayForRevoke() }
+            throw error
+        }
         let relayStopped = key == nil ? service.stopRelayForRevoke() : false
         return HTTPResponse.json(200, [
             "revoked_grants": grants.count,

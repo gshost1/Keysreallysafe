@@ -163,8 +163,9 @@ keys relay pair require off # one Touch ID — lowering enforcement needs you pr
 together with every grant and client token, and turn the app's relay off, so
 the kill switch also closes the one way in from outside the Mac. With
 `--key` they end only that key's grants and client tokens and leave
-pairings and the relay alone. A `keys relay` running in a Terminal keeps its
-socket, but every token it could carry is already refused.
+pairings and the relay alone. A `keys relay` running in a Terminal is another
+process and keeps its socket until you stop it there; every token it carried
+is refused, but a token issued afterwards would work through it again.
 
 Because the codes are new but the frame types are not, the protocol stays
 version 1: an older Worker that predates this mapping degrades a pairing
