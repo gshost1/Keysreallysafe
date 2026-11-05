@@ -1101,9 +1101,10 @@ final class KeysService: @unchecked Sendable {
 
     static func heldAccount(_ id: Int64) -> String { "client-\(id)" }
 
+    /// Labels are stored cut to 80 characters, so a longer held label could never be found again.
     static func validateHeldLabel(_ label: String) throws {
-        do { try KeyName.validate(label) } catch {
-            throw AppError.usage("a held token needs a --label like hermes ([a-z0-9][a-z0-9._-]*)")
+        guard label.count <= 80, (try? KeyName.validate(label)) != nil else {
+            throw AppError.usage("a held token needs a --label like hermes ([a-z0-9][a-z0-9._-]*, at most 80 characters)")
         }
     }
 
@@ -1117,16 +1118,20 @@ final class KeysService: @unchecked Sendable {
     /// held client with the same label, so re-running setup replaces rather than accumulates.
     /// A token the Keychain would not take is revoked at once: an unheld `--hold` token would
     /// be a live capability nobody can ever read back.
-    private func storeHeldToken(_ issued: (token: String, client: GatewayClient), caller: String) throws {
+    func storeHeldToken(_ issued: (token: String, client: GatewayClient), caller: String) throws {
         guard let store = heldTokens else { throw AppError.usage("this process cannot hold a client token") }
         do {
+            // A leftover item under this id (a catalog recreated beside an old Keychain) is
+            // not this client's token; it must not make a just-approved issue fail.
+            forgetHeldToken(issued.client.id)
             try store.add(name: Self.heldAccount(issued.client.id), secret: issued.token)
         } catch {
             _ = try? catalog.revokeGatewayClient(id: issued.client.id, keyName: issued.client.keyName, at: UTC.iso(Date()))
             try? recordKeyEvent(name: issued.client.keyName, action: "client_revoke", caller: caller, detail: "#\(issued.client.id) not held")
             throw error
         }
-        for old in try catalog.heldGatewayClients(label: issued.client.label) where old.id != issued.client.id {
+        // Only older rows: two issues racing under one label must not revoke each other.
+        for old in try catalog.heldGatewayClients(label: issued.client.label) where old.id < issued.client.id {
             if old.revokedAt == nil,
                try catalog.revokeGatewayClient(id: old.id, keyName: old.keyName, at: UTC.iso(Date())) {
                 try? recordKeyEvent(name: old.keyName, action: "client_revoke", caller: caller, detail: "#\(old.id) replaced by #\(issued.client.id)")
@@ -1159,8 +1164,24 @@ final class KeysService: @unchecked Sendable {
             forgetHeldToken(newest.id)
             return .unavailable("not_found")
         }
-        try? recordKeyEvent(name: newest.keyName, action: "client_held_read", caller: caller, detail: "#\(newest.id) \(label)")
+        if heldReadAuditDue(newest.id, now: now) {
+            try? recordKeyEvent(name: newest.keyName, action: "client_held_read", caller: caller, detail: "#\(newest.id) \(label)")
+        }
         return .active(token: token, client: newest)
+    }
+
+    /// A secret source can read on every start or cron fire; one audit row per client per
+    /// hour keeps the read visible without pushing issue and revoke rows out of `keys log`.
+    private let heldReadAuditLock = NSLock()
+    private var heldReadAudited: [Int64: Date] = [:]
+    static let heldReadAuditWindow: TimeInterval = 3600
+
+    private func heldReadAuditDue(_ id: Int64, now: Date) -> Bool {
+        heldReadAuditLock.withLock {
+            if let last = heldReadAudited[id], now.timeIntervalSince(last) < Self.heldReadAuditWindow { return false }
+            heldReadAudited[id] = now
+            return true
+        }
     }
 
     private func forgetHeldToken(_ id: Int64) {

@@ -333,13 +333,15 @@ keys client token --label hermes --json    # no prompt; stdout carries the token
 ```
 
 The issue prompt names the label and the days, and its `--json` line never
-carries the token. The label must match `[a-z0-9][a-z0-9._-]*`; a new held
+carries the token. The label must match `[a-z0-9][a-z0-9._-]*` (at most 80
+characters); a new held
 token replaces (revokes) the earlier one with the same label. `keys client
 token --json` prints one line: `token`, `base_url`, `key`, `label`,
 `client_id`, `expires_at`, `methods`, `path_prefix` and `gateway_on`. It exits
 2 when the newest held token under the label is missing, expired or revoked
 (the `--json` line is `{"error":"not_found"|"expired"|"revoked","label":…}`),
-and 6 when Keysrs cannot be reached. `gateway_on: false` means Keysrs restarted
+and 6 when Keysrs cannot be reached (like `keys grant`, it opens Keysrs first
+when it is not running). `gateway_on: false` means Keysrs restarted
 and has not loaded the key yet: the token is valid, but calls are refused until
 `keys gateway on <key>` (one Touch ID).
 
@@ -347,8 +349,8 @@ The trade-off is stated plainly: while it lives, any process running as you
 can read a held token without Touch ID, exactly as it could read a token
 `keys wrap` wrote into an env file. Keep the scope (methods, path prefix) and
 the days small. Revoking — `keys client revoke`, `keys revoke --all`, deleting
-the key, purge — deletes the held copy too, and each read is in `keys log` as
-`client_held_read`.
+the key, purge — deletes the held copy too, and reads show in `keys log` as
+`client_held_read` (at most one row per token per hour).
 
 For a machine you can SSH to, `keys tunnel` carries the loopback gateway there
 without opening a port on the Mac. For a managed agent that accepts no inbound

@@ -144,6 +144,48 @@ final class HeldClientTokenTests: XCTestCase {
         XCTAssertNotNil(rows[0].revokedAt, "a token nobody can read back must not stay live")
     }
 
+    func testALeftoverKeychainItemUnderTheSameIDDoesNotFailTheIssue() throws {
+        let (rig, store) = try makeRig()
+        defer { rig.stop() }
+        // The next client id in a fresh catalog is 1; an old Keychain still holds client-1.
+        try store.add(name: KeysService.heldAccount(1), secret: GatewayClientToken.generate())
+        let issued = try rig.service.issueGatewayClient(name: "demo", label: "hermes", hold: true)
+        XCTAssertEqual(issued.client.id, 1)
+        XCTAssertEqual(held(store, 1), issued.token)
+        XCTAssertNil(try rig.service.gatewayClients(name: "demo").first?.revokedAt)
+    }
+
+    func testAnOlderIssueFinishingLateNeverRevokesTheNewerOne() throws {
+        let (rig, store) = try makeRig()
+        defer { rig.stop() }
+        let older = try rig.service.issueGatewayClient(name: "demo", label: "hermes", hold: true)
+        let newer = try rig.service.issueGatewayClient(name: "demo", label: "hermes", hold: true)
+        // The older racer's replace step runs last.
+        try rig.service.storeHeldToken(older, caller: "cli")
+        XCTAssertNil(try rig.service.gatewayClients(name: "demo").first { $0.id == newer.client.id }?.revokedAt)
+        XCTAssertEqual(held(store, newer.client.id), newer.token)
+        guard case .active(let token, _) = try rig.service.heldClientToken(label: "hermes") else { return XCTFail("expected active") }
+        XCTAssertEqual(token, newer.token)
+    }
+
+    func testLabelsLongerThanTheStoredLabelAreRefused() throws {
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
+        XCTAssertNoThrow(try rig.service.issueGatewayClient(name: "demo", label: String(repeating: "a", count: 80), hold: true))
+        XCTAssertThrowsError(try rig.service.issueGatewayClient(name: "demo", label: String(repeating: "a", count: 81), hold: true))
+    }
+
+    func testReadsAreAuditedAtMostOncePerHourPerToken() throws {
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
+        _ = try rig.service.issueGatewayClient(name: "demo", label: "hermes", hold: true)
+        let t0 = Date()
+        for i in 0..<5 { _ = try rig.service.heldClientToken(label: "hermes", now: t0.addingTimeInterval(Double(i))) }
+        _ = try rig.service.heldClientToken(label: "hermes", now: t0.addingTimeInterval(3601))
+        let reads = try rig.service.keyEvents(name: "demo").filter { $0.action == "client_held_read" }
+        XCTAssertEqual(reads.count, 2)
+    }
+
     // MARK: - The control route
 
     func testRouteIsTokenGatedAndAnswersWhyNot() throws {

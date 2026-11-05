@@ -1231,8 +1231,8 @@ struct ClientTokenCommand: ParsableCommand {
         abstract: "Hand back a held client token without Touch ID (see keys client issue --hold).",
         discussion: """
             Prints the newest token held under --label while it is active. Exit 2 when there is \
-            none, or it expired or was revoked (--json says which); exit 6 when Keysrs is not \
-            running. gateway_on false means Keysrs restarted and the key is not loaded yet: \
+            none, or it expired or was revoked (--json says which). Like keys grant, it opens \
+            Keysrs when it is not running and exits 6 only when it cannot be reached. gateway_on false means Keysrs restarted and the key is not loaded yet: \
             run keys gateway on <key>. Treat stdout as a secret.
             """
     )
@@ -1248,7 +1248,7 @@ struct ClientTokenCommand: ParsableCommand {
         let obj: [String: Any]
         do {
             obj = try client.call(method: "POST", path: "/api/clients/held/token", body: ["label": label, "caller": "cli"], expect: 200)
-        } catch AppError.notFound(let reason) {
+        } catch AppError.notFound(let reason) where ["not_found", "expired", "revoked"].contains(reason) {
             if json { try JSONValue.printLine(["error": reason, "label": label]) }
             throw AppError.notFound("held token \(label) (\(reason)); issue one with: keys client issue <key> --label \(label) --hold")
         }
