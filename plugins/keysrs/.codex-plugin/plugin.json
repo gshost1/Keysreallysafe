@@ -1,6 +1,6 @@
 {
   "name": "keysrs",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "Agent surface for Keysrs, the local Mac API-key vault: the keysrs skill and the `keys mcp` server. Needs Keysrs.app on macOS (brew install --cask gshost1/keysrs/keysrs, or keysrs.com).",
   "author": { "name": "Keysrs", "url": "https://keysrs.com" },
   "homepage": "https://keysrs.com",
