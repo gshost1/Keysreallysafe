@@ -1,21 +1,5 @@
 import Foundation
 
-enum OpenAIEstimate {
-    /// Input already includes cached reads; reasoning is billed as output.
-    static func usd(model: String, input: Int, output: Int, cacheRead: Int, reasoning: Int) -> Double? {
-        ModelPrices.usd(model: model, input: input, output: output.saturatingAdding(reasoning), cacheRead: cacheRead, cacheWrite: 0,
-                        inputIncludesCacheRead: true)
-    }
-}
-
-enum ClaudeEstimate {
-    /// Cache reads and writes are billed on top of input; writes at 1.25x input.
-    static func usd(model: String, input: Int, output: Int, cacheCreate: Int, cacheRead: Int) -> Double? {
-        ModelPrices.usd(model: model, input: input, output: output, cacheRead: cacheRead, cacheWrite: cacheCreate,
-                        inputIncludesCacheRead: false)
-    }
-}
-
 extension Int {
     /// `self + other`, held at Int.max or Int.min instead of trapping. A stored row can carry any
     /// count a buggy or hostile source wrote, and one of them must not take `keys spend` or the
@@ -29,28 +13,16 @@ extension Int {
 }
 
 enum TokenTotals {
-    /// Claude includes cache tokens; Codex and Grok exclude cached reads and include reasoning;
-    /// Droid's log bills every bucket it reports, so all five count; a gateway call follows its
-    /// provider's API.
+    /// A gateway call counts tokens the way its provider's API reports them: Anthropic's
+    /// cache buckets sit beside input, OpenAI-style input already includes cached reads.
     static func normalized(_ event: UsageEvent) -> Int {
         func sum(_ parts: Int...) -> Int { parts.reduce(0) { $0.saturatingAdding($1) } }
         let (i, o, r, w, t) = (event.inputTokens, event.outputTokens, event.cachedReadTokens,
                                event.cacheCreationTokens, event.reasoningTokens)
-        switch event.source {
-        case "claude-local", "claude-remote":
+        if Providers.provider(id: event.provider)?.api == "anthropic" {
             return sum(i, o, r, w)
-        case "codex-local", "grok-local":
-            return sum(i, o, t)
-        case "droid-local", "droid-remote":
-            return sum(i, o, r, w, t)
-        case "gateway":
-            if Providers.provider(id: event.provider)?.api == "anthropic" {
-                return sum(i, o, r, w)
-            }
-            return sum(i, o, t)
-        default:
-            return sum(i, o, r, w, t)
         }
+        return sum(i, o, t)
     }
 }
 
@@ -175,169 +147,67 @@ struct SpendQueries {
     func report(
         range: SpendRange,
         by: SpendGroup,
-        source: SourceFilter,
         now: Date,
         timeZone: TimeZone,
         key: String? = nil,
         provider: String? = nil
     ) throws -> SpendReport {
         let (start, end) = range.interval(now: now, timeZone: timeZone)
-        let events = try db.usageEvents(
-            from: UTC.iso(start), to: UTC.iso(end), source: source, key: key, provider: provider
-        )
+        let events = try db.usageEvents(from: UTC.iso(start), to: UTC.iso(end), key: key, provider: provider)
         var assembled = Self.assemble(
-            events: events,
-            range: range,
-            by: by,
-            source: source,
-            start: start,
-            end: end,
-            now: now,
-            timeZone: timeZone,
-            keyed: key != nil
+            events: events, range: range, by: by, start: start, end: end, now: now, timeZone: timeZone
         )
-        assembled.lastIngestAt = try db.lastIngestAt()
         assembled.catalogVersion = try db.catalogVersion()
         return assembled
     }
 
     static func assemble(
-        events allEvents: [UsageEvent],
+        events: [UsageEvent],
         range: SpendRange,
         by: SpendGroup,
-        source: SourceFilter,
         start: Date,
         end: Date,
         now: Date,
-        timeZone: TimeZone,
-        keyed: Bool = false
+        timeZone: TimeZone
     ) -> SpendReport {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = timeZone
 
         var totals = SpendTotals()
-        // `source=keys` is the gateway's own ledger, so a gateway call stays in it even when a
-        // local log recorded the same upstream request. Dropping the correlated copy is how the
-        // local scope avoids counting one call twice; here there is no local figure to protect.
-        let keysMode = source == .keys
-        let (events, correlated) = keysMode ? (allEvents, 0) : dropCorrelatedGatewayEvents(allEvents)
-        totals.gatewayCorrelatedCalls = correlated
-        // Rows, daily buckets and hourly points follow the headline: without a key filter they
-        // are the local ledger, and gateway calls appear only in the gateway totals. A keyed
-        // report is the gateway's own ledger (local events carry no key), so everything shows.
-        let charted = keyed || keysMode ? events : events.filter { $0.source != "gateway" }
-        var grokTicks: Int64 = 0
-        var claudeEstimate: Double = 0
-        var hasClaudeEstimate = false
-        var openaiEstimate: Double = 0
-        var hasOpenAIEstimate = false
-        var claudeUnpriced = Set<String>()
-        var openaiUnpriced = Set<String>()
-        var gatewayEstimate: Double = 0
-        var hasGatewayEstimate = false
-
-        var gatewayUnpriced = Set<String>()
+        var estimate: Double = 0
+        var hasEstimate = false
+        var unpriced = Set<String>()
         for event in events {
-            if event.source == "gateway" {
-                // Separate ledger. See SpendTotals.usdEstimate.
-                let tok = TokenTotals.normalized(event)
-                totals.gatewayTokens.saturatingAdd(tok)
-                totals.gatewayCalls.saturatingAdd(1)
-                if keysMode {
-                    // This report is the gateway ledger, so its token totals are the headline
-                    // ones and agree with the rows and buckets below. Dollars stay in the
-                    // gateway fields: unpriced calls must not read as zero.
-                    totals.inputTokens.saturatingAdd(event.inputTokens)
-                    totals.outputTokens.saturatingAdd(event.outputTokens)
-                    totals.cachedReadTokens.saturatingAdd(event.cachedReadTokens)
-                    totals.reasoningTokens.saturatingAdd(event.reasoningTokens)
-                    totals.tokens.saturatingAdd(tok)
-                }
-                if let est = gatewayUsd(event) {
-                    gatewayEstimate += est
-                    hasGatewayEstimate = true
-                    totals.gatewayPricedTokens.saturatingAdd(tok)
-                } else {
-                    gatewayUnpriced.insert(event.model.isEmpty ? "unknown" : event.model)
-                    totals.gatewayUnpricedTokens.saturatingAdd(tok)
-                    totals.gatewayUnpricedCalls.saturatingAdd(1)
-                }
-                continue
-            }
+            let tok = TokenTotals.normalized(event)
             totals.inputTokens.saturatingAdd(event.inputTokens)
             totals.outputTokens.saturatingAdd(event.outputTokens)
             totals.cachedReadTokens.saturatingAdd(event.cachedReadTokens)
             totals.reasoningTokens.saturatingAdd(event.reasoningTokens)
-            totals.tokens.saturatingAdd(TokenTotals.normalized(event))
-            if RemoteImport.isRemote(event.source) {
-                totals.remoteTokens.saturatingAdd(TokenTotals.normalized(event))
-            }
-            if event.source == "grok-local", let ticks = event.costUsdTicks {
-                grokTicks += ticks
-            }
-            if event.source == "claude-local" {
-                let tok = TokenTotals.normalized(event)
-                totals.claudeTokens.saturatingAdd(tok)
-                if let est = ClaudeEstimate.usd(
-                    model: event.model,
-                    input: event.inputTokens,
-                    output: event.outputTokens,
-                    cacheCreate: event.cacheCreationTokens,
-                    cacheRead: event.cachedReadTokens
-                ) {
-                    claudeEstimate += est
-                    hasClaudeEstimate = true
-                    totals.claudePricedTokens.saturatingAdd(tok)
-                } else {
-                    claudeUnpriced.insert(event.model)
-                    totals.claudeUnpricedTokens.saturatingAdd(tok)
-                }
-            }
-            if event.source == "codex-local" {
-                let tok = TokenTotals.normalized(event)
-                totals.openaiTokens.saturatingAdd(tok)
-                if let est = OpenAIEstimate.usd(
-                    model: event.model,
-                    input: event.inputTokens,
-                    output: event.outputTokens,
-                    cacheRead: event.cachedReadTokens,
-                    reasoning: event.reasoningTokens
-                ) {
-                    openaiEstimate += est
-                    hasOpenAIEstimate = true
-                    totals.openaiPricedTokens.saturatingAdd(tok)
-                } else {
-                    openaiUnpriced.insert(event.model)
-                    totals.openaiUnpricedTokens.saturatingAdd(tok)
-                }
+            totals.tokens.saturatingAdd(tok)
+            totals.gatewayTokens.saturatingAdd(tok)
+            totals.gatewayCalls.saturatingAdd(1)
+            // Dollars stay apart from tokens: an unpriced call must not read as zero.
+            if let est = gatewayUsd(event) {
+                estimate += est
+                hasEstimate = true
+                totals.gatewayPricedTokens.saturatingAdd(tok)
+            } else {
+                unpriced.insert(event.model.isEmpty ? "unknown" : event.model)
+                totals.gatewayUnpricedTokens.saturatingAdd(tok)
+                totals.gatewayUnpricedCalls.saturatingAdd(1)
             }
         }
-        totals.grokUsd = Ticks.usd(grokTicks)
-        totals.claudeUsdEstimate = hasClaudeEstimate ? claudeEstimate : nil
-        totals.openaiUsdEstimate = hasOpenAIEstimate ? openaiEstimate : nil
-        totals.gatewayUsdEstimate = hasGatewayEstimate ? gatewayEstimate : nil
-        totals.claudeUnpricedModels = claudeUnpriced.sorted()
-        totals.openaiUnpricedModels = openaiUnpriced.sorted()
-        totals.gatewayUnpricedModels = gatewayUnpriced.sorted()
-        var grand = totals.grokUsd
-        if let est = totals.claudeUsdEstimate { grand += est }
-        if let est = totals.openaiUsdEstimate { grand += est }
-        // Gateway dollars stay in gatewayUsdEstimate. Adding them here double-counted every
-        // Claude Code or Codex call that went through the gateway.
-        totals.usdEstimate = keysMode ? nil : grand
+        totals.gatewayUsdEstimate = hasEstimate ? estimate : nil
+        totals.gatewayUnpricedModels = unpriced.sorted()
 
         let rows: [SpendRow]
         switch by {
         case .model, .hour:
-            rows = groupByModel(charted)
-        case .session:
-            rows = groupBySession(charted)
-        case .project:
-            rows = groupByProject(charted)
+            rows = groupByModel(events)
         case .key:
-            rows = groupByRoute(charted, label: Self.keyLabel)
+            rows = groupByRoute(events, label: Self.keyLabel)
         case .provider:
-            rows = groupByRoute(charted, label: Self.providerLabel)
+            rows = groupByRoute(events, label: Self.providerLabel)
         }
 
         let series: (UsageEvent) -> String = switch by {
@@ -345,17 +215,15 @@ struct SpendQueries {
         case .provider: Self.providerLabel
         default: \.model
         }
-        let daily = dailyPoints(charted, calendar: cal, byProject: by == .project, series: series)
+        let daily = dailyPoints(events, calendar: cal, series: series)
         // Today draws hourly points; a by=key or by=provider report over today carries them too,
         // stacked by the same series as its rows.
         let points = by == .hour || (range == .today && (by == .key || by == .provider))
-            ? hourlyPoints(charted, now: now, timeZone: timeZone, series: series)
+            ? hourlyPoints(events, now: now, timeZone: timeZone, series: series)
             : []
         return SpendReport(
             range: range,
             by: by,
-            source: source,
-            caption: totals.remoteTokens > 0 ? SpendReport.captionTextWithCloud : SpendReport.captionText,
             totals: totals,
             rows: rows,
             daily: daily,
@@ -367,46 +235,9 @@ struct SpendQueries {
         )
     }
 
-    /// A gateway event whose prompt id equals a local event's prompt id is the same upstream
-    /// call (the gateway stores the provider's request id; Claude Code stores it as
-    /// `requestId`). The local event is authoritative, so the gateway copy is dropped.
-    /// Only exact ids match; nothing is merged by time or model.
-    static func dropCorrelatedGatewayEvents(_ events: [UsageEvent]) -> ([UsageEvent], Int) {
-        var localIds = Set<String>()
-        for event in events where event.source != "gateway" && !event.promptId.isEmpty {
-            localIds.insert(event.promptId)
-        }
-        if localIds.isEmpty { return (events, 0) }
-        var dropped = 0
-        let kept = events.filter { event in
-            if event.source == "gateway", localIds.contains(event.promptId) {
-                dropped += 1
-                return false
-            }
-            return true
-        }
-        return (kept, dropped)
-    }
-
-    /// What one event cost: `usd` from the tool's own receipt (Grok logs its charge), or
-    /// `estimate` from list prices. Nil means unknown, never zero.
-    static func cost(_ event: UsageEvent) -> (usd: Double?, estimate: Double?) {
-        switch event.source {
-        case "grok-local":
-            return (event.costUsdTicks.map(Ticks.usd), nil)
-        case "claude-local":
-            return (nil, ClaudeEstimate.usd(model: event.model, input: event.inputTokens, output: event.outputTokens,
-                                            cacheCreate: event.cacheCreationTokens, cacheRead: event.cachedReadTokens))
-        case "codex-local":
-            return (nil, OpenAIEstimate.usd(model: event.model, input: event.inputTokens, output: event.outputTokens,
-                                            cacheRead: event.cachedReadTokens, reasoning: event.reasoningTokens))
-        default:
-            return (nil, gatewayUsd(event))
-        }
-    }
-
+    /// What one call cost: the provider's receipt, else a list-price estimate. Nil means
+    /// unknown, never zero.
     static func gatewayUsd(_ event: UsageEvent) -> Double? {
-        guard event.source == "gateway" else { return nil }
         // A reported zero is a known zero; only an absent receipt is unknown.
         if let ticks = event.costUsdTicks { return Ticks.usd(ticks) }
         // The recorder normalizes absent token counts to zero, so a call whose provider reported
@@ -425,28 +256,10 @@ struct SpendQueries {
         )
     }
 
-    private static func projectName(_ cwd: String?) -> String {
-        guard let cwd, !cwd.isEmpty else { return "" }
-        return URL(fileURLWithPath: cwd).lastPathComponent
-    }
-
     private static func byTotal(_ lhs: SpendRow, _ rhs: SpendRow) -> Bool? {
         let lu = lhs.usd ?? lhs.usdEstimate ?? 0
         let ru = rhs.usd ?? rhs.usdEstimate ?? 0
         return lu != ru ? lu > ru : nil
-    }
-
-    private static func groupByProject(_ events: [UsageEvent]) -> [SpendRow] {
-        var acc: [String: SpendRow] = [:]
-        for event in events {
-            let cwd = event.cwd ?? ""
-            acc[cwd, default: SpendRow(cwd: event.cwd, project: projectName(event.cwd))].add(event)
-        }
-        return acc.values.sorted { lhs, rhs in
-            if let order = byTotal(lhs, rhs) { return order }
-            if (lhs.project ?? "") != (rhs.project ?? "") { return (lhs.project ?? "") < (rhs.project ?? "") }
-            return (lhs.cwd ?? "") < (rhs.cwd ?? "")
-        }
     }
 
     private static func groupByModel(_ events: [UsageEvent]) -> [SpendRow] {
@@ -455,9 +268,7 @@ struct SpendQueries {
         for event in events {
             let accKey = AccKey(model: event.model, key: event.keyName)
             var row = acc[accKey] ?? SpendRow(model: event.model, key: event.keyName)
-            // Only a gateway call has a vault key and therefore a provider to name. Local rows
-            // keep provider nil so that adding this field does not split any existing grouping.
-            if event.source == "gateway", !event.provider.isEmpty { row.provider = event.provider }
+            if !event.provider.isEmpty { row.provider = event.provider }
             row.add(event)
             acc[accKey] = row
         }
@@ -496,30 +307,9 @@ struct SpendQueries {
         }
     }
 
-    private static func groupBySession(_ events: [UsageEvent]) -> [SpendRow] {
-        struct Key: Hashable { var source: String; var session: String }
-        var acc: [Key: SpendRow] = [:]
-        var models: [Key: Set<String>] = [:]
-        for event in events {
-            let key = Key(source: event.source, session: event.sessionId)
-            var row = acc[key] ?? SpendRow(sessionId: event.sessionId, source: event.source)
-            if row.cwd == nil { row.cwd = event.cwd }
-            if row.title == nil { row.title = event.sessionTitle }
-            row.add(event)
-            if let keyName = event.keyName { row.key = keyName }
-            acc[key] = row
-            models[key, default: []].insert(event.model)
-        }
-        return acc.keys.sorted { $0.session < $1.session }.map { key in
-            var row = acc[key]!
-            row.models = (models[key] ?? []).sorted()
-            return row
-        }
-    }
-
     /// Chart buckets: one per (bucket, series), sorted by both. `bucket` returns nil to skip an event.
-    /// Each bucket's token total is the row's own counted total — the same per-source rule the
-    /// headline rows carry, so a bar and a legend row cannot disagree about the same records.
+    /// Each bucket's token total is the row's own counted total, so a bar and a legend row
+    /// cannot disagree about the same records.
     private static func points(
         _ events: [UsageEvent], bucket: (Date) -> String?, series: (UsageEvent) -> String
     ) -> [(bucket: String, series: String, row: SpendRow, tokens: Int)] {
@@ -539,14 +329,13 @@ struct SpendQueries {
     }
 
     private static func dailyPoints(
-        _ events: [UsageEvent], calendar: Calendar, byProject: Bool, series: @escaping (UsageEvent) -> String = \.model
+        _ events: [UsageEvent], calendar: Calendar, series: @escaping (UsageEvent) -> String = \.model
     ) -> [DailyPoint] {
         let day = { (date: Date) -> String? in SpendRange.localDay(date, timeZone: calendar.timeZone) }
-        return points(events, bucket: day, series: { byProject ? ($0.cwd ?? "") : series($0) }).map { point in
-            let project = byProject ? projectName(point.series) : nil
-            return DailyPoint(
+        return points(events, bucket: day, series: series).map { point in
+            DailyPoint(
                 day: point.bucket,
-                model: project ?? point.series,
+                model: point.series,
                 usd: point.row.usd,
                 tokens: point.tokens,
                 inputTokens: point.row.inputTokens,
@@ -554,8 +343,6 @@ struct SpendQueries {
                 cachedReadTokens: point.row.cachedReadTokens,
                 cacheCreationTokens: point.row.cacheCreationTokens,
                 usdEstimate: point.row.usdEstimate,
-                project: project,
-                cwd: byProject && !point.series.isEmpty ? point.series : nil,
                 modelCalls: point.row.modelCalls
             )
         }
@@ -599,13 +386,9 @@ extension SpendRow {
         cacheCreationTokens.saturatingAdd(event.cacheCreationTokens)
         reasoningTokens.saturatingAdd(event.reasoningTokens)
         modelCalls.saturatingAdd(event.modelCalls ?? 0)
-        // The row's counted total is stated once, here, under the source's own rule: a row that
-        // mixes tools (by=model groups on the model id) would otherwise force every reader to
-        // guess a rule from the model name, and guess wrong for the second tool.
+        // The row's counted total is stated once, here, under the provider's own rule, so no
+        // reader has to guess one from the model name.
         countedTokens.saturatingAdd(TokenTotals.normalized(event))
-        if RemoteImport.isRemote(event.source) { remoteCountedTokens.saturatingAdd(TokenTotals.normalized(event)) }
-        let cost = SpendQueries.cost(event)
-        if let usd = cost.usd { self.usd = (self.usd ?? 0) + usd }
-        if let estimate = cost.estimate { usdEstimate = (usdEstimate ?? 0) + estimate }
+        if let estimate = SpendQueries.gatewayUsd(event) { usdEstimate = (usdEstimate ?? 0) + estimate }
     }
 }

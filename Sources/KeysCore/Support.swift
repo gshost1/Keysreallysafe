@@ -253,15 +253,11 @@ enum Paths {
         env("GROK_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok")
     }
 
-    static var claudeHome: URL {
-        env("CLAUDE_CONFIG_DIR") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
-    }
-
     static var codexHome: URL {
         env("CODEX_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     }
 
-    /// Droid's data folder. Droid itself has no override variable; `KEYS_DROID_HOME` is ours, for fixtures.
+    /// Droid's data folder. Droid itself has no override variable; `KEYS_DROID_HOME` is ours, for tests.
     static var droidHome: URL {
         env("KEYS_DROID_HOME") ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".factory")
     }

@@ -2,104 +2,42 @@ import XCTest
 @testable import KeysCore
 
 final class SpendQueryTests: XCTestCase {
-    func testOpenAISourceUsesCodexLocalEstimateNotGrokTicks() throws {
+    func testDailyByModelStacksOneSeriesPerModel() throws {
         let (db, _) = try makeDB()
-        _ = try CodexIngest.run(home: Fixtures.codexHome, db: db)
-        let now = UTC.parse("2026-09-03T18:00:00Z")!
+        _ = try db.insertUsage(grokEvent(at: "2026-01-16T10:00:00Z", usd: 5, prompt: "a", model: "grok-4.6-build"))
+        _ = try db.insertUsage(grokEvent(at: "2026-01-16T11:00:00Z", usd: 3.1, prompt: "b", model: "grok-4-fast"))
+        let now = UTC.parse("2026-01-16T18:00:00Z")!
         let report = try SpendQueries(db: db).report(
-            range: .month,
-            by: .model,
-            source: .openai,
-            now: now,
-            timeZone: TimeZone(secondsFromGMT: 0)!
+            range: .month, by: .model, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
         )
-        XCTAssertEqual(report.totals.grokUsd, 0, accuracy: 1e-12)
-        XCTAssertEqual(report.totals.openaiTokens, 250)
-        XCTAssertNotNil(report.totals.openaiUsdEstimate)
-        XCTAssertEqual(report.rows.first?.model, "gpt-5.4")
-        XCTAssertNotNil(report.rows.first?.usdEstimate)
-        XCTAssertNil(report.rows.first?.usd)
-    }
-
-    func testMonthRollupByModelMatchesFixtureMath() throws {
-        let (db, _) = try makeDB()
-        _ = try GrokIngest.run(home: Fixtures.grokHome, db: db)
-        let now = UTC.parse("2026-01-20T00:00:00Z")!
-        let report = try SpendQueries(db: db).report(
-            range: .month,
-            by: .model,
-            source: .all,
-            now: now,
-            timeZone: TimeZone(secondsFromGMT: 0)!
-        )
-        let grok46 = try XCTUnwrap(report.rows.first { $0.model == "grok-4.6-build" })
-        XCTAssertEqual(grok46.usd ?? 0, 14.1, accuracy: 1e-9)
-        XCTAssertEqual(grok46.inputTokens, 180)
-        XCTAssertFalse(report.rows.contains { $0.model == "unknown" })
-        XCTAssertEqual(report.totals.grokUsd, 16.2, accuracy: 1e-9)
+        XCTAssertEqual(Set(report.daily.map(\.model)), ["grok-4.6-build", "grok-4-fast"])
+        XCTAssertEqual(report.daily.count, 2)
+        let stacked = report.daily.compactMap(\.usdEstimate).reduce(0, +)
+        XCTAssertEqual(stacked, try XCTUnwrap(report.totals.gatewayUsdEstimate), accuracy: 1e-9)
+        XCTAssertEqual(stacked, 8.1, accuracy: 1e-9)
         XCTAssertEqual(report.caption, SpendReport.captionText)
     }
 
-    func testDailyByModelTwoSeriesFromTwoModelFixture() throws {
+    /// The report is the gateway ledger and nothing else: rows another tool's log reader stored
+    /// before 0.16 (still in a catalog until the launch cleanup runs) are never counted.
+    func testReportCountsOnlyGatewayRows() throws {
         let (db, _) = try makeDB()
-        let line = try Fixtures.grokTurnLine("sess-2")
-        let events = try GrokIngest.parseLine(line, sessionDirName: "sess-2", summary: nil)
-        for event in events { _ = try db.insertUsage(event) }
-        let now = UTC.parse("2026-01-16T18:00:00Z")!
+        _ = try db.insertUsage(grokEvent(at: "2026-01-16T10:00:00Z", usd: 2, prompt: "gw"))
+        _ = try db.insertUsage(.fixture(source: "claude-local", prompt: "old", model: "claude-sonnet-5",
+                                        at: "2026-01-16T11:00:00Z", provider: "anthropic", key: nil,
+                                        input: 1_000, output: 1_000))
         let report = try SpendQueries(db: db).report(
-            range: .month,
-            by: .model,
-            source: .grok,
-            now: now,
-            timeZone: TimeZone(secondsFromGMT: 0)!
+            range: .month, by: .model, now: UTC.parse("2026-01-20T00:00:00Z")!, timeZone: TimeZone(secondsFromGMT: 0)!
         )
-        let models = Set(report.daily.map(\.model))
-        XCTAssertEqual(models, ["grok-4.6-build", "grok-4-fast"])
-        XCTAssertEqual(report.daily.count, 2)
-        let stacked = report.daily.compactMap(\.usd).reduce(0, +)
-        XCTAssertEqual(stacked, report.totals.grokUsd, accuracy: 1e-9)
-        XCTAssertEqual(stacked, 8.1, accuracy: 1e-9)
-    }
-
-    func testClaudeUsdIsEstimateNotMixedIntoGrokTotal() throws {
-        let (db, _) = try makeDB()
-        _ = try GrokIngest.run(home: Fixtures.grokHome, db: db)
-        _ = try ClaudeIngest.run(home: Fixtures.claudeHome, db: db)
-        let now = UTC.parse("2026-01-20T00:00:00Z")!
-        let report = try SpendQueries(db: db).report(
-            range: .month,
-            by: .model,
-            source: .all,
-            now: now,
-            timeZone: TimeZone(secondsFromGMT: 0)!
-        )
-        XCTAssertEqual(report.totals.grokUsd, 16.2, accuracy: 1e-9)
-        XCTAssertGreaterThan(report.totals.claudeTokens, 0)
-        XCTAssertNotNil(report.totals.claudeUsdEstimate)
-        let claude = try XCTUnwrap(report.rows.first { $0.model == "claude-sonnet-5" })
-        XCTAssertNil(claude.usd)
-        XCTAssertNotNil(claude.usdEstimate)
-        let json = String(data: try JSONValue.data(report.jsonObject()), encoding: .utf8)!
-        XCTAssertFalse(json.contains(sentinelClaude))
-        XCTAssertFalse(json.contains(sentinelMessage))
-    }
-
-    func testBySessionIncludesCwdTitleWithoutMessageText() throws {
-        let (db, _) = try makeDB()
-        _ = try GrokIngest.run(home: Fixtures.grokHome, db: db)
-        let now = UTC.parse("2026-01-20T00:00:00Z")!
-        let report = try SpendQueries(db: db).report(
-            range: .month,
-            by: .session,
-            source: .grok,
-            now: now,
-            timeZone: TimeZone(secondsFromGMT: 0)!
-        )
-        XCTAssertTrue(report.rows.contains { $0.cwd == "/tmp/keysreallysafe-fixture" })
-        XCTAssertTrue(report.rows.contains { $0.title == "Synthetic fixture session" })
-        let json = String(data: try JSONValue.data(report.jsonObject()), encoding: .utf8)!
-        XCTAssertFalse(json.contains(sentinelMessage))
-        XCTAssertFalse(json.contains(sentinelRaw))
+        XCTAssertEqual(report.rows.map(\.model), ["grok-4.6-build"])
+        XCTAssertEqual(report.totals.gatewayCalls, 1)
+        XCTAssertEqual(report.totals.tokens, 15)
+        let totals = try XCTUnwrap(report.jsonObject()["totals"] as? [String: Any])
+        for gone in ["grok_usd", "claude_tokens", "openai_tokens", "remote_tokens", "usd_estimate", "gateway_correlated_calls"] {
+            XCTAssertNil(totals[gone], "\(gone) belonged to the subscription ledger")
+        }
+        XCTAssertNil(report.jsonObject()["source"])
+        XCTAssertNil(report.jsonObject()["last_ingest_at"])
     }
 
     func testMonthIntervalIsCalendarMonthInclusiveStartExclusiveEnd() {
@@ -136,11 +74,11 @@ final class SpendQueryTests: XCTestCase {
         _ = try db.insertUsage(grokEvent(at: UTC.iso(localDate(2026, 8, 31, 12, 0, timeZone: tz)), usd: 10, prompt: "aug"))
         _ = try db.insertUsage(grokEvent(at: UTC.iso(localDate(2026, 9, 2, 12, 0, timeZone: tz)), usd: 3, prompt: "sep"))
         let queries = SpendQueries(db: db)
-        let week = try queries.report(range: .week, by: .model, source: .grok, now: now, timeZone: tz)
-        let month = try queries.report(range: .month, by: .model, source: .grok, now: now, timeZone: tz)
-        XCTAssertEqual(week.totals.grokUsd, 13, accuracy: 1e-9)
-        XCTAssertEqual(month.totals.grokUsd, 3, accuracy: 1e-9)
-        XCTAssertGreaterThan(week.totals.grokUsd, month.totals.grokUsd)
+        let week = try queries.report(range: .week, by: .model, now: now, timeZone: tz)
+        let month = try queries.report(range: .month, by: .model, now: now, timeZone: tz)
+        XCTAssertEqual((week.totals.gatewayUsdEstimate ?? 0), 13, accuracy: 1e-9)
+        XCTAssertEqual((month.totals.gatewayUsdEstimate ?? 0), 3, accuracy: 1e-9)
+        XCTAssertGreaterThan((week.totals.gatewayUsdEstimate ?? 0), (month.totals.gatewayUsdEstimate ?? 0))
         XCTAssertEqual(week.startDay.prefix(7), "2026-08")
         XCTAssertEqual(month.startDay, "2026-09-01")
         XCTAssertEqual(month.endDay, "2026-09-30")
@@ -162,11 +100,11 @@ final class SpendQueryTests: XCTestCase {
         _ = try db.insertUsage(grokEvent(at: UTC.iso(localDate(2026, 9, 15, 12, 0, timeZone: tz)), usd: 2, prompt: "in-week"))
         _ = try db.insertUsage(grokEvent(at: UTC.iso(localDate(2026, 9, 22, 12, 0, timeZone: tz)), usd: 8, prompt: "later-week"))
         let queries = SpendQueries(db: db)
-        let week = try queries.report(range: .week, by: .model, source: .grok, now: now, timeZone: tz)
-        let month = try queries.report(range: .month, by: .model, source: .grok, now: now, timeZone: tz)
-        XCTAssertEqual(week.totals.grokUsd, 2, accuracy: 1e-9)
-        XCTAssertEqual(month.totals.grokUsd, 10, accuracy: 1e-9)
-        XCTAssertLessThanOrEqual(week.totals.grokUsd, month.totals.grokUsd)
+        let week = try queries.report(range: .week, by: .model, now: now, timeZone: tz)
+        let month = try queries.report(range: .month, by: .model, now: now, timeZone: tz)
+        XCTAssertEqual((week.totals.gatewayUsdEstimate ?? 0), 2, accuracy: 1e-9)
+        XCTAssertEqual((month.totals.gatewayUsdEstimate ?? 0), 10, accuracy: 1e-9)
+        XCTAssertLessThanOrEqual((week.totals.gatewayUsdEstimate ?? 0), (month.totals.gatewayUsdEstimate ?? 0))
     }
 
     func testInclusiveStartExclusiveEndOnUsageQuery() throws {
@@ -178,8 +116,8 @@ final class SpendQueryTests: XCTestCase {
         _ = try db.insertUsage(grokEvent(at: UTC.iso(start), usd: 5, prompt: "on-start"))
         _ = try db.insertUsage(grokEvent(at: UTC.iso(end.addingTimeInterval(-1)), usd: 6, prompt: "before-end"))
         _ = try db.insertUsage(grokEvent(at: UTC.iso(end), usd: 7, prompt: "on-end"))
-        let month = try SpendQueries(db: db).report(range: .month, by: .model, source: .grok, now: now, timeZone: tz)
-        XCTAssertEqual(month.totals.grokUsd, 11, accuracy: 1e-9)
+        let month = try SpendQueries(db: db).report(range: .month, by: .model, now: now, timeZone: tz)
+        XCTAssertEqual((month.totals.gatewayUsdEstimate ?? 0), 11, accuracy: 1e-9)
     }
 
     func testClaudePriceTableLongestPrefixAndCoverage() throws {
@@ -197,31 +135,29 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertEqual(ModelPrices.lookup("claude-haiku-4-5")?.inputPerMTok, 1)
 
         let million = 1_000_000
-        let opus5 = try XCTUnwrap(ClaudeEstimate.usd(
-            model: "claude-opus-5", input: million, output: million, cacheCreate: 0, cacheRead: 0
+        let opus5 = try XCTUnwrap(GatewayEstimate.usd(
+            model: "claude-opus-5", input: million, output: million, cacheRead: 0, cacheWrite: 0, api: "anthropic"
         ))
-        let opusGeneric = try XCTUnwrap(ClaudeEstimate.usd(
-            model: "claude-opus", input: million, output: million, cacheCreate: 0, cacheRead: 0
+        let opusGeneric = try XCTUnwrap(GatewayEstimate.usd(
+            model: "claude-opus", input: million, output: million, cacheRead: 0, cacheWrite: 0, api: "anthropic"
         ))
         XCTAssertEqual(opus5, 30, accuracy: 1e-9)
         XCTAssertEqual(opusGeneric, 90, accuracy: 1e-9)
-        XCTAssertEqual(opus5, opusGeneric / 3, accuracy: 1e-9)
 
         let (db, _) = try makeDB()
-        _ = try db.insertUsage(UsageEvent.fixture(source: "claude-local", session: "price", prompt: "fable", model: "claude-fable-5-1", input: 1000, output: 200))
-        _ = try db.insertUsage(UsageEvent.fixture(source: "claude-local", session: "price", prompt: "mystery", model: "claude-mystery", input: 50, output: 10))
+        _ = try db.insertUsage(.fixture(prompt: "fable", model: "claude-fable-5-1", provider: "anthropic", input: 1000, output: 200))
+        _ = try db.insertUsage(.fixture(prompt: "mystery", model: "claude-mystery", provider: "anthropic", input: 50, output: 10))
         let now = UTC.parse("2026-01-20T00:00:00Z")!
         let report = try SpendQueries(db: db).report(
-            range: .month, by: .model, source: .claude, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
+            range: .month, by: .model, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
         )
         let fable = try XCTUnwrap(report.rows.first { $0.model == "claude-fable-5-1" })
         XCTAssertNotNil(fable.usdEstimate)
         let mystery = try XCTUnwrap(report.rows.first { $0.model == "claude-mystery" })
         XCTAssertNil(mystery.usdEstimate)
-        XCTAssertEqual(report.totals.claudeUnpricedModels, ["claude-mystery"])
-        XCTAssertEqual(report.totals.claudeUnpricedTokens, 60)
-        XCTAssertEqual(report.totals.claudePricedTokens, 1200)
-        let json = report.jsonObject()["totals"] as! [String: Any]
+        XCTAssertEqual(report.totals.gatewayUnpricedModels, ["claude-mystery"])
+        XCTAssertEqual(report.totals.gatewayUnpricedTokens, 60)
+        XCTAssertEqual(report.totals.gatewayPricedTokens, 1200)
     }
 
     func testEmptySpendJSONIncludesIntervalKeys() throws {
@@ -229,7 +165,7 @@ final class SpendQueryTests: XCTestCase {
         let tz = Self.denver
         let now = localDate(2026, 9, 3, 12, 0, timeZone: tz)
         let report = try SpendQueries(db: db).report(
-            range: .week, by: .model, source: .all, now: now, timeZone: tz
+            range: .week, by: .model, now: now, timeZone: tz
         )
         XCTAssertTrue(report.rows.isEmpty)
         XCTAssertTrue(report.daily.isEmpty)
@@ -245,14 +181,14 @@ final class SpendQueryTests: XCTestCase {
 
     func testDailyPointsCarryTokenBucketsAndUsdEstimate() throws {
         let (db, _) = try makeDB()
-        _ = try ClaudeIngest.run(home: Fixtures.claudeHome, db: db)
+        _ = try db.insertUsage(UsageEvent(
+            source: "gateway", sessionId: "gw:claude", promptId: "req-1", model: "claude-sonnet-5",
+            occurredAt: "2026-01-15T12:00:00Z", provider: "anthropic", modelCalls: 1,
+            inputTokens: 200, outputTokens: 80, cachedReadTokens: 40, keyName: "claude"
+        ))
         let now = UTC.parse("2026-01-20T00:00:00Z")!
         let report = try SpendQueries(db: db).report(
-            range: .month,
-            by: .model,
-            source: .claude,
-            now: now,
-            timeZone: TimeZone(secondsFromGMT: 0)!
+            range: .month, by: .model, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
         )
         XCTAssertEqual(report.daily.count, 1)
         let point = try XCTUnwrap(report.daily.first)
@@ -261,9 +197,9 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertEqual(point.outputTokens, 80)
         XCTAssertEqual(point.cachedReadTokens, 40)
         XCTAssertEqual(point.cacheCreationTokens, 0)
-        XCTAssertEqual(point.tokens, 320)
-        let expected = ClaudeEstimate.usd(
-            model: "claude-sonnet-5", input: 200, output: 80, cacheCreate: 0, cacheRead: 40
+        XCTAssertEqual(point.tokens, 320, "Anthropic's cache reads sit beside input and count")
+        let expected = GatewayEstimate.usd(
+            model: "claude-sonnet-5", input: 200, output: 80, cacheRead: 40, cacheWrite: 0, api: "anthropic"
         )
         XCTAssertEqual(point.usdEstimate ?? 0, expected ?? 0, accuracy: 1e-12)
         let obj = report.jsonObject()["daily"] as! [[String: Any]]
@@ -281,11 +217,11 @@ final class SpendQueryTests: XCTestCase {
         _ = try db.insertUsage(grokEvent(at: UTC.iso(localDate(2026, 9, 4, 16, 0, timeZone: tz)), usd: 9, prompt: "future"))
         _ = try db.insertUsage(grokEvent(at: UTC.iso(localDate(2026, 9, 3, 23, 0, timeZone: tz)), usd: 3, prompt: "yesterday"))
         let hourly = try SpendQueries(db: db).report(
-            range: .today, by: .hour, source: .grok, now: now, timeZone: tz
+            range: .today, by: .hour, now: now, timeZone: tz
         )
         XCTAssertEqual(hourly.points.map(\.hour), ["2026-09-04T10:00", "2026-09-04T14:00"])
-        XCTAssertEqual(hourly.points[0].usd ?? 0, 1.5, accuracy: 1e-9)
-        XCTAssertEqual(hourly.points[1].usd ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(hourly.points[0].usdEstimate ?? 0, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(hourly.points[1].usdEstimate ?? 0, 0.5, accuracy: 1e-9)
         let json = hourly.jsonObject()
         let points = json["points"] as! [[String: Any]]
         XCTAssertEqual(points.count, 2)
@@ -294,11 +230,11 @@ final class SpendQueryTests: XCTestCase {
         XCTAssertNotNil(points[0]["usd_estimate"])
 
         let today = try SpendQueries(db: db).report(
-            range: .today, by: .model, source: .grok, now: now, timeZone: tz
+            range: .today, by: .model, now: now, timeZone: tz
         )
         XCTAssertEqual(today.daily.map(\.day), ["2026-09-04"])
         XCTAssertTrue(today.points.isEmpty)
-        XCTAssertEqual(today.totals.grokUsd, 11, accuracy: 1e-9)
+        XCTAssertEqual((today.totals.gatewayUsdEstimate ?? 0), 11, accuracy: 1e-9)
     }
 
     func testDailyBucketsUseLocalTimezoneNotUTC() throws {
@@ -307,64 +243,36 @@ final class SpendQueryTests: XCTestCase {
         let (db, _) = try makeDB()
         // 05:00 UTC on Sep 2 is 23:00 MDT on Sep 1.
         _ = try db.insertUsage(grokEvent(at: "2026-09-02T05:00:00Z", usd: 1.5, prompt: "late-local"))
-        let month = try SpendQueries(db: db).report(range: .month, by: .model, source: .grok, now: now, timeZone: tz)
+        let month = try SpendQueries(db: db).report(range: .month, by: .model, now: now, timeZone: tz)
         XCTAssertEqual(month.daily.map(\.day), ["2026-09-01"])
-        XCTAssertEqual(month.daily.first?.usd ?? 0, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(month.daily.first?.usdEstimate ?? 0, 1.5, accuracy: 1e-9)
     }
 
-    // A by=model row groups by the model id, so one row can mix tools — and each tool counts
-    // tokens under its own rule (Claude's cache buckets, Droid's every bucket). The row's raw
-    // buckets alone cannot answer "how many counted"; the chart needs the engine's per-row
-    // total, computed under each event's own source rule.
-    func testModelRowMixingToolsCountsEachSourceByItsOwnRule() throws {
+    // A by=model row groups by the model id, so one row can mix providers, and each provider's
+    // API counts tokens its own way: Anthropic's cache buckets sit beside input, OpenAI-style
+    // input already holds cached reads and reasoning is billed apart. The chart reads the
+    // engine's per-row total instead of re-deriving a rule from the model name.
+    func testModelRowMixingProvidersCountsEachCallByItsOwnRule() throws {
         let (db, _) = try makeDB()
-        // Claude Code: cache counts, its log carries no reasoning bucket. 1,000 + 200 + 400 + 100.
+        // Anthropic: 1,000 + 200 + 400 + 100.
         _ = try db.insertUsage(UsageEvent(
-            source: "claude-local", sessionId: "cc", promptId: "cc-1", model: "claude-sonnet-5",
+            source: "gateway", sessionId: "gw:a", promptId: "a-1", model: "claude-sonnet-5",
             occurredAt: "2026-10-10T20:00:00Z", provider: "anthropic",
-            inputTokens: 1_000, outputTokens: 200, cachedReadTokens: 400, cacheCreationTokens: 100
+            inputTokens: 1_000, outputTokens: 200, cachedReadTokens: 400, cacheCreationTokens: 100, keyName: "a"
         ))
-        // Droid saw the same model: every bucket its log reports counts. 100 + 50 + 25.
+        // An OpenAI-compatible router for the same model: 100 + 50 + 25.
         _ = try db.insertUsage(UsageEvent(
-            source: "droid-local", sessionId: "dr", promptId: "dr-1", model: "claude-sonnet-5",
-            occurredAt: "2026-10-10T21:00:00Z", provider: "anthropic",
-            inputTokens: 100, outputTokens: 50, reasoningTokens: 25
+            source: "gateway", sessionId: "gw:r", promptId: "r-1", model: "claude-sonnet-5",
+            occurredAt: "2026-10-10T21:00:00Z", provider: "openrouter",
+            inputTokens: 100, outputTokens: 50, cachedReadTokens: 30, reasoningTokens: 25, keyName: "r"
         ))
         let now = UTC.parse("2026-10-10T22:00:00Z")!
         let report = try SpendQueries(db: db).report(
-            range: .month, by: .model, source: .all, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
+            range: .month, by: .model, now: now, timeZone: TimeZone(secondsFromGMT: 0)!
         )
-        XCTAssertEqual(report.rows.count, 1, "one model id is one row, whichever tool used it")
-        let row = try XCTUnwrap(report.rows.first)
-        XCTAssertEqual(row.inputTokens, 1_100)
-        XCTAssertEqual(row.outputTokens, 250)
-        XCTAssertEqual(row.cachedReadTokens, 400)
-        XCTAssertEqual(row.cacheCreationTokens, 100)
-        XCTAssertEqual(row.reasoningTokens, 25)
-        // Not the raw bucket sum (1,875 + the reasoning a Claude row would drop): each source's
-        // own rule, added. 1,700 + 175.
-        XCTAssertEqual(row.countedTokens, 1_875)
-        let json = row.jsonObject()
-        XCTAssertEqual(json["counted_tokens"] as? Int, 1_875)
-    }
-
-    // The Chart's Droid filter counts every bucket Droid's log reports, by
-    // `TokenTotals.normalized`. (Fixture math: the October records of Fixtures/droid-home are
-    // 74,352 claude-sonnet-5 tokens and 956 gpt-6-pro tokens.)
-    func testDroidMonthChartRowsCountTheFixtureMonth() throws {
-        let (db, _) = try makeDB()
-        _ = try DroidIngest.run(home: Fixtures.droidHome, db: db)
-        let utc = TimeZone(identifier: "UTC")!
-        let now = UTC.parse("2026-10-10T22:00:00Z")!
-        let report = try SpendQueries(db: db).report(
-            range: .month, by: .model, source: .droid, now: now, timeZone: utc
-        )
-        XCTAssertEqual(report.rows.count, 2, "only the two October models are in this month")
-        XCTAssertEqual(Set(report.rows.compactMap(\.model)), ["claude-sonnet-5", "gpt-6-pro"])
-        XCTAssertEqual(report.rows.reduce(0) { $0 + $1.countedTokens }, 75_308)
-        // The weekly chart says the same thing: this calendar week holds both October records.
-        let week = try SpendQueries(db: db).report(range: .week, by: .model, source: .droid, now: now, timeZone: utc)
-        XCTAssertEqual(week.rows.reduce(0) { $0 + $1.countedTokens }, 75_308)
+        let rows = report.rows.filter { $0.model == "claude-sonnet-5" }
+        XCTAssertEqual(rows.reduce(0) { $0 + $1.countedTokens }, 1_700 + 175)
+        XCTAssertEqual(report.totals.tokens, 1_875)
     }
 
     private static let denver = TimeZone(identifier: "America/Denver")!

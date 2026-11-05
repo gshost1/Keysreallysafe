@@ -97,17 +97,14 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
 - No scraping. It does not open provider websites, cookies or browser sessions.
 - The usage catalog stores only counters and metadata. Gateway request bodies
   never reach that catalog.
-- No credentials from other tools. `~/.codex/auth.json` and
-  `~/.grok/auth.json` are never read, and nothing in Grok Bot's folder is
-  opened. Nothing under `~/.factory/sessions/` is read, and Droid's transcripts
-  (`*.jsonl`) and its auth files are never opened. From `~/.factory/logs/` only the
-  `[Agent] Streaming result` records of `droid-log-single.log` and its dated
-  rotations are read, and of those only the token counts, model id, session
-  id and timestamp are kept; the log's other record types carry message
-  content and are never parsed.
+- No credentials or logs from other tools. `~/.codex/auth.json` and
+  `~/.grok/auth.json` are never read. Since 2026-11-04 Keysrs reads no coding
+  tool's session logs either (Claude Code, Codex, Grok, Droid): the only usage
+  it records is the calls made through its own gateway.
 - No fake numbers, and no plan limits. Keysrs shows no quota windows,
-  percent-of-limit meters or remaining credit; it counts tokens from local
-  logs and labels list-price dollars as estimates.
+  percent-of-limit meters or remaining credit; it counts the tokens the
+  providers report on gateway calls and labels list-price dollars as
+  estimates.
 - No secret on screen by default. The key list shows names, never values.
   Copy, reveal, env and rotate ask for user presence every time.
 - No open gateway. A request through the gateway needs a grant token: one
@@ -154,51 +151,40 @@ The dashboard is dark by default (neutral grey, not blue-tinted). **Settings →
 keysrs.com light look; the choice is remembered on this Mac and does not follow the
 system appearance.
 
-**Usage** is the first thing you see: one quiet line with this month from the
-local logs, in tokens by default, with a switch on the line itself for USD. A first run with an empty
+**Usage** is the first thing you see: one quiet line with this month's calls
+through the gateway, in tokens by default, with a switch on the line itself for USD. A first run with an empty
 vault also gets a short getting-started guide there; it stays available under
 **Help** at the foot of the rail (or the `?` key).
 
 **Chart** starts on today by hour and switches to this week or this month by
-day (`D` / `W` / `M`). Two things this Mac pays for are charted, and `S`
-switches between them: **Subscriptions**, the tools' own local logs, and **API
-keys**, the local gateway's ledger. The filters underneath belong to whichever
-is chosen, and switching drops the ones that do not carry over. Figures are in
-tokens — and requests, where the ledger counts them — until USD is chosen: a
-token count is what this Mac measured, while a dollar figure is this repo's
-list-price table applied to it afterwards. `T` flips tokens and USD, the choice
-is remembered, and the Usage summary and the Keys list's gateway figures follow
-the same unit from their own switches. The model list under the chart shows
-every model by default, each with its own name, colour and filter however many
-a family has, and clicking one shows it alone. Each model wears its vendor's
-colour — Claude orange, OpenAI green, Grok blue, and the vendors Droid runs
-(Gemini, GLM, Kimi, DeepSeek, and anything unrecognized in grey) each their own
-palette — and the same model id coming from several tools is one series. `X` downloads the rows as CSV, `⇧C` copies the
-totals line as Markdown (both are also buttons in Settings).
+day (`D` / `W` / `M`). It charts one ledger: the calls this Mac routed through
+the local gateway with a key from the vault. Figures are in tokens and requests
+until USD is chosen: a token count is what the provider reported, while a
+dollar figure is the provider's receipt where it sent one, else this repo's
+list-price table applied afterwards. `T` steps through tokens, USD and
+requests, the choice is remembered, and the Usage summary and the Keys list's
+gateway figures follow the same unit from their own switches. The model list
+under the chart shows every model by default, each with its own name, colour
+and filter however many a family has, and clicking one shows it alone. Each
+model wears its vendor's colour — Claude orange, OpenAI green, Grok blue,
+Gemini, GLM, Kimi and DeepSeek their own palettes, anything unrecognized in
+grey — and the same model id served by several providers is one series. `X`
+downloads the rows as CSV, `⇧C` copies the totals line as Markdown (both are
+also buttons in Settings).
 
-Under **Subscriptions**, chips narrow the view to Grok, Claude, OpenAI or
-Droid. Everything here is estimated from what those tools wrote to their own logs on
-this Mac — not from a plan invoice. Claude and Codex dollars are
-list-price estimates and are labelled as such; Grok's come from its own cost
-log. With the Claude chip selected, `P` switches the breakdown to projects.
-
-Under **API keys** the chart is a different ledger: the calls this Mac routed
-through the local gateway with a key from the vault. Two pickers narrow it, in
-the order the billing works — first the provider (TypeSafe, the Vercel AI
-Gateway, or any other provider a vault key reached), then the key, both
-defaulting to all and both naming keys only, never values. A model served by
-more than one provider is a model under each of them rather than a source of
-its own. Requests lead the totals because every routed call is
-countable, and `T` adds a requests unit here alongside tokens and USD — a provider like TypeSafe's
-System One reports no tokens and no cost, so those calls are shown as requests
-with the cost left unknown rather than counted as zero. A partly priced range
-is shown as a floor (`≥ ≈ $…`), and that label stays visible under a model,
-provider, day or hour, because a bucket that mixes a priced call with an
-unpriced one still carries a number. Only routed requests are observable: a
-provider called directly, or with a key this Mac never proxied, leaves nothing
-to chart, so this view will not match a provider's own dashboard. The
-subscription sources are unaffected — gateway dollars are never folded into
-them, because a routed Claude Code or Codex call also appears in a local log.
+Two pickers narrow the chart, in the order the billing works — first the
+provider (TypeSafe, the Vercel AI Gateway, or any other provider a vault key
+reached), then the key, both defaulting to all and both naming keys only,
+never values — and the group chips break it down by model, key or provider.
+Requests lead the totals because every routed call is countable: a provider
+like TypeSafe's System One reports no tokens and no cost, so those calls are
+shown as requests with the cost left unknown rather than counted as zero. A
+partly priced range is shown as a floor (`≥ ≈ $…`), and that label stays
+visible under a model, provider, day or hour, because a bucket that mixes a
+priced call with an unpriced one still carries a number. Only routed requests
+are observable: a provider called directly, a subscription tool signed in to
+its own plan, or a key this Mac never proxied leaves nothing to chart, so this
+view will not match a provider's own dashboard.
 
 **Keys** is a flat list of the vault's keys: each row shows a provider-initials
 tile, the key's name and provider, when it was last used, a Copy button (`C`,
@@ -220,8 +206,8 @@ does, and `Esc` clears it — a provider filter shows one provider's keys, and
 the sort orders by name, recency, use or age, remembered across launches. `?`
 lists every shortcut.
 
-**Settings** holds what used to crowd the toolbar: the theme switch,
-**Ingest now** with the last ingest time, the CSV export and Copy totals, and
+**Settings** holds what used to crowd the toolbar: the theme switch, the CSV
+export and Copy totals, and
 the Agents and Privacy dialogs. The theme lives in this browser's storage, not
 in the catalog.
 
@@ -647,9 +633,7 @@ keys profile list [--json]
 keys profile remove <name>
 keys test <name> [--json]
 keys models <name> [--grep <text>] [--cached] [--json]
-keys ingest [all|grok|claude|openai|droid]
-keys usage import <file>...
-keys spend [--month|--week] [--json] [--by model|session|project]
+keys spend [--month|--week] [--json] [--by model|key|provider]
 keys version [--json]
 keys doctor
 keys log [--key <name>] [--failed] [--tail] [--limit N] [--json]
@@ -739,7 +723,7 @@ existed show `-` for what was not kept.
 `0` success; `1` a usage or HTTP error; `2` not found (also `keys test` and
 `keys models` when the provider has no read-only check endpoint, except
 `keys models --json`, which reports every failed check as `5`); `3` user
-presence or the Keychain; `4` ingest or catalog; `5` a failed provider check;
+presence or the Keychain; `4` the usage catalog; `5` a failed provider check;
 `6` an app-dependent command could not reach Keysrs: the command first
 tries to open the app and wait for it, and exit 6 comes with `Keysrs isn't
 running. Open Keysrs from Applications, then try again.` only when that
@@ -749,64 +733,20 @@ when the app is up but its gateway is off); `64` bad arguments. `keys env`,
 it ends.
 [docs/agents.md](agents.md) states the whole table an agent reads.
 
-## Local sources
+## Usage ledger
 
-| Source | Path | Feeds |
-|---|---|---|
-| Claude Code sessions | `~/.claude/projects/**/*.jsonl` | Claude tokens, estimate, per-project view |
-| Grok sessions | `~/.grok/sessions` | Grok dollars |
-| Droid logs | `~/.factory/logs/droid-log-single.log` and its dated rotations | Droid tokens (only the Streaming-result token fields, model id, session id and timestamp) |
-| Codex rollouts | `~/.codex/sessions/**/rollout-*.jsonl` | Codex tokens, estimate |
-| Gateway | in-process | dollars per key |
+The gateway records each call it routes: key, provider, model, the token
+counts the provider reported and its cost receipt if it sent one. Request and
+response bodies are never stored. Prices for calls without a receipt come from
+`Fixtures/models.json` (OpenRouter's list, refreshed by hand with
+`scripts/refresh-models.sh`) with a few hand-maintained rows that win on exact
+match.
 
-Ingest is incremental, reads logs in bounded chunks, commits in batches, and
-runs on a background queue on start, every five minutes, and on demand
-(`⌘R`). Claude subagent transcripts and Codex subagent rollouts are included
-in local token totals and estimated spend when their logs are present. Existing
-Claude subagent logs are picked up on the next scan. Subagent usage appears in
-the existing model/session/project breakdowns, without a separate subagent view.
-The cursor it keeps per file is a SHA-256 of the last 32 bytes, never
-the bytes themselves. Claude turns are counted once per message id even though Claude Code
-writes one log line per content block. Prices come from `Fixtures/models.json`
-(OpenRouter's list, refreshed by hand with `scripts/refresh-models.sh`) with a
-few hand-maintained rows that win on exact match.
-
-### Usage from off this Mac
-
-Claude Code cloud sessions and droid runs on another machine write their logs
-there, not here, so nothing above sees them. To count them, make an export
-where the usage happened and bring the file over:
-
-```sh
-python3 scripts/export-remote-usage.py -o usage.jsonl [--stream droid-stream.jsonl]   # in the cloud session
-keys usage import usage.jsonl                                                          # on the Mac
-```
-
-The script copies only usage: droid's Streaming-result token fields with the
-model and session ids, the `usage` block, model and ids of each Claude Code
-assistant turn, and, for a `droid exec -o stream-json` capture passed with
-`--stream`, the closing event's token totals. Prompts, answers, tool output,
-paths and Factory credits stay behind. Rows are stored as `droid-remote` and
-`claude-remote` and appear in the Chart under **Cloud** (and in All); they
-carry no dollar estimate. Droid's per-request lines keep each
-request's model, so a run that fell back from Claude to `kimi-k3` shows both. A
-stream-json total covers a whole session and is stored under the model
-`unattributed`; if the same session's per-request lines are imported too, they
-replace the part of the total they account for and the rest stays as
-`unattributed`. Rows this Mac already has from its own logs are skipped on
-import, in either order. Re-importing a file updates rows rather than adding
-them twice.
-Run the exporter where the usage happened, not on the Mac that runs Keysrs:
-exporting this Mac's own logs and importing them double-counts them. Keysrs
-skips rows it already has locally, but do not rely on that. The exporter keeps
-only plain token counts from 0 to 10^12, ids of up to 128 printable ASCII
-characters (no quotes, backslashes or control characters), and ISO-8601
-timestamps; a record with anything else is dropped and counted on stderr. A named `--stream` file or `--factory-home` /
-`--claude-home` that does not exist, a non-regular input, or an `-o` that is an
-input or lies inside the Claude projects folder is refused with one line and
-exit 2, and a failed run leaves no output file.
-Files dropped into `~/Library/Application Support/Keysreallysafe/imports/` are
-imported on the next ingest and moved to `imports/imported/`.
+Until 2026-11-04 Keysrs also read the usage logs Claude Code, Codex, Grok and
+Droid write, and imported cloud exports with `keys usage import`. Both are
+gone: `keys ingest` and `keys usage import` now exit with a one-line notice,
+and the first launch of a newer build deletes the rows they had recorded,
+their per-file cursors and the `imports/` folder. Gateway rows are kept.
 
 The program is `/Applications/Keysrs.app`. Your data lives under
 `~/Library/Application Support/Keysreallysafe/` (SQLite catalog, preferences,
@@ -816,37 +756,16 @@ deleting the app leaves both alone.
 ## Development
 
 ```sh
-CLAUDE_CONFIG_DIR=Fixtures/claude-home GROK_HOME=Fixtures/grok-home KEYS_DROID_HOME=Fixtures/droid-home swift test
+swift test
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 KEYS_NO_OPEN=1 ./.build/debug/keys dashboard   # dev copy on :12765, serves Web/ from the checkout
 ```
 
 `Web/` is plain HTML, CSS and JavaScript with no build step and no external
-resources. `Fixtures/` holds synthetic session logs for the tests, the price
-table, and the provider catalog. `.github/workflows/test.yml` is the full list
+resources. `Fixtures/` holds the price table and synthetic data for the
+tests. `.github/workflows/test.yml` is the full list
 of checks CI runs, including the dashboard browser suites, with Playwright
 pinned in `scripts/tests/package.json`.
-
-The fixtures are pinned to fixed dates the Swift tests assert against, so on a
-live clock most of their records sit outside the dashboard's today/week/month
-windows and the Chart's current ranges come up nearly empty. To drive those
-ranges with data (vendor colours across every Droid family, a model merged
-across Claude Code and Droid), write throwaway homes dated a few minutes ago:
-
-```sh
-python3 scripts/tests/fixture_now.py --out /tmp/keys-now
-KEYS_NO_OPEN=1 KEYS_CATALOG=/tmp/keys-now/catalog.db \
-  KEYS_DROID_HOME=/tmp/keys-now/droid-home CLAUDE_CONFIG_DIR=/tmp/keys-now/claude-home \
-  ./.build/debug/keys dashboard
-```
-
-The helper prints the per-model and merged totals the Chart should show for the
-current month. Its homes are synthetic and throwaway; the checked-in fixtures
-are never touched, and `scripts/tests/test_fixture_now.py` pins the helper's
-line format to DroidIngest's exact marker. When the helper runs so soon after
-local midnight that its records would land on yesterday (or on the previous
-calendar week), it clamps their timestamps to stay after the most recent local
-midnight, so the Today and Week ranges keep data even right after midnight.
 
 ## License
 

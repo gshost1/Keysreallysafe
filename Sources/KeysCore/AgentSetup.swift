@@ -69,8 +69,8 @@ enum CodingAgent: String, CaseIterable, Sendable {
         }
     }
 
-    /// The agent's config directory, honoring the same overrides the ingests use so tests
-    /// and the CI fixtures never touch a real home.
+    /// The agent's config directory, honoring the CODEX_HOME / GROK_HOME / KEYS_DROID_HOME
+    /// overrides so tests and CI never touch a real home.
     var configHome: URL? {
         switch self {
         case .claude: return nil

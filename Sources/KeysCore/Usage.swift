@@ -44,70 +44,6 @@ struct CatalogRow: Equatable {
     var gatewayCheapest: Bool = false
 }
 
-struct IngestReport: Equatable {
-    var filesScanned: Int = 0
-    var rowsInserted: Int = 0
-    var rowsUpdated: Int = 0
-    var parseErrors: Int = 0
-    var rowsSkipped: Int = 0
-    var rowsUnchanged: Int = 0
-    var rowsDeleted: Int = 0
-    var held: [String] = []
-
-    /// Rows this pass dealt with, stored or recognised: a remote file whose rows were all
-    /// skipped (this Mac already holds them) is finished, not stuck.
-    var handledRows: Int { rowsInserted + rowsUpdated + rowsSkipped + rowsUnchanged }
-
-    /// Rows whose stored values this pass actually changed; only these move the catalog version.
-    var changedRows: Int { rowsInserted + rowsUpdated + rowsDeleted }
-
-    var line: String {
-        var text = "files=\(filesScanned) inserted=\(rowsInserted) updated=\(rowsUpdated) errors=\(parseErrors)"
-        if rowsSkipped > 0 { text += " skipped=\(rowsSkipped)" }
-        if rowsUnchanged > 0 { text += " unchanged=\(rowsUnchanged)" }
-        if rowsDeleted > 0 { text += " deleted=\(rowsDeleted)" }
-        if !held.isEmpty { text += " held=\(held.joined(separator: ","))" }
-        return text
-    }
-
-    mutating func add(_ other: IngestReport) {
-        filesScanned += other.filesScanned
-        rowsInserted += other.rowsInserted
-        rowsUpdated += other.rowsUpdated
-        parseErrors += other.parseErrors
-        rowsSkipped += other.rowsSkipped
-        rowsUnchanged += other.rowsUnchanged
-        rowsDeleted += other.rowsDeleted
-        held += other.held
-    }
-}
-
-enum SourceFilter: String {
-    case all
-    case grok
-    case claude
-    case openai
-    /// Droid's own per-request ledger, from the Streaming-result records in its log.
-    case droid
-    /// Usage imported from off this Mac: Claude Code cloud sessions and Factory droid runs.
-    case cloud
-    /// The local gateway's own ledger: calls this Mac routed through an API key in the vault.
-    /// Nothing else observes a key, so a provider called directly is not in here.
-    case keys
-
-    var sqlValues: [String]? {
-        switch self {
-        case .all: return nil
-        case .grok: return ["grok-local"]
-        case .claude: return ["claude-local"]
-        case .openai: return ["codex-local"]
-        case .droid: return ["droid-local"]
-        case .cloud: return [RemoteImport.droidSource, RemoteImport.claudeSource]
-        case .keys: return ["gateway"]
-        }
-    }
-}
-
 enum SpendRange: String {
     case month
     case week
@@ -166,36 +102,21 @@ enum SpendRange: String {
 
 enum SpendGroup: String {
     case model
-    case session
     case hour
-    case project
-    /// The gateway ledger only: one row per vault key, or per provider the keys route to.
+    /// One row per vault key, or per provider the keys route to.
     case key
     case provider
 }
 
+/// The gateway ledger's totals: calls this Mac routed through a key in the vault. Token
+/// totals count every call; dollars only the ones with a receipt or a list price, so an
+/// unpriced call never reads as $0.
 struct SpendTotals: Equatable {
-    var grokUsd: Double = 0
-    var claudeTokens: Int = 0
-    var claudeUsdEstimate: Double?
-    var openaiTokens: Int = 0
-    /// Tokens imported from off this Mac (`droid-remote`, `claude-remote`), already inside
-    /// `tokens`; the page uses it to stop calling the total "from local logs".
-    var remoteTokens: Int = 0
-    var openaiUsdEstimate: Double?
     var inputTokens: Int = 0
     var outputTokens: Int = 0
     var cachedReadTokens: Int = 0
     var reasoningTokens: Int = 0
-    var claudeUnpricedModels: [String] = []
-    var claudePricedTokens: Int = 0
-    var claudeUnpricedTokens: Int = 0
-    var openaiUnpricedModels: [String] = []
-    var openaiPricedTokens: Int = 0
-    var openaiUnpricedTokens: Int = 0
-    /// Dollars for gateway calls that no local log also recorded. Kept out of `usdEstimate`:
-    /// a Claude Code or Codex call routed through the gateway is in both records, and only an
-    /// exact request-id match can tell them apart.
+    var tokens: Int = 0
     var gatewayUsdEstimate: Double?
     var gatewayTokens: Int = 0
     var gatewayCalls: Int = 0
@@ -203,21 +124,10 @@ struct SpendTotals: Equatable {
     var gatewayUnpricedTokens: Int = 0
     var gatewayUnpricedCalls: Int = 0
     var gatewayUnpricedModels: [String] = []
-    /// Gateway calls dropped because a local event carried the same upstream request id.
-    var gatewayCorrelatedCalls: Int = 0
-    /// Local sources only (Grok cost log, Claude and OpenAI list-price estimates).
-    /// Gateway dollars stay out of it, because a routed call can also appear in a local log.
-    /// With `source=keys` the report is the gateway ledger and this is nil; see gatewayUsdEstimate.
-    var usdEstimate: Double?
-    var tokens: Int = 0
 }
 
 struct SpendRow: Equatable {
     var model: String?
-    var sessionId: String?
-    var source: String?
-    var cwd: String?
-    var title: String?
     var models: [String] = []
     var inputTokens: Int = 0
     var outputTokens: Int = 0
@@ -225,22 +135,13 @@ struct SpendRow: Equatable {
     var cacheCreationTokens: Int = 0
     var reasoningTokens: Int = 0
     var modelCalls: Int = 0
-    /// The row's tokens counted under each event's own source rule (`TokenTotals.normalized`),
-    /// summed as events are added. A by=model row groups by the model id, so one row can mix
-    /// tools whose rules differ — Claude's cache buckets, Droid's every bucket — and the raw
-    /// buckets alone cannot answer how many counted. The chart reads this total instead of
-    /// re-deriving a rule from the model name.
+    /// The row's tokens counted under each call's provider rule (`TokenTotals.normalized`),
+    /// summed as calls are added, so the chart never re-derives a rule from the model name.
     var countedTokens: Int = 0
-    /// The part of `countedTokens` that came from imported remote rows (never priced), so a row
-    /// that mixes local and imported calls can say its USD estimate covers only the local part.
-    var remoteCountedTokens: Int = 0
     var usd: Double?
     var usdEstimate: Double?
     var key: String? = nil
-    var project: String? = nil
-    /// The provider a gateway call was routed to (`typesafe`, `vercel-ai-gateway`, …). Only
-    /// gateway rows carry one: it is the vault key's provider, which is the axis the API keys
-    /// view filters on. Local log rows leave it nil so their grouping is unchanged.
+    /// The provider the vault key routes to (`typesafe`, `vercel-ai-gateway`, …).
     var provider: String? = nil
 }
 
@@ -254,10 +155,7 @@ struct DailyPoint: Equatable {
     var cachedReadTokens: Int = 0
     var cacheCreationTokens: Int = 0
     var usdEstimate: Double?
-    var project: String? = nil
-    var cwd: String? = nil
-    /// Upstream calls in this bucket. One per gateway request; local logs count model calls,
-    /// which they do not always record. Lets a chart show requests when tokens are unknown.
+    /// Gateway requests in this bucket. Lets a chart show requests when tokens are unknown.
     var modelCalls: Int = 0
 }
 
@@ -278,8 +176,7 @@ struct HourlyPoint: Equatable {
 struct SpendReport: Equatable {
     var range: SpendRange
     var by: SpendGroup
-    var source: SourceFilter
-    var caption: String
+    var caption: String = SpendReport.captionText
     var totals: SpendTotals
     var rows: [SpendRow]
     var daily: [DailyPoint]
@@ -293,31 +190,17 @@ struct SpendReport: Equatable {
     var startDay: String = ""
     /// Inclusive local calendar day of the last instant in `[start, end)`.
     var endDay: String = ""
-    var lastIngestAt: String? = nil
     var catalogVersion: Int = 0
 
-    static let captionText = "local tool spend on this Mac — not a subscription remaining bar"
-    /// With imported rows the total is no longer only what this Mac's logs measured, and the
-    /// imported part carries no price, so the caption says both instead of "local".
-    static let captionTextWithCloud =
-        "tool usage on this Mac plus imported cloud usage (not priced) — not a subscription remaining bar"
+    static let captionText = "API-key calls through the local gateway — dollars are receipts or list-price estimates"
 
     func jsonObject() -> [String: Any] {
-        var totalsObj: [String: Any] = [
-            "grok_usd": totals.grokUsd,
-            "claude_tokens": totals.claudeTokens,
-            "remote_tokens": totals.remoteTokens,
-            "openai_tokens": totals.openaiTokens,
+        let totalsObj: [String: Any] = [
             "input_tokens": totals.inputTokens,
             "output_tokens": totals.outputTokens,
             "cached_read_tokens": totals.cachedReadTokens,
             "reasoning_tokens": totals.reasoningTokens,
-            "claude_unpriced_models": totals.claudeUnpricedModels,
-            "claude_priced_tokens": totals.claudePricedTokens,
-            "claude_unpriced_tokens": totals.claudeUnpricedTokens,
-            "openai_unpriced_models": totals.openaiUnpricedModels,
-            "openai_priced_tokens": totals.openaiPricedTokens,
-            "openai_unpriced_tokens": totals.openaiUnpricedTokens,
+            "tokens": totals.tokens,
             "gateway_usd_estimate": totals.gatewayUsdEstimate as Any? ?? NSNull(),
             "gateway_tokens": totals.gatewayTokens,
             "gateway_calls": totals.gatewayCalls,
@@ -325,35 +208,20 @@ struct SpendReport: Equatable {
             "gateway_unpriced_tokens": totals.gatewayUnpricedTokens,
             "gateway_unpriced_calls": totals.gatewayUnpricedCalls,
             "gateway_unpriced_models": totals.gatewayUnpricedModels,
-            "gateway_correlated_calls": totals.gatewayCorrelatedCalls,
-            "usd_estimate": totals.usdEstimate as Any? ?? NSNull(),
-            "tokens": totals.tokens,
         ]
-        if let est = totals.claudeUsdEstimate {
-            totalsObj["claude_usd_estimate"] = est
-        } else {
-            totalsObj["claude_usd_estimate"] = NSNull()
-        }
-        if let est = totals.openaiUsdEstimate {
-            totalsObj["openai_usd_estimate"] = est
-        } else {
-            totalsObj["openai_usd_estimate"] = NSNull()
-        }
         return [
             "range": range.rawValue,
             "by": by.rawValue,
-            "source": source.rawValue,
             "caption": caption,
             "start": UTC.iso(start),
             "end": UTC.iso(end),
             "start_day": startDay,
             "end_day": endDay,
-            "last_ingest_at": lastIngestAt as Any? ?? NSNull(),
             "catalog_version": catalogVersion,
             "totals": totalsObj,
             "rows": rows.map { $0.jsonObject() },
             "daily": daily.map { point -> [String: Any] in
-                var obj: [String: Any] = [
+                [
                     "day": point.day,
                     "model": point.model,
                     "usd": point.usd as Any? ?? NSNull(),
@@ -365,9 +233,6 @@ struct SpendReport: Equatable {
                     "usd_estimate": point.usdEstimate as Any? ?? NSNull(),
                     "model_calls": point.modelCalls,
                 ]
-                if let project = point.project { obj["project"] = project }
-                if let cwd = point.cwd { obj["cwd"] = cwd }
-                return obj
             },
             "points": points.map { point -> [String: Any] in
                 [
@@ -396,19 +261,13 @@ extension SpendRow {
             "cache_creation_tokens": cacheCreationTokens,
             "reasoning_tokens": reasoningTokens,
             "counted_tokens": countedTokens,
-            "remote_counted_tokens": remoteCountedTokens,
             "model_calls": modelCalls,
             "usd": usd as Any? ?? NSNull(),
             "usd_estimate": usdEstimate as Any? ?? NSNull(),
         ]
         if let model { obj["model"] = model }
-        if let sessionId { obj["session_id"] = sessionId }
-        if let source { obj["source"] = source }
-        if let cwd { obj["cwd"] = cwd }
-        if let title { obj["title"] = title }
         if let key { obj["key"] = key }
         if let provider { obj["provider"] = provider }
-        if let project { obj["project"] = project }
         if !models.isEmpty { obj["models"] = models }
         return obj
     }

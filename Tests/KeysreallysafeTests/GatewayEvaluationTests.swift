@@ -206,7 +206,7 @@ final class GatewayEvaluationTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(month.usd), 0.000051828, accuracy: 1e-12)
         XCTAssertEqual(month.kind, "estimate")
         let report = try SpendQueries(db: db).report(
-            range: .month, by: .model, source: .all, now: Date(), timeZone: .current, key: "evaluation"
+            range: .month, by: .model, now: Date(), timeZone: .current, key: "evaluation"
         )
         XCTAssertEqual(report.totals.gatewayCalls, 1)
         XCTAssertEqual(report.totals.gatewayTokens, 1234)

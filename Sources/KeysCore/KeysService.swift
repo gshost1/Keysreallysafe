@@ -9,12 +9,6 @@ final class KeysService: @unchecked Sendable {
     let presence: any PresenceGate
     let clipboard: any ClipboardClient
     let runner: any CommandRunner
-    var grokHome: URL
-    var claudeHome: URL
-    var codexHome: URL
-    var droidHome: URL
-    /// Serialises ingest passes only. A five-minute log scan must never hold up a gateway lookup.
-    private let ingestLock = NSLock()
     /// Guards `gatewayCache`, `gatewayListener`, `gatewayCacheGeneration`, `gatewayRotating`
     /// and the breaker reference; held for dictionary access only.
     private let gatewayLock = NSLock()
@@ -102,10 +96,6 @@ final class KeysService: @unchecked Sendable {
         secrets: any SecretStore,
         presence: any PresenceGate,
         clipboard: any ClipboardClient,
-        grokHome: URL = Paths.grokHome,
-        claudeHome: URL = Paths.claudeHome,
-        codexHome: URL = Paths.codexHome,
-        droidHome: URL = Paths.droidHome,
         runner: any CommandRunner = SpawnCommandRunner(),
         relaySecrets: (any SecretStore)? = nil,
         presencePrompts: InFlightWork = InFlightWork()
@@ -116,10 +106,6 @@ final class KeysService: @unchecked Sendable {
         self.presence = presence
         self.presencePrompts = presencePrompts
         self.clipboard = clipboard
-        self.grokHome = grokHome
-        self.claudeHome = claudeHome
-        self.codexHome = codexHome
-        self.droidHome = droidHome
         self.runner = runner
         self.preferences = AppPreferences(catalog: catalog)
         ModelPrices.loadAtStartup()
@@ -1504,9 +1490,9 @@ final class KeysService: @unchecked Sendable {
             )
         }
         try catalog.withTransaction {
-            // The upstream request id is the prompt id so a local event with the same id can be
-            // matched. A proxy that repeats ids must not collapse two calls into one row, so a
-            // second sighting of an id gets a suffix (and then no longer correlates).
+            // The upstream request id is the prompt id, so the row names the call the provider
+            // logged. A proxy that repeats ids must not collapse two calls into one row, so a
+            // second sighting of an id gets a suffix.
             if row.requestId != nil,
                try catalog.usageExists(source: "gateway", sessionId: event.sessionId, promptId: event.promptId, model: event.model)
             {
@@ -1892,8 +1878,7 @@ final class KeysService: @unchecked Sendable {
 
     func monthGatewayByKey(now: Date = Date(), timeZone: TimeZone = .current) throws -> [String: GatewayMonth] {
         let (start, end) = SpendRange.month.interval(now: now, timeZone: timeZone)
-        // Straight from the gateway rows: the unkeyed report drops calls a local log correlated.
-        let events = try catalog.usageEvents(from: UTC.iso(start), to: UTC.iso(end), source: .keys)
+        let events = try catalog.usageEvents(from: UTC.iso(start), to: UTC.iso(end))
         var out: [String: GatewayMonth] = [:]
         for event in events {
             guard let key = event.keyName else { continue }
@@ -2074,7 +2059,7 @@ final class KeysService: @unchecked Sendable {
         }
         try Self.removeRetiredOptimizerData(catalogDirectory: catalog.path.deletingLastPathComponent())
         try Self.removeRetiredPlanSnapshot(catalogDirectory: catalog.path.deletingLastPathComponent())
-        try Self.removeRemoteImports(importsDir)
+        try Self.removeRetiredUsageImports(catalogDirectory: catalog.path.deletingLastPathComponent())
         gatewayLock.withLock {
             bumpGatewayGenerationLocked(gatewayCache.keys)
             gatewayCache.removeAll()
@@ -2084,6 +2069,7 @@ final class KeysService: @unchecked Sendable {
         try relaySecrets?.deleteAll()
         // A catalog the 0.15 app never launched against still carries the meter's tables.
         _ = try catalog.removeRetiredPlanMeter()
+        // wipeData empties every table, the retired subscription rows and cursors included.
         try catalog.wipeData()
     }
 
@@ -2109,9 +2095,11 @@ final class KeysService: @unchecked Sendable {
         try FileManager.default.removeItem(at: file)
     }
 
-    /// The drop folder holds usage exports the user brought in, and `imported/` inside it keeps
-    /// the ones already read; purge promises to leave no Keysrs data behind, so both go.
-    static func removeRemoteImports(_ directory: URL) throws {
+    /// The `imports/` drop folder beside the catalog held cloud usage exports (`keys usage
+    /// import`) until subscription tracking was removed on 2026-11-04, and `imported/` inside it
+    /// kept the ones already read. Nothing reads it now, so launch and purge both remove it.
+    static func removeRetiredUsageImports(catalogDirectory: URL) throws {
+        let directory = catalogDirectory.appendingPathComponent("imports", isDirectory: true)
         var info = stat()
         guard lstat(directory.path, &info) == 0 else { return }
         try FileManager.default.removeItem(at: directory)
@@ -2137,65 +2125,6 @@ final class KeysService: @unchecked Sendable {
         if touchLastUsed {
             try catalog.touchLastUsed(name: name, at: ts)
         }
-    }
-
-    /// The drop folder for remote usage exports, beside the catalog so a test catalog in a
-    /// temporary folder never drains the real one.
-    var importsDir: URL {
-        catalog.path.deletingLastPathComponent().appendingPathComponent("imports", isDirectory: true)
-    }
-
-    /// `keys usage import`: the same insert path as an ingest pass, under the ingest lock.
-    func importRemote(_ url: URL) throws -> IngestReport {
-        ingestLock.lock()
-        defer { ingestLock.unlock() }
-        let report = try RemoteImport.importFile(url, db: catalog)
-        if report.changedRows > 0 {
-            try catalog.bumpCatalogVersion()
-            try catalog.ensureModelColors()
-        }
-        return report
-    }
-
-    func ingest(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
-        ingestLock.lock()
-        defer { ingestLock.unlock() }
-        return try ingestLocked(source)
-    }
-
-    func ingestIfStale(olderThan: TimeInterval = IngestScheduler.staleInterval) throws {
-        // A pass already running will refresh the data; do not queue a request thread behind it.
-        guard ingestLock.try() else { return }
-        defer { ingestLock.unlock() }
-        if let iso = try catalog.lastIngestAt(), let date = UTC.parse(iso) {
-            if Date().timeIntervalSince(date) < olderThan { return }
-        }
-        _ = try ingestLocked(.all)
-    }
-
-    private func ingestLocked(_ source: Ingest.Source) throws -> [(name: String, report: IngestReport)] {
-        // Every ingest path (explicit, scheduled, the dashboard's stale refresh) comes through here.
-        var reports = try Ingest.run(
-            source: source,
-            grokHome: grokHome,
-            claudeHome: claudeHome,
-            codexHome: codexHome,
-            droidHome: droidHome,
-            db: catalog
-        )
-        if source == .all {
-            reports.append(("imports", RemoteImport.drain(importsDir, db: catalog)))
-        }
-        // Local rows that arrived since a remote import make some of its rows duplicates or
-        // shrink a session total; settle that on every pass, whichever source was ingested.
-        let reconciled = try RemoteImport.reconcile(db: catalog)
-        let changed = reports.reduce(reconciled) { $0 + $1.report.changedRows }
-        if changed > 0 {
-            try catalog.bumpCatalogVersion()
-        }
-        try catalog.ensureModelColors()
-        try catalog.setLastIngestAt(UTC.iso(Date()))
-        return reports
     }
 
     /// Key mutations belong to the process serving the gateway, named by the control file
@@ -2322,7 +2251,6 @@ final class KeysService: @unchecked Sendable {
     func spend(
         range: SpendRange,
         by: SpendGroup,
-        source: SourceFilter,
         now: Date = Date(),
         timeZone: TimeZone = .current,
         key: String? = nil,
@@ -2331,7 +2259,6 @@ final class KeysService: @unchecked Sendable {
         try SpendQueries(db: catalog).report(
             range: range,
             by: by,
-            source: source,
             now: now,
             timeZone: timeZone,
             key: key,

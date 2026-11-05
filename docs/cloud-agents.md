@@ -45,8 +45,7 @@ export OPENAI_BASE_URL=http://127.0.0.1:12767/router
 export OPENAI_API_KEY=ksfc_…            # the client token, not the real key
 ```
 
-Every call is routed, metered on the Mac like any other gateway call (Chart →
-API keys), and refused once the token is revoked or expired.
+Every call is routed, metered on the Mac like any other gateway call (Chart), and refused once the token is revoked or expired.
 
 ## What each agent needs there
 

@@ -11,7 +11,8 @@ keys stay in the macOS Keychain; agents get a scoped token instead.
   come back to the gateway on your Mac, over SSH or a relay you deploy
   yourself, and the real key is swapped in there.
 
-Keysrs also shows what Claude Code, Codex, Grok and Droid are spending.
+Keysrs also charts the calls made through its gateway: tokens, requests and
+estimated spend per key and provider.
 
 Free and MIT-licensed. macOS 14+ on Apple Silicon.
 
@@ -82,9 +83,9 @@ Details: [the full guide](docs/guide.md), [agents and MCP](docs/agents.md),
   keys never travel over it.
 - No tool, log, screen or report ever shows a key value. Copy, reveal, env and
   rotate ask for Touch ID every time.
-- Keysrs reads only the usage files your AI tools already write. It never
-  reads `~/.codex/auth.json`, `~/.grok/auth.json`, browser cookies or provider
-  websites.
+- Keysrs counts only the calls made through its own gateway; it reads no
+  other tool's logs. It never reads `~/.codex/auth.json`, `~/.grok/auth.json`,
+  browser cookies or provider websites.
 - The app sends no analytics or telemetry.
 - Update checks are one cookieless request to GitHub's release API.
 
@@ -93,7 +94,7 @@ Details: [the full guide](docs/guide.md), [agents and MCP](docs/agents.md),
 ```sh
 make build                     # signed debug CLI at .build/debug/keys
 python3 scripts/build-app.py   # Keysrs.app from the release build
-swift test                     # offline; CI's fixture env is in test.yml
+swift test                     # offline; CI's env is in test.yml
 ```
 
 Signing setup is in [SIGNING.md](SIGNING.md); `.github/workflows/test.yml` is

@@ -184,14 +184,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         presentWelcome()
     }
 
-    @objc func ingestNow() {
-        // Never on the main thread: a pass over a large log tree would freeze the menu bar.
-        let queued = IngestScheduler.enqueue(service: service) { [weak self] in
-            DispatchQueue.main.async { self?.refresh() }
-        }
-        if !queued { refresh() }   // a pass is already running and will refresh when it lands
-    }
-
     @objc func quit() {
         service.stopRelay()
         service.stopGateway()
@@ -247,8 +239,8 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: "Keysrs",
             .applicationVersion: AppVersion.current,
-            .version: "local vault + usage · loopback only",
-            .credits: NSAttributedString(string: "Reads the usage files Claude Code, Codex and Grok already write. Secrets live in the Keychain and leave only through a Touch ID grant. MIT licensed."),
+            .version: "local key vault · loopback only",
+            .credits: NSAttributedString(string: "Secrets live in the Keychain and leave only through a Touch ID grant. The gateway counts the calls made with them. MIT licensed."),
         ])
     }
 
@@ -374,7 +366,7 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Welcome to Keysrs"
-        alert.informativeText = "Keysrs keeps running when you close its window. It reads the usage files your AI tools already keep on this Mac, and your API keys stay in the Keychain."
+        alert.informativeText = "Keysrs keeps running when you close its window. Your API keys stay in the Keychain, and agents reach them only through a Touch ID grant."
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Continue and Open Keysrs")
 
@@ -400,11 +392,6 @@ final class MenubarExtra: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let open = NSMenuItem(title: "Open Keysrs", action: #selector(openDashboard), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
-        let ingest = NSMenuItem(title: "Refresh", action: #selector(ingestNow), keyEquivalent: "r")
-        ingest.keyEquivalentModifierMask = [.command]
-        ingest.target = self
-        ingest.toolTip = "Ingest the local session logs now"
-        menu.addItem(ingest)
         menu.addItem(.separator())
         let relay = NSMenuItem(title: "Relay for Cloud Agents", action: #selector(toggleRelay), keyEquivalent: "")
         relay.target = self

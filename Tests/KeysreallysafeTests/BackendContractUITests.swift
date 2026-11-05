@@ -50,11 +50,7 @@ final class BackendContractUITests: XCTestCase {
             catalog: db,
             secrets: secrets,
             presence: presence,
-            clipboard: clipboard,
-            grokHome: Fixtures.grokHome,
-            claudeHome: Fixtures.claudeHome,
-            codexHome: Fixtures.codexHome,
-            droidHome: Fixtures.droidHome
+            clipboard: clipboard
         )
 
         // A synthetic vault: four keys the browser will list, two of them on the
@@ -87,17 +83,17 @@ final class BackendContractUITests: XCTestCase {
             model: "claude-sonnet-5", inputTokens: 900, outputTokens: 300,
             cacheReadTokens: 0, cacheWriteTokens: 0, status: 200, durationMs: 11, requestId: "contract-3"
         ))
-        let ledger = try service.spend(range: .month, by: .model, source: .keys)
+        let ledger = try service.spend(range: .month, by: .model)
         XCTAssertEqual(ledger.totals.gatewayCalls, 3)
         XCTAssertEqual(ledger.totals.gatewayUnpricedCalls, 2, "the TypeSafe half stays unpriced")
         XCTAssertEqual(Set(ledger.rows.compactMap(\.provider)), ["typesafe", "vercel-ai-gateway"])
 
         // The provider axis over the real engine: each side is its own ledger, and together they
         // are the whole one. TypeSafe never acquires a price by being filtered to.
-        let typesafe = try service.spend(range: .month, by: .model, source: .keys, provider: "typesafe")
+        let typesafe = try service.spend(range: .month, by: .model, provider: "typesafe")
         XCTAssertEqual(typesafe.totals.gatewayCalls, 2)
         XCTAssertNil(typesafe.totals.gatewayUsdEstimate, "TypeSafe reports no cost; it must stay unknown")
-        let vercel = try service.spend(range: .month, by: .model, source: .keys, provider: "vercel-ai-gateway")
+        let vercel = try service.spend(range: .month, by: .model, provider: "vercel-ai-gateway")
         XCTAssertEqual(vercel.totals.gatewayCalls, 1)
         XCTAssertNotNil(vercel.totals.gatewayUsdEstimate)
         XCTAssertEqual(vercel.totals.gatewayUnpricedCalls, 0)
@@ -181,10 +177,10 @@ final class BackendContractUITests: XCTestCase {
         // one call the renewal case routed through the real gateway for contract-alpha.
         // The gateway answers the client before it records usage, so wait (boundedly) for
         // that row to land.
-        var afterBrowsing = try service.spend(range: .month, by: .model, source: .keys)
+        var afterBrowsing = try service.spend(range: .month, by: .model)
         for _ in 0..<200 where afterBrowsing.totals.gatewayCalls < 4 {
             Thread.sleep(forTimeInterval: 0.025)
-            afterBrowsing = try service.spend(range: .month, by: .model, source: .keys)
+            afterBrowsing = try service.spend(range: .month, by: .model)
         }
         XCTAssertEqual(afterBrowsing.totals.gatewayCalls, 4)
         XCTAssertEqual(Set(afterBrowsing.rows.compactMap(\.key)), ["contract-alpha", "contract-typesafe", "contract-vercel"])

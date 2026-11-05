@@ -10,13 +10,15 @@ permissions:
 jobs:
   test:
     runs-on: macos-latest
+    # Agent homes inside the workspace, never the runner's own: `keys setup` and MCP
+    # registration resolve their config files from these, and no test may reach a real one.
     env:
-      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
-      GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
-      KEYS_DROID_HOME: ${{ github.workspace }}/Fixtures/droid-home
+      GROK_HOME: ${{ github.workspace }}/.agent-homes/grok
+      CODEX_HOME: ${{ github.workspace }}/.agent-homes/codex
+      KEYS_DROID_HOME: ${{ github.workspace }}/.agent-homes/factory
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Test with synthetic fixtures
+      - name: Swift tests
         run: swift test
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -74,9 +76,9 @@ jobs:
   thread-sanitizer:
     runs-on: macos-latest
     env:
-      CLAUDE_CONFIG_DIR: ${{ github.workspace }}/Fixtures/claude-home
-      GROK_HOME: ${{ github.workspace }}/Fixtures/grok-home
-      KEYS_DROID_HOME: ${{ github.workspace }}/Fixtures/droid-home
+      GROK_HOME: ${{ github.workspace }}/.agent-homes/grok
+      CODEX_HOME: ${{ github.workspace }}/.agent-homes/codex
+      KEYS_DROID_HOME: ${{ github.workspace }}/.agent-homes/factory
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Gateway, grants, relay and revoke under ThreadSanitizer
