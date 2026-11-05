@@ -53,7 +53,7 @@ const baseKeys = () => [
     usd_month: null, usd_month_kind: "unknown", gateway_month_calls: 2, gateway_month_unpriced_calls: 2 },
 ];
 
-// The gateway's own ledger, as the engine reports it for source=keys. `alpha` routes to the Vercel
+// The gateway's own ledger, as the engine reports it. `alpha` routes to the Vercel
 // AI Gateway and its calls carry tokens and a list-price estimate; `charlie` routes to TypeSafe,
 // whose calls carry neither, so their cost is unknown rather than zero. `system-one` runs on both
 // providers — a workload is a model under a provider, not a billing source of its own — which also
@@ -68,9 +68,7 @@ const baseLedger = () => [
     cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
 ];
 
-// The subscription ledger: what the tools wrote to their own logs. It is empty unless a test
-// fills it, so every case written against the empty local shape keeps that shape.
-let keys, ledger, localRows, failures, delays, replies, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, grants, profiles, preferences;
+let keys, ledger, failures, delays, replies, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, grants, profiles, preferences;
 
 function reset() {
   keys = baseKeys();
@@ -79,7 +77,6 @@ function reset() {
   customProviders = [];
   hiddenUsers = new Set();
   ledger = baseLedger();
-  localRows = [];
   failures = new Map();   // "METHOD /path" -> {status, body, after, drop} | "drop"
   delays = new Map();     // "METHOD /path" -> milliseconds, or a queue of them
   // Whole answers to hand out in order, keyed by "METHOD /path?query": [{status, body, after}].
@@ -115,92 +112,27 @@ let relay;
 const pad2 = (n) => String(n).padStart(2, "0");
 const localDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
-// The spend endpoint, answering only what the query asked for. Local sources keep the empty
-// shape the rest of this suite relies on; the API keys source serves the ledger above.
+// The spend endpoint, answering only what the query asked for: the gateway ledger above, the only
+// ledger since the subscription log readers went on 2026-11-04. It refuses what the engine
+// refuses, so a page that still sent a tool source or a project grouping would be told.
 function spend(params) {
-  const source = params.get("source") || "all";
+  const source = params.get("source");
   const by = params.get("by") || "model";
   const key = params.get("key");
   const provider = params.get("provider");
-  if (by === "project" && source !== "claude") return [400, { error: "by=project requires source=claude" }];
-  // The engine refuses a provider outside the gateway ledger; the fixture must too, or the page
-  // could pass a stale filter and never be told.
-  if (provider && source !== "keys") return [400, { error: "provider requires source=keys" }];
+  if (source != null && !["", "keys", "all"].includes(source)) return [400, { error: "invalid source" }];
+  if (!["model", "hour", "key", "provider"].includes(by)) return [400, { error: "invalid by" }];
   const day = localDay(new Date());
-  if (source !== "keys") {
-    if (!localRows.length) return [200, { source, by, start_day: day, end_day: day, ...(emptyIngested ? { last_ingest_at: day + "T00:00:00Z" } : {}), totals: {}, rows: [], daily: [], points: [], models: [] }];
-    // The vendor families, mirrored from the page's family(): the family decides a row's
-    // fallback token rule and where a sourceless row's tool filter looks.
-    const fam = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude"
-      : /^(gpt-|o[1-9]|codex|chatgpt)/i.test(m) ? "openai"
-      : /^gemini/i.test(m) ? "gemini" : /^glm/i.test(m) ? "glm" : /^kimi/i.test(m) ? "kimi"
-      : /^deepseek/i.test(m) ? "deepseek" : "other");
-    // A row that names a source belongs to that tool's filter whatever vendor its model is
-    // (Droid runs Claude and GLM models); a row of the old shape, with no source, keeps being
-    // matched by its model's family the way this suite always matched it.
-    const wireSource = { grok: "grok-local", claude: "claude-local", openai: "codex-local", droid: "droid-local" };
-    // Cloud is the two imported sources, mirroring SourceFilter.cloud.
-    const inSource = (r) => source === "all"
-      || (source === "cloud" ? ["droid-remote", "claude-remote"].includes(r.source)
-        : r.source ? r.source === wireSource[source] : fam(r.model) === source);
-    const rows = localRows.filter(inSource);
-    if (!rows.length) return [200, { source, by, start_day: day, end_day: day, ...(emptyIngested ? { last_ingest_at: day + "T00:00:00Z" } : {}), totals: {}, rows: [], daily: [], points: [], models: [] }];
-    // The engine's own token rule (`TokenTotals.normalized`), applied per source: Claude's
-    // cache buckets are billed tokens, Codex's and Grok's reasoning tokens are, and Droid's
-    // log bills every bucket it reports. A row with no source follows its model's family.
-    const counted = (r) => {
-      const input = r.input_tokens || 0, output = r.output_tokens || 0;
-      const cache = (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0);
-      const reasoning = r.reasoning_tokens || 0;
-      if (r.source === "claude-local" || r.source === "claude-remote") return input + output + cache;
-      if (r.source === "codex-local" || r.source === "grok-local") return input + output + reasoning;
-      if (r.source === "droid-local" || r.source === "droid-remote") return input + output + cache + reasoning;
-      return input + output + (fam(r.model) === "claude" ? cache : reasoning);
-    };
-    // by=model groups by the model id, so the same model from two tools is one row: the raw
-    // buckets are summed and `counted_tokens` is each part counted under its own source's rule —
-    // the field the engine sends so the chart never has to guess a merged row's token rule.
-    const merged = new Map();
-    for (const r of rows) {
-      const m = merged.get(r.model) || {
-        model: r.model, input_tokens: 0, output_tokens: 0, cached_read_tokens: 0,
-        cache_creation_tokens: 0, reasoning_tokens: 0, model_calls: 0, counted_tokens: 0, remote_counted_tokens: 0,
-        usd: null, usd_estimate: null,
-      };
-      m.input_tokens += r.input_tokens || 0;
-      m.output_tokens += r.output_tokens || 0;
-      m.cached_read_tokens += r.cached_read_tokens || 0;
-      m.cache_creation_tokens += r.cache_creation_tokens || 0;
-      m.reasoning_tokens += r.reasoning_tokens || 0;
-      m.model_calls += r.model_calls || 0;
-      m.counted_tokens += counted(r);
-      if (/-remote$/.test(r.source || "")) m.remote_counted_tokens += counted(r);
-      if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
-      if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
-      merged.set(r.model, m);
-    }
-    const modelRows = [...merged.values()];
-    // Dollars stay per tool: Grok's own receipt, Claude's and Codex's list-price estimates.
-    const grokUsd = rows.filter((r) => r.source === "grok-local" || (!r.source && fam(r.model) === "grok"))
-      .reduce((a, r) => a + (r.usd || 0), 0);
-    const claudeEst = rows.filter((r) => r.source === "claude-local" || (!r.source && fam(r.model) === "claude"))
-      .reduce((a, r) => a + (r.usd_estimate || 0), 0);
-    const openaiEst = rows.filter((r) => r.source === "codex-local" || (!r.source && fam(r.model) === "openai"))
-      .reduce((a, r) => a + (r.usd_estimate || 0), 0);
-    return [200, {
-      range: params.get("range") || "today", by, source,
-      start_day: day, end_day: day, last_ingest_at: day + "T00:00:00Z",
-      totals: { grok_usd: grokUsd, claude_usd_estimate: claudeEst, openai_usd_estimate: openaiEst,
-        remote_tokens: rows.filter((r) => /-remote$/.test(r.source || "")).reduce((a, r) => a + counted(r), 0) },
-      rows: modelRows,
-      daily: by === "hour" ? [] : modelRows.map((r) => ({ ...r, day, tokens: r.counted_tokens, usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null })),
-      points: by === "hour"
-        ? modelRows.map((r) => ({ ...r, hour: `${day}T${pad2(new Date().getHours())}:00`, tokens: r.counted_tokens, usd: r.usd ?? null, usd_estimate: r.usd_estimate ?? null }))
-        : [],
-      models: [...new Set(rows.map((r) => r.model))],
-    }];
-  }
-  const rows = ledger.filter((r) => (!key || r.key === key) && (!provider || r.provider === provider));
+  // A case may write a row with only the fields it is about; the rest take the engine's defaults
+  // for one priced-nowhere call on alpha's Vercel route. `counted_tokens` is the engine's own
+  // token rule (`TokenTotals.normalized`): Anthropic's API bills its cache buckets, every other
+  // provider its reasoning tokens.
+  const rows = ledger.map((r) => {
+    const row = { key: "alpha", provider: "vercel-ai-gateway", model_calls: 1, input_tokens: 0, output_tokens: 0,
+      cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null, ...r };
+    const extra = row.provider === "anthropic" ? row.cached_read_tokens + row.cache_creation_tokens : row.reasoning_tokens;
+    return { ...row, counted_tokens: row.input_tokens + row.output_tokens + extra };
+  }).filter((r) => (!key || r.key === key) && (!provider || r.provider === provider));
   // A gateway call's dollars arrive in `usd_estimate`, receipt or list price alike, and a
   // provider-reported zero arrives as an explicit 0 there — `SpendQueries.gatewayUsd` returns the
   // known zero and nil only when there is no receipt at all. So null, and only null, is unpriced.
@@ -212,21 +144,19 @@ function spend(params) {
   const unpricedCalls = (r) => (r.unpriced_calls != null ? r.unpriced_calls
     : r.usd_estimate == null ? r.model_calls : 0);
   const point = (extra) => rows.map((r) => ({
-    model: r.model, tokens: r.input_tokens + r.output_tokens, usd: null, usd_estimate: r.usd_estimate,
-    input_tokens: r.input_tokens, output_tokens: r.output_tokens, cached_read_tokens: 0,
-    cache_creation_tokens: 0, model_calls: r.model_calls, ...extra,
+    model: r.model, tokens: r.counted_tokens, usd: null, usd_estimate: r.usd_estimate,
+    input_tokens: r.input_tokens, output_tokens: r.output_tokens, cached_read_tokens: r.cached_read_tokens,
+    cache_creation_tokens: r.cache_creation_tokens, reasoning_tokens: r.reasoning_tokens, model_calls: r.model_calls, ...extra,
   }));
   return [200, {
-    range: params.get("range") || "today", by, source,
-    start_day: day, end_day: day, last_ingest_at: day + "T00:00:00Z",
+    range: params.get("range") || "today", by,
+    start_day: day, end_day: day,
     totals: {
       gateway_calls: rows.reduce((a, r) => a + r.model_calls, 0),
-      gateway_tokens: rows.reduce((a, r) => a + r.input_tokens + r.output_tokens, 0),
+      gateway_tokens: rows.reduce((a, r) => a + r.counted_tokens, 0),
       gateway_usd_estimate: priced.length ? priced.reduce((a, r) => a + r.usd_estimate, 0) : null,
       gateway_unpriced_calls: rows.reduce((a, r) => a + unpricedCalls(r), 0),
       gateway_unpriced_models: rows.filter((r) => unpricedCalls(r) > 0).map((r) => r.model),
-      gateway_correlated_calls: 0,
-      usd_estimate: null,
     },
     rows,
     daily: by === "hour" ? [] : point({ day }),
@@ -402,7 +332,7 @@ function handle(method, pathname, body, params) {
     return [200, { removed: id }];
   }
   if (pathname === "/api/models") return [200, []];
-  if (pathname === "/api/status") return [200, { catalog_version: catalogVersion, last_ingest_at: null }];
+  if (pathname === "/api/status") return [200, { catalog_version: catalogVersion }];
   // The app's relay, mirroring the engine: the body is enabled and/or stay_awake, booleans and
   // nothing else; on needs a relay that is set up and no relay running in a Terminal.
   // The persisted app choices, mirroring the engine: GET reads them, each write takes exactly
@@ -2425,36 +2355,31 @@ test("chips and pickers wrap on the arrow keys", async (page, origin) => {
 
 // ---------- filtering ----------
 
-test("range and source chips drive the query, the URL and the group chips", async (page, origin) => {
+test("range and group chips drive the query and the URL", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
-  assert.equal(await page.locator("#group-chips").isHidden(), true, "grouping is Claude-only");
+  assert.equal(await page.locator("#group-chips").isHidden(), false, "grouping is always offered");
+  assert.equal(await page.locator('[data-group="project"]').count(), 0, "projects went with the Claude Code log reader");
 
   await page.getByRole("radio", { name: "This week" }).click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get("range") === "week");
   const weekly = requests.filter((r) => r.pathname === "/api/spend" && r.search.includes("range=week"));
   assert.ok(weekly.length > 0, "the week range must reach the engine");
 
-  await page.getByRole("radio", { name: "Claude", exact: true }).click();
-  await page.locator("#group-chips:visible").waitFor();
-  await page.getByRole("radio", { name: "Projects" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-group="project"]').getAttribute("aria-checked") === "true");
-  const grouped = requests.filter((r) => r.pathname === "/api/spend" && r.search.includes("by=project"));
-  assert.ok(grouped.length > 0, "grouping by project must reach the engine");
-
-  // Leaving Claude must drop a grouping that no longer applies.
-  await page.getByRole("radio", { name: "All", exact: true }).click();
-  await page.waitForFunction(() => document.getElementById("group-chips").hidden);
-  assert.equal(await page.locator('[data-group="model"]').getAttribute("aria-checked"), "true");
+  await page.getByRole("radio", { name: "Providers" }).click();
+  await page.waitForFunction(() => document.querySelector('[data-group="provider"]').getAttribute("aria-checked") === "true");
+  const grouped = requests.filter((r) => r.pathname === "/api/spend" && r.search.includes("by=provider"));
+  assert.ok(grouped.length > 0, "grouping by provider must reach the engine");
+  // No request names a tool source: the engine refuses one.
+  assert.ok(spendSearches().every((s) => !s.includes("source=")), spendSearches().join(" | "));
 });
 
-test("a link that names a key boots into the API keys scope with that key chosen", async (page, origin) => {
+test("a link that names a key boots into the chart with that key chosen", async (page, origin) => {
   await page.goto(`${origin}/?key=alpha&range=week`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#keys-filter:visible").waitFor();
-  assert.equal(await page.evaluate(inKeysScope), true, "a key only means anything in that scope");
   assert.equal(await keyPicked(page), "alpha");
   const filtered = requests.filter((r) => r.pathname === "/api/spend" && r.search.includes("key=alpha"));
   assert.ok(filtered.length > 0, "the key filter must reach the engine");
@@ -2470,16 +2395,15 @@ const keyOptions = (page) => page.locator("#keys-filter [data-key-filter]").eval
 
 // ---------- API keys usage ----------
 
-const inKeysScope = () => document.querySelector('[data-scope="keys"]').getAttribute("aria-checked") === "true";
+// One ledger since 2026-11-04: the chart is in the gateway view whenever it is on screen.
+const inKeysScope = () => !document.getElementById("pane-chart").hidden;
 const openKeysSource = async (page, origin, query = "range=week") => {
   await page.goto(`${origin}/?${query}`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
-  if (!(await page.evaluate(inKeysScope))) await page.getByRole("radio", { name: "API keys" }).click();
   await page.waitForFunction(inKeysScope);
   await page.locator("#mix .mix-row").first().waitFor();
 };
-let emptyIngested = false;
 const spendSearches = () => requests.filter((r) => r.pathname === "/api/spend").map((r) => r.search);
 const totalsText = (page) => page.locator("#totals").textContent();
 // Dollars are a price put on the measurement afterwards, so they are on screen only once the
@@ -2491,7 +2415,7 @@ const chooseUsd = async (page) => {
 
 test("the API keys scope charts the gateway ledger with requests, tokens and a partial cost", async (page, origin) => {
   await openKeysSource(page, origin);
-  assert.ok(spendSearches().some((s) => s.includes("source=keys")), "the API keys scope must reach the engine");
+  assert.ok(spendSearches().every((s) => !s.includes("source=")), "the engine has one ledger and takes no tool source");
 
   // Every key's models are charted, including the one whose provider reported no tokens.
   const models = await page.locator("#mix .mix-name").allTextContents();
@@ -2540,7 +2464,7 @@ test("a provider filter separates TypeSafe from Vercel without inventing a third
   await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
   await page.waitForFunction(() => new URL(location.href).searchParams.get("provider") === "typesafe");
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
-  assert.ok(spendSearches().some((s) => s.includes("provider=typesafe") && s.includes("source=keys")));
+  assert.ok(spendSearches().some((s) => s.includes("provider=typesafe")));
   assert.equal(await page.locator("#mix .mix-name").textContent(), "system-one");
   assert.match(await totalsText(page), /cost unknown/, "TypeSafe reports no cost: unknown, not $0");
   assert.match(await totalsText(page), /2 requests/);
@@ -2566,7 +2490,7 @@ test("a provider filter separates TypeSafe from Vercel without inventing a third
 });
 
 test("choosing a provider drops a key that belongs to another one", async (page, origin) => {
-  await openKeysSource(page, origin, "range=week&source=keys&key=alpha");
+  await openKeysSource(page, origin, "range=week&key=alpha");
   await page.waitForFunction(() => document.querySelectorAll("#keys-filter [data-key-filter]").length === 3);
 
   await page.getByRole("radio", { name: "Show only calls routed to TypeSafe" }).click();
@@ -2601,7 +2525,7 @@ test("the per-key picker names every key and filters to one, all keys included",
   await select.selectOption("charlie");
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
   assert.equal(await page.evaluate(() => document.activeElement.id), "keys-filter-select", "focus stays on the picker after it redraws");
-  assert.ok(spendSearches().some((s) => s.includes("key=charlie") && s.includes("source=keys")));
+  assert.ok(spendSearches().some((s) => s.includes("key=charlie")));
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1);
   assert.equal(await page.locator("#mix .mix-name").textContent(), "system-one");
   assert.match(await totalsText(page), /cost unknown/, "an unpriced key reads as unknown, not $0");
@@ -2614,32 +2538,20 @@ test("the per-key picker names every key and filters to one, all keys included",
   assert.equal(await page.evaluate(inKeysScope), true, "clearing a key stays in the API keys scope");
 });
 
-test("requests are a chartable unit in the API keys scope and nowhere else", async (page, origin) => {
+test("requests are a chartable unit", async (page, origin) => {
   await page.goto(`${origin}/?range=week`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
-  assert.equal(await page.locator('[data-unit="requests"]').isHidden(), true, "local logs do not count every call");
-
-  await page.getByRole("radio", { name: "API keys" }).click();
-  await page.locator('[data-unit="requests"]:visible').waitFor();
   await page.getByRole("radio", { name: "Requests" }).click();
   await page.waitForFunction(() => document.getElementById("daily-unit").textContent.startsWith("requests per"));
   // The bars come from the request counts, so the unpriced, token-less key is still drawn.
   const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
   assert.ok(labels.some((l) => /system-one 3/.test(l)), "a call with no tokens still has a bar");
   assert.ok(labels.some((l) => /claude-sonnet-5 3/.test(l)));
-
-  // Leaving the scope drops a unit that only means something there.
-  await page.getByRole("radio", { name: "Subscriptions" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-unit="requests"]').hidden);
-  assert.equal(await page.locator('[data-unit="tokens"]').getAttribute("aria-checked"), "true");
-  assert.equal(await page.locator("#keys-filter").isHidden(), true);
-  assert.equal(await page.locator("#provider-filter").isHidden(), true);
-  assert.equal(await page.locator("#source-chips").isHidden(), false, "the tool filter comes back with it");
 });
 
 test("a key whose provider reports no tokens says so instead of drawing nothing", async (page, origin) => {
-  await openKeysSource(page, origin, "range=week&key=charlie&source=keys");
+  await openKeysSource(page, origin, "range=week&key=charlie");
   await page.locator("#chart-nothing:visible").waitFor();
   assert.match(await page.locator("#chart-nothing").textContent(),
     /No tokens were reported for these requests\. Switch to Requests to chart them\./);
@@ -2683,37 +2595,19 @@ test("a key opened from the Keys pane cannot inherit another provider's filter",
   assert.equal(new URL(await page.url()).searchParams.get("provider"), "typesafe", "an ordinary key pick keeps its provider");
 });
 
-test("an explicit subscription source drops a gateway key and provider, URL included", async (page, origin) => {
-  await page.goto(`${origin}/?range=week&source=claude&key=alpha&provider=typesafe`);
+test("an old link's tool source is struck from the URL and its gateway filters stay", async (page, origin) => {
+  // A bookmark from before 2026-11-04 may still say source=claude. The engine refuses a tool
+  // source, so the page must neither send it nor keep advertising it.
+  await page.goto(`${origin}/?range=week&source=claude&key=alpha`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
-  // The link asked for Claude Code's local log. A gateway key cannot narrow local rows to
-  // anything but nothing, so the explicit source wins and both filters go.
-  assert.equal(await page.locator('[data-scope="subs"]').getAttribute("aria-checked"), "true");
-  assert.equal(await page.locator('[data-source="claude"]').getAttribute("aria-checked"), "true");
+  await page.locator("#mix .mix-row").first().waitFor();
   const url = new URL(await page.url());
-  assert.equal(url.searchParams.get("key"), null, "the URL must stop advertising a dropped filter");
-  assert.equal(url.searchParams.get("provider"), null);
-  // The Usage pane's own month total is a sourceless request and not part of this question.
-  const searches = spendSearches().filter((s) => s.includes("source="));
-  assert.ok(searches.length > 0, "the chart must still load");
-  assert.ok(searches.every((s) => s.includes("source=claude") && !s.includes("key=") && !s.includes("provider=")),
-    `a local source carried a gateway filter: ${searches.join(" | ")}`);
-
-  // A later tool choice cannot bring them back either.
-  await page.getByRole("radio", { name: "Grok", exact: true }).click();
-  await page.waitForFunction(() => new URL(location.href).searchParams.get("source") === "grok");
-  const grok = spendSearches().filter((s) => s.includes("source=grok"));
-  assert.ok(grok.length > 0 && grok.every((s) => !s.includes("key=") && !s.includes("provider=")),
-    `stale filter survived a source change: ${grok.join(" | ")}`);
-
-  // And a key with no source at all still means the gateway ledger.
-  await page.goto(`${origin}/?range=week&key=alpha`);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#keys-filter:visible").waitFor();
-  assert.equal(await page.evaluate(inKeysScope), true, "a source-less key still enters the API keys scope");
-  assert.equal(new URL(await page.url()).searchParams.get("key"), "alpha");
+  assert.equal(url.searchParams.get("source"), null, "the URL must stop advertising a retired source");
+  assert.equal(url.searchParams.get("key"), "alpha", "the key it named still narrows the chart");
+  assert.equal(await keyPicked(page), "alpha");
+  assert.ok(spendSearches().every((s) => !s.includes("source=")), spendSearches().join(" | "));
+  assert.equal(await page.locator("#chart-error").textContent(), "", "no refusal reached the page");
 });
 
 test("a reported cost of zero is a known $0, not a missing receipt", async (page, origin) => {
@@ -2826,40 +2720,7 @@ test("a request whose provider named no model keeps its bar under unknown", asyn
   assert.ok(only.every((l) => !/claude-sonnet-5/.test(l)), "and it is the only one");
 });
 
-test("switching scope clears the filters that belong to the other one", async (page, origin) => {
-  await openKeysSource(page, origin, "range=week&key=alpha&provider=vercel-ai-gateway&source=keys");
-  assert.equal(await page.locator("#source-chips").isHidden(), true, "a tool filter means nothing in the gateway ledger");
-  assert.equal(await page.locator('[data-group="project"]').isHidden(), true, "projects are a Claude-only grouping");
-  assert.equal(await page.locator('[data-group="key"]').isVisible(), true, "the gateway ledger groups by key");
-  assert.equal(await page.locator('[data-group="provider"]').isVisible(), true, "and by provider");
-
-  // Out to Subscriptions: the provider and key go with it, and the local filters come back.
-  await page.getByRole("radio", { name: "Subscriptions" }).click();
-  await page.waitForFunction(() => !new URL(location.href).searchParams.get("key"));
-  await page.locator("#source-chips:visible").waitFor();
-  assert.equal(new URL(await page.url()).searchParams.get("provider"), null);
-  let last = spendSearches().pop();
-  assert.ok(last.includes("source=all") && !last.includes("key=") && !last.includes("provider="),
-    `stale filter survived: ${last}`);
-
-  // Into Claude, then back to API keys: the project grouping cannot follow.
-  await page.getByRole("radio", { name: "Claude", exact: true }).click();
-  await page.locator("#group-chips:visible").waitFor();
-  await page.getByRole("radio", { name: "Projects" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-group="project"]').getAttribute("aria-checked") === "true");
-
-  await page.getByRole("radio", { name: "API keys" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-group="project"]').hidden);
-  assert.equal(await page.locator('[data-group="model"]').getAttribute("aria-checked"), "true");
-  last = spendSearches().pop();
-  assert.ok(last.includes("source=keys") && last.includes("by=model"), `stale grouping survived: ${last}`);
-
-  // And leaving again comes back to the subscription source that was last chosen, not to All.
-  await page.getByRole("radio", { name: "Subscriptions" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-source="claude"]').getAttribute("aria-checked") === "true");
-});
-
-test("a key's gateway figure opens that key in the API keys scope", async (page, origin) => {
+test("a key's gateway figure opens that key in the chart", async (page, origin) => {
   await openKeys(page, origin);
   // Default unit: the figure counts requests, the only figure a key's own row can always answer
   // for, and puts no price on screen.
@@ -2870,7 +2731,7 @@ test("a key's gateway figure opens that key in the API keys scope", async (page,
   await page.waitForFunction(inKeysScope);
   await page.waitForFunction(() => new URL(location.href).searchParams.get("key") === "charlie");
   assert.equal(await page.locator("#pane-chart").isVisible(), true);
-  assert.ok(spendSearches().some((s) => s.includes("source=keys") && s.includes("key=charlie")),
+  assert.ok(spendSearches().some((s) => s.includes("key=charlie")),
     `landed with ${spendSearches().join(" | ")}`);
   await page.waitForFunction(() => /no reported tokens/.test(document.getElementById("totals").textContent));
   // Absent token counts are not a measured zero, and the requests are still counted.
@@ -2887,9 +2748,9 @@ test("a key's gateway figure opens that key in the API keys scope", async (page,
   assert.equal(new URL(await page.url()).searchParams.get("key"), "charlie");
 });
 
-test("an empty API keys view explains that only routed requests are recorded", async (page, origin) => {
+test("an empty chart explains that only routed requests are recorded", async (page, origin) => {
   ledger = [];
-  await page.goto(`${origin}/?range=week&source=keys`);
+  await page.goto(`${origin}/?range=week`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#spend-empty:visible").waitFor();
@@ -2897,70 +2758,19 @@ test("an empty API keys view explains that only routed requests are recorded", a
   assert.match(text, /No API key calls in this range/);
   assert.match(text, /Only requests routed through Keys are recorded here; a provider called directly is not observable/);
   assert.equal(await page.locator("#totals").isHidden(), true, "no ledger means no totals line, not a zero one");
-
-  await page.getByRole("button", { name: "Show subscriptions" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-scope="subs"]').getAttribute("aria-checked") === "true");
-  assert.equal(await page.locator('[data-source="all"]').getAttribute("aria-checked"), "true");
-});
-
-test("the subscriptions scope says its figures come from local logs, not plan invoices", async (page, origin) => {
-  await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  assert.equal(await page.locator('[data-scope="subs"]').getAttribute("aria-checked"), "true", "subscriptions lead");
-  await page.waitForFunction(() => /estimated from the tools' own local logs on this Mac, not from plan invoices/
-    .test(document.getElementById("chart-caption").textContent));
-
-  await page.getByRole("radio", { name: "API keys" }).click();
-  await page.waitForFunction(inKeysScope);
-  await page.waitForFunction(() => /calls this Mac routed through the local gateway with a key from the vault/
-    .test(document.getElementById("chart-caption").textContent));
 });
 
 // ---------- tokens first ----------
 
-// What this Mac measured is tokens and requests; a dollar figure is this repo's price table put
-// on them afterwards. The page leads with the measurement and prices it only when asked.
-const subscriptionRows = () => [
+// What the gateway measured is tokens and requests; a dollar figure is a receipt or this repo's
+// price table put on them afterwards. The page leads with the measurement and prices it only
+// when asked. Two models on alpha's route, one priced and one not.
+const twoModelRows = () => [
   { model: "claude-sonnet-5", input_tokens: 900, output_tokens: 300, cached_read_tokens: 400, cache_creation_tokens: 100, usd: null, usd_estimate: 0.02 },
   { model: "grok-4", input_tokens: 500, output_tokens: 200, cached_read_tokens: 0, cache_creation_tokens: 0, usd: 0.01, usd_estimate: null },
 ];
 
-test("the subscriptions chart leads with tokens and prices nothing until USD is chosen", async (page, origin) => {
-  localRows = subscriptionRows();
-  await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#mix .mix-row").first().waitFor();
-
-  assert.equal(await page.locator('[data-unit="tokens"]').getAttribute("aria-checked"), "true", "tokens is the default unit");
-  const totals = await totalsText(page);
-  assert.match(totals, /2\.4K tokens/, "Claude's cache reads and writes are billed tokens and count");
-  assert.doesNotMatch(totals, /\$/, "no dollar figure until USD is chosen");
-  assert.doesNotMatch(await page.locator("#mix").textContent(), /\$/);
-  assert.match(totals, /cached input/, "cached input is named, not hidden inside the total");
-  assert.match(await page.locator("#totals .totals-main").getAttribute("title"),
-    /Cached input is counted on each request that reads it again/);
-  assert.match(await page.locator("#daily-unit").textContent(), /^tokens per/);
-
-  // USD is one click away, and everything the honest-cost work put on this line survives it.
-  await chooseUsd(page);
-  const priced = await totalsText(page);
-  assert.match(priced, /≈ \$0\.03/);
-  assert.match(priced, /estimate from list prices, not an invoice/);
-
-  // And the choice is remembered for the next visit, tokens or dollars alike.
-  await page.reload();
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-unit="usd"]').getAttribute("aria-checked") === "true");
-  await page.getByRole("radio", { name: "Tokens" }).click();
-  await page.reload();
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-unit="tokens"]').getAttribute("aria-checked") === "true");
-});
-
 test("the Usage summary and the Keys figures follow the same unit, switched from Usage", async (page, origin) => {
-  localRows = subscriptionRows();
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
@@ -2969,7 +2779,7 @@ test("the Usage summary and the Keys figures follow the same unit, switched from
   // The switch is on the line itself: nobody has to find another pane to change the unit.
   await page.getByRole("button", { name: "Show this month in USD instead of tokens" }).click();
   await page.waitForFunction(() => /\$/.test(document.getElementById("usage-totals").textContent));
-  assert.match(await page.locator("#usage-totals").textContent(), /≈ \$0\.03/);
+  assert.match(await page.locator("#usage-totals").textContent(), /≥ ≈ \$0\.02/, "partly priced, so a floor");
 
   // One unit for the page: the Keys figures answer in it too, and the pane says which one it is.
   await page.getByRole("tab", { name: "Keys" }).click();
@@ -3032,8 +2842,8 @@ test("the Keys figures follow the Chart's unit at 390 px and stay inside the row
 // The engine's token rule counts reasoning tokens for Codex, OpenAI and Grok. A headline that
 // dropped them would disagree with the bars the same payload drew.
 test("token headlines count reasoning tokens exactly as the engine's buckets do", async (page, origin) => {
-  localRows = [
-    { model: "gpt-5", source: "codex-local", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.01 },
+  ledger = [
+    { model: "gpt-5", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.01 },
   ];
   await page.goto(`${origin}/?range=week`);
   await page.waitForLoadState("networkidle");
@@ -3052,66 +2862,18 @@ test("token headlines count reasoning tokens exactly as the engine's buckets do"
     "the monthly summary counts them the same way");
 });
 
-// ---------- vendor families, the Droid source, and the merge ----------
-
-// The droid-home fixture's October records, in the local shape the engine serves after
-// `keys ingest droid`: two claude-sonnet-5 requests and one gpt-6-pro, every bucket Droid's
-// log reports counted, 75,308 tokens in all (the mock's numbers mirror
-// Fixtures/droid-home/README.md).
-const droidFixtureRows = () => [
-  { model: "claude-sonnet-5", source: "droid-local", input_tokens: 1200, output_tokens: 340, cached_read_tokens: 30000, cache_creation_tokens: 500, reasoning_tokens: 0, usd: null, usd_estimate: null },
-  { model: "claude-sonnet-5", source: "droid-local", input_tokens: 800, output_tokens: 512, cached_read_tokens: 41000, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
-  { model: "gpt-6-pro", source: "droid-local", input_tokens: 640, output_tokens: 220, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 96, usd: null, usd_estimate: null },
-];
-
-test("the Droid chip filters the chart to Droid's own records and the URL boots into it", async (page, origin) => {
-  localRows = droidFixtureRows();
-  await page.goto(`${origin}/?range=month`);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#mix .mix-row").first().waitFor();
-  const names = () => page.locator("#mix .mix-name").allTextContents();
-  assert.deepEqual((await names()).sort(), ["claude-sonnet-5", "gpt-6-pro"], "All shows both October models");
-
-  // The chip sits alongside the tool chips and asks the engine for the droid-local ledger.
-  await page.getByRole("radio", { name: "Droid", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('#source-chips [data-source="droid"]').getAttribute("aria-checked") === "true");
-  assert.ok(spendSearches().some((s) => s.includes("source=droid")), "the Droid chip must reach /api/spend?source=droid");
-  assert.equal(new URL(await page.url()).searchParams.get("source"), "droid", "the URL carries the choice");
-  assert.deepEqual((await names()).sort(), ["claude-sonnet-5", "gpt-6-pro"], "the same two models, and only they");
-
-  // Droid's Claude model is not Claude Code's: the Claude chip narrows to nothing here, and
-  // the empty state names the tool rather than pretending the model was counted elsewhere.
-  await page.getByRole("radio", { name: "Claude", exact: true }).click();
-  await page.locator("#spend-empty:visible").waitFor();
-  assert.match(await page.locator("#spend-empty").textContent(), /No Claude Code sessions in this range/);
-
-  // Back to All, Droid's rows return untouched.
-  await page.getByRole("radio", { name: "All", exact: true }).click();
-  await page.locator("#mix .mix-row").first().waitFor();
-  assert.equal((await names()).length, 2);
-
-  // A link that says ?source=droid boots straight into the Droid source.
-  await page.goto(`${origin}/?range=month&source=droid`);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#mix .mix-row").first().waitFor();
-  assert.equal(await page.locator('#source-chips [data-source="droid"]').getAttribute("aria-checked"), "true", "the boot source is Droid");
-  assert.ok(spendSearches().some((s) => s.includes("source=droid") && s.includes("range=month")),
-    `the booted chart must load the Droid month: ${spendSearches().join(" | ")}`);
-  assert.deepEqual((await names()).sort(), ["claude-sonnet-5", "gpt-6-pro"]);
-});
+// ---------- vendor families and the merge ----------
 
 test("every vendor family wears its own palette, Claude stays orange, and the legend orders by family", async (page, origin) => {
-  localRows = [
-    { model: "grok-4", source: "grok-local", input_tokens: 700, output_tokens: 130, reasoning_tokens: 64, usd: 0.01, usd_estimate: null },
-    { model: "claude-sonnet-5", source: "claude-local", input_tokens: 900, output_tokens: 300, cached_read_tokens: 400, cache_creation_tokens: 100, usd: null, usd_estimate: 0.02 },
-    { model: "gpt-5", source: "codex-local", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, usd: null, usd_estimate: 0.01 },
-    { model: "gemini-3-pro", source: "droid-local", input_tokens: 2100, output_tokens: 430, usd: null, usd_estimate: null },
-    { model: "glm-5.3", source: "droid-local", input_tokens: 900, output_tokens: 150, cached_read_tokens: 1200, cache_creation_tokens: 60, usd: null, usd_estimate: null },
-    { model: "kimi-k3", source: "droid-local", input_tokens: 450, output_tokens: 90, usd: null, usd_estimate: null },
-    { model: "deepseek-r2", source: "droid-local", input_tokens: 300, output_tokens: 60, usd: null, usd_estimate: null },
-    { model: "typesafe-one", source: "droid-local", input_tokens: 10, output_tokens: 5, usd: null, usd_estimate: null },
+  ledger = [
+    { model: "grok-4", input_tokens: 700, output_tokens: 130, reasoning_tokens: 64, usd: 0.01, usd_estimate: null },
+    { model: "claude-sonnet-5", input_tokens: 900, output_tokens: 300, cached_read_tokens: 400, cache_creation_tokens: 100, usd: null, usd_estimate: 0.02 },
+    { model: "gpt-5", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, usd: null, usd_estimate: 0.01 },
+    { model: "gemini-3-pro", input_tokens: 2100, output_tokens: 430, usd: null, usd_estimate: null },
+    { model: "glm-5.3", input_tokens: 900, output_tokens: 150, cached_read_tokens: 1200, cache_creation_tokens: 60, usd: null, usd_estimate: null },
+    { model: "kimi-k3", input_tokens: 450, output_tokens: 90, usd: null, usd_estimate: null },
+    { model: "deepseek-r2", input_tokens: 300, output_tokens: 60, usd: null, usd_estimate: null },
+    { model: "typesafe-one", input_tokens: 10, output_tokens: 5, usd: null, usd_estimate: null },
   ];
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto(`${origin}/?range=month`);
@@ -3292,7 +3054,7 @@ test("a theme switch keeps the vault's filter, search and menu, and a reload kee
 test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothing loads off-origin", async (page, origin) => {
   const foreign = [];
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
-  localRows = subscriptionRows();
+  ledger = twoModelRows();
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
   for (const width of [390, 540, 780, 1280, 1920]) {
@@ -3308,13 +3070,14 @@ test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothi
       // html/body clip horizontal overflow, so a document-level spill check alone cannot see a
       // pane child (the rail made the Chart chips row 53px narrower) whose content is cut off.
       if (pane === "Chart") {
-        const chips = await page.evaluate(() => {
-          const row = document.querySelector("#source-chips");
-          const cloud = row.querySelector('[data-source="cloud"]').getBoundingClientRect();
-          return { scroll: row.scrollWidth, client: row.clientWidth, cloudRight: cloud.right, vw: document.documentElement.clientWidth };
-        });
-        assert.ok(chips.scroll <= chips.client + 1, `#source-chips clips its chips at ${width}px (scroll ${chips.scroll} > client ${chips.client})`);
-        assert.ok(chips.cloudRight <= chips.vw, `the Cloud chip is cut off at ${width}px (right edge ${chips.cloudRight} > viewport ${chips.vw})`);
+        const rows = await page.evaluate(() => [...document.querySelectorAll("#pane-chart .filters > :not([hidden])")].map((row) => ({
+          id: row.id || row.getAttribute("aria-label"), scroll: row.scrollWidth, client: row.clientWidth,
+          right: row.getBoundingClientRect().right, vw: document.documentElement.clientWidth,
+        })));
+        for (const row of rows) {
+          assert.ok(row.scroll <= row.client + 1, `${row.id} clips its content at ${width}px (scroll ${row.scroll} > client ${row.client})`);
+          assert.ok(row.right <= row.vw, `${row.id} is cut off at ${width}px (right edge ${row.right} > viewport ${row.vw})`);
+        }
       }
     }
   }
@@ -3326,7 +3089,7 @@ test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothi
 test("the status line stays one row beside the rail on every pane from 390 px up", async (page, origin) => {
   await page.goto(origin);
   await page.waitForLoadState("networkidle");
-  await page.evaluate(() => { document.getElementById("status").textContent = "Ingested 1,234 new rows from 56 files, 3 parse errors. ".repeat(3); });
+  await page.evaluate(() => { document.getElementById("status").textContent = "Saved keysreallysafe-month-2026-11-01-2026-11-30.csv, with the raw token and cost columns. ".repeat(3); });
   for (const width of [390, 540, 780, 1180, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
@@ -3501,26 +3264,26 @@ test("the status line is visible after a copy at 1440 and 390 px", async (page, 
   }
 });
 
-test("a model used by Claude Code and Droid is one series whose total counts both tools' rules", async (page, origin) => {
-  localRows = [
-    // Claude Code saw the model: 1,000 in, 400 cached read, 100 cache write, 200 out — 1,700
-    // counted, its cache buckets billed and its log carrying no reasoning bucket.
-    { model: "claude-sonnet-5", source: "claude-local", input_tokens: 1000, output_tokens: 200, cached_read_tokens: 400, cache_creation_tokens: 100, usd: null, usd_estimate: 0.02 },
-    // Droid saw the same model: 100 in, 50 out, 25 reasoning — 175 counted, every bucket.
-    { model: "claude-sonnet-5", source: "droid-local", input_tokens: 100, output_tokens: 50, reasoning_tokens: 25, usd: null, usd_estimate: null },
+test("a model reached through two providers is one series whose total counts each provider's rule", async (page, origin) => {
+  ledger = [
+    // Anthropic's API saw the model: 1,000 in, 400 cached read, 100 cache write, 200 out — 1,700
+    // counted, its cache buckets billed.
+    { key: "bravo", provider: "anthropic", model: "claude-sonnet-5", input_tokens: 1000, output_tokens: 200, cached_read_tokens: 400, cache_creation_tokens: 100, usd_estimate: 0.02 },
+    // Vercel's gateway saw the same model: 100 in, 50 out, 25 reasoning — 175 counted.
+    { model: "claude-sonnet-5", input_tokens: 100, output_tokens: 50, reasoning_tokens: 25 },
   ];
   await page.goto(`${origin}/?range=month`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1, null, { timeout: 5000 });
   assert.equal(await page.locator("#mix .mix-name").textContent(), "claude-sonnet-5",
-    "one model id is one series whichever tool used it");
-  // 1,700 under Claude's rule + 175 under Droid's: 1,875, a number no single rule over the
-  // merged raw buckets could produce (Claude's rule would drop the 25 reasoning tokens).
+    "one model id is one series whichever provider served it");
+  // 1,700 under Anthropic's rule + 175 under Vercel's: 1,875, a number no single rule over the
+  // merged raw buckets could produce (Anthropic's rule would drop the 25 reasoning tokens).
   assert.match(await totalsText(page), /1\.9K tokens/);
   assert.equal((await page.locator("#mix .mix-val").first().textContent()).trim(), "1.9K");
-  // The raw buckets of both tools stay on the row for the tooltip, and the totals line names
-  // the reasoning bucket only the Droid part contributed.
+  // The raw buckets of both providers stay on the row for the tooltip, and the totals line names
+  // the reasoning bucket only the Vercel part contributed.
   assert.match(await page.locator("#mix .mix-row").getAttribute("title"), /1,100 in, 250 out, 400 cached reads, 100 cache writes/);
   assert.match(await page.locator("#totals .totals-main").getAttribute("title"), /25 reasoning/);
   const labels = await page.locator("#daily-svg g.col").evaluateAll((g) => g.map((n) => n.getAttribute("aria-label")));
@@ -3975,13 +3738,9 @@ test("changing the range drops a model filter the new rows may not carry", async
 });
 
 test("the Keys switch's label, its hint and the unit it stores are one value", async (page, origin) => {
-  // The API keys scope is where requests is a legal page unit, and so where the switch can store
-  // the unit it announces.
   await page.goto(`${origin}/?range=week`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
-  await page.getByRole("radio", { name: "API keys" }).click();
-  await page.waitForFunction(inKeysScope);
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   const label = async () => (await page.locator("#keys-unit").textContent()).trim();
@@ -4009,8 +3768,8 @@ test("the Keys switch's label, its hint and the unit it stores are one value", a
 });
 
 test("an export waits for the range it describes instead of shipping the previous rows", async (page, origin) => {
-  localRows = [
-    { model: "grok-4", source: "grok-local", input_tokens: 100000, output_tokens: 0, cached_read_tokens: 0,
+  ledger = [
+    { model: "grok-4", input_tokens: 100000, output_tokens: 0, cached_read_tokens: 0,
       cache_creation_tokens: 0, reasoning_tokens: 0, usd: 1, usd_estimate: null },
   ];
   await page.goto(`${origin}/?range=week`);
@@ -4021,8 +3780,8 @@ test("an export waits for the range it describes instead of shipping the previou
 
   // The month's report differs, and its request is slow enough that the week's rows are still in
   // hand when the export is asked for. The heading and the filename would name the new range.
-  localRows = [
-    { model: "gpt-5", source: "codex-local", input_tokens: 5000, output_tokens: 0, cached_read_tokens: 0,
+  ledger = [
+    { model: "gpt-5", input_tokens: 5000, output_tokens: 0, cached_read_tokens: 0,
       cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: 0.01 },
   ];
   delays.set(rule("GET", "/api/spend"), 700);
@@ -4176,7 +3935,7 @@ test("a slower grants list cannot revive a grant a newer revoke killed", async (
 test("a slower month total cannot stick over a newer one", async (page, origin) => {
   const day = localDay(new Date());
   const month = (tokens, model) => JSON.stringify({
-    range: "month", by: "model", source: "all", start_day: day, end_day: day, totals: { remote_tokens: 0 },
+    range: "month", by: "model", start_day: day, end_day: day, totals: { gateway_tokens: tokens, gateway_calls: 1 },
     rows: [{ model, input_tokens: tokens, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0,
       reasoning_tokens: 0, usd: null, usd_estimate: null }],
     daily: [], points: [], models: [model],
@@ -4351,11 +4110,11 @@ test("a failed key refresh still refreshes the grants pane", async (page, origin
 // An error reply from /api/spend is the real answer; retrying it three times only delays the
 // message, and the export then says "still loading", which names the wrong problem.
 test("an export reports a chart error instead of calling it still loading", async (page, origin) => {
-  localRows = subscriptionRows();
+  ledger = twoModelRows();
   await page.goto(`${origin}/?range=week`);
   await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Chart" }).click();
-  await page.waitForFunction(() => /2\.4K tokens/.test(document.getElementById("totals").textContent));
+  await page.waitForFunction(() => /1\.9K tokens/.test(document.getElementById("totals").textContent));
   // The range moves to a report the engine refuses, so the export has no report for the filters on
   // screen and has to ask for one itself.
   failures.set(rule("GET", "/api/spend"), { status: 500, body: { error: "report unavailable" } });
@@ -4368,36 +4127,6 @@ test("an export reports a chart error instead of calling it still loading", asyn
   assert.doesNotMatch(await status(page), /still loading/, "and never calls an error a slow load");
   assert.equal(requests.filter((r) => r.pathname === "/api/spend").length - before, 1,
     "an error reply is not retried");
-});
-
-// Leaving the API keys scope with requests chosen falls back to the remembered unit. The fallback
-// used to write `state.unit` directly, so the chips changed while the Keys rows and the Usage
-// summary kept printing requests.
-test("leaving the API keys scope redraws every place that prints the unit", async (page, origin) => {
-  localRows = subscriptionRows();
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.getByRole("radio", { name: "API keys" }).click();
-  await page.waitForFunction(inKeysScope);
-  await page.getByRole("radio", { name: "Requests" }).click();
-  assert.equal(await page.locator('[data-unit="requests"]').getAttribute("aria-checked"), "true");
-  // Back to the subscription scope: requests is not offered there.
-  await page.getByRole("radio", { name: "Subscriptions" }).click();
-  await page.waitForFunction(() => document.querySelector('[data-unit="tokens"]').getAttribute("aria-checked") === "true");
-  // The chart is redrawn by the new scope's report, not from the previous scope's rows.
-  await page.waitForFunction(() => !/requests/.test(document.getElementById("totals").textContent));
-  assert.match(await totalsText(page), /tokens/, "the chart's totals follow the fallback unit");
-  assert.doesNotMatch(await totalsText(page), /requests/);
-  // The Keys pane's figure follows too, so the page never prints two units at once.
-  await page.getByRole("tab", { name: "Keys" }).click();
-  await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
-  assert.equal((await page.locator("#keys-unit").textContent()).trim(), "requests",
-    "the gateway figures still answer in requests, and say so");
-  await page.getByRole("tab", { name: "Usage" }).click();
-  await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
-  assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/,
-    "the month summary is in the fallback unit too");
 });
 
 test("a slow failure cannot raise the outage banner over a newer reply", async (page, origin) => {
@@ -4909,58 +4638,6 @@ test("the key History drawer names every audited action and caller in words", as
   assert.doesNotMatch(await page.locator("#keys-body .key-events").textContent(), /client_issue|gateway_denied|client_revoke/);
 });
 
-// "from Grok's own cost log" belongs to Grok's receipt alone. With Droid chosen, or Claude at
-// $0.00, the USD totals bar and Copy totals used to say it because no estimate was above zero.
-test("USD totals name Grok's cost log only when Grok alone has dollars, and Droid is not priced", async (page, origin) => {
-  localRows = [
-    { source: "claude-local", model: "claude-sonnet-5", input_tokens: 100, output_tokens: 50, usd: null, usd_estimate: 0 },
-    { source: "droid-local", model: "gpt-6-pro", input_tokens: 400, output_tokens: 100, usd: null, usd_estimate: null },
-    { source: "grok-local", model: "grok-4", input_tokens: 500, output_tokens: 200, usd: 0.01, usd_estimate: null },
-  ];
-  await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator("#mix .mix-row").first().waitFor();
-  await chooseUsd(page);
-  await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
-  const copyTotals = async () => {
-    await page.evaluate(() => { window.__copied = ""; });
-    await page.keyboard.press("Shift+C");
-    await page.waitForFunction(() => window.__copied);
-    return page.evaluate(() => window.__copied);
-  };
-  const pick = async (name) => {
-    await page.getByRole("radio", { name, exact: true }).click();
-    await page.waitForFunction((n) => document.querySelector(`#source-chips [data-source="${n.toLowerCase()}"]`).getAttribute("aria-checked") === "true", name);
-  };
-
-  // All: Grok is the only tool with dollars, so its receipt is named.
-  assert.match(await totalsText(page), /from Grok's own cost log/);
-
-  await pick("Claude");
-  await page.waitForFunction(() => !/Grok's own cost log/.test(document.getElementById("totals").textContent));
-  const claude = await totalsText(page);
-  assert.equal(await page.locator("#totals .totals-main").textContent(), "$0", "a zero estimate is still shown as the estimate it is: " + claude);
-  assert.match(claude, /estimate from list prices/);
-  const claudeMd = await copyTotals();
-  assert.match(claudeMd, /Estimated from the tools' own local logs/);
-  assert.doesNotMatch(claudeMd, /Grok's own cost log/);
-
-  await pick("Droid");
-  await page.waitForFunction(() => /not priced/.test(document.getElementById("totals").textContent));
-  const droid = await totalsText(page);
-  assert.match(droid, /Droid's own local log/);
-  assert.doesNotMatch(droid, /\$0\.00|Grok's own cost log|estimate from list prices/, droid);
-  const droidMd = await copyTotals();
-  assert.match(droidMd, /Droid/);
-  assert.match(droidMd, /not priced/);
-  assert.doesNotMatch(droidMd, /\$0\.00|Grok's own cost log/, droidMd);
-
-  await pick("Grok");
-  await page.waitForFunction(() => /from Grok's own cost log/.test(document.getElementById("totals").textContent));
-  assert.match(await copyTotals(), /From Grok's own cost log/);
-});
-
 // First run: an empty vault gets the walkthrough, every step a command you can copy as is; the
 // same section lives under ? and behind Settings → Guide afterwards.
 test("the first-use guide walks through the command line, a key, an agent, tokens and the relay", async (page, origin) => {
@@ -5024,108 +4701,6 @@ test("arrow keys step through the flat list from the search box", async (page, o
 
 
 // ---------- imported cloud usage ----------
-
-// Usage from a cloud session or a remote droid run is imported, never read off this Mac, so it
-// has its own chip and the Usage line stops calling the total "from local logs".
-test("the Cloud chip shows imported remote usage, kimi-k3 included, and names it on Usage", async (page, origin) => {
-  localRows = [
-    ...subscriptionRows(),
-    { source: "droid-remote", model: "kimi-k3", input_tokens: 400, output_tokens: 50, cached_read_tokens: 2000, cache_creation_tokens: 0, reasoning_tokens: 10, usd: null, usd_estimate: null },
-    { source: "droid-remote", model: "unattributed", input_tokens: 100, output_tokens: 100, cached_read_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: null },
-  ];
-  await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#usage-totals b").first().waitFor();
-  const usage = await page.locator("#usage-totals").textContent();
-  assert.match(usage, /This month from local logs\s*2\.4K tokens/, "the local share stands alone: " + usage);
-  assert.match(usage, /2\.7K imported from cloud \(not priced\)/, "the imported share is separate: " + usage);
-
-  // USD on Usage: local dollars, with the cloud tokens noted as not priced rather than dropped.
-  await page.locator("#usage-totals").getByText("show USD").click();
-  await page.waitForFunction(() => /tokens imported from cloud \(not priced\)/.test(document.getElementById("usage-totals").textContent));
-  await page.locator("#usage-totals").getByText("show tokens").click().catch(() => {});
-
-  await page.getByRole("tab", { name: "Chart" }).click();
-  // All view with imports acknowledges them.
-  await page.waitForFunction(() => /imported from the cloud/.test(document.getElementById("chart-caption").textContent));
-  await page.locator('[data-source="cloud"]').click();
-  await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 2);
-  // Tokens view on Cloud: imported wording, never "local logs".
-  const cloudText = async () => (await page.locator("#chart-caption").textContent()) + " " + (await page.locator("#totals").textContent());
-  let ct = await cloudText();
-  assert.match(ct, /imported/i);
-  assert.doesNotMatch(ct, /local logs|Grok's own cost log/, ct);
-  // USD view on Cloud: "not priced", not a measured $0.00.
-  await page.locator('[data-unit="usd"]').click();
-  await page.waitForFunction(() => /not priced/.test(document.getElementById("totals").textContent));
-  ct = await cloudText();
-  assert.doesNotMatch(ct, /\$0\.00|local logs|Grok's own cost log/, ct);
-  await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
-  await page.keyboard.press("Shift+C");
-  await page.waitForFunction(() => window.__copied);
-  const copied = await page.evaluate(() => window.__copied);
-  assert.ok(copied, "Copy totals produced text");
-  assert.doesNotMatch(copied, /\$0\.00|local logs|Grok's own cost log/, copied);
-  await page.locator('[data-unit="tokens"]').click();
-  assert.ok(spendSearches().some((s) => s.includes("source=cloud")), "the chip reaches the engine as source=cloud");
-  const mix = await page.locator("#mix").textContent();
-  assert.match(mix, /kimi-k3/);
-  assert.match(mix, /unattributed/, "a session total that cannot be split says so instead of borrowing a model");
-  assert.doesNotMatch(mix, /claude-sonnet-5|grok-4/, "local rows stay out of Cloud");
-  assert.match(page.url(), /source=cloud/);
-
-  // Nothing imported in range: the empty state says how usage gets here.
-  localRows = subscriptionRows();
-  await page.reload();
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.waitForFunction(() => /No imported cloud usage/.test(document.getElementById("spend-empty").textContent));
-  assert.equal(await page.locator('[data-source="cloud"]').getAttribute("aria-checked"), "true", "?source=cloud boots into the chip");
-  assert.match(await page.locator("#spend-empty").textContent(), /keys usage import/);
-});
-
-test("a model with local and imported tokens: families stay local, the dollar row is partly priced", async (page, origin) => {
-  localRows = [
-    ...subscriptionRows(),
-    { source: "claude-local", model: "claude-sonnet-5", input_tokens: 0, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: null },
-    { source: "claude-remote", model: "claude-sonnet-5", input_tokens: 5000, output_tokens: 0, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: null },
-  ];
-  await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#usage-totals b").first().waitFor();
-  const usage = await page.locator("#usage-totals").textContent();
-  assert.match(usage, /1\.7K Claude/, "the Claude part is the local tokens only: " + usage);
-  assert.match(usage, /5K imported from cloud \(not priced\)/, usage);
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.locator('[data-unit="usd"]').click();
-  await page.waitForFunction(() => /partly priced/.test(document.getElementById("mix").textContent));
-  const row = page.locator('#mix .mix-row[data-model="claude-sonnet-5"]');
-  assert.match(await row.textContent(), /partly priced/);
-  assert.match(await row.locator(".mix-usd").getAttribute("title"), /not priced/);
-  assert.doesNotMatch(await page.locator('#mix .mix-row[data-model="grok-4"]').textContent(), /partly priced/);
-});
-
-test("the All empty state and the ingest wording name imported cloud usage and Droid", async (page, origin) => {
-  localRows = [];
-  emptyIngested = true;
-  await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
-  await page.getByRole("tab", { name: "Chart" }).click();
-  await page.waitForFunction(() => /Nothing in this range/.test(document.getElementById("spend-empty").textContent));
-  assert.match(await page.locator("#spend-empty").textContent(), /imported cloud usage/);
-  assert.match(await page.locator("#btn-ingest").getAttribute("title"), /Droid/);
-  emptyIngested = false;
-});
-
-test("without imports the Usage line still says local logs", async (page, origin) => {
-  localRows = subscriptionRows();
-  await page.goto(origin);
-  await page.waitForLoadState("networkidle");
-  await page.locator("#usage-totals b").first().waitFor();
-  const text = await page.locator("#usage-totals").textContent();
-  assert.match(text, /This month from local logs /);
-  assert.doesNotMatch(text, /cloud imports/);
-});
 
 (async () => {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

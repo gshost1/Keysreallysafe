@@ -14,32 +14,20 @@
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
 
   const readUnit = () => { try { return localStorage.getItem("ksf.unit") === "usd" ? "usd" : "tokens"; } catch { return "tokens"; } };
-  // A link that names a key or a provider is a request to see that gateway ledger, so it lands in
-  // the API keys scope unless the link says otherwise. `source=keys` is the wire name for that
-  // scope; the four local sources are the subscription one. A link that asks for a local source
-  // *and* carries a key or a provider asks for two things that cannot both be true: neither filter
-  // describes a local log, and a key sent with a local source narrows those rows to nothing. The
-  // explicit source wins and the gateway filters are dropped here, URL included, so a reload
-  // cannot re-apply what this boot refused.
+  // The chart is the gateway's ledger of calls made with vault keys; a link may narrow it to one
+  // key or one provider. An older link's `source` (a subscription tool, removed 2026-11-04) is
+  // ignored and struck from the URL so the address bar says what the page shows.
   const boot = (() => {
     const q = new URLSearchParams(location.search);
-    const asked = q.get("source");
-    const key = q.get("key") || null;
-    const provider = q.get("provider") || null;
-    if (["all", "grok", "claude", "openai", "droid", "cloud"].includes(asked)) return { source: asked, key: null, provider: null, dropped: Boolean(key || provider) };
-    if (asked === "keys") return { source: "keys", key, provider, dropped: false };
-    return { source: key || provider ? "keys" : "all", key, provider, dropped: false };
+    return { key: q.get("key") || null, provider: q.get("provider") || null, dropped: q.has("source") };
   })();
 
   const state = {
     pane: "usage",
-    source: boot.source,
     range: ["today", "week", "month"].includes(new URLSearchParams(location.search).get("range")) ? new URLSearchParams(location.search).get("range") : "today",
     unit: readUnit(),
     key: boot.key,
     provider: boot.provider,
-    // The subscription source to come back to when the scope leaves the API keys view.
-    subSource: boot.source === "keys" ? "all" : boot.source,
     group: "model",
     eventsOpen: null,
     spend: null,
@@ -370,68 +358,27 @@
     return { sync };
   }
 
-  // Two things this Mac pays for, and they are not the same kind of record. Subscriptions are the
-  // tools' own local logs; API keys are the gateway's ledger of calls it routed. Picking between
-  // them comes first, and only then does a narrower filter — a tool, or a provider and a key —
-  // mean anything. A flat list would put Claude beside TypeSafe as if they were the same axis.
-  const scopeChips = wireChips("data-scope", (value) => setScope(value));
-  const sourceChips = wireChips("data-source", (value) => setSource(value));
-  const keysMode = () => state.source === "keys";
-  function setScope(value) {
-    if (value === "keys" && keysMode()) return;
-    if (value !== "keys" && !keysMode()) return;
-    // Each scope's own filters are dropped on the way out: a provider or key means nothing to a
-    // local log, and the project grouping means nothing to the gateway ledger.
-    state.source = value === "keys" ? "keys" : state.subSource;
-    state.key = null;
-    state.provider = null;
-    state.keyIndex = [];
-    state.mixFilter = null;
-    syncScopeChips();
-    writeChartUrl();
-    loadSpend();
-  }
-  function setSource(value) {
-    state.source = value;
-    state.subSource = value;
-    // A tool chip is a local source, and a local source never carries a gateway filter — not even
-    // one that arrived from outside the chart. Clearing here is what keeps `loadSpend` from
-    // sending a key with a local source however the view got into one.
-    state.key = null;
-    state.provider = null;
-    state.mixFilter = null;
-    syncScopeChips();
-    writeChartUrl();
-    loadSpend();
-  }
-  // One place decides which filter rows belong to the current scope, so no row is ever left
-  // showing a filter the request no longer sends.
-  function syncScopeChips() {
-    scopeChips.sync(keysMode() ? "keys" : "subs");
-    // The tool row keeps the last subscription choice while it is hidden, so coming back out of
-    // the API keys scope returns to where the user was rather than resetting to All.
-    sourceChips.sync(state.subSource);
-    $("source-chips").hidden = keysMode();
+  // One place decides which filter rows show, so no row is ever left showing a filter the
+  // request no longer sends.
+  function syncFilters() {
     syncGroupChips();
-    syncUnitChips();
+    unitChips.sync(state.unit);
     renderProviderFilter();
     renderKeysFilter();
   }
   function writeChartUrl() {
     const url = new URL(location.href);
     url.searchParams.set("range", state.range);
-    if (state.source === "all") url.searchParams.delete("source"); else url.searchParams.set("source", state.source);
+    url.searchParams.delete("source");
     if (state.key) url.searchParams.set("key", state.key); else url.searchParams.delete("key");
     if (state.provider) url.searchParams.set("provider", state.provider); else url.searchParams.delete("provider");
     history.replaceState(null, "", url);
   }
-  // The gateway filters an explicit local source refused above are struck from the URL now, so the
-  // address bar says what the page is actually showing.
   if (boot.dropped) writeChartUrl();
   const rangeChips = wireChips("data-range", (value) => setRange(value));
   rangeChips.sync(state.range);
   // A key filter narrows both charts and the model list to calls that went through the gateway
-  // with that key. It only means anything in the API keys source, so it takes the view there.
+  // with that key.
   function setKey(name) {
     applyKey(name);
     loadSpend();
@@ -442,10 +389,9 @@
   // filtering the view, and the pair would report an empty intersection for a key that has calls.
   function applyKey(name, keepProvider = true) {
     state.key = name;
-    state.source = "keys";
     if (!keepProvider) state.provider = name ? keyProvider(name) : null;
     state.mixFilter = null;
-    syncScopeChips();
+    syncFilters();
     writeChartUrl();
   }
   // Providers and keys are one hierarchy: a vault key belongs to exactly one provider. Narrowing
@@ -456,12 +402,12 @@
     state.provider = next;
     state.mixFilter = null;
     if (next && state.key && keyProvider(state.key) && keyProvider(state.key) !== next) state.key = null;
-    syncScopeChips();
+    syncFilters();
     writeChartUrl();
     loadSpend();
   }
   const keyProvider = (name) => (state.keyIndex.find((e) => e.key === name) || {}).provider || null;
-  // The Keys pane's gateway cell lands here: the named key, in the API keys view, every time. A
+  // The Keys pane's gateway cell lands here: the named key, every time. A
   // provider left over from an earlier look at the chart is not this key's, so it is derived from
   // the key or dropped rather than carried into a filter pair that cannot both hold.
   function showKeyInChart(name) {
@@ -469,32 +415,18 @@
     showPane("chart");
   }
   // Every gateway call is one request, so requests are countable even when a provider reports no
-  // tokens and no cost. Local logs do not always record a call count, so the unit is offered only
-  // for the API keys source.
+  // tokens and no cost.
   const unitChips = wireChips("data-unit", (value) => setUnit(value));
-  function syncUnitChips() {
-    const chip = document.querySelector('[data-unit="requests"]');
-    if (chip) chip.hidden = !keysMode();
-    // Leaving the API keys scope with requests chosen: requests is not offered there, so the page
-    // falls back to the remembered non-USD unit. Through setUnit, so the key rows and the Usage
-    // summary are redrawn as well — writing `state.unit` here left both showing the old unit while
-    // the chips announced the new one. Every scope change comes through here, so this is the one
-    // place that has to know the rule.
-    // The chart itself is not redrawn here: `state.spend` is still the previous scope's report,
-    // and the load the scope change starts redraws it.
-    if (!keysMode() && state.unit === "requests") setUnit(readUnit(), { chart: false });
-    unitChips.sync(state.unit);
-  }
-  syncUnitChips();
+  unitChips.sync(state.unit);
 
   // A picker row: "All …" first, then one chip per recorded value. Choosing a chip reloads and
   // redraws the row, so keyboard focus follows the new choice rather than falling to the body.
   function renderPicker(boxId, attr, allLabel, allHint, options, current, choose) {
     const box = $(boxId);
     const hadFocus = box.contains(document.activeElement);
-    box.hidden = !keysMode();
+    box.hidden = false;
     box.replaceChildren();
-    if (!keysMode() || !options.length) return;
+    if (!options.length) return;
     const chip = (value, label, hint, on) => el("button", {
       type: "button", role: "radio", "aria-checked": String(on), tabindex: on ? "0" : "-1",
       [attr]: value || "", "aria-label": hint, title: hint,
@@ -537,7 +469,7 @@
       .filter((e) => !state.provider || e.provider === state.provider)
       .map((e) => e.key)
       .concat(state.key ? [state.key] : []))].sort();
-    box.hidden = !keysMode() || !names.length;
+    box.hidden = !names.length;
     select.replaceChildren(
       el("option", { value: "", "data-key-filter": "", text: "All keys", title: "Show every key" }),
       ...names.map((n) => el("option", { value: n, "data-key-filter": n, text: n, title: "Show only key " + n })),
@@ -550,12 +482,9 @@
   });
   wirePickerKeys("provider-filter", "data-provider-filter");
 
-  // Projects are a Claude-only grouping (the only source with a project path); keys and
-  // providers exist only in the gateway ledger. Each chip shows only where it means something.
+  // The list and the chart group by model, by vault key or by the provider the keys route to.
   const groupChips = wireChips("data-group", (value) => setGroup(value));
-  const groupAllowed = (value) => value === "model"
-    || (value === "project" && state.source === "claude")
-    || ((value === "key" || value === "provider") && keysMode());
+  const groupAllowed = (value) => ["model", "key", "provider"].includes(value);
   function setGroup(value) {
     state.group = groupAllowed(value) ? value : "model";
     groupChips.sync(state.group);
@@ -563,14 +492,10 @@
     loadSpend();
   }
   function syncGroupChips() {
-    const show = state.source === "claude" || keysMode();
-    $("group-chips").hidden = !show;
-    document.querySelector('[data-group="project"]').hidden = state.source !== "claude";
-    for (const g of ["key", "provider"]) document.querySelector(`[data-group="${g}"]`).hidden = !keysMode();
     if (!groupAllowed(state.group)) state.group = "model";
     groupChips.sync(state.group);
   }
-  const routeGroup = () => keysMode() && (state.group === "key" || state.group === "provider") ? state.group : null;
+  const routeGroup = () => (state.group === "key" || state.group === "provider") ? state.group : null;
   const todayMode = () => state.range === "today";
   function setRange(value) {
     rangeChips.sync(value);
@@ -578,16 +503,15 @@
     // The range decides which rows exist, so a model picked in the old range need not be in the
     // new one. A filter naming a series that is gone draws nothing at all, and the plot reads as
     // an empty range with no row selected to explain it. Range is one more control that drops it,
-    // as the scope, source, key, provider and group already do.
+    // as the key, provider and group already do.
     state.mixFilter = null;
     writeChartUrl();
     loadSpend();
   }
 
   function setUnit(value, { chart = true } = {}) {
-    const wanted = value === "requests" && !keysMode() ? "tokens" : value;
-    state.unit = wanted === "usd" ? "usd" : wanted === "requests" ? "requests" : "tokens";
-    // "requests" belongs to the API keys source only, so it is not remembered for the next visit.
+    state.unit = value === "usd" ? "usd" : value === "requests" ? "requests" : "tokens";
+    // The stored unit is tokens or USD; requests is a look, not a default for the next visit.
     if (state.unit !== "requests") { try { localStorage.setItem("ksf.unit", state.unit); } catch { /* fine */ } }
     unitChips.sync(state.unit);
     // One unit for the whole page: the chart, the key rows' gateway figures and the Usage
@@ -597,21 +521,17 @@
     renderUsageTotals();
     if (chart && state.spend) { renderTotals(state.spend); renderMix(); drawChart(); }
   }
-  // Tokens → USD → requests, with requests only where every call is countable. The chart's `t`
-  // key steps the page unit through this.
+  // Tokens → USD → requests. The chart's `t` key steps the page unit through this.
   function cycleUnit() {
-    const cycle = keysMode() ? ["tokens", "usd", "requests"] : ["tokens", "usd"];
+    const cycle = ["tokens", "usd", "requests"];
     setUnit(cycle[(cycle.indexOf(state.unit) + 1) % cycle.length]);
   }
   // The Keys pane has no chart chips, so it carries its own switch: without it the figures would
   // silently follow whatever was last picked on Usage or Chart. A gateway cell prints exactly two
   // things — the requests the engine counted, and their dollars (a key's row records no token
   // count) — so the label, the hint and the click are all that one pair. The click stores the
-  // unit it announced: `requests` in the API keys scope, where requests is a legal page unit. It
-  // used to store `tokens` there — a unit the label never mentioned and the rows cannot show.
-  // Outside that scope the page keeps a non-USD unit instead (requests is not offered there), and
-  // the cells still print the requests the label names, so the promise stays true.
-  const keysUnitNext = () => (usdMode() ? (keysMode() ? "requests" : "tokens") : "usd");
+  // unit it announced.
+  const keysUnitNext = () => (usdMode() ? "requests" : "usd");
   const GATEWAY_UNIT = { usd: "USD", requests: "requests" };
   function syncKeysUnit() {
     const btn = $("keys-unit");
@@ -660,10 +580,9 @@
   let spendKey = null;
   const currentSpendQuery = () => new URLSearchParams({
     range: state.range,
-    by: routeGroup() || (todayMode() ? "hour" : projectMode() ? "project" : "model"),
-    source: state.source,
+    by: routeGroup() || (todayMode() ? "hour" : "model"),
     ...(state.key ? { key: state.key } : {}),
-    ...(keysMode() && state.provider ? { provider: state.provider } : {}),
+    ...(state.provider ? { provider: state.provider } : {}),
   }).toString();
   let spendErrorKey = null;
   // The load in flight and the query it answers, so an export waits for it instead of starting a
@@ -682,16 +601,16 @@
       // narrow to the current choice and strand the user there. The unfiltered report over the
       // same range is what lists every choice; it is only needed while a filter is applied.
       // A by=key or by=provider report names no key per row either, so it needs the index too.
-      const filtered = keysMode() && (state.key || state.provider || routeGroup());
+      const filtered = Boolean(state.key || state.provider || routeGroup());
       const indexReq = filtered
-        ? api("/api/spend?" + new URLSearchParams({ range: state.range, by: "model", source: "keys" }).toString()).catch(() => null)
+        ? api("/api/spend?" + new URLSearchParams({ range: state.range, by: "model" }).toString()).catch(() => null)
         : null;
       const [data, index] = await Promise.all([api("/api/spend?" + q), indexReq]);
       if (!latest.isCurrent("spend", seq)) return "stale";
       state.spend = data;
       state.spendError = null;
       spendKey = q;
-      const indexReport = keysMode() ? (filtered ? index : data) : null;
+      const indexReport = filtered ? index : data;
       const indexRows = indexReport ? indexReport.rows || [] : null;
       if (indexRows) {
         const seen = new Map();
@@ -726,8 +645,7 @@
 
   // The vendor a model id names — one family per vendor, and the family owns the palette, the
   // legend order and the token-rule fallback below. The prefixes are the public ids the tools
-  // log (Droid included), matching the ingest's provider map; anything unrecognized is
-  // "other", which has its own grey palette.
+  // and the gateway sees; anything unrecognized is "other", which has its own grey palette.
   const family = (m) => (/^grok/i.test(m) ? "grok" : /^claude/i.test(m) ? "claude" : /^(gpt-|o[1-9]|codex|chatgpt)/i.test(m) ? "openai"
     : /^gemini/i.test(m) ? "gemini" : /^glm/i.test(m) ? "glm" : /^kimi/i.test(m) ? "kimi" : /^deepseek/i.test(m) ? "deepseek" : "other");
 
@@ -746,16 +664,7 @@
     return `color-mix(in oklab, ${base} ${100 - pct}%, ${toward})`;
   }
 
-  const PROJECT_PALETTE = ["claude-1", "grok-1", "openai-1", "claude-2", "grok-2", "openai-2", "claude-3", "grok-3", "openai-3", "claude-4", "grok-4", "openai-4"];
   function assignColors(models) {
-    if (projectMode()) {
-      state.colors = new Map();
-      models.forEach((m, i) => {
-        if (i >= PROJECT_PALETTE.length) return;
-        state.colors.set(m, { color: `var(--s-${PROJECT_PALETTE[i]})`, slot: i, family: "project" });
-      });
-      return;
-    }
     const byFam = new Map();
     for (const m of models) {
       const f = family(m);
@@ -770,68 +679,42 @@
       });
     }
   }
-  const colorFor = (model) => (model === OTHER || model === "Other projects" ? { color: "var(--s-other)", slot: OTHER_SLOT, family: "other" } : state.colors.get(model) || null);
+  const colorFor = (model) => (model === OTHER ? { color: "var(--s-other)", slot: OTHER_SLOT, family: "other" } : state.colors.get(model) || null);
 
   // One identity for a row, a daily point and an hourly point alike. The gateway records model=""
   // when the caller named no model and the provider reported none, so the empty name is a real
   // bucket: it becomes "unknown" here, and every lookup has to ask the same question or those
   // requests would count in the totals and the mix while their bars went missing.
-  const seriesId = (r) => (projectMode() ? (r.cwd || r.project || "unknown") : (r.model || "unknown"));
+  const seriesId = (r) => r.model || "unknown";
 
-  // The engine's own token rule, applied to a row here so a headline, a legend row and the bars
-  // the engine drew cannot disagree about the same range: Claude counts cache reads and writes
-  // because they are billed separately, OpenAI, Codex and Grok count reasoning tokens instead,
-  // and a gateway row follows the API its provider speaks. A row names its source where the
-  // engine sends one; otherwise the model's family answers the same question.
+  // What a report row counts. The engine states it once, in `counted_tokens`: each call counted
+  // under its provider's API rule (Anthropic's cache buckets beside input, OpenAI-style reasoning
+  // apart) before the grouping, so a model served by two providers is not re-counted under
+  // whichever was named first. Only a payload without the field — a hand-made fixture — falls
+  // back to the same rule here.
   const anthropicApi = (id) => (providerById(id) || {}).api === "anthropic";
-  function rowTokens(r, projects = false) {
-    const input = r.input_tokens || 0;
-    const output = r.output_tokens || 0;
+  const rowCounted = (r) => {
+    if (typeof r.counted_tokens === "number") return r.counted_tokens;
     const cache = (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0);
-    const reasoning = r.reasoning_tokens || 0;
-    const src = r.source || "";
-    // A project row is a folder's Claude sessions; it names no model, and Claude is the only
-    // source with a project path.
-    if (projects || src === "claude-local") return input + output + cache;
-    if (src === "codex-local" || src === "grok-local") return input + output + reasoning;
-    // Droid's log bills every bucket it reports, cache and thinking included.
-    if (src === "droid-local" || src === "droid-remote") return input + output + cache + reasoning;
-    if (src === "claude-remote") return input + output + cache;
-    if (src === "gateway" || (!src && r.provider)) return input + output + (anthropicApi(r.provider) ? cache : reasoning);
-    return input + output + (family(r.model || "") === "claude" ? cache : reasoning);
-  }
-
-  // What a report row counts. by=model rows group on the model id, so one row can mix tools —
-  // a model Claude Code and Droid both used — and no single rule over its raw buckets can be
-  // right for both (Claude's cache buckets and Droid's reasoning both count, each under its own
-  // source). The engine states the answer once, in `counted_tokens`: each event counted under
-  // its own source's rule before the grouping, the same `TokenTotals.normalized` the Usage row
-  // reads. Only a payload without the field — an older engine, a hand-made fixture — falls back
-  // to the family-based rule above.
-  const rowCounted = (r, projects = false) => (typeof r.counted_tokens === "number" ? r.counted_tokens : rowTokens(r, projects));
+    return (r.input_tokens || 0) + (r.output_tokens || 0) + (anthropicApi(r.provider) ? cache : r.reasoning_tokens || 0);
+  };
 
   function buildSeries(rows) {
     // Families first, newest vendors after the three the chips name, unknown last: a stack
     // never interleaves one vendor's shades with another's.
     const order = { grok: 0, claude: 1, openai: 2, gemini: 3, glm: 4, kimi: 5, deepseek: 6, other: 7 };
-    // Same accounting as the engine's totals: Claude counts every bucket (cache reads and
-    // writes are billed separately), Grok's cached reads already sit inside input_tokens.
     // A gateway call is real even with no token counts: TypeSafe's System One protocol reports
     // neither tokens nor cost, and dropping those rows would hide calls that did happen.
     const isReal = (r) => ((r.input_tokens || 0) + (r.output_tokens || 0) + (r.cached_read_tokens || 0) + (r.cache_creation_tokens || 0)) > 0
-      || (keysMode() && (r.model_calls || 0) > 0);
+      || (r.model_calls || 0) > 0;
     // The engine sends one row per (model, key); daily points are per model. Merge rows by model
-    // first so a model with local and gateway usage, or two keys, is one series and one bucket.
+    // first so a model used through two keys is one series and one bucket.
     const merged = new Map();
     for (const r of rows.filter(isReal)) {
       const id = seriesId(r);
       const m = merged.get(id);
-      // Each row arrives already counted under its own sources' rules (`counted_tokens`), so a
-      // model served by two tools or two providers is not re-counted under whichever one
-      // happened to be named first.
-      if (!m) { merged.set(id, { ...r, counted: rowCounted(r, projectMode()) }); continue; }
-      m.counted += rowCounted(r, projectMode());
-      m.remote_counted_tokens = (m.remote_counted_tokens || 0) + (Number(r.remote_counted_tokens) || 0);
+      if (!m) { merged.set(id, { ...r, counted: rowCounted(r) }); continue; }
+      m.counted += rowCounted(r);
       for (const f of ["input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "reasoning_tokens", "model_calls"]) m[f] = (m[f] || 0) + (r[f] || 0);
       if (r.usd != null) m.usd = (m.usd || 0) + r.usd;
       if (r.usd_estimate != null) m.usd_estimate = (m.usd_estimate || 0) + r.usd_estimate;
@@ -843,8 +726,7 @@
     }
     const items = [...merged.values()].map((r) => ({
       model: seriesId(r),
-      label: projectMode() ? (r.project || r.cwd || "unknown") : (r.model || "unknown"),
-      cwd: r.cwd || null,
+      label: r.model || "unknown",
       tokens: r.counted || 0,
       input: r.input_tokens || 0,
       output: r.output_tokens || 0,
@@ -856,15 +738,8 @@
       provider: r.provider || null,
       usd: r.usd,
       est: r.usd_estimate,
-      remote: Number(r.remote_counted_tokens) || 0,
     }));
-    if (projectMode()) {
-      items.sort((a, b) => b.tokens - a.tokens);
-      // two projects with the same folder name: show the parent folder too
-      const seen = new Map();
-      for (const it of items) seen.set(it.label, (seen.get(it.label) || 0) + 1);
-      for (const it of items) if (seen.get(it.label) > 1 && it.cwd) it.label = it.cwd.split("/").filter(Boolean).slice(-2).join("/");
-    } else if (routeGroup()) {
+    if (routeGroup()) {
       // Keys and providers have no vendor family to cluster by: biggest spend first, then calls.
       const cost = (it) => it.usd ?? it.est ?? 0;
       items.sort((a, b) => cost(b) - cost(a) || b.calls - a.calls || b.tokens - a.tokens);
@@ -877,11 +752,10 @@
       if (entry) {
         out.push({ ...it, color: entry.color, slot: entry.slot, members: [it.model] });
       } else {
-        if (!other) other = { model: projectMode() ? "Other projects" : OTHER, label: projectMode() ? "Other projects" : OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, reasoning: 0, calls: 0, usd: null, est: null, remote: 0, color: "var(--s-other)", slot: OTHER_SLOT + 1, members: [] };
+        if (!other) other = { model: OTHER, label: OTHER, tokens: 0, input: 0, output: 0, cached: 0, created: 0, reasoning: 0, calls: 0, usd: null, est: null, color: "var(--s-other)", slot: OTHER_SLOT + 1, members: [] };
         other.tokens += it.tokens; other.input += it.input; other.output += it.output;
         other.cached += it.cached; other.created += it.created; other.calls += it.calls || 0;
         other.reasoning += it.reasoning || 0;
-        other.remote += it.remote || 0;
         if (it.usd != null) other.usd = (other.usd || 0) + it.usd;
         if (it.est != null) other.est = (other.est || 0) + it.est;
         other.members.push(it.model);
@@ -895,8 +769,8 @@
     return out;
   }
 
-  // dollars for a series or point: real when the vendor logs them (Grok), else the estimate
-  // actual dollars (Grok's own log) plus any estimate for the part that has no actual figure
+  // Dollars for a series or point: the provider's receipt or a list-price estimate, null when
+  // neither exists (unknown, never zero).
   const dollars = (x) => {
     const actual = x.usd != null ? Number(x.usd) : null;
     const est = x.est != null ? Number(x.est) : x.usd_estimate != null ? Number(x.usd_estimate) : null;
@@ -908,20 +782,15 @@
     const data = state.spend;
     const rows = data.rows || [];
     const empty = rows.length === 0;
-    renderEmpty(empty, data);
+    renderEmpty(empty);
     $("spend-empty").hidden = !empty;
     $("daily").hidden = empty;
     $("mix").hidden = empty;
-    $("mix").setAttribute("aria-label", projectMode() ? "Project mix" : "Model mix");
+    $("mix").setAttribute("aria-label", "Model mix");
     $("totals").hidden = empty;
-    // The caption says which ledger is on screen. The subscription one is what the tools wrote to
-    // their own logs on this Mac — an estimate from those logs, never a plan invoice, and the plan
-    // windows themselves stay in the Usage pane rather than being redrawn here as bars.
-    $("chart-caption").textContent = keysMode()
-      ? "calls this Mac routed through the local gateway with a key from the vault"
-        + (state.provider ? " · " + providerName(state.provider) : "")
-        + " · click a model to see it alone"
-      : ledgerCaption(data) + " · click a model to see it alone";
+    $("chart-caption").textContent = "calls this Mac routed through the local gateway with a key from the vault"
+      + (state.provider ? " · " + providerName(state.provider) : "")
+      + " · click a model to see it alone";
     renderInterval(data);
     if (empty) return;
     state.series = buildSeries(rows);
@@ -934,46 +803,21 @@
     drawChart();
   }
 
-  const projectMode = () => state.group === "project" && !todayMode();
-  // Imported cloud tokens are counted inside totals.tokens but were never read off this Mac, so
-  // every sentence that says "local logs" has to know whether they are in the view.
-  const remoteTokens = (data) => Number(((data || {}).totals || {}).remote_tokens) || 0;
-  const PARTLY_PRICED_NOTE = "Partly priced: this figure covers the local tokens only. Imported cloud tokens carry no dollar figure and are not priced.";
-  const LOCAL_LEDGER = "estimated from the tools' own local logs on this Mac, not from plan invoices";
-  const CLOUD_LEDGER = "imported cloud usage, recorded off this Mac and brought in with keys usage import · no dollar figure, so not priced";
-  const MIXED_LEDGER = "estimated from the tools' own local logs on this Mac, plus usage imported from the cloud, which carries no dollar figure and is not priced";
-  const ledgerCaption = (data) => state.source === "cloud" ? CLOUD_LEDGER : remoteTokens(data) > 0 ? MIXED_LEDGER : LOCAL_LEDGER;
-  function renderEmpty(empty, data) {
+  function renderEmpty(empty) {
     const node = $("spend-empty");
     if (!empty) return;
     node.replaceChildren();
-    const ingested = data && data.last_ingest_at;
     // Only the local gateway sees a key being used. A provider called directly, from another
     // machine, or before the key was routed through Keys leaves nothing here to count.
     const onlyRouted = "Only requests routed through Keys are recorded here; a provider called directly is not observable.";
-    if (state.key && keysMode()) {
+    if (state.key) {
       node.append(`No calls through the gateway with ${state.key} in this range. ${onlyRouted} `,
         el("button", { type: "button", class: "link", text: "Show every key", onclick: () => setKey(null) }));
-    } else if (state.provider && keysMode()) {
+    } else if (state.provider) {
       node.append(`No calls through the gateway to ${providerName(state.provider)} in this range. ${onlyRouted} `,
         el("button", { type: "button", class: "link", text: "Show every provider", onclick: () => setProvider(state.provider) }));
-    } else if (keysMode()) {
-      node.append(`No API key calls in this range. ${onlyRouted} `,
-        el("button", { type: "button", class: "link", text: "Show subscriptions", onclick: () => { document.querySelector('[data-scope="subs"]').click(); } }));
-    } else if (state.source !== "all") {
-      const name = { grok: "Grok", claude: "Claude Code", openai: "Codex", droid: "Droid", cloud: "imported cloud" }[state.source] || state.source;
-      if (state.source === "cloud") {
-        // Nothing reaches Cloud on its own; say how usage gets here instead of implying a log was read.
-        node.append("No imported cloud usage in this range. Cloud usage comes from files made with scripts/export-remote-usage.py and brought in with keys usage import. ");
-        node.append(el("button", { type: "button", class: "link", text: "Show all", onclick: () => { document.querySelector('[data-source="all"]').click(); } }));
-        return;
-      }
-      node.append(`No ${name} sessions in this range. `, el("button", { type: "button", class: "link", text: "Show all", onclick: () => { document.querySelector('[data-source="all"]').click(); } }));
-    } else if (!ingested) {
-      node.append("No sessions ingested yet. ", el("button", { type: "button", class: "link", text: "Ingest now", onclick: ingest }));
     } else {
-      node.append("Nothing in this range. Claude Code, Grok, Codex and Droid logs were read, and no imported cloud usage falls in ",
-        el("span", { text: state.range === "week" ? "this week." : state.range === "month" ? "this month." : "today." }));
+      node.append(`No API key calls in this range. ${onlyRouted}`);
     }
   }
 
@@ -1024,10 +868,10 @@
     + (b.reasoning ? ` · ${fmtInt(b.reasoning)} reasoning` : "") + `. ${CACHE_NOTE}`;
   const requestsPart = (n, title) => el("span", { class: "totals-part", title }, el("b", { text: fmtInt(n) }), " " + (n === 1 ? "request" : "requests"));
 
-  // The API keys view is the gateway's own ledger, so requests lead: a call is always countable,
+  // The chart is the gateway's own ledger, so requests lead: a call is always countable,
   // while tokens and dollars depend on what the provider reported. An unpriced call is shown as
   // unknown, never as $0, and a partly priced range is a floor.
-  function renderKeysTotals(data) {
+  function renderTotals(data) {
     const t = data.totals || {};
     const calls = Number(t.gateway_calls) || 0;
     const unpricedCalls = Number(t.gateway_unpriced_calls) || 0;
@@ -1104,120 +948,6 @@
   }
   const appendParts = (nodes, list) => list.forEach((p) => { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
 
-  // One line in the chosen unit: the headline figure first, then the parts that make it up.
-  function renderTotals(data) {
-    if (keysMode()) return renderKeysTotals(data);
-    const t = data.totals || {};
-    const src = state.source;
-    const parts = [];
-    // Tokens are what the tools' own logs measured; the dollar figure is this repo's price table
-    // applied to them afterwards. Only an explicit USD choice puts money on screen.
-    if (!usdMode()) {
-      const b = seriesBreakdown();
-      const byFamily = new Map();
-      for (const s of state.series) {
-        const f = projectMode() ? "project" : family(s.model || "");
-        byFamily.set(f, (byFamily.get(f) || 0) + (s.tokens || 0));
-      }
-      const nodes = [el("span", {
-        class: "totals-main" + (b.tokens ? "" : " none"),
-        text: fmtTokens(b.tokens) + " tokens",
-        title: breakdownTitle(b),
-      })];
-      if (src === "all" && !projectMode()) {
-        // Every family a fixture can hold, so the parts always sum to the headline beside them.
-        for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["gemini", "Gemini"], ["glm", "GLM"], ["kimi", "Kimi"], ["deepseek", "DeepSeek"], ["other", "other"]]) {
-          const n = byFamily.get(fam) || 0;
-          if (n > 0) parts.push(el("span", { class: "totals-part" }, el("b", { text: fmtTokens(n) }), " " + label));
-        }
-      }
-      parts.forEach((p) => { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
-      if (b.cached > 0) {
-        nodes.push(el("span", { class: "totals-sep", text: "·" }));
-        nodes.push(el("span", { class: "totals-note", text: fmtTokens(b.cached) + " cached input", title: CACHE_NOTE }));
-      }
-      const rt = remoteTokens(data);
-      nodes.push(el("span", { class: "totals-note", text: src === "cloud"
-        ? "imported from the cloud, recorded off this Mac · not priced"
-        : rt > 0 ? `counted from the tools' own local logs on this Mac plus ${fmtTokens(rt)} tokens imported from the cloud · choose USD above for cost`
-        : "counted from the tools' own local logs on this Mac · choose USD above for cost" }));
-      $("totals").replaceChildren(...nodes);
-      return;
-    }
-    if (src === "cloud") {
-      // Imported usage has no dollar figure; a measured-looking $0.00 would be a fake number.
-      const tk = state.series.reduce((a, s) => a + s.tokens, 0);
-      $("totals").replaceChildren(
-        el("span", { class: "totals-main none", text: "not priced", title: "Imported cloud usage carries no dollar figure." }),
-        el("span", { class: "totals-sep", text: "·" }),
-        el("span", { class: "totals-part" }, el("b", { text: fmtTokens(tk) }), " tokens"),
-        el("span", { class: "totals-note", text: "imported from the cloud, recorded off this Mac · choose Tokens above to compare" }));
-      return;
-    }
-    if (src === "droid") {
-      // Droid's log has no cost field and the engine puts no list price on its rows, so there is
-      // no dollar figure to show: not $0.00, and not Grok's receipt either.
-      const tk = state.series.reduce((a, s) => a + s.tokens, 0);
-      $("totals").replaceChildren(
-        el("span", { class: "totals-main none", text: "not priced", title: "Droid's local log carries no dollar figure." }),
-        el("span", { class: "totals-sep", text: "·" }),
-        el("span", { class: "totals-part" }, el("b", { text: fmtTokens(tk) }), " tokens"),
-        el("span", { class: "totals-note", text: "counted from Droid's own local log on this Mac · choose Tokens above to compare" }));
-      return;
-    }
-    const showGrok = src === "all" || src === "grok";
-    const showClaude = src === "all" || src === "claude";
-    const showOpenAI = src === "all" || src === "openai";
-    const grok = showGrok ? Number(t.grok_usd) || 0 : 0;
-    const claude = showClaude && t.claude_usd_estimate != null ? Number(t.claude_usd_estimate) : 0;
-    const openai = showOpenAI && t.openai_usd_estimate != null ? Number(t.openai_usd_estimate) : 0;
-    const total = grok + claude + openai;
-    const anyEst = (showClaude && claude > 0) || (showOpenAI && openai > 0);
-    const nodes = [el("span", { class: "totals-main" + (anyEst ? " est" : ""), text: (anyEst ? "≈ " : "") + fmtUsd(total) })];
-    if (showGrok && src === "all") parts.push(el("span", { class: "totals-part" }, el("b", { text: fmtUsd(grok) }), " Grok"));
-    if (showClaude && src === "all") parts.push(el("span", { class: "totals-part" }, el("b", { text: "≈ " + fmtUsd(claude) }), " Claude"));
-    if (showOpenAI && src === "all") parts.push(el("span", { class: "totals-part" }, el("b", { text: "≈ " + fmtUsd(openai) }), " OpenAI"));
-    const tokens = state.series.reduce((a, s) => a + s.tokens, 0);
-    parts.push(el("span", { class: "totals-part" }, el("b", { text: fmtTokens(tokens) }), " tokens"));
-    // Gateway dollars are a separate ledger: a routed Claude Code or Codex call is also in a local
-    // log, so the engine never adds them into the headline figure.
-    const gwCalls = Number(t.gateway_calls) || 0;
-    const gwUnpriced = Number(t.gateway_unpriced_calls) || 0;
-    if (src === "all" && (gwCalls > 0 || t.gateway_usd_estimate != null)) {
-      const gw = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
-      const label = gw == null ? "unpriced" : "≈ " + fmtUsd(gw);
-      const why = gwUnpriced > 0
-        ? `${plural(gwUnpriced, "gateway call", "gateway calls")} could not be priced (${(t.gateway_unpriced_models || []).join(", ") || "no model"}).`
-        : "";
-      parts.push(el("span", { class: "totals-part", title: ("Calls routed through the local gateway that no local log also recorded. Uses provider-reported cost where available, otherwise a list-price estimate. Not added to the total above. " + why).trim() },
-        el("b", { text: label }), " via gateway"));
-    }
-    parts.forEach((p, i) => { if (i) nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); });
-    const unpriced = unpricedModels(data);
-    if (unpriced.length) {
-      nodes.push(el("span", { class: "totals-sep", text: "·" }));
-      nodes.push(el("span", { class: "totals-note warn", text: `${plural(unpriced.length, "model", "models")} unpriced`, title: "No local price row, left out of the estimate: " + unpriced.join(", ") }));
-    }
-    const rtUsd = remoteTokens(data);
-    if (rtUsd > 0) {
-      nodes.push(el("span", { class: "totals-sep", text: "·" }));
-      nodes.push(el("span", { class: "totals-note warn", text: `partly priced · ${fmtTokens(rtUsd)} tokens imported from the cloud (not priced)`, title: "Imported cloud usage carries no dollar figure, so it is left out of the dollars here rather than counted as zero." }));
-    }
-    // Grok's receipt is named only when Grok is the only tool with dollars here. Claude or
-    // OpenAI at $0.00 is still an estimate (of nothing), never Grok's log; all-zero says nothing.
-    const grokOnly = src === "grok" || (src === "all" && !anyEst && grok > 0);
-    const note = grokOnly ? "from Grok's own cost log" : (anyEst || src !== "all") ? "≈ estimate from list prices, not an invoice" : "";
-    if (note) nodes.push(el("span", { class: "totals-note", text: note }));
-    $("totals").replaceChildren(...nodes);
-  }
-
-  // Models the engine could not price.
-  function unpricedModels(data) {
-    if (projectMode()) return [];
-    const t = data.totals || {};
-    return [].concat(t.claude_unpriced_models || [], t.openai_unpriced_models || []);
-  }
-
   function renderInterval(data) {
     const node = $("interval");
     const label = state.range === "week" ? "This week" : state.range === "month" ? "This month" : "Today";
@@ -1248,23 +978,21 @@
     // A row's dollars are only the calls that could be priced. The engine reports unpriced calls
     // for the range, not per row, so while any exist no row's figure may be read as complete —
     // the row tooltip has to say so too, not just the totals line.
-    const partial = keysMode() && Number((state.spend.totals || {}).gateway_unpriced_calls) > 0;
+    const partial = Number((state.spend.totals || {}).gateway_unpriced_calls) > 0;
     const partialNote = "\nPartial: some calls in this range have no cost receipt and no list price,"
       + " and are left out of this figure rather than counted as zero";
     const max = Math.max(1e-9, ...state.series.map(seriesValue));
     const items = state.series.map((s) => {
       const d = dollars(s);
       const isEst = s.usd == null && s.est != null;
-      // A dollar figure on a row that also holds imported cloud tokens covers only its local part.
-      const partlyPriced = d != null && (s.remote || 0) > 0;
       const usdNode = d == null
-        ? el("span", { class: "mix-usd none", text: "—", title: keysMode() ? "No cost receipt and no list price for this model: unknown, not zero." : null })
+        ? el("span", { class: "mix-usd none", text: "—", title: "No cost receipt and no list price for this model: unknown, not zero." })
         : el("span", {
           class: "mix-usd" + (usd ? " mix-primary" : ""),
-          text: (partlyPriced ? "partly priced · " : "") + (partial ? "≥ " : "") + (isEst ? "≈ " : "") + fmtUsd(d),
-          title: partlyPriced ? PARTLY_PRICED_NOTE + (partial ? partialNote : "") : partial ? partialNote.trim() : null,
+          text: (partial ? "≥ " : "") + (isEst ? "≈ " : "") + fmtUsd(d),
+          title: partial ? partialNote.trim() : null,
         });
-      const noTokens = keysMode() && !s.tokens && (s.calls || 0) > 0;
+      const noTokens = !s.tokens && (s.calls || 0) > 0;
       const tokNode = el("span", {
         class: "mix-val" + (usd ? "" : " mix-primary") + (!usd && noTokens && !requestMode() ? " none" : ""),
         text: requestMode()
@@ -1274,22 +1002,17 @@
       });
       // In a token or request view the second figure is the other measured count, never a price.
       // Dollars appear on this row only when USD was chosen.
-      const sideNode = usd ? tokNode : keysMode()
-        ? el("span", { class: "mix-val", text: requestMode() ? (s.tokens ? fmtTokens(s.tokens) + " tok" : "—") : plural(s.calls || 0, "request", "requests") })
-        : el("span", { class: "mix-val" });
+      const sideNode = usd ? tokNode
+        : el("span", { class: "mix-val", text: requestMode() ? (s.tokens ? fmtTokens(s.tokens) + " tok" : "—") : plural(s.calls || 0, "request", "requests") });
       const barFrac = seriesValue(s) / max;
-      const detail = (s.cwd ? s.cwd + "\n" : "")
-        + (keysMode()
-          ? `${plural(s.calls || 0, "request", "requests")}`
-            + `${s.provider ? " · " + s.provider.split(",").map(providerName).join(", ") : ""}`
-            + `${s.key ? " · key " + s.key : ""}\n`
-          : "")
+      const detail = `${plural(s.calls || 0, "request", "requests")}`
+        + `${s.provider ? " · " + s.provider.split(",").map(providerName).join(", ") : ""}`
+        + `${s.key ? " · key " + s.key : ""}\n`
         + `${fmtInt(s.input)} in, ${fmtInt(s.output)} out, ${fmtInt(s.cached)} cached reads, ${fmtInt(s.created)} cache writes`
         + (s.cached ? "\n" + CACHE_NOTE : "")
         + (usd && isEst ? "\nUSD is an estimate from list prices" : "")
-        + (usd && keysMode() && d == null ? "\nUSD unknown: no receipt and no list price" : "")
+        + (usd && d == null ? "\nUSD unknown: no receipt and no list price" : "")
         + (usd && partial && d != null ? partialNote : "")
-        + (usd && partlyPriced ? "\n" + PARTLY_PRICED_NOTE : "")
         + (s.members.length > 1 ? `\n${(s.labels || s.members).join(", ")}` : "");
       const on = state.mixFilter === s.model;
       const li = el("li", {
@@ -1475,10 +1198,8 @@
 
   function unitLabel(per) {
     if (requestMode()) return "requests per " + per;
-    if (!usdMode()) return "tokens per " + per + (keysMode() ? " · providers that report none are absent here" : "");
-    if (keysMode()) return "USD per " + per + " · receipt where reported, else list-price estimate; unpriced calls absent";
-    const grokOnly = state.source === "grok";
-    return "USD per " + per + (grokOnly ? "" : " · estimate except Grok");
+    if (!usdMode()) return "tokens per " + per + " · providers that report none are absent here";
+    return "USD per " + per + " · receipt where reported, else list-price estimate; unpriced calls absent";
   }
 
   // The plot can only draw the chosen unit, and a gateway call may carry no tokens and no cost
@@ -1490,13 +1211,13 @@
     // model, so the explanation has to describe that model's requests and not the whole range's.
     const memberOf = new Map();
     for (const s of state.series) for (const m of s.members) memberOf.set(m, s.model);
-    const pool = keysMode() && state.mixFilter
+    const pool = state.mixFilter
       ? points.filter((p) => memberOf.get(seriesId(p)) === state.mixFilter)
       : points;
     const value = (p) => (usdMode() ? dollars(p) || 0 : requestMode() ? p.model_calls || 0 : p.tokens || 0);
     const drawable = pool.some((p) => value(p) > 0);
     const routed = pool.filter((p) => (p.model_calls || 0) > 0);
-    if (!drawable && keysMode() && !requestMode() && routed.length) {
+    if (!drawable && !requestMode() && routed.length) {
       // Zero and unknown are different answers. A cost of zero the provider actually reported is
       // knowledge; calling it missing would contradict a totals line that reads $0.00. Only an
       // absent figure — dollars(p) === null — is a receipt this view never got.
@@ -1542,7 +1263,7 @@
       });
       return;
     }
-    $("daily-title").textContent = (state.range === "week" ? "This week by day" : "This month by day") + (projectMode() ? " · by project" : "");
+    $("daily-title").textContent = (state.range === "week" ? "This week by day" : "This month by day");
     $("daily-unit").textContent = unitLabel("day");
     setChartNote(data.daily || [], "");
     const days = axisDays(data);
@@ -1567,7 +1288,7 @@
       ...(rows.length > 1 ? [el("div", { class: "total" }, el("span", { text: "total" }), el("span", { text: fmt(total) }))] : []),
       // A day or hour's dollars cover only the calls that could be priced, and the engine counts
       // unpriced calls for the range rather than per bucket. While any exist, say so here too.
-      ...(usdMode() && keysMode() && Number((state.spend.totals || {}).gateway_unpriced_calls) > 0
+      ...(usdMode() && Number((state.spend.totals || {}).gateway_unpriced_calls) > 0
         ? [el("div", { class: "row tip-note", text: "partial · some calls in this range are unpriced" })]
         : []),
     );
@@ -3155,12 +2876,8 @@
     if (!(await ensureSpend())) { say(spendMissingLine()); return; }
     const data = state.spend;
     if (!data || !(data.rows || []).length) { say("Nothing to export in this range."); return; }
-    const cols = projectMode()
-      ? ["project", "cwd", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate"]
-      : keysMode()
-        // An empty usd_estimate means unpriced, not zero; the request count is always there.
-        ? ["provider", "key", "model", "model_calls", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate"]
-        : ["model", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate", "key"];
+    // An empty usd_estimate means unpriced, not zero; the request count is always there.
+    const cols = ["provider", "key", "model", "model_calls", "input_tokens", "output_tokens", "cached_read_tokens", "cache_creation_tokens", "usd", "usd_estimate"];
     const lines = [cols.join(",")];
     for (const r of data.rows) lines.push(cols.map((c) => csvCell(r[c])).join(","));
     const name = `keysreallysafe-${state.range}-${data.start_day || ""}-${data.end_day || ""}`
@@ -3179,75 +2896,26 @@
     const data = state.spend;
     if (!data) return "";
     const t = data.totals || {};
-    const src = state.source;
     const rangeHead = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
       : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
+    const scope = `${state.provider ? " · " + providerName(state.provider) : " · every provider"}${state.key ? " · key " + state.key : " · every key"}`;
+    const calls = Number(t.gateway_calls) || 0;
     // The copied line is the line on screen, so it carries the same unit. Dollars are copied only
     // when USD is the chosen unit.
     if (!usdMode()) {
       const b = seriesBreakdown();
-      const scope = keysMode()
-        ? ` · API keys${state.provider ? " · " + providerName(state.provider) : " · every provider"}${state.key ? " · key " + state.key : " · every key"}`
-        : ` · Subscriptions${projectMode() ? " · by project" : ""}`;
-      const head = `**Keysrs${scope} · ${rangeHead}**`;
-      const measured = keysMode() ? Math.max(Number(t.gateway_tokens) || 0, b.tokens) : b.tokens;
-      const tokens = measured > 0 ? `${fmtTokens(measured)} tokens` : keysMode() && b.calls ? "no reported tokens" : "0 tokens";
-      const line = keysMode()
-        ? `${fmtInt(Number(t.gateway_calls) || 0)} ${(Number(t.gateway_calls) || 0) === 1 ? "request" : "requests"} · ${tokens}`
-        : `${tokens} · ${fmtInt(b.input)} in · ${fmtInt(b.output)} out · ${fmtInt(b.cached)} cached input read · ${fmtInt(b.created)} cache writes`;
-      const foot = keysMode()
-        ? "_Requests routed through the local gateway only; token counts are what the providers reported._"
-        : src === "cloud" ? "_Imported cloud usage, recorded off this Mac; not a plan invoice._"
-        : remoteTokens(data) > 0 ? `_Counted from the tools' own local logs on this Mac plus ${fmtTokens(remoteTokens(data))} tokens imported from the cloud, not a plan invoice._`
-        : "_Counted from the tools' own local logs on this Mac, not a plan invoice._";
-      return `${head}\n${line}\n${foot}\n`;
+      const measured = Math.max(Number(t.gateway_tokens) || 0, b.tokens);
+      const tokens = measured > 0 ? `${fmtTokens(measured)} tokens` : b.calls ? "no reported tokens" : "0 tokens";
+      return `**Keysrs · API keys${scope} · ${rangeHead}**\n`
+        + `${fmtInt(calls)} ${calls === 1 ? "request" : "requests"} · ${tokens}\n`
+        + "_Requests routed through the local gateway only; token counts are what the providers reported._\n";
     }
-    if (keysMode()) {
-      const calls = Number(t.gateway_calls) || 0;
-      const unpriced = Number(t.gateway_unpriced_calls) || 0;
-      const usd = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
-      const money = usd == null ? (calls ? "cost unknown" : fmtUsd(0)) : (unpriced > 0 ? "≥ ≈ " : "≈ ") + fmtUsd(usd);
-      const head = `**Keysrs · API keys · ${rangeHead}`
-        + `${state.provider ? " · " + providerName(state.provider) : " · every provider"}`
-        + `${state.key ? " · key " + state.key : " · every key"}**`;
-      const line = `${money} · ${fmtInt(calls)} ${calls === 1 ? "request" : "requests"} · ${fmtTokens(Number(t.gateway_tokens) || 0)} tokens`
-        + (unpriced > 0 ? ` · ${plural(unpriced, "request", "requests")} unpriced` : "");
-      return `${head}\n${line}\n_Calls routed through the local gateway only. Receipt where reported, else a list-price estimate; unpriced calls are left out rather than counted as zero._\n`;
-    }
-    if (src === "cloud") {
-      const rangeCloud = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
-        : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
-      return `**Keysrs · Subscriptions · Cloud · ${rangeCloud}**\nnot priced · ${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens\n_Imported cloud usage, recorded off this Mac; it carries no dollar figure._\n`;
-    }
-    if (src === "droid") {
-      const rangeDroid = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
-        : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
-      return `**Keysrs · Subscriptions · Droid · ${rangeDroid}**\nnot priced · ${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens\n_Counted from Droid's own local log on this Mac; it carries no dollar figure._\n`;
-    }
-    const showGrok = src === "all" || src === "grok";
-    const showClaude = src === "all" || src === "claude";
-    const showOpenAI = src === "all" || src === "openai";
-    const grok = showGrok ? Number(t.grok_usd) || 0 : 0;
-    const claude = showClaude ? Number(t.claude_usd_estimate) || 0 : 0;
-    const openai = showOpenAI ? Number(t.openai_usd_estimate) || 0 : 0;
-    const anyEst = claude > 0 || openai > 0;
-    // The same rule as the totals bar: Grok's receipt is named only when Grok alone has dollars.
-    const grokOnly = src === "grok" || (src === "all" && !anyEst && grok > 0);
-    const parts = [];
-    if (showGrok) parts.push(`${fmtUsd(grok)} Grok`);
-    if (showClaude) parts.push(`≈ ${fmtUsd(claude)} Claude`);
-    if (showOpenAI) parts.push(`≈ ${fmtUsd(openai)} OpenAI`);
-    parts.push(`${fmtTokens(state.series.reduce((a, s) => a + s.tokens, 0))} tokens`);
-    const rangeLabel = state.range === "today" ? "Today " + fmtDay(data.start_day || isoDay(new Date()))
-      : (state.range === "week" ? "This week " : "This month ") + fmtRange(data.start_day, data.end_day);
-    const head = `**Keysrs · Subscriptions · ${rangeLabel}${projectMode() ? " · by project" : ""}**`;
-    const line = `${anyEst ? "≈ " : ""}${fmtUsd(grok + claude + openai)} total · ${parts.join(" · ")}`;
-    const rtMd = remoteTokens(data);
-    const foot = (grokOnly
-      ? "_From Grok's own cost log; local logs only, not a plan invoice._"
-      : "_Estimated from the tools' own local logs on this Mac, not a plan invoice._")
-      + (rtMd > 0 ? `\n_Plus ${fmtTokens(rtMd)} tokens imported from the cloud (not priced)._` : "");
-    return `${head}\n${line}\n${foot}\n`;
+    const unpriced = Number(t.gateway_unpriced_calls) || 0;
+    const usd = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
+    const money = usd == null ? (calls ? "cost unknown" : fmtUsd(0)) : (unpriced > 0 ? "≥ ≈ " : "≈ ") + fmtUsd(usd);
+    const line = `${money} · ${fmtInt(calls)} ${calls === 1 ? "request" : "requests"} · ${fmtTokens(Number(t.gateway_tokens) || 0)} tokens`
+      + (unpriced > 0 ? ` · ${plural(unpriced, "request", "requests")} unpriced` : "");
+    return `**Keysrs · API keys · ${rangeHead}${scope}**\n${line}\n_Calls routed through the local gateway only. Receipt where reported, else a list-price estimate; unpriced calls are left out rather than counted as zero._\n`;
   }
   async function copyTotals() {
     if (!(await ensureSpend())) { say(spendMissingLine()); return; }
@@ -3263,34 +2931,6 @@
   $("btn-export").addEventListener("click", exportCsv);
   $("btn-copy-totals").addEventListener("click", copyTotals);
 
-  // ---------- ingest ----------
-
-  async function ingest() {
-    if (state.busy) return;
-    state.busy = true;
-    const btn = $("btn-ingest");
-    btn.disabled = true;
-    btn.textContent = "Ingesting…";
-    say("Reading Grok, Claude Code, Codex and Droid session logs.", true);
-    try {
-      const r = await api("/api/ingest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: "all" }) });
-      let inserted = 0, errors = 0, files = 0;
-      for (const rep of Object.values(r || {})) {
-        inserted += rep.inserted || 0; errors += rep.errors || 0; files += rep.files || 0;
-      }
-      say(`Ingested ${plural(inserted, "new row", "new rows")} from ${plural(files, "file", "files")}${errors ? `, ${plural(errors, "parse error", "parse errors")}` : ""}.`);
-      await loadModels();
-      if (state.pane === "chart") await loadSpend();
-      if (state.pane === "usage" || state.pane === "settings") await loadStatus();
-    } catch (e) {
-      say(e.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Ingest now";
-      state.busy = false;
-    }
-  }
-  $("btn-ingest").addEventListener("click", ingest);
   document.querySelectorAll('[data-action="add"]').forEach((b) => b.addEventListener("click", openAdd));
 
   // ---------- dialogs ----------
@@ -3353,7 +2993,6 @@
       else if (e.key === "2") { e.preventDefault(); showPane("chart", { keyboard: true }); }
       else if (e.key === "3") { e.preventDefault(); showPane("keys", { keyboard: true }); }
       else if (e.key === "4") { e.preventDefault(); showPane("settings", { keyboard: true }); }
-      else if (e.key === "r" || e.key === "R") { e.preventDefault(); ingest(); }
       return;
     }
     if (e.altKey) return;
@@ -3371,13 +3010,10 @@
         cycleUnit();
         return;
       }
-      // The top-level choice gets a key of its own: it is the one that decides what the rest mean.
-      if (e.key === "s") { e.preventDefault(); setScope(keysMode() ? "subs" : "keys"); return; }
       if (e.key === "d") { e.preventDefault(); setRange("today"); return; }
       if (e.key === "w") { e.preventDefault(); setRange("week"); return; }
       if (e.key === "m") { e.preventDefault(); setRange("month"); return; }
       if (e.key === "x") { e.preventDefault(); exportCsv(); return; }
-      if (e.key === "p" && state.source === "claude") { e.preventDefault(); setGroup(projectMode() ? "model" : "project"); return; }
       if (e.key === "C" && e.shiftKey) { e.preventDefault(); copyTotals(); return; }
     }
     if (state.pane === "keys") {
@@ -3414,9 +3050,8 @@
       }
       state.catalogVersion = version;
       state.status = data;
-      // /api/status carries only the catalog version compared above and the last ingest time
-      // Settings shows; the plan-window cards it used to carry were removed on 2026-11-03.
-      renderSettings();
+      // /api/status carries only the catalog version compared above; the plan-window cards went
+      // on 2026-11-03 and the last-ingest time with the log readers on 2026-11-04.
     } catch { /* the next poll tries again; the status line reports an engine outage */ }
   }
 
@@ -3435,12 +3070,6 @@
   function renderSettings() {
     setSwitch($("theme-switch"), readTheme() === "light");
     renderAppSettings();
-    const status = state.status;
-    if (!status) {
-      $("last-ingest").textContent = "";
-      return;
-    }
-    $("last-ingest").textContent = status.last_ingest_at ? "Last ingest " + relTime(status.last_ingest_at) : "Not ingested yet";
   }
 
   $("theme-switch").addEventListener("click", () => setTheme(readTheme() === "light" ? "dark" : "light"));
@@ -3608,8 +3237,8 @@
     setRelay({ awake_while_shared: !state.relay.awake_while_shared }, "Saving…");
   });
 
-  // One quiet line on the Usage pane: this month from the local logs, in the unit this page is
-  // in. It is never a subscription invoice, and no dollar figure appears unless USD was chosen.
+  // One quiet line on the Usage pane: this month's gateway calls, in the unit this page is in.
+  // No dollar figure appears unless USD was chosen.
   async function loadUsageTotals() {
     const seq = latest.begin("usage");
     try {
@@ -3628,6 +3257,8 @@
     const node = $("usage-totals");
     if (!data) return;
     const t = data.totals || {};
+    const calls = Number(t.gateway_calls) || 0;
+    const sep = () => el("span", { class: "totals-sep", text: "·" });
     const toggle = el("button", {
       type: "button", class: "link",
       text: usdMode() ? "show tokens" : "show USD",
@@ -3635,65 +3266,25 @@
       onclick: () => setUnit(usdMode() ? "tokens" : "usd"),
     });
     const chart = el("button", { type: "button", class: "link", text: "open the chart", onclick: () => showPane("chart") });
-    if (!usdMode()) {
-      const rows = data.rows || [];
-      const byFamily = new Map();
-      let cached = 0, hasRemoteField = false;
-      for (const r of rows) {
-        const f = family(r.model || "");
-        // Imported cloud tokens are shown once, as their own share, so the families are local only.
-        byFamily.set(f, (byFamily.get(f) || 0) + Math.max(0, rowCounted(r) - (Number(r.remote_counted_tokens) || 0)));
-        if (r.remote_counted_tokens != null) hasRemoteField = true;
-        cached += (r.cached_read_tokens || 0);
-      }
-      const total = [...byFamily.values()].reduce((a, n) => a + n, 0);
-      const remote = Number(t.remote_tokens) || 0;
-      const parts = [];
-      for (const [fam, label] of [["grok", "Grok"], ["claude", "Claude"], ["openai", "OpenAI"], ["gemini", "Gemini"], ["glm", "GLM"], ["kimi", "Kimi"], ["deepseek", "DeepSeek"], ["other", "other"]]) {
-        const n = byFamily.get(fam) || 0;
-        if (n > 0) parts.push(el("span", {}, el("b", { text: fmtTokens(n) }), " " + label));
-      }
-      const nodes = [
-        el("span", { text: "This month from local logs " }),
-        el("b", { text: fmtTokens(hasRemoteField ? total : Math.max(0, total - remote)) + " tokens", title: cached ? CACHE_NOTE : null }),
-      ];
-      if (remote > 0) {
-        nodes.push(el("span", { class: "totals-sep", text: "·" }),
-          el("span", {}, el("b", { text: fmtTokens(remote) }), " imported from cloud (not priced)"));
-      }
-      for (const p of parts) { nodes.push(el("span", { class: "totals-sep", text: "·" })); nodes.push(p); }
-      nodes.push(el("span", { class: "totals-sep", text: "·" }), toggle,
-        el("span", { class: "totals-sep", text: "·" }), chart);
-      node.replaceChildren(...nodes);
-      return;
+    const nodes = [el("span", { text: "This month through the gateway " })];
+    if (usdMode()) {
+      const unpriced = Number(t.gateway_unpriced_calls) || 0;
+      const usd = t.gateway_usd_estimate != null ? Number(t.gateway_usd_estimate) : null;
+      nodes.push(el("b", { text: usd == null ? (calls ? "cost unknown" : fmtUsd(0)) : (unpriced > 0 ? "≥ ≈ " : "≈ ") + fmtUsd(usd) }));
+      if (unpriced > 0) nodes.push(sep(), el("span", { text: plural(unpriced, "request", "requests") + " unpriced" }));
+    } else {
+      nodes.push(el("b", { text: fmtTokens(Number(t.gateway_tokens) || 0) + " tokens" }));
     }
-    const grok = Number(t.grok_usd) || 0;
-    const claude = Number(t.claude_usd_estimate) || 0;
-    const openai = Number(t.openai_usd_estimate) || 0;
-    const remoteUsd = Number(t.remote_tokens) || 0;
-    node.replaceChildren(
-      el("span", { text: "This month from local logs " }),
-      el("b", { text: (claude + openai > 0 ? "≈ " : "") + fmtUsd(grok + claude + openai) }),
-      el("span", { class: "totals-sep", text: "·" }),
-      el("span", {}, el("b", { text: fmtUsd(grok) }), " Grok"),
-      el("span", { class: "totals-sep", text: "·" }),
-      el("span", {}, el("b", { text: "≈ " + fmtUsd(claude) }), " Claude"),
-      el("span", { class: "totals-sep", text: "·" }),
-      el("span", {}, el("b", { text: "≈ " + fmtUsd(openai) }), " OpenAI"),
-      ...(remoteUsd > 0 ? [el("span", { class: "totals-sep", text: "·" }),
-        el("span", {}, el("b", { text: fmtTokens(remoteUsd) }), " tokens imported from cloud (not priced)")] : []),
-      el("span", { class: "totals-sep", text: "·" }),
-      toggle,
-      el("span", { class: "totals-sep", text: "·" }),
-      chart,
-    );
+    nodes.push(sep(), el("span", {}, el("b", { text: fmtInt(calls) }), calls === 1 ? " request" : " requests"),
+      sep(), toggle, sep(), chart);
+    node.replaceChildren(...nodes);
   }
 
   // ---------- start ----------
 
   loadProviders();
   syncKeysUnit();
-  syncScopeChips();
+  syncFilters();
   loadModels();
   showPane("usage", { keyboard: true });
   loadUsageTotals();
