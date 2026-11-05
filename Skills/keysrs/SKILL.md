@@ -8,14 +8,15 @@ license: MIT
 
 Keysrs is a local Mac app plus the `keys` command line tool: an API-key vault
 that keeps provider secrets in the macOS Keychain behind Touch ID, and a spend
-chart from the usage logs coding agents already write. It is not an AI
+chart of the calls made through its local gateway. It is not an AI
 subscription: it supplies no credits and no model, and everything it runs binds
 to `127.0.0.1` on this Mac.
 
 ## Use the Keysrs MCP server
 
 The supported agent surface is the MCP server named **keysrs**, served by
-`keys mcp`. Register it once:
+`keys mcp`. Installed as a plugin, the server is already registered; otherwise
+register it once:
 
 ```sh
 keys setup mcp          # writes the resolved keys binary into Claude Code,

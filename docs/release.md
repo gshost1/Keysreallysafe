@@ -125,6 +125,19 @@ automated here:
 4. Only after those pass: tag and publish the GitHub release with the DMG
    under the same name.
 
+## Agent plugin versions
+
+`plugins/keysrs` is the Claude Code / Claude Desktop / Codex plugin (see
+"Install as a plugin" in `docs/agents.md`). Its two manifests,
+`plugins/keysrs/.claude-plugin/plugin.json` and
+`plugins/keysrs/.codex-plugin/plugin.json`, carry `version`, which must equal
+`AppVersion.current`. Bump both in the release PR, with the cask version, and
+check with `python3 -m unittest scripts/tests/test_agent_plugins.py`. If
+`Skills/keysrs/SKILL.md` or `Assets/icon/png/keysrs-icon-256.png` changed,
+copy them into the plugin folder (the same test fails until they match).
+Merging to the tracked branch is how the Anthropic directory picks up a new
+version; there is no separate publish step for the Codex marketplace.
+
 ## Homebrew cask (unpublished tap)
 
 `packaging/homebrew/keysrs.rb` is the Keysrs cask for our own tap,

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "keysrs": {
+      "command": "/Applications/Keysrs.app/Contents/MacOS/keys",
+      "args": ["mcp"]
+    }
+  }
+}
