@@ -46,6 +46,77 @@ export const LIMITS = Object.freeze({
   holdRecheckMs: 1_000,
 });
 
+// The doorbell (docs/relay.md, The doorbell): a second, low-privilege socket the
+// Mac may keep open while its relay is off, which carries nothing but "an agent
+// asks for the relay" and the Mac's answer. Both paths start with a dot, which
+// no Keysrs key name can, so neither can shadow a key.
+export const DOORBELL = Object.freeze({
+  listenPath: "/.keysrs/doorbell/listen",
+  ringPath: "/.keysrs/doorbell",
+  keyPrefix: "ksfd_",
+  // HMAC context for the doorbell key; Relay.swift's DoorbellKey uses the same.
+  keyContext: "keysrs relay doorbell v1",
+  // How long a ringer waits for the Mac's answer by default, and at most
+  // (`?wait=<seconds>`): long enough to walk to the Mac and touch the sensor.
+  ringWaitMs: 60_000,
+  maxRingWaitMs: 120_000,
+  // At most one ring reaches the Mac this often, whoever rings: the Worker
+  // checks no credential, so this is what keeps a stranger who knows the URL
+  // from making the Mac look up hashes all day.
+  ringIntervalMs: 10_000,
+});
+
+// The two credentials a ring may carry, in the shape the Mac mints them
+// (24 random bytes, lower-case hex). Anything else never reaches the Mac.
+const CLIENT_TOKEN = /^ksfc_[0-9a-f]{48}$/;
+const PAIRING = /^ksfp_[0-9a-f]{48}$/;
+
+/// The client token and pairing a ring presents, read from the same headers the
+/// gateway reads them from, and only as SHA-256 hex: the Mac stores both as
+/// those hashes, so it can look them up, and the doorbell socket never carries
+/// a credential someone who took over that socket could spend.
+export async function ringCredentials(headers) {
+  let client = null;
+  const auth = (headers.get("authorization") || "").trim().split(/\s+/, 2);
+  if (auth.length === 2 && auth[0].toLowerCase() === "bearer" && CLIENT_TOKEN.test(auth[1])) client = auth[1];
+  if (!client) {
+    for (const name of ["x-ksf-client", "x-api-key", "x-goog-api-key", "api-key"]) {
+      const value = (headers.get(name) || "").trim();
+      if (CLIENT_TOKEN.test(value)) {
+        client = value;
+        break;
+      }
+    }
+  }
+  const pairValue = (headers.get("x-ksf-pair") || "").trim();
+  const pair = PAIRING.test(pairValue) ? pairValue : null;
+  return {
+    client: client ? await sha256Hex(client) : null,
+    pair: pair ? await sha256Hex(pair) : null,
+  };
+}
+
+export async function sha256Hex(text) {
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", utf8.encode(text))));
+}
+
+/// The doorbell key for a relay secret: `ksfd_` + HMAC-SHA256(secret, context)
+/// in hex. The Worker derives it from RELAY_SECRET, so turning the doorbell on
+/// needs no second Worker secret; the Mac derives it once, under Touch ID, and
+/// keeps only it. It cannot be turned back into the relay secret.
+export async function doorbellKey(secret) {
+  if (typeof secret !== "string" || !secret) return "";
+  const key = await crypto.subtle.importKey("raw", utf8.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, utf8.encode(DOORBELL.keyContext));
+  return DOORBELL.keyPrefix + hex(new Uint8Array(mac));
+}
+
+function hex(bytes) {
+  let out = "";
+  for (const b of bytes) out += b.toString(16).padStart(2, "0");
+  return out;
+}
+
 /// The limits a deployment runs with. The timeout knobs exist for the offline
 /// test suite only; RELAY_OFFLINE_GRACE_MS is a real setting, where 0 means
 /// "answer mac_offline at once" and anything above the cap is held to it.
