@@ -359,6 +359,17 @@ final class RelayHostTests: XCTestCase {
 
     // MARK: service and API
 
+    /// Until the relay's loop has its socket. A stop that lands first cancels the dial, and
+    /// a test asserting the socket was closed then fails on timing alone.
+    private func waitConnected(_ service: KeysService, timeout: TimeInterval = 5) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if case .connected = service.relayHost.status.state.phase { return }
+            if Date() > deadline { throw RelayDialError(status: nil, message: "the relay never connected") }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
     private func gatedService() throws -> (KeysService, RecordingPresenceGate) {
         let (db, _) = try makeDB()
         return makeGatedService(db: db)
@@ -402,6 +413,9 @@ final class RelayHostTests: XCTestCase {
         _ = try service.setRelay(enabled: true)
         XCTAssertEqual(gate.reasons.count, afterSetup + 1, "already on asks for nothing")
 
+        // Off before the loop has dialed leaves no socket to close; wait for the one the
+        // assertion below is about.
+        try waitConnected(service)
         let off = try service.setRelay(enabled: false)
         XCTAssertFalse(off.host.on)
         XCTAssertTrue(socket.closed)
@@ -427,6 +441,7 @@ final class RelayHostTests: XCTestCase {
         }
 
         XCTAssertTrue(try service.setRelay(enabled: true).host.on)
+        try waitConnected(service)
         let prompts = gate.reasons.count
 
         let scoped = try revokeAll(["key": "demo"])
