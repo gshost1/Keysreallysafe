@@ -799,7 +799,7 @@ final class ServerTests: XCTestCase {
         XCTAssertNil(obj["token"], "the renew response never carries a token")
         XCTAssertFalse(String(decoding: renewed.body, as: UTF8.self).contains(issued.token))
         XCTAssertEqual(gate.reasons.count, 1, "exactly one prompt, for the renewal")
-        XCTAssertTrue(gate.reasons.last?.hasPrefix("renew \"night evals\"") ?? false, gate.reasons.last ?? "")
+        XCTAssertTrue(gate.reasons.last?.hasSuffix("task \"night evals\"") ?? false, gate.reasons.last ?? "")
 
         let listed = try object(handle(handler, method: "GET", path: "/api/grants"))
         let rows = try XCTUnwrap(listed["grants"] as? [[String: Any]])

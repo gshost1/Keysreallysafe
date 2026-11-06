@@ -37,9 +37,9 @@ protocol PresenceGate: Sendable {
 /// fake a line break, reorder what follows it (bidi controls) or overdraw it
 /// (stacked combining marks).
 enum PromptText {
-    /// A base character plus this many marks covers every real script; Zalgo-style
-    /// stacks past it are cut.
-    static let maxScalarsPerCharacter = 4
+    /// A base character plus marks, as Devanagari conjuncts and emoji sequences use
+    /// them, fits; a Zalgo-style stack past this is cut so it cannot overdraw the line.
+    static let maxScalarsPerCharacter = 8
 
     /// Line breaks and the other C0/C1 controls, plus the Unicode line and
     /// paragraph separators, which render as line breaks without being controls.
@@ -50,36 +50,66 @@ enum PromptText {
         }
     }
 
-    /// Bidi embeddings, overrides and isolates, zero-width characters and every
-    /// other format scalar: invisible, but able to reorder or hide what follows.
+    /// Any run of these renders as blank space; a long run wraps the sheet onto
+    /// what looks like a new line, so a run collapses to one space.
+    static func blank(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.properties.generalCategory == .spaceSeparator || scalar == "\u{2800}"
+    }
+
+    /// Bidi embeddings, overrides and isolates, tag characters, zero-width spaces,
+    /// Hangul fillers and every other default-ignorable or format scalar: invisible,
+    /// but able to reorder, hide or pad what follows. ZWNJ and ZWJ stay: scripts and
+    /// emoji need them, and they cannot reorder or pad anything.
     static func hidden(_ scalar: Unicode.Scalar) -> Bool {
-        breaks(scalar) || scalar.properties.generalCategory == .format
-            || CharacterSet.controlCharacters.contains(scalar)
+        if scalar == "\u{200C}" || scalar == "\u{200D}" { return false }
+        return scalar.properties.generalCategory == .format || scalar.properties.isDefaultIgnorableCodePoint
     }
 
     /// `text` with every break replaced by `breakReplacement`, every other hidden
-    /// scalar dropped and each character cut to `maxScalarsPerCharacter` scalars.
+    /// scalar dropped, blank runs collapsed to one space, and each character cut to
+    /// `maxScalarsPerCharacter` scalars.
     static func plain(_ text: String, breakReplacement: String = " ") -> String {
         var out = String.UnicodeScalarView()
+        var lastWasBlank = false
+        func emitBlank() {
+            if !lastWasBlank { out.append(" ") }
+            lastWasBlank = true
+        }
         for character in text.precomposedStringWithCanonicalMapping {
-            let visible = character.unicodeScalars.filter { !hidden($0) }
-            if visible.isEmpty {
-                if character.unicodeScalars.contains(where: breaks) {
+            let scalars = character.unicodeScalars
+            if scalars.contains(where: breaks) {
+                if breakReplacement == " " { emitBlank() } else {
                     out.append(contentsOf: breakReplacement.unicodeScalars)
+                    lastWasBlank = false
                 }
                 continue
             }
+            let visible = scalars.filter { !hidden($0) }
+            guard let first = visible.first else { continue }
+            if blank(first) { emitBlank(); continue }
             out.append(contentsOf: visible.prefix(maxScalarsPerCharacter))
+            lastWasBlank = false
         }
         return String(out)
     }
 
-    /// One untrusted field inside a reason (a task, a label): hidden scalars and
-    /// breaks dropped, then capped at `max` characters so it cannot crowd out the
-    /// key, host and duration that follow it.
+    /// One untrusted field inside a reason (a task, a label, a file name): breaks
+    /// and hidden scalars dropped, blank runs collapsed, then capped at `max`
+    /// characters so it cannot crowd out what the reason must still show.
     static func field(_ text: String, max: Int) -> String {
-        let visible = plain(text, breakReplacement: "")
+        let visible = plain(text, breakReplacement: "").trimmingCharacters(in: .whitespaces)
         return visible.count > max ? String(visible.prefix(max - 1)) + "…" : visible
+    }
+
+    /// A host as it is dialed. `URL` turns a non-ASCII hostname into its punycode
+    /// form, so a lookalike (a Cyrillic і in "openai") shows as the `xn--` name the
+    /// secret actually goes to instead of passing for the real one.
+    static func host(_ host: String) -> String {
+        guard !host.unicodeScalars.allSatisfy(\.isASCII) else { return host }
+        guard let url = URL(string: "https://\(host)/"), let dialed = url.host else {
+            return field(host, max: 80)
+        }
+        return url.port.map { "\(dialed):\($0)" } ?? dialed
     }
 }
 

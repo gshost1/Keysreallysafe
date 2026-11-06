@@ -68,7 +68,12 @@ final class GrantPromptHardeningTests: XCTestCase {
 
         let reason = try XCTUnwrap(gate.reasons.last)
         assertPlain(reason)
-        XCTAssertTrue(reason.hasSuffix("the key demo for OpenAI at api.openai.com, 24 h, project acme"), reason)
+        // The real clause comes first, and the forged one stays inside the task's
+        // quotes: its double quote cannot close them.
+        XCTAssertTrue(reason.hasPrefix("grant the key demo for OpenAI at api.openai.com, 24 h, task \"run tests' "),
+                      reason)
+        XCTAssertTrue(reason.hasSuffix(", 5 min\", project acme"), reason)
+        XCTAssertEqual(reason.filter { $0 == "\"" }.count, 2, "only the reason's own quotes")
     }
 
     /// The same for the profile reason and the renewal reason, which put the stored
@@ -89,7 +94,8 @@ final class GrantPromptHardeningTests: XCTestCase {
         let grant = store.issue(key: "demo", provider: "openai", host: "api.openai.com", request: request).grant
         let renewal = KeysService.renewReason(grant)
         assertPlain(renewal)
-        XCTAssertTrue(renewal.hasPrefix("renew \"okfake\" the key demo"), renewal)
+        XCTAssertTrue(renewal.hasPrefix("renew the key demo for OpenAI at api.openai.com, 1 h"), renewal)
+        XCTAssertTrue(renewal.hasSuffix(", task \"okfake\""), renewal)
     }
 
     /// The presence gate itself strips control and format scalars from every reason,
@@ -111,6 +117,17 @@ final class GrantPromptHardeningTests: XCTestCase {
         XCTAssertEqual(PromptText.plain("café e\u{0301}"), "café é")
         XCTAssertEqual(KeysService.promptTask("tidy up\u{2028}Approved"), "tidy upApproved")
         XCTAssertEqual(KeysService.promptTask(String(repeating: "y", count: 200)).count, 120)
+        // Scripts and emoji that need more than a few scalars or a joiner survive.
+        XCTAssertEqual(PromptText.plain("स्त्री"), "स्त्री")
+        XCTAssertEqual(PromptText.plain("👨‍👩‍👧‍👦"), "👨‍👩‍👧‍👦")
+        // Blank runs and invisible fillers cannot pad the sheet onto a fake line.
+        XCTAssertEqual(PromptText.plain("ok" + String(repeating: "\u{3000}", count: 100) + "x\u{3164}\u{2800}\u{2800}y"),
+                       "ok x y")
+        XCTAssertEqual(PromptText.plain("a\u{E0041}\u{E0042}b"), "ab", "tag characters are dropped")
+        // A lookalike host shows as the punycode name the secret actually goes to.
+        XCTAssertEqual(PromptText.host("api.opena\u{0456}.com"), "api.xn--opena-r2e.com")
+        XCTAssertEqual(PromptText.host("api.opena\u{0456}.com:8443"), "api.xn--opena-r2e.com:8443")
+        XCTAssertEqual(PromptText.host("127.0.0.1:9000"), "127.0.0.1:9000")
     }
 
     private func assertPlain(_ reason: String, file: StaticString = #filePath, line: UInt = #line) {

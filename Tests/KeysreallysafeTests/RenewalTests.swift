@@ -178,7 +178,7 @@ final class RenewalTests: XCTestCase {
         XCTAssertEqual(gate.reasons.count, prompts + 1, "exactly one prompt per renewal")
         XCTAssertEqual(
             gate.reasons.last,
-            "renew \"list models\" the key demo for OpenAI at api.openai.com, 15 min, GET, /models"
+            "renew the key demo for OpenAI at api.openai.com, 15 min, GET, /models, task \"list models\""
         )
         prompts = gate.reasons.count
 
@@ -217,7 +217,7 @@ final class RenewalTests: XCTestCase {
         XCTAssertEqual(gate.reasons.count, prompts + 2, "one issuance prompt and one renewal prompt")
         XCTAssertEqual(
             gate.reasons.last,
-            "renew \"bench\" the key demo for OpenAI at api.openai.com, 2 h, POST, /chat/completions, max 500 req, max $2.00"
+            "renew the key demo for OpenAI at api.openai.com, 2 h, POST, /chat/completions, max 500 req, max $2.00, task \"bench\""
         )
         prompts = gate.reasons.count
 
@@ -233,7 +233,7 @@ final class RenewalTests: XCTestCase {
         XCTAssertEqual(gate.reasons.count, prompts + 2)
         XCTAssertEqual(
             gate.reasons.last,
-            "renew \"night evals\" the key demo for OpenAI at api.openai.com, 8 h, GET,POST, /v1/messages, max 500 req, max $2.50, unattended, profile evals"
+            "renew the key demo for OpenAI at api.openai.com, 8 h, GET,POST, /v1/messages, max 500 req, max $2.50, unattended, profile evals, task \"night evals\""
         )
         XCTAssertEqual(profiledRenewal.profile, "evals")
         XCTAssertTrue(profiledRenewal.unattended)
@@ -279,7 +279,7 @@ final class RenewalTests: XCTestCase {
         XCTAssertEqual(gate.reasons.count, 1, "an expired grant still costs exactly one prompt")
         XCTAssertEqual(
             gate.reasons.last,
-            "renew \"old\" the key demo for OpenAI at api.openai.com, 10 min, GET, any path"
+            "renew the key demo for OpenAI at api.openai.com, 10 min, GET, any path, task \"old\""
         )
     }
 

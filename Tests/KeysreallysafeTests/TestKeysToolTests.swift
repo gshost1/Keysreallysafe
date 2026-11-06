@@ -192,7 +192,7 @@ final class TestKeysToolTests: XCTestCase {
 
         XCTAssertEqual(
             site.gate.reasons,
-            ["test 2 keys read-only: demo (OpenAI at attacker.example), router (Groq at api.groq.com)"],
+            ["test 2 keys read-only: demo at attacker.example (OpenAI), router at api.groq.com (Groq)"],
             "the one prompt names where each secret goes"
         )
         XCTAssertEqual(site.checker.requests.first?.url?.absoluteString, "https://attacker.example/v1/models",
@@ -213,7 +213,7 @@ final class TestKeysToolTests: XCTestCase {
 
         let payload = try site.service.testKeys(keys: ["demo", "router"], confirm: true, caller: "mcp", now: now)
 
-        XCTAssertEqual(site.gate.reasons, ["test 2 keys read-only: demo (OpenAI at api.openai.com), router (Groq at api.groq.com)"],
+        XCTAssertEqual(site.gate.reasons, ["test 2 keys read-only: demo at api.openai.com (OpenAI), router at api.groq.com (Groq)"],
                        "exactly one prompt, naming the keys it will probe")
         XCTAssertEqual(site.checker.requests.count, 2, "one read-only GET per probeable key")
         let requests = site.checker.requests
@@ -252,7 +252,7 @@ final class TestKeysToolTests: XCTestCase {
         XCTAssertEqual(site.gate.reasons.count, 1, "the gateway's own unlock prompt")
 
         _ = try site.service.testKeys(keys: ["demo"], confirm: true, caller: "mcp")
-        XCTAssertEqual(site.gate.reasons, [site.gate.reasons[0], "test 1 key read-only: demo (OpenAI at api.openai.com)"],
+        XCTAssertEqual(site.gate.reasons, [site.gate.reasons[0], "test 1 key read-only: demo at api.openai.com (OpenAI)"],
                        "the check prompts even with the secret unlocked in memory")
         XCTAssertEqual(site.checker.requests.count, 1)
     }
@@ -264,7 +264,7 @@ final class TestKeysToolTests: XCTestCase {
 
         let payload = try site.service.testKeys(keys: ["demo", "demo"], confirm: true, caller: "mcp")
 
-        XCTAssertEqual(site.gate.reasons, ["test 1 key read-only: demo (OpenAI at api.openai.com)"])
+        XCTAssertEqual(site.gate.reasons, ["test 1 key read-only: demo at api.openai.com (OpenAI)"])
         XCTAssertEqual(site.checker.requests.count, 1)
         XCTAssertEqual(try rows(payload).count, 1)
     }
@@ -280,7 +280,7 @@ final class TestKeysToolTests: XCTestCase {
         try site.service.add(name: "voice", provider: "elevenlabs", kind: "runtime", notes: "", secret: voiceSecret)
 
         let mixed = try site.service.testKeys(keys: ["demo", "voice"], confirm: true, caller: "mcp")
-        XCTAssertEqual(site.gate.reasons, ["test 1 key read-only: demo (OpenAI at api.openai.com)"],
+        XCTAssertEqual(site.gate.reasons, ["test 1 key read-only: demo at api.openai.com (OpenAI)"],
                        "the prompt names only the keys it will probe")
         XCTAssertEqual(site.checker.requests.count, 1, "the unprobeable key sent nothing")
         let mixedRows = try rows(mixed)
@@ -438,7 +438,7 @@ final class TestKeysToolTests: XCTestCase {
         XCTAssertEqual(try rows(payload).count, 1)
         XCTAssertEqual(try rows(payload)[0]["confirmed"] as? Bool, true)
         XCTAssertFalse(text.contains(openaiSecret), "no key value crossed the wire")
-        XCTAssertEqual(site.gate.reasons, ["test 1 key read-only: demo (OpenAI at api.openai.com)"], "the one prompt, app-side")
+        XCTAssertEqual(site.gate.reasons, ["test 1 key read-only: demo at api.openai.com (OpenAI)"], "the one prompt, app-side")
 
         let sent = try JSONSerialization.jsonObject(
             with: Data(String(decoding: site.log.all.last { $0.path == "/api/mcp/test_keys" }!.body, as: UTF8.self).utf8)
