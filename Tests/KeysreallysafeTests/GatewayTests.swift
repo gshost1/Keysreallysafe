@@ -412,6 +412,61 @@ final class GatewayTests: XCTestCase {
         XCTAssertEqual(secondHits.count, 0)
     }
 
+    /// Audit lead 8: a bare LF inside a header value must not reach URLRequest, where an
+    /// HTTP/1.1 upstream could read it as the end of the header and a second, unscoped
+    /// request. The upstream here records raw bytes, so it sees exactly what CFNetwork wrote.
+    func testBareLFInAHeaderValueIsRefusedBeforeTheUpstream() throws {
+        let recorder = try RawUpstream()
+        defer { recorder.stop() }
+        let rig = try GatewayRig { _ in HTTPResponse.json(200, ["ok": true]) }
+        defer { rig.stop() }
+        try rig.service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: "sk-dummy-secret")
+        _ = try rig.service.setGateway(name: "demo", enabled: true, host: "127.0.0.1:\(recorder.port)")
+        let token = try grantFor(rig.service, "demo")
+
+        let request = "POST /demo/v1/chat/completions HTTP/1.1\r\n"
+            + "Host: 127.0.0.1:\(rig.gateway.boundPort)\r\n"
+            + "Authorization: Bearer \(token)\r\n"
+            + "X-Pad: a\n\nDELETE /v1/outside HTTP/1.1\nX-Q: b\r\n"
+            + "Content-Length: 2\r\n\r\n{}"
+        let (status, _) = try exchangeRaw(port: rig.gateway.boundPort, request: Data(request.utf8))
+        XCTAssertEqual(status, 400)
+        let seen = recorder.received
+        XCTAssertTrue(
+            seen.isEmpty,
+            "upstream received: \(String(data: seen, encoding: .isoLatin1)!.debugDescription)"
+        )
+    }
+
+    /// Google APIs honour X-HTTP-Method-Override on POST, so forwarding it would let a
+    /// POST-only grant reach DELETE or PATCH.
+    func testMethodOverrideHeadersAreNotForwarded() async throws {
+        let captured = RequestLog()
+        let rig = try GatewayRig { request in
+            captured.record(request)
+            return HTTPResponse.json(200, ["ok": true])
+        }
+        defer { rig.stop() }
+        try rig.key()
+        let token = try grantFor(rig.service, "demo")
+        var req = URLRequest(url: rig.url("v1/chat/completions"))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("DELETE", forHTTPHeaderField: "X-HTTP-Method-Override")
+        req.setValue("DELETE", forHTTPHeaderField: "X-HTTP-Method")
+        req.setValue("DELETE", forHTTPHeaderField: "X-Method-Override")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        let (_, response) = try await URLSession.shared.data(for: req)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let upstream = try XCTUnwrap(captured.last)
+        XCTAssertEqual(upstream.method, "POST")
+        XCTAssertNil(upstream.headers["x-http-method-override"])
+        XCTAssertNil(upstream.headers["x-http-method"])
+        XCTAssertNil(upstream.headers["x-method-override"])
+        XCTAssertEqual(upstream.headers["content-type"], "application/json")
+    }
+
     func testBodyOver8MBIs413() async throws {
         let hits = RequestLog()
         let rig = try GatewayRig { request in
@@ -452,3 +507,34 @@ private let noRedirectSession: URLSession = {
     let config = URLSessionConfiguration.ephemeral
     return URLSession(configuration: config, delegate: DenyRedirects(), delegateQueue: nil)
 }()
+
+/// An upstream that records every byte it receives and answers 200, with no HTTP parsing of
+/// its own, so a malformed request is seen exactly as the gateway's URLSession wrote it.
+private final class RawUpstream: @unchecked Sendable {
+    private let listener: LoopbackListener
+    private let lock = NSLock()
+    private var bytes = Data()
+    var port: UInt16 { listener.port }
+    var received: Data { lock.lock(); defer { lock.unlock() }; return bytes }
+
+    init() throws {
+        listener = try LoopbackListener(port: 0, acceptLabel: "test.raw.accept", workLabel: "test.raw.work")
+        listener.start { [weak self] client in
+            // Read the head, then answer: whatever CFNetwork wrote into it is what this test
+            // is about, and waiting for a close would stall a kept-alive connection.
+            var head = Data()
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while head.range(of: Data("\r\n\r\n".utf8)) == nil {
+                let n = Darwin.read(client, &buf, buf.count)
+                if n <= 0 { break }
+                head.append(contentsOf: buf[0..<n])
+            }
+            self?.append(head)
+            let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+            _ = HTTPFrame.writeAll(fd: client, Data(reply.utf8))
+        }
+    }
+
+    private func append(_ data: Data) { lock.lock(); bytes.append(data); lock.unlock() }
+    func stop() { listener.stop() }
+}
