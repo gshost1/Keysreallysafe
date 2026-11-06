@@ -364,7 +364,7 @@ final class RelayHostTests: XCTestCase {
         return makeGatedService(db: db)
     }
 
-    func testTurningTheRelayOnRefusesWhatItCanBeforeTouchID() throws {
+    func testTurningTheRelayOnRefusesWhatItCanBeforeTouchID() async throws {
         let (service, gate) = try gatedService()
         let socket = FakeRelaySocket()
         service.relayHost = RelayHost(log: { _ in }, dialer: FakeRelayDialer([.success(socket)]), blocker: FakeSleepBlocker())
@@ -402,6 +402,9 @@ final class RelayHostTests: XCTestCase {
         _ = try service.setRelay(enabled: true)
         XCTAssertEqual(gate.reasons.count, afterSetup + 1, "already on asks for nothing")
 
+        // The loop dials on a detached task. Turned off before it got that far, it ends
+        // without ever opening the socket, so there would be nothing to close.
+        try await until("connected") { isConnected(service.relayHost.status.state) }
         let off = try service.setRelay(enabled: false)
         XCTAssertFalse(off.host.on)
         XCTAssertTrue(socket.closed)
@@ -411,7 +414,7 @@ final class RelayHostTests: XCTestCase {
     /// The unscoped kill switch closes the relay path too: the route turns this process's
     /// relay off (socket closed, lock given back) and says so, with no Touch ID; a second call
     /// finds it off. A key-scoped revoke leaves a running relay alone.
-    func testRevokeAllTurnsTheRelayOffAndAKeyScopedRevokeLeavesItOn() throws {
+    func testRevokeAllTurnsTheRelayOffAndAKeyScopedRevokeLeavesItOn() async throws {
         let (service, gate) = try gatedService()
         let first = FakeRelaySocket()
         service.relayHost = RelayHost(log: { _ in }, dialer: FakeRelayDialer([.success(first)]), blocker: FakeSleepBlocker())
@@ -428,6 +431,8 @@ final class RelayHostTests: XCTestCase {
 
         XCTAssertTrue(try service.setRelay(enabled: true).host.on)
         let prompts = gate.reasons.count
+        // The loop dials on a detached task: revoked before that, it never opens the socket.
+        try await until("connected") { isConnected(service.relayHost.status.state) }
 
         let scoped = try revokeAll(["key": "demo"])
         XCTAssertEqual(scoped["relay_stopped"] as? Bool, false)
