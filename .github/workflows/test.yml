@@ -1,86 +1,240 @@
 name: Test
 
+# Pull requests run the checks for the areas they touch; every push to main and
+# a manual run (workflow_dispatch) run everything, as the backstop for a filter
+# that misses a dependency. Branch pushes are not a trigger: an open PR already
+# runs on them, and tags would only repeat main's run.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new commit on a PR cancels the run it replaces. Runs on main all finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Agent homes inside the workspace, never the runner's own: `keys setup` and MCP
+# registration resolve their config files from these, and no test may reach a real one.
+env:
+  GROK_HOME: ${{ github.workspace }}/.agent-homes/grok
+  CODEX_HOME: ${{ github.workspace }}/.agent-homes/codex
+  KEYS_DROID_HOME: ${{ github.workspace }}/.agent-homes/factory
+
 jobs:
-  test:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      all: ${{ steps.scope.outputs.all }}
+      swift: ${{ steps.filter.outputs.swift }}
+      assets: ${{ steps.filter.outputs.assets }}
+      web: ${{ steps.filter.outputs.web }}
+      site: ${{ steps.filter.outputs.site }}
+      relay: ${{ steps.filter.outputs.relay }}
+      siteworker: ${{ steps.filter.outputs.siteworker }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: github.event_name == 'pull_request'
+      # Which areas a PR touches. Each list names what that area's tests read,
+      # not only its own folder: the Swift tests read Fixtures/, Skills/ and the
+      # top-level scripts; the browser suites read Web/ or Site/ through
+      # scripts/tests.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            ci:
+              - '.github/workflows/**'
+            swift:
+              - 'Sources/**'
+              - 'Tests/**'
+              - 'Package.swift'
+              - 'Package.resolved'
+              - 'Fixtures/**'
+              - 'Skills/**'
+              - 'scripts/*.py'
+            assets:
+              - 'Web/**'
+              - 'docs/**'
+              - 'README.md'
+              - 'scripts/tests/test_backend_contract_ui.cjs'
+            web:
+              - 'Web/**'
+              - 'scripts/tests/test_keys_dashboard_ui.cjs'
+              - 'scripts/tests/dashboard.e2e.ts'
+              - 'scripts/tests/e2e.config.ts'
+              - 'scripts/tests/package.json'
+              - 'scripts/tests/package-lock.json'
+            site:
+              - 'Site/**'
+              - 'scripts/tests/site.e2e.ts'
+              - 'scripts/tests/site_fixture.cjs'
+              - 'scripts/tests/e2e.site.config.ts'
+              - 'scripts/tests/package.json'
+              - 'scripts/tests/package-lock.json'
+            relay:
+              - 'Relay/**'
+              - 'Sources/KeysCore/Relay*.swift'
+            siteworker:
+              - 'SiteWorker/**'
+              - 'wrangler.jsonc'
+      - id: scope
+        run: echo "all=${{ github.event_name != 'pull_request' || steps.filter.outputs.ci == 'true' }}" >> "$GITHUB_OUTPUT"
+
+  swift:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
-    # Agent homes inside the workspace, never the runner's own: `keys setup` and MCP
-    # registration resolve their config files from these, and no test may reach a real one.
-    env:
-      GROK_HOME: ${{ github.workspace }}/.agent-homes/grok
-      CODEX_HOME: ${{ github.workspace }}/.agent-homes/codex
-      KEYS_DROID_HOME: ${{ github.workspace }}/.agent-homes/factory
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Swift tests
         run: swift test
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            scripts/tests/package-lock.json
-            Relay/package-lock.json
-            SiteWorker/package-lock.json
-      - name: Install the pinned browser test dependencies
-        working-directory: scripts/tests
-        run: npm ci
-      - name: Install the relay Worker's pinned tooling
-        working-directory: Relay
-        run: npm ci
-      # Runs inside workerd with a throwaway secret: no Cloudflare account, no network.
-      - name: Check the relay Worker offline
-        working-directory: Relay
-        run: npm test
-      - name: Install the site Worker's pinned tooling
-        working-directory: SiteWorker
-        run: npm ci
-      # The keysrs.com notify form, in workerd with simulated KV and rate limit.
-      - name: Check the site Worker offline
-        working-directory: SiteWorker
-        run: npm test
-      - name: Check release packaging scripts (no credentials)
-        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
-      - name: Install the pinned browser
-        working-directory: scripts/tests
-        run: npx --no-install playwright install chromium
-      - name: Check dashboard workflows in a real browser (synthetic local fixtures only)
-        env:
-          NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
-        run: node scripts/tests/test_keys_dashboard_ui.cjs
-      - name: Check tester-army dashboard flows (synthetic fixture server only)
-        working-directory: scripts/tests
-        run: npm run test:e2e
-      # The same real assets against the real Swift backend on a temporary
-      # synthetic vault: no keychain, Touch ID, clipboard or provider call.
-      # KEYS_CONTRACT_TIMEOUT_S bounds the browser half inside the test; the step
-      # timeout is the backstop, so a wedged browser fails the step rather than
-      # holding the runner open.
-      - name: Check the dashboard against the real backend (synthetic vault only)
-        timeout-minutes: 15
-        env:
-          NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
-          KEYS_BACKEND_CONTRACT_UI: "1"
-        run: swift test --filter BackendContractUITests
+      # These two drive the debug `keys` binary over stdio and skip without it,
+      # so they run here, after the build, rather than in the scripts job.
+      - name: Check the MCP server and setup through the built binary
+        run: python3 -m unittest discover -s scripts/tests -p 'test_keys_*mcp*.py'
 
   # Most of KeysCore is @unchecked Sendable with hand-held locks, so the compiler
   # does not check which lock guards which field. ThreadSanitizer does, at run
   # time, over the areas where threads actually meet: the gateway, grants, the
   # relay and the revoke paths.
   thread-sanitizer:
+    needs: changes
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
-    env:
-      GROK_HOME: ${{ github.workspace }}/.agent-homes/grok
-      CODEX_HOME: ${{ github.workspace }}/.agent-homes/codex
-      KEYS_DROID_HOME: ${{ github.workspace }}/.agent-homes/factory
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Gateway, grants, relay and revoke under ThreadSanitizer
         timeout-minutes: 30
         run: swift test --sanitize=thread --filter 'Gateway|Grant|Relay|Revoke'
+
+  # The Swift tests that read checked-in assets (Web/, docs/, README.md), so a
+  # change to those alone still meets the real backend without the whole suite.
+  swift-assets:
+    needs: changes
+    if: >-
+      needs.changes.outputs.all == 'true' || needs.changes.outputs.swift == 'true'
+      || needs.changes.outputs.assets == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scripts/tests/package-lock.json
+      - name: Install the pinned browser test dependencies
+        working-directory: scripts/tests
+        run: npm ci
+      - name: Install the pinned browser
+        working-directory: scripts/tests
+        run: npx --no-install playwright install chromium
+      # The same real assets against the real Swift backend on a temporary
+      # synthetic vault: no keychain, Touch ID, clipboard or provider call.
+      # KEYS_CONTRACT_TIMEOUT_S bounds the browser half inside the test; the step
+      # timeout is the backstop, so a wedged browser fails the step rather than
+      # holding the runner open.
+      - name: Check the dashboard against the real backend, plus the asset-reading tests
+        timeout-minutes: 15
+        env:
+          NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
+          KEYS_BACKEND_CONTRACT_UI: "1"
+        run: swift test --filter 'BackendContractUITests|AppRuntimeTests|MenubarTests|AgentSkillTests'
+
+  browser:
+    needs: changes
+    if: >-
+      needs.changes.outputs.all == 'true' || needs.changes.outputs.web == 'true'
+      || needs.changes.outputs.site == 'true'
+    runs-on: macos-latest
+    env:
+      NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
+      E2E_TELEMETRY_DISABLED: "1"
+      WEB: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.web == 'true' }}
+      SITE: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.site == 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scripts/tests/package-lock.json
+      - name: Install the pinned browser test dependencies
+        working-directory: scripts/tests
+        run: npm ci
+      - name: Install the pinned browser
+        working-directory: scripts/tests
+        run: npx --no-install playwright install chromium
+      - name: Check dashboard workflows in a real browser (synthetic local fixtures only)
+        if: env.WEB == 'true'
+        run: node scripts/tests/test_keys_dashboard_ui.cjs
+      - name: Check tester-army dashboard flows (synthetic fixture server only)
+        if: env.WEB == 'true'
+        working-directory: scripts/tests
+        run: npx --no-install e2e run
+      - name: Check the marketing site flows (static Site/ only)
+        if: env.SITE == 'true'
+        working-directory: scripts/tests
+        run: npx --no-install e2e run --config e2e.site.config.ts
+
+  # Runs on every PR: the scripts tests read most of the tree (Site/install,
+  # packaging, plugins, licenses, Web) and take seconds.
+  scripts:
+    needs: changes
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check release packaging scripts (no credentials)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+  workers:
+    needs: changes
+    if: >-
+      needs.changes.outputs.all == 'true' || needs.changes.outputs.relay == 'true'
+      || needs.changes.outputs.siteworker == 'true'
+    # workerd and node behave the same on Linux, and it keeps a full run within
+    # the five concurrent macOS jobs a free account gets.
+    runs-on: ubuntu-latest
+    env:
+      RELAY: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.relay == 'true' }}
+      SITEWORKER: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.siteworker == 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            Relay/package-lock.json
+            SiteWorker/package-lock.json
+      # Runs inside workerd with a throwaway secret: no Cloudflare account, no network.
+      - name: Check the relay Worker offline
+        if: env.RELAY == 'true'
+        working-directory: Relay
+        run: npm ci && npm test
+      # The keysrs.com notify form, in workerd with simulated KV and rate limit.
+      - name: Check the site Worker offline
+        if: env.SITEWORKER == 'true'
+        working-directory: SiteWorker
+        run: npm ci && npm test
+
+  # The one check the protect-main ruleset requires, by this name. It passes when
+  # every job above passed or was skipped as out of scope, and fails if any
+  # failed, was cancelled, or the change detection itself broke.
+  test:
+    needs: [changes, swift, thread-sanitizer, swift-assets, browser, scripts, workers]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          jobs: ${{ toJSON(needs) }}
+          allowed-skips: swift, thread-sanitizer, swift-assets, browser, workers
