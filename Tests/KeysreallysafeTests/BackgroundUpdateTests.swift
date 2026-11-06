@@ -913,15 +913,24 @@ extension AppUpdaterTests {
         let rig = try makeUpdateRig(release: { self.newerRelease() })
         let held = try XCTUnwrap(rig.coordinator.beginCheck(.manual))
         rig.controller.applyUpdateChecks(true)
-        let stale = rig.retries.take()
+        let stale = try XCTUnwrap(rig.retries.take(), "the refused check armed a retry")
+        // Rebuild the schedule with automatic updates still on, while the
+        // machine is still held: its own first check is refused too and arms
+        // the new schedule's retry. Only the generation tells the two apart.
+        rig.controller.applyUpdateChecks(true)
+        let fresh = try XCTUnwrap(rig.retries.take(), "the rebuilt schedule armed its own retry")
         rig.coordinator.finishCheck(held)
-        rig.controller.applyUpdateChecks(false)
 
-        XCTAssertNotNil(stale, "the refused check armed a retry")
-        stale?()
-        XCTAssertTrue(rig.coordinator.isIdle, "the stale retry claimed nothing")
+        stale()
+        XCTAssertTrue(rig.coordinator.isIdle, "the stale retry claimed nothing, though the machine is free")
         await drain(until: rig.checks.calls > 0, within: .seconds(1))
         XCTAssertEqual(rig.checks.calls, 0, "the stale retry ran no lookup")
+
+        // The control: the current schedule's retry, fired the same way, does
+        // check, so the stale one was dropped for its generation alone.
+        fresh()
+        await drain(until: rig.checks.calls > 0)
+        XCTAssertEqual(rig.checks.calls, 1, "the current retry ran its lookup")
     }
 
     /// A machine that stays claimed gets a bounded number of retries per daily

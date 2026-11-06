@@ -71,7 +71,7 @@ extension KeysService {
         guard !imports.isEmpty else {
             if docker, !preferences.dockerAccess {
                 try presence.require(
-                    reason: "let Docker containers reach the Keysrs gateway (project \(project.label))"
+                    reason: "let Docker containers reach the Keysrs gateway (project \(Self.promptLabel(project.label)))"
                 )
                 try preferences.setDockerAccess(true)
             }
@@ -103,7 +103,7 @@ extension KeysService {
         }
         try presence.require(
             reason: "import and wrap \(imports.count) key\(imports.count == 1 ? "" : "s") "
-                + "for project \(project.label): \(identities.joined(separator: ", "))"
+                + "for project \(Self.promptLabel(project.label)): \(identities.joined(separator: ", "))"
                 + (docker ? " and allow Docker containers to reach the gateway" : "")
         )
 

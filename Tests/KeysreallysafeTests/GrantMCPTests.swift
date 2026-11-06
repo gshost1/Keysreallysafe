@@ -1510,18 +1510,27 @@ final class MCPGrantTests: XCTestCase {
     /// no grant — at both the route and the tool surface.
     func testOwnerCheckAtCreate() throws {
         let site = try makeSite()
-        // A second live site owns the gateway: the control file still reaches this
-        // site, but it names another live process as the owner. The guard runs
-        // before the site's control file is rewritten.
+        // A second live site owns the gateway: the catalog's control file names
+        // another live Keysrs process (a copy of sleep named `keys`) as the owner.
+        // The guard runs before the site's control file is rewritten.
         try AppConnectionIsolationGuard.assertIsolated(control: site.control, launch: .neverLaunching)
-        let other = getppid()
+        let other = try KeysrsStandIn.start(self).processIdentifier
         try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, pid: other, to: site.control)
 
         let refusal = try create(site, ask(site))
         XCTAssertEqual(refusal.status, 409)
         XCTAssertEqual(try json(refusal)["error"] as? String, "gateway owned by another process")
 
-        let (isError, text) = try callTool(site, name: "request_grant", arguments: ask(site))
+        // The tool reaches a site only through the process serving the file's port,
+        // so its own control file names this process; the site's owner check still
+        // reads the catalog's file, which names the stand-in.
+        let (_, _, toolControl) = try AppConnectionIsolationGuard.makeWorld()
+        try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, to: toolControl)
+        let toolSite = Site(
+            service: site.service, db: site.db, dir: site.dir, gate: site.gate, handler: site.handler,
+            server: site.server, control: toolControl, clock: site.clock
+        )
+        let (isError, text) = try callTool(toolSite, name: "request_grant", arguments: ask(site))
         XCTAssertTrue(isError)
         XCTAssertTrue(text.contains("is managing your keys right now"), "the existing wording: \(text)")
         XCTAssertFalse(text.contains(String(other)), "the pid is scrubbed: \(text)")

@@ -181,7 +181,7 @@ final class GrantTests: XCTestCase {
             caller: "cli"
         )
         XCTAssertEqual(gate.reasons.count, 1)
-        XCTAssertEqual(gate.reasons[0], "grant \"list models\" the key demo for OpenAI at 127.0.0.1:\(stub.boundPort), 15 min")
+        XCTAssertEqual(gate.reasons[0], "grant the key demo for OpenAI at 127.0.0.1:\(stub.boundPort), 15 min, task \"list models\"")
         XCTAssertTrue(service.isGatewayEnabled("demo"))
 
         for header in ["Authorization", "x-api-key", "x-goog-api-key", "api-key"] {
@@ -571,18 +571,18 @@ final class GrantTests: XCTestCase {
         let plain = try service.issueGrant(name: "demo", request: GrantRequest(task: "list models", minutes: 15), caller: "cli")
         XCTAssertEqual(
             gate.reasons.last,
-            "grant \"list models\" the key demo for OpenAI at api.openai.com, 15 min"
+            "grant the key demo for OpenAI at api.openai.com, 15 min, task \"list models\""
         )
         XCTAssertTrue(plain.grant.jsonObject()["profile"] is NSNull)
         XCTAssertEqual(plain.grant.jsonObject()["unattended"] as? Bool, false)
 
-        // The profile format: task, key, provider, host, span, then the profile name and the
-        // effective methods, paths, caps, and the word unattended — in that order.
+        // The profile format: key, provider, host, span, then the profile name and the
+        // effective methods, paths, caps, the word unattended, and the task last — in that order.
         _ = try service.issueGrant(name: "demo", request: GrantRequest(task: "night evals"), profile: "evals", caller: "cli")
         XCTAssertEqual(
             gate.reasons.last,
-            "grant \"night evals\" the key demo for OpenAI at api.openai.com, 8 h, "
-                + "profile evals: GET,POST, /v1/messages, max 500 req, max $2.50, unattended"
+            "grant the key demo for OpenAI at api.openai.com, 8 h, "
+                + "profile evals: GET,POST, /v1/messages, max 500 req, max $2.50, unattended, task \"night evals\""
         )
 
         // All methods are spelled out, no paths reads "any path", and a watched profile
@@ -590,8 +590,8 @@ final class GrantTests: XCTestCase {
         _ = try service.issueGrant(name: "demo", request: GrantRequest(task: "reading"), profile: "reads", caller: "cli")
         XCTAssertEqual(
             gate.reasons.last,
-            "grant \"reading\" the key demo for OpenAI at api.openai.com, 30 min, "
-                + "profile reads: DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT, any path"
+            "grant the key demo for OpenAI at api.openai.com, 30 min, "
+                + "profile reads: DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT, any path, task \"reading\""
         )
 
         // A tightened ask is shown with its tightened values, not the profile's.
@@ -607,8 +607,8 @@ final class GrantTests: XCTestCase {
         )
         XCTAssertEqual(
             gate.reasons.last,
-            "grant \"tight\" the key demo for OpenAI at api.openai.com, 1 h, "
-                + "profile evals: GET, /v1/messages/count_tokens, max 10 req, max $1.00, unattended"
+            "grant the key demo for OpenAI at api.openai.com, 1 h, "
+                + "profile evals: GET, /v1/messages/count_tokens, max 10 req, max $1.00, unattended, task \"tight\""
         )
         XCTAssertEqual(gate.reasons.count, 4, "exactly one prompt per grant, profile or not")
     }

@@ -59,7 +59,7 @@ extension KeysService {
             return ["files": [Self.staleRow(path: canonical)], "revoked": 0]
         }
         let display = URL(fileURLWithPath: canonical).lastPathComponent
-        try presence.require(reason: "unwrap \(display)" + (try revocationClause(for: canonical)))
+        try presence.require(reason: "unwrap \(Self.promptLabel(display))" + (try revocationClause(for: canonical)))
         let outcome = try restoreFile(canonical: canonical, caller: caller, now: now)
         return ["files": [outcome.payload()], "revoked": outcome.revoked]
     }
@@ -127,9 +127,9 @@ extension KeysService {
 
         // ONE prompt for the whole call, naming the files and the project.
         let names = live.map { URL(fileURLWithPath: $0).lastPathComponent }
-        let named = names.count == 1 ? names[0] : "\(names.count) files"
+        let named = names.count == 1 ? Self.promptLabel(names[0]) : "\(names.count) files"
         try presence.require(
-            reason: "unwrap \(named) for project \(project.label) and revoke their gateway client tokens"
+            reason: "unwrap \(named) for project \(Self.promptLabel(project.label)) and revoke their gateway client tokens"
         )
 
         var files: [[String: Any]] = []
@@ -293,12 +293,21 @@ extension KeysService {
             }
             try EnvFileWriter.swap(URL(fileURLWithPath: canonical), original: data, text: parsed.render())
         }
-        // A legacy backup beside the file holds the pre-wrap values inside the
-        // project, where git can pick it up; once every line came back it has no
-        // further use, so it goes (every one of this file's, not only the newest).
-        if backupIsLegacy, outcome.failed.isEmpty {
-            for legacy in Self.legacyBackups(of: canonical) { try? FileManager.default.removeItem(at: legacy) }
-            outcome.backup = nil
+        // Once every line came back the backups have no further use, and the ones
+        // older builds wrote are byte copies of the file, key values included: a
+        // legacy one beside the file (inside the project, where git can pick it up)
+        // and an App Support one alike. Every one of this file's goes, not only the
+        // newest, whichever was read. A failed line keeps them for the rerun, and a
+        // backup that would not go stays reported.
+        if outcome.failed.isEmpty {
+            var clean = true
+            for legacy in Self.legacyBackups(of: canonical) {
+                do { try FileManager.default.removeItem(at: legacy) } catch { clean = false }
+            }
+            if !EnvFileWriter.removeBackups(
+                of: URL(fileURLWithPath: canonical), under: EnvFileWriter.backupsRoot(beside: catalog.path)
+            ) { clean = false }
+            if clean { outcome.backup = nil }
         }
 
         // Revoke exactly the tokens this file held, found by hashing each wrapped

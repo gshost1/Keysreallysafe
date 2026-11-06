@@ -84,7 +84,9 @@ final class ControlFileOwnershipTests: XCTestCase {
         let world = try world()
         try ControlFile.write(port: 12_765, token: "mine", to: world.control)
         // A newer owner replaces it, in another process with its own boot id.
-        try ControlFile.write(port: 12_766, token: "newer", pid: getppid(), bootID: "other-boot", to: world.control)
+        // A Keysrs-shaped stand-in: `live` below counts only this user's Keysrs.
+        let newer = try liveSiteStandIn().processIdentifier
+        try ControlFile.write(port: 12_766, token: "newer", pid: newer, bootID: "other-boot", to: world.control)
         ControlFile.remove(at: world.control)
         XCTAssertTrue(FileManager.default.fileExists(atPath: world.control.path))
         XCTAssertEqual(ControlFile.live(at: world.control)?.token, "newer")

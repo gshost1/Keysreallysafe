@@ -83,9 +83,9 @@ struct AppConnection {
         self.timeouts = timeouts
     }
 
-    /// The single "is the app up?" decision. A live control file is today's rule
-    /// unchanged — its owner alive means the app is running, so nothing launches
-    /// and nothing polls on that path. With no live app, this function alone owns
+    /// The single "is the app up?" decision. A live control file whose owner holds
+    /// the file's listener means the app is running, so nothing launches and
+    /// nothing polls on that path. With no live app, this function alone owns
     /// the launch: open, bounded wait for health, one retry, and after the retry
     /// the plain sentence is the answer — a tool result on MCP, exit 6 on the CLI,
     /// never any caller's own wording.
@@ -102,8 +102,9 @@ struct AppConnection {
         launch: AppLaunchSeam = .production
     ) throws -> AppConnection {
         let control = try control ?? ControlFile.url()
-        // The fast path: the file's owner is the truth, exactly as before this
-        // seam grew a launch; a hung site stays the app-call timeout's problem.
+        // The fast path: a file whose owner holds its recorded listener
+        // (`ControlFile.serving`); a listener nobody proved receives nothing, not
+        // even the health probe. A hung site stays the app-call timeout's problem.
         if let client = try? ControlClient.connect(control: control) {
             return AppConnection(client: client, timeouts: launch.callTimeouts)
         }

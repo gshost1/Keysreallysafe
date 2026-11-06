@@ -4,6 +4,12 @@ import Foundation
 /// The running site (menubar or dashboard) writes its port and per-launch token to a
 /// 0600 file so `keys grant` in a Terminal can ask it for a grant. The token only lets a
 /// local process ask; every grant still needs Touch ID in the owner process.
+///
+/// The file also carries a second per-launch value, the control secret. The token is the
+/// dashboard page's CSRF value too, so any loopback peer reads it from GET /, and macOS
+/// loopback is shared by every account on the Mac. The control secret is never served:
+/// only a reader of this owner-only file has it, and the routes that answer with a
+/// credential or a vault-derived fact without asking for presence require it.
 enum ControlFile {
     struct Info: Equatable {
         var port: UInt16
@@ -12,6 +18,23 @@ enum ControlFile {
         /// Written by whichever process created this file; the pid alone is not the
         /// identity, because a pid is recycled and two sites can share one catalog.
         var bootID: String = ""
+        /// Empty when the file was written by a site that predates the field; the
+        /// client then refuses the secret-gated routes itself instead of trying them.
+        var controlSecret: String = ""
+    }
+
+    /// The header the control secret travels in. Never set by the dashboard page.
+    static let secretHeader = "X-KSF-Control"
+
+    /// The routes only a control-file holder may call: their answers carry a live
+    /// credential or confirm a vault value, and none asks for presence. The
+    /// dashboard page calls none of them, so the page's token is never enough.
+    /// One list for both sides, so the client can fail closed on an older site.
+    static func requiresSecret(method: String, path: String) -> Bool {
+        guard method.uppercased() == "POST" else { return false }
+        return path == "/api/clients/held/token"
+            || path == "/api/mcp/vault_lookup"
+            || path == "/api/mcp/feedback"
     }
 
     /// The live owner of an existing file, when a different site may not displace it.
@@ -56,7 +79,8 @@ enum ControlFile {
     /// `keys dashboard` on 12765 overwrote the app's file on 12766 and its exit removed
     /// it, leaving the running app unreachable to every CLI command.
     static func write(
-        port: UInt16, token: String, pid: pid_t = ProcessInfo.processInfo.processIdentifier,
+        port: UInt16, token: String, controlSecret: String = "",
+        pid: pid_t = ProcessInfo.processInfo.processIdentifier,
         bootID: String? = nil, takeover: Bool = false, to url: URL? = nil
     ) throws {
         let url = try url ?? ControlFile.url()
@@ -68,7 +92,9 @@ enum ControlFile {
         // A foreign pid is a rig or a stand-in, never this process: giving it this
         // process's boot id would let our exit cleanup delete its file.
         let id = bootID ?? (pid == getpid() ? processBootID : UUID().uuidString)
-        let data = try JSONValue.data(["port": Int(port), "pid": Int(pid), "token": token, "boot": id])
+        var fields: [String: Any] = ["port": Int(port), "pid": Int(pid), "token": token, "boot": id]
+        if !controlSecret.isEmpty { fields["control"] = controlSecret }
+        let data = try JSONValue.data(fields)
         try writeOwnerOnly(data, to: url)
     }
 
@@ -108,16 +134,93 @@ enum ControlFile {
               // kill(0 or negative) signals a process group, so such a pid is never "alive".
               pid > 0, pid <= Int(Int32.max)
         else { return nil }
-        return Info(port: UInt16(port), pid: pid_t(pid), token: token, bootID: JSONValue.string(obj["boot"]) ?? "")
+        return Info(
+            port: UInt16(port), pid: pid_t(pid), token: token, bootID: JSONValue.string(obj["boot"]) ?? "",
+            controlSecret: JSONValue.string(obj["control"]) ?? ""
+        )
     }
 
-    /// A live owner, or nil when the file is missing or its process is gone.
-    /// Under the tripwire the no-argument form answers nil: there is
+    /// A live owner, or nil when the file is missing or its pid is not this user's
+    /// Keysrs. Under the tripwire the no-argument form answers nil: there is
     /// deliberately no default control file in a test process.
+    ///
+    /// The file outlives an unclean exit (it is removed only at exit), so its pid can
+    /// be recycled. "Some process has this pid" used to be enough, and kill's EPERM
+    /// for another account's process counted as alive too, so a stale file read as
+    /// the running app.
     static func live(at url: URL? = nil) -> Info? {
         guard let url = url ?? (try? ControlFile.url()), let info = try? read(at: url) else { return nil }
-        if kill(info.pid, 0) != 0 && errno == ESRCH { return nil }
+        return isOwnSite(info) ? info : nil
+    }
+
+    /// Whether the file's pid may be this user's site: this very process, or a live
+    /// process of this user that is a `keys` binary or holds the file's listener.
+    /// The installed app and a checkout dev copy are both `keys`; the listener
+    /// branch is for a site whose binary is called something else (an XCTest rig
+    /// serving a spawned `keys` subprocess), and admits only the process actually
+    /// serving that port. This process counts as itself whatever its binary is.
+    static func isOwnSite(_ info: Info) -> Bool {
+        if info.pid == getpid() { return true }
+        guard isSameUser(info.pid) else { return false }
+        return isRunningSite(info.pid) || holdsLoopbackListener(info.pid, port: info.port)
+    }
+
+    /// The owner a client may talk to: a process of this user (or this one) that
+    /// holds the file's loopback listener. `live` answers "is a Keysrs up"; this
+    /// answers "is the thing on this port that Keysrs". Every call after it carries
+    /// the control token and, for keys wrap, raw key values, and the file survives
+    /// a crash: its pid may be recycled into any process, and its port bound by
+    /// anyone, in any account, while the app is down.
+    static func serving(at url: URL) -> Info? {
+        guard let info = try? read(at: url),
+              info.pid == getpid() || isSameUser(info.pid),
+              holdsLoopbackListener(info.pid, port: info.port)
+        else { return nil }
         return info
+    }
+
+    /// Whether `pid` runs as this process's effective user. Another account's
+    /// process answers kill with EPERM, which `isAlive` counts as alive.
+    static func isSameUser(_ pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return false }
+        return info.pbi_uid == geteuid()
+    }
+
+    /// Whether `pid` holds a listening TCP socket on 127.0.0.1:`port`. A file's pid
+    /// being a Keysrs binary says nothing about who answers on its port: a recycled
+    /// pid can land on a `keys mcp`. Only the process holding the listener is the
+    /// site. Same-user processes only: those are the ones whose fds libproc lists,
+    /// and a refused listing answers false, the fail-closed direction.
+    static func holdsLoopbackListener(_ pid: pid_t, port: UInt16) -> Bool {
+        guard pid > 0, port > 0 else { return false }
+        let estimate = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard estimate > 0 else { return false }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        // Room for a few fds opened between the two calls.
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(estimate) / stride + 32)
+        let filled = fds.withUnsafeMutableBytes { raw in
+            proc_pidinfo(pid, PROC_PIDLISTFDS, 0, raw.baseAddress, Int32(raw.count))
+        }
+        guard filled > 0 else { return false }
+        let loopback = inet_addr(BindPolicy.loopback)
+        for fd in fds.prefix(Int(filled) / stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let size = Int32(MemoryLayout<socket_fdinfo>.size)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size,
+                  Int(info.psi.soi_kind) == Int(SOCKINFO_TCP) else { continue }
+            let tcp = info.psi.soi_proto.pri_tcp
+            let local = tcp.tcpsi_ini
+            guard tcp.tcpsi_state == TSI_S_LISTEN,
+                  Int32(local.insi_vflag) & Int32(INI_IPV4) != 0,
+                  UInt16(bigEndian: UInt16(truncatingIfNeeded: local.insi_lport)) == port,
+                  local.insi_laddr.ina_46.i46a_addr4.s_addr == loopback
+            else { continue }
+            return true
+        }
+        return false
     }
 
     /// Whether `pid` is a live Keysrs binary. The site that may not be displaced is a
@@ -136,7 +239,8 @@ enum ControlFile {
             .lastPathComponent == "keys"
     }
 
-    /// Whether `pid` is a process that exists (a zombie counts, as it does for `live`).
+    /// Whether `pid` is a process that exists (a zombie counts). `live` asks more:
+    /// a zombie has no path, so it is not a running site.
     static func isAlive(_ pid: pid_t) -> Bool {
         guard pid > 0 else { return false }
         return kill(pid, 0) == 0 || errno != ESRCH
@@ -185,13 +289,16 @@ enum ControlFile {
 struct ControlClient {
     var info: ControlFile.Info
 
+    /// Only a file whose owner holds its listener connects (`ControlFile.serving`):
+    /// every call after this carries the token, so a port nobody proved gets none.
+    ///
     /// The default control URL resolves INSIDE the body (a Swift default
     /// argument cannot throw): under the test tripwire the no-argument form
     /// throws the refusal instead of reaching for the real control.json, and a
     /// caller with an explicit catalog sibling keeps today's behavior.
     static func connect(control: URL? = nil) throws -> ControlClient {
         let control = try control ?? ControlFile.url()
-        guard let info = ControlFile.live(at: control) else {
+        guard let info = ControlFile.serving(at: control) else {
             // Its own exit code (6), so a script can tell a site that is not running from a
             // mistyped command.
             throw AppError.siteUnavailable(
@@ -206,11 +313,23 @@ struct ControlClient {
     func call(
         method: String, path: String, body: [String: Any]? = nil, expect: Int, timeout: TimeInterval = 180
     ) throws -> [String: Any] {
+        // A site that predates the control secret answers these routes on the page token
+        // alone, which any account on this Mac can read; so this side refuses first.
+        if info.controlSecret.isEmpty, ControlFile.requiresSecret(method: method, path: path) {
+            throw AppError.usage(
+                "the running Keysrs is older than this keys command and cannot prove the control file for \(path); update Keysrs and reopen it, then retry"
+            )
+        }
         let url = URL(string: "http://127.0.0.1:\(info.port)\(path)")!
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.timeoutInterval = timeout
         req.setValue(info.token, forHTTPHeaderField: "X-KSF-Token")
+        // Only the routes that need it carry the secret, so it never rides a call that
+        // does not, whatever proved (or failed to prove) the listener for this client.
+        if ControlFile.requiresSecret(method: method, path: path) {
+            req.setValue(info.controlSecret, forHTTPHeaderField: ControlFile.secretHeader)
+        }
         req.setValue("127.0.0.1:\(info.port)", forHTTPHeaderField: "Host")
         if let body {
             req.httpBody = try JSONValue.data(body)

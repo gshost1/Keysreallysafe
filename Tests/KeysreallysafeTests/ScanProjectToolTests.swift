@@ -435,7 +435,7 @@ final class ScanProjectToolTests: XCTestCase {
         let folder = try TempDir.make()
         try write("ANTHROPIC_API_KEY=\(anthropicValue)\nGROQ_API_KEY=\(groqValue)\n", to: ".env", under: folder)
         try AppConnectionIsolationGuard.assertIsolated(control: site.control)
-        try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, to: site.control)
+        try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, controlSecret: site.handler.controlSecret, to: site.control)
 
         let result = try callJSON(roster(control: site.control, projectFolder: { folder.path }), arguments: [:])
         XCTAssertEqual(result["vault_check"] as? String, "app")
@@ -452,6 +452,7 @@ final class ScanProjectToolTests: XCTestCase {
         XCTAssertEqual(lookups.count, 1, "one comparison call per scan")
         XCTAssertEqual(lookups[0].method, "POST", "a POST, never a state-carrying GET")
         XCTAssertEqual(lookups[0].headers["x-ksf-token"], site.handler.originToken, "origin-token gated")
+        XCTAssertEqual(lookups[0].headers["x-ksf-control"], site.handler.controlSecret, "control-secret gated")
         let body = String(decoding: lookups[0].body, as: UTF8.self)
         let sent = try JSONSerialization.jsonObject(with: Data(body.utf8)) as! [String: Any]
         XCTAssertEqual(Set(sent.keys), ["hashes"], "the body carries one field")

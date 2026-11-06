@@ -71,6 +71,7 @@ const baseLedger = () => [
 let keys, ledger, failures, delays, replies, requests, unexpected, fixtureSecrets, rotations, customProviders, hiddenUsers, grants, profiles, preferences;
 
 function reset() {
+  for (const gate of [...gates]) gate.release();
   keys = baseKeys();
   fixtureSecrets = new Map(keys.map(k => [k.name, SECRET]));
   rotations = [];
@@ -165,7 +166,20 @@ function spend(params) {
 }
 
 const rule = (method, pathname) => `${method} ${pathname}`;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Waits out a delay in milliseconds, or a gate from hold() until it is released.
+const sleep = (wait) => (wait && typeof wait.then === "function"
+  ? wait : new Promise((resolve) => setTimeout(resolve, wait)));
+// A reply held until the case lets it go, in place of a delay long enough to outlast the steps
+// in between: `const gate = hold(); delays.set(key, gate); ...; gate.release();`. It goes wherever
+// a delay in milliseconds goes (`delays`, a queue entry, a failure's `after`). A case that fails
+// before its release leaves the gate to reset(), which lets every live one go.
+const gates = new Set();
+function hold() {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  gates.add(gate);
+  return Object.assign(gate, { release: () => { gates.delete(gate); release(); } });
+}
 
 function json(response, status, value) {
   const body = JSON.stringify(value);
@@ -460,9 +474,87 @@ const waitDialog = (page, id, open) =>
   page.waitForFunction(([name, want]) => document.getElementById(name).open === want, [id, open]);
 
 
+// networkidle waits for 500 ms with no request open, and the suite waited on it well over a
+// hundred times. The page's own requests are counted here instead, so a case waits for the same
+// quiet with a shorter window: the page has loaded and no request of its has been open for
+// QUIET_MS. Every page the runner opens is watched from its first request.
+const QUIET_MS = 150;
+const traffic = new WeakMap();
+function watchTraffic(page) {
+  const t = { open: new Set(), last: Date.now(), loading: null };
+  const done = (request) => { t.open.delete(request); t.last = Date.now(); };
+  page.on("request", (request) => {
+    t.open.add(request); t.last = Date.now();
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) t.loading = request;
+  });
+  page.on("requestfinished", done);
+  page.on("requestfailed", done);
+  // A reload or a new goto cuts off the old document's requests, and the browser does not always
+  // report them as failed; they can never finish, so they no longer count once the new document
+  // commits. Only a document request makes it a new document: replaceState and pushState fire the
+  // same event within the page, and the old requests are still live then.
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame() || !t.loading) return;
+    for (const request of t.open) if (request !== t.loading) t.open.delete(request);
+    t.loading = null;
+    t.last = Date.now();
+  });
+  traffic.set(page, t);
+}
+async function settle(page) {
+  await page.waitForLoadState("load");
+  const t = traffic.get(page);
+  const deadline = Date.now() + 30000;
+  while (t.open.size || Date.now() - t.last < QUIET_MS) {
+    if (Date.now() > deadline) throw new Error(`the page never went quiet: ${[...t.open].map((r) => r.url()).join(", ")}`);
+    await sleep(10);
+  }
+}
+
+// Polls `cond` (a plain function, read in the runner) until it holds, and names what never
+// happened when it does not.
+async function until(page, cond, what, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await page.waitForTimeout(10);
+  }
+}
+
+// The fixture's count of `method pathname` requests, from `since` (an index into `requests`).
+const served = (method, pathname, since = 0) =>
+  requests.slice(since).filter((r) => r.method === method && r.pathname === pathname).length;
+// Every request the page sends from now on to `method pathname`, as the browser sent it. The
+// browser's report can trail the fixture's, so the list also knows what the fixture has taken.
+function outgoing(page, method, pathname) {
+  const list = [];
+  const since = requests.length;
+  page.on("request", (r) => { if (r.method() === method && new URL(r.url()).pathname === pathname) list.push(r); });
+  return Object.assign(list, { what: `${method} ${pathname}`, atFixture: () => served(method, pathname, since) });
+}
+// The page holds the whole reply to each request, or saw it fail, and has had a beat to act on
+// it. This replaces sleeping past a held reply: a case releases the reply, then waits here. Each
+// source is a list from outgoing(), which first catches up with every request the fixture took on
+// that call, or a single browser request.
+const GRACE_MS = 200;
+async function landed(page, ...sources) {
+  for (const source of sources) {
+    if (Array.isArray(source)) {
+      await until(page, () => source.length >= source.atFixture(), `the browser to report every ${source.what} the fixture took`);
+    } else {
+      assert.ok(source, "a request to wait for");
+    }
+  }
+  for (const request of sources.flat()) {
+    const response = await request.response();
+    if (response) await response.finished();
+  }
+  await page.waitForTimeout(GRACE_MS);
+}
+
 async function openKeys(page, origin, options = {}) {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   if (!options.expectEmpty) await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   return page;
@@ -662,6 +754,7 @@ test("no secret reaches the DOM and no request leaves the origin across list, se
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
   const secretFree = async (step) =>
     assert.doesNotMatch(await page.evaluate(() => document.documentElement.innerHTML), new RegExp(SECRET), step);
+  await page.clock.install();
   await openKeys(page, origin);
   await settleKeys(page);
   await secretFree("the rendered list");
@@ -680,7 +773,12 @@ test("no secret reaches the DOM and no request leaves the origin across list, se
   await rowButton(page, "bravo", "copy").click();
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
   await secretFree("copy feedback");
+  // The 1.2 s label and the 2.5 s deferred refresh, on the fake clock.
+  const lists = outgoing(page, "GET", "/api/keys");
+  await page.clock.runFor(2600);
   await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
+  await until(page, () => lists.length, "the deferred refresh after the copy");
+  await landed(page, lists);
   await secretFree("the post-copy refresh");
 
   await openRowMenu(page, "alpha");
@@ -911,14 +1009,13 @@ test("the More menu skips disabled items, supports keyboard dismissal and stays 
 });
 
 test("a busy key action leaves a skipped menu action focused and lets refresh close it safely", async (page, origin) => {
-  delays.set(rule("POST", "/api/keys/alpha/check"), 1200);
+  const gate = hold();
+  delays.set(rule("POST", "/api/keys/alpha/check"), gate);
   await openKeys(page, origin);
   await settleKeys(page);
   await openRowMenu(page, "alpha");
   await menuItem(page, "Check connection").click();
-  for (let i = 0; i < 100 && !requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"); i++) {
-    await page.waitForTimeout(10);
-  }
+  await until(page, () => served("POST", "/api/keys/alpha/check"), "the check to reach the fixture");
   assert.ok(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/alpha/check"), "check is pending");
 
   await openRowMenu(page, "bravo");
@@ -929,6 +1026,7 @@ test("a busy key action leaves a skipped menu action focused and lets refresh cl
   assert.equal(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/bravo/reveal"), false,
     "the busy action sends no second request");
 
+  gate.release();
   await waitDialog(page, "dlg-check", true);
   await page.waitForFunction(() => document.getElementById("key-menu").hidden);
   await page.locator("#dlg-check [data-close]").click();
@@ -972,7 +1070,7 @@ test("deleting from the More menu updates rows, count and the provider filter", 
 test("a first vault visit searches, copies and edits through the More menu", async (page, origin) => {
   await page.clock.install();
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal(await page.locator("#pane-usage").isVisible(), true, "Usage is the default pane");
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -1085,6 +1183,7 @@ test("the provider filter lists the vault's providers, combines with search and 
 });
 
 test("the provider filter is session-only and returns to All when its provider disappears", async (page, origin) => {
+  await page.clock.install();
   await openKeys(page, origin);
   const filter = page.locator("#keys-provider");
   await filter.selectOption("anthropic");
@@ -1103,7 +1202,9 @@ test("the provider filter is session-only and returns to All when its provider d
   await filter.selectOption("anthropic");
   keys = keys.filter((k) => k.name !== "bravo");
   catalogVersion += 1;
-  await page.waitForFunction(() => document.getElementById("keys-provider").value === "", null, { timeout: 30000 });
+  // The 15 s status poll is what notices the change.
+  await page.clock.runFor(16000);
+  await page.waitForFunction(() => document.getElementById("keys-provider").value === "");
   assert.deepEqual(await rowNames(page), ["alpha", "charlie"]);
   assert.equal(await page.locator("#keys-count").textContent(), "2 keys");
 });
@@ -2033,12 +2134,11 @@ const waitFocused = (page, want) => page.waitForFunction((want) => {
   return (tr ? `${tr.dataset.name}${a.dataset.act ? ":" + a.dataset.act : ""}` : (a && a.id) || "") === want;
 }, want, { timeout: 5000 });
 // The startup key load and the Keys tab's own load each redraw the rows (as does the provider
-// catalog arriving), and a redraw drops focus. networkidle has already fired by then, so wait for
+// catalog arriving), and a redraw drops focus. The page has gone quiet once by then, so wait for
 // both loads to reach their grant lookups and for the catalog names before focusing a row.
 async function settleKeys(page) {
-  for (let i = 0; i < 100 && requests.filter((r) => r.pathname.endsWith("/clients")).length < 2 * keys.length; i++) {
-    await page.waitForTimeout(50);
-  }
+  await until(page, () => requests.filter((r) => r.pathname.endsWith("/clients")).length >= 2 * keys.length,
+    "both key loads to reach their grant lookups");
   await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="alpha"] .key-provider').textContent.startsWith("OpenAI"));
 }
 const waitEmpty = (page, selector) =>
@@ -2336,7 +2436,7 @@ test("renewing a grant posts to the renew route and refreshes the row, and a ref
 });
 test("chips and pickers wrap on the arrow keys", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator('[data-range="today"]').focus();
   await page.keyboard.press("ArrowLeft");
@@ -2357,7 +2457,7 @@ test("chips and pickers wrap on the arrow keys", async (page, origin) => {
 
 test("range and group chips drive the query and the URL", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   assert.equal(await page.locator("#group-chips").isHidden(), false, "grouping is always offered");
   assert.equal(await page.locator('[data-group="project"]').count(), 0, "projects went with the Claude Code log reader");
@@ -2377,7 +2477,7 @@ test("range and group chips drive the query and the URL", async (page, origin) =
 
 test("a link that names a key boots into the chart with that key chosen", async (page, origin) => {
   await page.goto(`${origin}/?key=alpha&range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#keys-filter:visible").waitFor();
   assert.equal(await keyPicked(page), "alpha");
@@ -2399,7 +2499,7 @@ const keyOptions = (page) => page.locator("#keys-filter [data-key-filter]").eval
 const inKeysScope = () => !document.getElementById("pane-chart").hidden;
 const openKeysSource = async (page, origin, query = "range=week") => {
   await page.goto(`${origin}/?${query}`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(inKeysScope);
   await page.locator("#mix .mix-row").first().waitFor();
@@ -2540,7 +2640,7 @@ test("the per-key picker names every key and filters to one, all keys included",
 
 test("requests are a chartable unit", async (page, origin) => {
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("radio", { name: "Requests" }).click();
   await page.waitForFunction(() => document.getElementById("daily-unit").textContent.startsWith("requests per"));
@@ -2599,7 +2699,7 @@ test("an old link's tool source is struck from the URL and its gateway filters s
   // A bookmark from before 2026-11-04 may still say source=claude. The engine refuses a tool
   // source, so the page must neither send it nor keep advertising it.
   await page.goto(`${origin}/?range=week&source=claude&key=alpha`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#mix .mix-row").first().waitFor();
   const url = new URL(await page.url());
@@ -2751,7 +2851,7 @@ test("a key's gateway figure opens that key in the chart", async (page, origin) 
 test("an empty chart explains that only routed requests are recorded", async (page, origin) => {
   ledger = [];
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#spend-empty:visible").waitFor();
   const text = await page.locator("#spend-empty").textContent();
@@ -2772,7 +2872,7 @@ const twoModelRows = () => [
 
 test("the Usage summary and the Keys figures follow the same unit, switched from Usage", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
   assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/, "the month summary leads with tokens");
 
@@ -2846,7 +2946,7 @@ test("token headlines count reasoning tokens exactly as the engine's buckets do"
     { model: "gpt-5", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.01 },
   ];
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#mix .mix-row").first().waitFor();
   assert.match(await totalsText(page), /200 tokens/, "reasoning tokens are part of the count");
@@ -2877,7 +2977,7 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
   ];
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto(`${origin}/?range=month`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, 8);
 
@@ -2928,7 +3028,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
   // The OS preference never decides: a light system still opens dark.
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.locator("#pane-usage").waitFor();
   const read = () => page.evaluate(() => ({
     attr: document.documentElement.dataset.theme || null,
@@ -2983,7 +3083,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
 
   // Remembered, and applied before the first paint rather than after a flash of dark.
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal((await read()).attr, "light");
   // Even under a dark system preference, the stored choice wins.
   await page.emulateMedia({ colorScheme: "dark" });
@@ -3042,7 +3142,7 @@ test("a theme switch keeps the vault's filter, search and menu, and a reload kee
 
   // A reload keeps the theme and the sort; the provider filter is session-only.
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light", "the theme survives the reload");
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -3056,7 +3156,7 @@ test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothi
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
   ledger = twoModelRows();
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   for (const width of [390, 540, 780, 1280, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
@@ -3088,7 +3188,7 @@ test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothi
 // panes, so a long message must ellipsize on one line there and never reach the rail.
 test("the status line stays one row beside the rail on every pane from 390 px up", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.evaluate(() => { document.getElementById("status").textContent = "Saved keysreallysafe-month-2026-11-01-2026-11-30.csv, with the raw token and cost columns. ".repeat(3); });
   for (const width of [390, 540, 780, 1180, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -3115,7 +3215,7 @@ test("the rail carries the original app icon and Usage, Chart, Keys, Help and Se
   page.on("response", (r) => { if (new URL(r.url()).pathname === "/icon.png") icons.push({ origin: new URL(r.url()).origin, status: r.status() }); });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const read = () => page.evaluate(() => {
     const img = document.querySelector(".rail .brand-mark img");
     const mark = getComputedStyle(document.querySelector(".rail .brand-mark"));
@@ -3162,7 +3262,7 @@ test("the rail carries the original app icon and Usage, Chart, Keys, Help and Se
 
 test("rail tabs switch panes, mark the selection and step on every arrow key", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const selected = () => page.evaluate(() =>
     [...document.querySelectorAll("[role=tab]")].filter((t) => t.getAttribute("aria-selected") === "true").map((t) => t.id));
   for (const [name, id] of [["Keys", "nav-keys"], ["Chart", "nav-chart"], ["Settings", "nav-settings"], ["Usage", "nav-usage"]]) {
@@ -3225,7 +3325,7 @@ test("rail tabs switch panes, mark the selection and step on every arrow key", a
 
 test("the rail narrows at 780 and 540 px and the logo shrinks to 40 px", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   for (const [width, rail, logo] of [[1280, 78, 48], [781, 78, 48], [780, 65, 48], [541, 65, 48], [540, 53, 40], [390, 53, 40]]) {
     await page.setViewportSize({ width, height: 800 });
     const g = await page.evaluate(() => {
@@ -3273,7 +3373,7 @@ test("a model reached through two providers is one series whose total counts eac
     { model: "claude-sonnet-5", input_tokens: 100, output_tokens: 50, reasoning_tokens: 25 },
   ];
   await page.goto(`${origin}/?range=month`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1, null, { timeout: 5000 });
   assert.equal(await page.locator("#mix .mix-name").textContent(), "claude-sonnet-5",
@@ -3362,7 +3462,7 @@ test("a model no provider named stays unknown rather than borrowing a name", asy
 test("an empty vault gets the first-use guide, dismisses it and keeps it in help", async (page, origin) => {
   keys = [];
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.locator("#onboard:visible").waitFor();
   const guide = await page.locator("#onboard").textContent();
   assert.match(guide, /Add a key/);
@@ -3387,7 +3487,7 @@ test("an empty vault gets the first-use guide, dismisses it and keeps it in help
   await page.locator("#onboard-dismiss").click();
   await page.waitForFunction(() => document.getElementById("onboard").hidden);
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal(await page.locator("#onboard").isHidden(), true, "a dismissed guide stays dismissed");
   await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
   await waitDialog(page, "dlg-help", true);
@@ -3396,7 +3496,7 @@ test("an empty vault gets the first-use guide, dismisses it and keeps it in help
 
 test("a vault that already has keys is not interrupted by the first-use guide", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   await page.getByRole("tab", { name: "Usage" }).click();
@@ -3407,7 +3507,7 @@ test("a vault that already has keys is not interrupted by the first-use guide", 
 
 test("the providers manager adds, hides and removes", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   // Both the Add key and the Providers buttons belong to the Keys pane.
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -3475,7 +3575,7 @@ test("the providers manager adds, hides and removes", async (page, origin) => {
 
 test("the agents dialog personalizes each recipe to the chosen key", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   // Agents lives in Settings now that the header carries only status and help.
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Agents", exact: true }).click();
@@ -3512,7 +3612,7 @@ test("the agents dialog personalizes each recipe to the chosen key", async (page
 test("the first-use guide links to the agents dialog", async (page, origin) => {
   keys = [];
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.match(await page.locator("#onboard").textContent(), /Wire up a coding agent/);
   await page.locator("#onboard [data-action='agents']").click();
   await waitDialog(page, "dlg-agents", true);
@@ -3523,7 +3623,7 @@ test("the first-use guide links to the agents dialog", async (page, origin) => {
 
 test("four panes: the shortcuts and arrow keys reach Usage, Chart, Keys and Settings and nothing else", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const tabNames = await page.locator("[role=tab]").allTextContents();
   assert.deepEqual(tabNames.map((t) => t.trim()), ["Usage", "Chart", "Keys", "Settings"]);
   const shown = () => page.evaluate(() =>
@@ -3560,13 +3660,16 @@ const waitSlot = (page, id, want) =>
     { polling: 100, timeout: 5000 });
 
 test("a chart request that fails leaves a sticky reason and no stale drawing", async (page, origin) => {
+  await page.clock.install();
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   failures.set(rule("GET", "/api/spend"), chartDown);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("radio", { name: "This month" }).click();
   await waitSlot(page, "chart-error", "engine_busy");
-  await page.waitForTimeout(4500);
+  await page.clock.runFor(4500);
+  // Whatever those 4.5 s started has answered before the slot is read.
+  await settle(page);
   assert.equal(await slot(page, "chart-error"), "engine_busy", "a failed load must stay reported");
   assert.equal(await page.locator("#chart-error").isVisible(), true);
 
@@ -3578,7 +3681,7 @@ test("a chart request that fails leaves a sticky reason and no stale drawing", a
 
 test("a key list that fails reports in the Keys pane and clears on reload", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   failures.set(rule("GET", "/api/keys"), keysDown);
   await page.getByRole("tab", { name: "Keys" }).click();
   await waitSlot(page, "keys-error", "vault is locked");
@@ -3591,7 +3694,7 @@ test("a key list that fails reports in the Keys pane and clears on reload", asyn
 
 test("one pane recovering leaves the other pane's failure alone", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   failures.set(rule("GET", "/api/spend"), chartDown);
   await page.getByRole("tab", { name: "Chart" }).click();
   await waitSlot(page, "chart-error", "engine_busy");
@@ -3674,11 +3777,15 @@ test("a slow key list cannot overwrite a newer one", async (page, origin) => {
   await openKeys(page, origin);
   // A refresh is answered from the vault as it is now, then held back while the
   // vault changes and a second, faster refresh overtakes it.
-  delays.set(rule("GET", "/api/keys"), 1500);
+  const gate = hold();
+  delays.set(rule("GET", "/api/keys"), gate);
   await rowAct(page, "alpha", "reveal");
   await waitDialog(page, "dlg-reveal", true);
+  const lists = outgoing(page, "GET", "/api/keys");
   await page.locator("#dlg-reveal [data-close]").click();   // the close handler refreshes
-  await page.waitForTimeout(150);
+  // The fixture has taken the refresh, so it is held, before the delay comes off.
+  await until(page, () => lists.atFixture(), "the refresh to reach the fixture");
+  assert.ok(lists.atFixture() > 0, "the refresh is in flight");
 
   delays.delete(rule("GET", "/api/keys"));
   keys = keys.filter((k) => k.name !== "charlie");
@@ -3692,7 +3799,9 @@ test("a slow key list cannot overwrite a newer one", async (page, origin) => {
   assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"]);
 
   // The slow reply, carrying the older vault, lands last.
-  await page.waitForTimeout(1800);
+  gate.release();
+  await until(page, () => lists.length >= 1, "the browser to report the held refresh");
+  await landed(page, lists);
   assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"],
     "a stale list must not restore a deleted key or drop a new one");
 });
@@ -3739,7 +3848,7 @@ test("changing the range drops a model filter the new rows may not carry", async
 
 test("the Keys switch's label, its hint and the unit it stores are one value", async (page, origin) => {
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -3773,7 +3882,7 @@ test("an export waits for the range it describes instead of shipping the previou
       cache_creation_tokens: 0, reasoning_tokens: 0, usd: 1, usd_estimate: null },
   ];
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(() => /100K tokens/.test(document.getElementById("totals").textContent));
   await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
@@ -3784,9 +3893,16 @@ test("an export waits for the range it describes instead of shipping the previou
     { model: "gpt-5", input_tokens: 5000, output_tokens: 0, cached_read_tokens: 0,
       cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: 0.01 },
   ];
-  delays.set(rule("GET", "/api/spend"), 700);
+  const gate = hold();
+  delays.set(rule("GET", "/api/spend"), gate);
+  const asked = () => requests.filter((r) => r.pathname === "/api/spend").length;
+  const before = asked();
   await page.getByRole("radio", { name: "This month" }).click();
   await page.keyboard.press("Shift+C");
+  // The month's report is held at the fixture while the export is asked for, then let go.
+  await until(page, () => asked() > before, "the month's report to reach the fixture");
+  assert.ok(asked() > before, "the month's report is in flight");
+  gate.release();
   await page.waitForFunction(() => window.__copied, null, { timeout: 8000 });
   const copied = await page.evaluate(() => window.__copied);
   assert.match(copied, /This month/, `the line names the range asked for: ${copied}`);
@@ -3801,7 +3917,8 @@ test("the grant dialog refuses every dismissal while the issue is in flight, the
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
   await openKeys(page, origin);
   await settleKeys(page);
-  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: 800, body: {
+  const gate = hold();
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: gate, body: {
     id: "g1", key: "alpha", provider: "openai", host: "api.openai.com", methods: ["GET", "POST"], paths: [],
     expires_at: "2026-09-20T13:00:00Z", base_url: "http://127.0.0.1:12767/g/g1", token: "ksf-grant-fixture", auth_header: "Authorization",
   } });
@@ -3827,6 +3944,7 @@ test("the grant dialog refuses every dismissal while the issue is in flight, the
   assert.equal(await dialogOpen(page, "dlg-grant"), true, "Cancel cannot close the dialog mid-issue");
 
   // The reply lands in the dialog the user is still looking at, and its token is shown there.
+  gate.release();
   await page.locator("#grant-result").waitFor({ state: "visible" });
   assert.equal(await page.locator("#grant-submit").isDisabled(), false, "the issue settled");
   assert.equal(await page.locator("#gr-token").textContent(), "ksf-grant-fixture",
@@ -3865,25 +3983,32 @@ test("the grant dialog refuses every dismissal while the issue is in flight, the
 // the page-wide flag there left the form disabled for good.
 test("another pane's operation cannot leave the grant dialog disabled", async (page, origin) => {
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await page.clock.install();
   await openKeys(page, origin);
   await settleKeys(page);
   // The reveal holds the page-wide busy flag while its Touch ID is up. The grant dialog opens
   // during that window, so it is drawn while `busy` is true; the reveal then settles and clears the
   // flag, and nothing redraws the dialog — reading the page-wide flag left the form disabled for
   // good.
-  delays.set(rule("POST", "/api/keys/bravo/reveal"), 900);
+  const gate = hold();
+  delays.set(rule("POST", "/api/keys/bravo/reveal"), gate);
   await rowAct(page, "bravo", "reveal");
-  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys/bravo/reveal"); i++) await page.waitForTimeout(10);
+  await until(page, () => served("POST", "/api/keys/bravo/reveal"), "the reveal to reach the fixture");
   assert.ok(requests.some((r) => r.pathname === "/api/keys/bravo/reveal"), "the reveal is in flight");
   await rowAct(page, "alpha", "grant");
   await waitDialog(page, "dlg-grant", true);
   assert.equal(await page.locator("#grant-submit").textContent(), "Grant",
     "the dialog does not claim an issue of its own is running");
   // The reveal settles: its busy flag clears and the grant form is usable.
-  await page.waitForTimeout(1200);
+  gate.release();
+  // The secret's dialog opens in the same turn that clears the busy flag.
+  await waitDialog(page, "dlg-reveal", true);
   assert.equal(await page.locator("#grant-submit").isDisabled(), false,
     "the other op settling leaves the grant form usable");
   assert.equal(await page.locator('.kind-switch [data-kind="client"]').isDisabled(), false);
+  // The secret's dialog sits over the grant form until its 15 s are up; the fake clock runs them.
+  await page.clock.runFor(16000);
+  await waitDialog(page, "dlg-reveal", false);
   // And it really works: the kind switch moves the form's fields and label.
   await page.locator('.kind-switch [data-kind="client"]').click();
   assert.equal(await page.locator("#grant-submit").textContent(), "Issue client");
@@ -3900,13 +4025,16 @@ test("two cached connection checks cannot paint in the order they were asked", a
   await settleKeys(page);
   // alpha's cached read is held back; bravo's lands first. The slower reply is stale and must not
   // repaint the dialog the newer press opened, or swap the key it names.
-  delays.set(rule("GET", "/api/keys/alpha/check"), 900);
+  const gate = hold();
+  delays.set(rule("GET", "/api/keys/alpha/check"), gate);
+  const alphaReads = outgoing(page, "GET", "/api/keys/alpha/check");
   await rowAct(page, "alpha", "check");
-  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys/alpha/check"); i++) await page.waitForTimeout(10);
+  await until(page, () => alphaReads.atFixture(), "alpha's cached read to reach the fixture");
   await rowAct(page, "bravo", "check");
   await waitDialog(page, "dlg-check", true);
   await page.waitForFunction(() => /bravo/.test(document.getElementById("check-name").textContent));
-  await page.waitForTimeout(1200);
+  gate.release();
+  await landed(page, alphaReads);
   assert.equal(await page.locator("#check-name").textContent(), "bravo", "the newer check owns the dialog");
   assert.deepEqual(await page.locator("#check-models li").allTextContents(), ["bravo-cached"]);
 });
@@ -3919,14 +4047,23 @@ test("a slower grants list cannot revive a grant a newer revoke killed", async (
 
   // Re-entering the pane starts a slow round trip. The revoke that follows starts a fast one, and
   // its revoked row is already painted when the earlier reply lands carrying "active".
-  delays.set(rule("GET", "/api/grants"), [900, 0]);
+  const gate = hold();
+  delays.set(rule("GET", "/api/grants"), [gate, 0]);
+  const reads = outgoing(page, "GET", "/api/grants");
   const before = requests.filter((r) => r.pathname === "/api/grants").length;
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("tab", { name: "Keys" }).click();
-  for (let i = 0; i < 200 && requests.filter((r) => r.pathname === "/api/grants").length === before; i++) await page.waitForTimeout(10);
+  await until(page, () => requests.filter((r) => r.pathname === "/api/grants").length > before, "the slow grants read to reach the fixture");
+  const sinceRevoke = requests.length;
   await page.locator('[aria-label="Revoke grant ee55ff66"]').click();
+  // The revoke's own round has started, so it holds the newer ticket, when the older reply lands.
+  // Its grants read cannot overtake: Chromium sends an identical GET only once the first is done.
+  await until(page, () => served("GET", "/api/profiles", sinceRevoke), "the revoke's own grants round to start");
+  assert.ok(requests.slice(sinceRevoke).some((r) => r.method === "DELETE"), "the revoke went out");
+  assert.ok(served("GET", "/api/profiles", sinceRevoke), "the revoke's round took its ticket before the older reply lands");
+  gate.release();
   await page.waitForFunction(() => /revoked/.test(document.querySelector("#grants-list li").textContent));
-  await page.waitForTimeout(1200);
+  await landed(page, reads);
   assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.",
     "the revoked row stays revoked");
   assert.equal(await page.locator('[aria-label="Revoke grant ee55ff66"]').count(), 0);
@@ -3944,44 +4081,52 @@ test("a slower month total cannot stick over a newer one", async (page, origin) 
   // see 1K tokens; the first bump's answer is held back past the second bump's, and would
   // otherwise be the last word on the Usage line until the catalog moved again. Every body is
   // fixed here, so arrival order is the only variable.
-  let served = 0;
+  let routed = 0;
+  const gate = hold();
+  let slow = null;
   await page.route("**/api/spend*range=month*", async (route) => {
-    served += 1;
-    if (served === 2) {
-      await new Promise((r) => setTimeout(r, 900));
+    routed += 1;
+    if (routed === 2) {
+      slow = route.request();
+      await gate;
       return route.fulfill({ status: 200, contentType: "application/json", body: month(1000, "grok-4") });
     }
-    const body = served >= 3 ? month(5000, "gpt-5") : month(1000, "grok-4");
+    const body = routed >= 3 ? month(5000, "gpt-5") : month(1000, "grok-4");
     return route.fulfill({ status: 200, contentType: "application/json", body });
   });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.waitForFunction(() => /1K tokens/.test(document.getElementById("usage-totals").textContent));
 
   // A catalog change while Settings is open asks for the month (the slow answer, no. 2)…
   catalogVersion += 1;
   await page.getByRole("tab", { name: "Settings" }).click();
-  for (let i = 0; i < 300 && served < 2; i++) await page.waitForTimeout(10);
+  await until(page, () => routed >= 2, "the slow month read");
   // …and a second one answers at once with the newer figures.
   catalogVersion += 1;
   await page.getByRole("tab", { name: "Usage" }).click();
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => /5K tokens/.test(document.getElementById("usage-totals").textContent));
-  await page.waitForTimeout(1400);
+  gate.release();
+  assert.ok(slow, "the slow month read was held");
+  await landed(page, slow);
   assert.match(await page.locator("#usage-totals").textContent(), /5K tokens/, "the newer month total stands");
 });
 
 test("a settings read that returns after a toggle cannot paint the old value", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   // Opening Settings starts the read; the toggle answers first, and the older body then lands.
-  delays.set(rule("GET", "/api/preferences"), 900);
+  const gate = hold();
+  delays.set(rule("GET", "/api/preferences"), gate);
+  const reads = outgoing(page, "GET", "/api/preferences");
   const before = requests.filter((r) => r.pathname === "/api/preferences").length;
   await page.getByRole("tab", { name: "Settings" }).click();
-  for (let i = 0; i < 200 && requests.filter((r) => r.pathname === "/api/preferences").length === before; i++) await page.waitForTimeout(10);
+  await until(page, () => requests.filter((r) => r.pathname === "/api/preferences").length > before, "the settings read to reach the fixture");
   await page.locator("#menubar-item-switch").click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
-  await page.waitForTimeout(1200);
+  gate.release();
+  await landed(page, reads);
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "true",
     "the older read must not paint the value the toggle replaced");
   assert.equal(preferences.menubar_item, true);
@@ -3998,7 +4143,8 @@ test("a grant dialog forced closed during Touch ID reopens to show the token", a
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
   await openKeys(page, origin);
   await settleKeys(page);
-  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: 800, body: {
+  const gate = hold();
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: gate, body: {
     id: "g2", key: "alpha", provider: "openai", host: "api.openai.com", methods: ["GET"], paths: [],
     expires_at: "2026-09-20T13:00:00Z", base_url: "http://127.0.0.1:12767/g/g2", token: "ksf-grant-forced", auth_header: "Authorization",
   } });
@@ -4007,8 +4153,14 @@ test("a grant dialog forced closed during Touch ID reopens to show the token", a
   await page.locator("#grant-form [name=task]").fill("forced close task");
   await page.locator("#grant-submit").click();
   await page.waitForFunction(() => document.getElementById("grant-submit").disabled);
-  await page.evaluate(() => document.getElementById("dlg-grant").close());
+  // Closed, and its close event (the wipe) has run, before the reply is let go.
+  await page.evaluate(() => new Promise((resolve) => {
+    const dlg = document.getElementById("dlg-grant");
+    dlg.addEventListener("close", () => setTimeout(resolve, 0), { once: true });
+    dlg.close();
+  }));
   await waitDialog(page, "dlg-grant", false);
+  gate.release();
   await page.locator("#grant-result").waitFor({ state: "visible" });
   assert.equal(await dialogOpen(page, "dlg-grant"), true, "the dialog is back to show the token");
   assert.equal(await page.locator("#gr-token").textContent(), "ksf-grant-forced");
@@ -4021,14 +4173,19 @@ test("a grant dialog forced closed during Touch ID reopens to show the token", a
 // value twice and left the switch the opposite of the last click.
 test("two quick clicks on one preference switch send on and then off", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "false");
-  delays.set(rule("POST", "/api/preferences/menubar-item"), 500);
+  const gate = hold();
+  delays.set(rule("POST", "/api/preferences/menubar-item"), gate);
+  const writes = outgoing(page, "POST", "/api/preferences/menubar-item");
   await page.locator("#menubar-item-switch").click();
   await page.locator("#menubar-item-switch").click();
-  for (let i = 0; i < 400 && requests.filter((r) => r.pathname === "/api/preferences/menubar-item").length < 2; i++) await page.waitForTimeout(10);
-  await page.waitForTimeout(700);
+  // Both clicks are in while the first write is still held.
+  await until(page, () => writes.atFixture(), "the first write to reach the fixture");
+  gate.release();
+  await until(page, () => writes.atFixture() >= 2, "the second write to reach the fixture");
+  await landed(page, writes);
   const sent = requests.filter((r) => r.pathname === "/api/preferences/menubar-item").map((r) => r.body && r.body.on);
   assert.deepEqual(sent, [true, false], "the second click sends the opposite of the first");
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "false");
@@ -4037,20 +4194,25 @@ test("two quick clicks on one preference switch send on and then off", async (pa
 
 test("two preference toggles cannot paint each other's values", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
   // The first write is held back; the second press lands while it is still open.
-  delays.set(rule("POST", "/api/preferences/menubar-item"), 900);
+  const gate = hold();
+  delays.set(rule("POST", "/api/preferences/menubar-item"), gate);
+  const menubarWrites = outgoing(page, "POST", "/api/preferences/menubar-item");
+  const updateWrites = outgoing(page, "POST", "/api/preferences/update-checks");
   await page.locator("#menubar-item-switch").click();
-  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/menubar-item"); i++) await page.waitForTimeout(10);
+  await until(page, () => menubarWrites.atFixture(), "the first write to reach the fixture");
   await page.locator("#auto-update-switch").click();
   // The second write must not start before the first has settled: one POST at a time.
   await page.waitForTimeout(400);
   assert.equal(requests.filter((r) => r.pathname === "/api/preferences/update-checks").length, 0,
     "the second write waits for the first");
+  gate.release();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "false");
-  await page.waitForTimeout(1200);
+  await until(page, () => updateWrites.atFixture(), "the second write to reach the fixture");
+  await landed(page, menubarWrites, updateWrites);
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "true",
     "the first toggle's value stands");
   assert.equal(await page.locator("#auto-update-switch").getAttribute("aria-checked"), "false",
@@ -4062,17 +4224,25 @@ test("two preference toggles cannot paint each other's values", async (page, ori
 // refused, and the switch silently went back with nothing said. The error is always reported.
 test("a preference write that fails says so even after a newer read superseded it", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
   // The write is refused, and held long enough that a Settings re-read (a pane change) starts and
   // takes the newer ticket while it is still open.
-  failures.set(rule("POST", "/api/preferences/menubar-item"), { status: 400, after: 700, body: { error: "send on" } });
+  const gate = hold();
+  failures.set(rule("POST", "/api/preferences/menubar-item"), { status: 400, after: gate, body: { error: "send on" } });
+  const writes = outgoing(page, "POST", "/api/preferences/menubar-item");
   await page.locator("#menubar-item-switch").click();
-  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/menubar-item"); i++) await page.waitForTimeout(10);
+  await until(page, () => writes.atFixture(), "the write to reach the fixture");
+  const reads = outgoing(page, "GET", "/api/preferences");
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.getByRole("tab", { name: "Settings" }).click();
-  await page.waitForTimeout(1200);
+  // The re-read has answered, so the refused write lands under the newer ticket.
+  await until(page, () => reads.atFixture(), "the pane change's settings read to reach the fixture");
+  assert.ok(reads.atFixture(), "the pane change re-reads the settings");
+  await landed(page, reads);
+  gate.release();
+  await landed(page, writes);
   assert.match(await status(page), /send on/, "the failed write is reported");
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "false",
     "and the switch shows the value the engine still holds");
@@ -4089,17 +4259,23 @@ test("a failed key refresh still refreshes the grants pane", async (page, origin
   assert.equal(await page.locator('[aria-label="Revoke grant aa11bb22"]').count(), 1, "the grant starts out active");
 
   // The next key list is slow and fails; the revoke lands in between and its own refresh answers.
-  failures.set(rule("GET", "/api/keys"), { status: 500, after: 1200, body: { error: "boom" } });
+  const gate = hold();
+  failures.set(rule("GET", "/api/keys"), { status: 500, after: gate, body: { error: "boom" } });
+  const lists = outgoing(page, "GET", "/api/keys");
+  const reads = outgoing(page, "GET", "/api/grants");
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("tab", { name: "Keys" }).click();
-  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys" && r.method === "GET" && failures.get(rule("GET", "/api/keys"))); i++) {
-    await page.waitForTimeout(10);
-  }
+  await until(page, () => lists.atFixture(), "the failing key list to reach the fixture");
   await page.waitForTimeout(100);
+  const sinceRevoke = requests.length;
   await page.locator('[aria-label="Revoke grant aa11bb22"]').click();
   // The failed round settles after the revoke did. The revoked row must stay revoked; a pane that
-  // still lists it as active is the bug.
-  await page.waitForTimeout(2000);
+  // still lists it as active is the bug. The revoke's own round has started when it is let go.
+  await until(page, () => served("GET", "/api/profiles", sinceRevoke), "the revoke's own grants round to start");
+  assert.ok(requests.slice(sinceRevoke).some((r) => r.method === "DELETE"), "the revoke went out");
+  assert.ok(served("GET", "/api/profiles", sinceRevoke), "the revoke's round took its ticket before the failure lands");
+  gate.release();
+  await landed(page, lists, reads);
   assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.",
     "the failed key round does not leave the revoked grant looking active");
   assert.equal(await page.locator('[aria-label="Revoke grant aa11bb22"]').count(), 0);
@@ -4112,7 +4288,7 @@ test("a failed key refresh still refreshes the grants pane", async (page, origin
 test("an export reports a chart error instead of calling it still loading", async (page, origin) => {
   ledger = twoModelRows();
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(() => /1\.9K tokens/.test(document.getElementById("totals").textContent));
   // The range moves to a report the engine refuses, so the export has no report for the filters on
@@ -4121,8 +4297,13 @@ test("an export reports a chart error instead of calling it still loading", asyn
   await page.getByRole("radio", { name: "This month" }).click();
   await page.waitForFunction(() => /report unavailable/.test(document.getElementById("chart-error").textContent));
   const before = requests.filter((r) => r.pathname === "/api/spend").length;
+  assert.equal(await status(page), "", "nothing is said before the export");
   await page.keyboard.press("Shift+C");
-  await page.waitForTimeout(1200);
+  // The export speaks once its attempts are over, so its line is the end of them.
+  await page.waitForFunction(() => document.getElementById("status").textContent !== "");
+  // A window after the line for a late attempt to start, and for any that did to answer.
+  await page.waitForTimeout(500);
+  await settle(page);
   assert.match(await status(page), /report unavailable/, "the export says what the engine said");
   assert.doesNotMatch(await status(page), /still loading/, "and never calls an error a slow load");
   assert.equal(requests.filter((r) => r.pathname === "/api/spend").length - before, 1,
@@ -4139,7 +4320,7 @@ test("a slow failure cannot raise the outage banner over a newer reply", async (
   const before = requests.filter((r) => r.pathname === "/api/keys" && r.method === "GET").length;
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("tab", { name: "Keys" }).click();
-  for (let i = 0; i < 300 && !held; i++) await page.waitForTimeout(10);
+  await until(page, () => held, "the key list to be held at the browser");
   assert.ok(held, "the key list is in flight");
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
@@ -4156,7 +4337,7 @@ test("a slow failure cannot raise the outage banner over a newer reply", async (
 test("a second copy restarts its own confirmation instead of the first timer ending it", async (page, origin) => {
   await page.clock.install();
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.evaluate(() => { navigator.clipboard.writeText = async () => {}; });
   await page.locator("#btn-help").click();
   await waitDialog(page, "dlg-help", true);
@@ -4254,7 +4435,7 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   // The key list is drawn again once grants arrive. Resolving the row
   // inside the same evaluate measures the table as it is now, not a row that redraw detached
   // (which reads as a zero-width button; seen only when the warm suite ran fast enough).
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   for (const width of [390, 520, 521, 600, 720, 768, 1024, 1280, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await page.evaluate(() => {
@@ -4286,7 +4467,7 @@ test("the vault's rows, Copy and More stay inside the viewport in both themes fr
   const longName = keys[0].name;
   await openKeys(page, origin, { expectEmpty: true });
   await page.locator("#keys-body .key-row[data-name]").first().waitFor();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const palettes = {
     dark: { bg: "rgb(17, 17, 19)", pane: "rgb(26, 26, 29)", blue: "#4c9aff" },
     light: { bg: "rgb(245, 245, 247)", pane: "rgb(255, 255, 255)", blue: "#0071e3" },
@@ -4374,7 +4555,7 @@ const relayHintMatches = (page, pattern) =>
 
 test("Settings turns the app's relay on and off with the page token and says where it stands", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   const sw = page.locator("#relay-switch");
   const awake = page.locator("#relay-awake-switch");
@@ -4434,7 +4615,7 @@ test("Settings turns the app's relay on and off with the page token and says whe
 test("the relay switch says why it cannot turn on: not set up, a Terminal relay, a refusal", async (page, origin) => {
   Object.assign(relay, { configured: false, url: null });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   const sw = page.locator("#relay-switch");
   await relayHintMatches(page, /^Not set up yet: deploy the Worker \(docs\/relay\.md\), then run keys relay setup --url/);
@@ -4464,7 +4645,7 @@ test("the relay switch says why it cannot turn on: not set up, a Terminal relay,
 // whole persisted state; a reload reads the store, not a browser copy.
 test("Settings shows the app's persisted choices and writes each one with the page token", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   const menubar = page.locator("#menubar-item-switch");
   const autoUpdate = page.locator("#auto-update-switch");
@@ -4488,7 +4669,7 @@ test("Settings shows the app's persisted choices and writes each one with the pa
 
   // A reload reads the persisted truth, not a browser copy.
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
   assert.equal(await autoUpdate.getAttribute("aria-checked"), "false");
@@ -4500,7 +4681,7 @@ test("Settings shows the app's persisted choices and writes each one with the pa
 test("with the menu bar item off, Settings still carries Quit and the relay controls", async (page, origin) => {
   preferences.menubar_item = false;
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "false");
   assert.equal(await page.locator("#relay-switch").isVisible(), true);
@@ -4523,7 +4704,7 @@ test("key search filters by name, provider and host, counts what it shows and cl
   keys.find((k) => k.name === "bravo").host = "api.example.test";
   keys.find((k) => k.name === "charlie").gateway_host = "gw.typesafe.test";
   await page.goto(`${origin}/#keys`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator("#keys-body .key-row[data-name]").first().waitFor();
   const names = () => page.locator("#keys-body .key-row[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
@@ -4643,7 +4824,7 @@ test("the key History drawer names every audited action and caller in words", as
 test("the first-use guide walks through the command line, a key, an agent, tokens and the relay", async (page, origin) => {
   keys = [];
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.locator("#onboard:visible").waitFor();
   const text = await page.locator("#onboard").textContent();
   assert.match(text, /Use with coding agents/);
@@ -4680,7 +4861,7 @@ test("the first-use guide walks through the command line, a key, an agent, token
 
 test("arrow keys step through the flat list from the search box", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator("#keys-body .key-row[data-name]").first().waitFor();
   await page.locator("#keys-search").focus();
@@ -4711,6 +4892,7 @@ test("arrow keys step through the flat list from the search box", async (page, o
     for (const check of checks) {
       reset();
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      watchTraffic(page);
       const pageErrors = [];
       page.on("pageerror", (error) => pageErrors.push(error.message));
       try {

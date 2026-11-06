@@ -232,8 +232,9 @@ The tools the server offers:
   per-variable outcomes (`wrapped`, `imported_not_wrapped`, `skipped`,
   `not_found`, each with its reason), the project label, the token's
   expiry, the docker setting, the base-URL host, and whether a backup of
-  the original values was kept outside the project (backups live beside
-  the catalog, never inside the project) — never a value, a
+  the original base-URL lines was kept outside the project (backups hold no
+  key value, live beside the catalog, never inside the project, and are
+  deleted by a clean unwrap) — never a value, a
   token or an absolute path. Values the gateway cannot proxy (AWS SigV4 pairs,
   credential URLs) import but keep their lines; a value with no recognized
   provider and no vault match is not imported. Requires the app; without it
@@ -366,8 +367,10 @@ and has not loaded the key yet: the token is valid, but calls are refused until
 
 The trade-off is stated plainly: while it lives, any process running as you
 can read a held token without Touch ID, exactly as it could read a token
-`keys wrap` wrote into an env file. Keep the scope (methods, path prefix) and
-the days small. Revoking — `keys client revoke`, `keys revoke --all`, deleting
+`keys wrap` wrote into an env file. The read needs a per-launch secret that
+lives only in Keysrs's owner-only control file and never in the dashboard
+page, so another account on this Mac cannot make it. Keep the scope (methods,
+path prefix) and the days small. Revoking — `keys client revoke`, `keys revoke --all`, deleting
 the key, purge — deletes the held copy too, and reads show in `keys log` as
 `client_held_read` (at most one row per token per hour).
 
@@ -395,7 +398,9 @@ file comes back byte-for-byte — the wrap-time backup is the restore
 source for the BASE_URL companions (restored where the wrap replaced one,
 removed where it appended one or where no backup holds an original).
 Backups live outside the project, in Keysrs' own backups folder beside
-its catalog (owner-only folders, 0600 files); a backup a wrap wrote beside
+its catalog (owner-only folders, 0600 files, excluded from Time Machine),
+and hold only those companion lines, never a key value; a clean unwrap
+deletes them, and purge removes the folder. A backup a wrap wrote beside
 the file before that move is still read. Only the companions the wrap
 recorded writing are removed: a gateway-pointing URL the wrap never wrote
 is left as written and

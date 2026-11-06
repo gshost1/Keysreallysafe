@@ -537,7 +537,11 @@ RELAY_OFFLINE_GRACE_MS:0`, or a `vars` entry in `Relay/wrangler.jsonc`.
 Response bodies are streamed and not capped; the idle timeout bounds a stalled
 stream. The in-flight slot is taken when the request arrives, before its body,
 which is why the upload has its own deadline: without it, 32 agents sending a
-byte a minute would hold every slot. It is given back once the agent has its
+byte a minute would hold a slot each for as long as they liked. The deadline
+bounds each request, not each sender: there is no per-sender share of the 32
+slots, so one client that knows the Worker URL can keep every slot busy by
+opening a new slow upload each time one times out, and your agents get
+`relay_busy` until it stops. The slot is given back once the agent has its
 answer and the request has ended on the Mac's side, so a response still
 streaming counts, and so does a request the Mac refused at REQUEST time while
 its refused body is being drained and the refusal answered. A request waiting for the Mac keeps its
@@ -751,9 +755,11 @@ appears, cancel it, and treat it like a leaked relay secret.
 
 Someone who learns the **Worker URL** alone can send it requests and burn
 your Cloudflare request quota, and will be told whether the Mac is online.
-While the Mac is away they can also fill the 32 waiting slots and the 32 MiB
-of kept bodies, a minute at a time, so that your agents get `relay_busy`
-instead of waiting; that is all the window adds. Every one of those requests
+They can also keep the 32 in-flight slots full with slow uploads, renewed a
+minute at a time, while the Mac is online or away, so that your agents get
+`relay_busy`; while the Mac is away the waiting slots and the 32 MiB of kept
+bodies fill the same way. That costs availability only: no key, token, grant
+or spend is exposed, and the relay recovers once the sender stops. Every one of those requests
 is refused on the Mac without a token, the waiting ones included once it is
 back. They cannot ring the Mac without one of your tokens either: the Worker
 sends no ring without a credential in the right shape, and the Mac answers a

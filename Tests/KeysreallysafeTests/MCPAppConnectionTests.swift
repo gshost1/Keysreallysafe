@@ -208,16 +208,6 @@ final class MCPAppConnectionTests: XCTestCase {
         return rows
     }
 
-    /// A live child standing in for the app process named by the control file, so
-    /// the "site" can die mid-session on demand like a quit Keysrs.app.
-    private static func liveChild() throws -> Process {
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        child.arguments = ["300"]
-        try child.run()
-        return child
-    }
-
     /// A child that exited and was reaped: kill(pid, 0) answers ESRCH, exactly the
     /// shape of a Keysrs.app that quit.
     private static func reapedChildPID() throws -> pid_t {
@@ -386,17 +376,13 @@ final class MCPAppConnectionTests: XCTestCase {
     func testMidSessionSiteLoss() throws {
         let (server, handler, _, control) = try Self.makeSite()
         defer { server.stop() }
-        // The control file names a live stand-in process as its pid, so the site
-        // can die mid-session exactly like a quit Keysrs.app.
-        let sitter = try Self.liveChild()
-        defer {
-            if sitter.isRunning { sitter.terminate() }
-            sitter.waitUntilExit()
-        }
+        // The control file names this process, which holds the site's listener:
+        // the seam takes a site only from the process serving the file's port, so
+        // stopping the server below is the site dying, like a quit Keysrs.app.
         // The guard before the site's world is written to or driven: the rig's
         // control URL and the never-launching default pair.
         try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
-        try ControlFile.write(port: server.boundPort, token: handler.originToken, pid: sitter.processIdentifier, to: control)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         // The probe beside the control-wired production roster: this loop drives
         // the seam, and the roster stays pointed at THIS site should a later edit
         // add a registered-tool call.
@@ -442,7 +428,7 @@ final class MCPAppConnectionTests: XCTestCase {
         // A stale per-launch token: the site is up and the pid alive, but the site
         // refuses the call — a plain error, no status text, no token, no path.
         let refusedElapsed = try timed {
-            try ControlFile.write(port: server.boundPort, token: "stale-launch-token", pid: sitter.processIdentifier, to: control)
+            try ControlFile.write(port: server.boundPort, token: "stale-launch-token", to: control)
             let refused = try probe("refused")
             XCTAssertEqual(refused.isError, true)
             XCTAssertNotEqual(refused.text, notRunningSentence,
@@ -453,13 +439,12 @@ final class MCPAppConnectionTests: XCTestCase {
         }
         XCTAssertLessThan(refusedElapsed, AppConnection.appCallTimeout)
 
-        // The site dies between calls: server stopped, stand-in reaped, the control
-        // file still holding the good token — the next call fails through the
-        // connect path's pid check, promptly, with the exact sentence.
+        // The site dies between calls: its listener closed, the control file still
+        // holding the good token — the next call fails through the connect path's
+        // listener check, promptly, with the exact sentence.
         let deadElapsed = try timed {
+            try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
             server.stop()
-            sitter.terminate()
-            sitter.waitUntilExit()
             let dead = try probe("dead")
             XCTAssertEqual(dead.isError, true)
             XCTAssertEqual(dead.text, notRunningSentence)
@@ -501,7 +486,12 @@ final class MCPAppConnectionTests: XCTestCase {
         let stub = try HungSiteStub()
         defer { stub.stop() }
         let (_, _, control) = try AppConnectionIsolationGuard.makeWorld()
-        try ControlFile.write(port: stub.port, token: "hung-site", pid: ProcessInfo.processInfo.processIdentifier, to: control)
+        // With a control secret, so the secret-gated tools (send_feedback) reach the stub
+        // too instead of failing closed in the client.
+        try ControlFile.write(
+            port: stub.port, token: "hung-site", controlSecret: "hung-control",
+            pid: ProcessInfo.processInfo.processIdentifier, to: control
+        )
         // The app-bound production tools wired over the HUNG site's control file,
         // so the bound below drives the real groups against the stub, never the
         // machine's installed app.
