@@ -1,5 +1,8 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createContext, runInContext } from 'node:vm';
 
 test('marketing navigation, release links, privacy and terms', async ({ app, browser, screen }) => {
   await app.open('/');
@@ -100,4 +103,50 @@ test('install tabs: brew, curl and DMG, with keyboard arrows and a copy button e
   // The installer is served from the same site, as plain text.
   await app.open('/install');
   await expect(browser.locator('body')).toContainText('curl -fsSL https://keysrs.com/install | bash');
+});
+
+// posthog.js runs here in a bare VM with consent already given: the PostHog
+// snippet only queues init's arguments, so its config can be read without
+// loading array.js or sending anything. The notify form puts the visitor's
+// address in a fetch body while a consented recording runs; privacy.html says
+// the address never reaches PostHog, so the recorder must not capture request
+// bodies or headers whatever the project's remote setting, and /api/notify is
+// dropped from the replay outright.
+test('consented session recording never captures network bodies or /api/notify', async () => {
+  const noop = () => {};
+  const ctx: any = {
+    URLSearchParams,
+    location: { search: '' },
+    localStorage: { getItem: (k: string) => (k === 'keysrs-analytics-consent' ? 'yes' : null), setItem: noop, removeItem: noop },
+    getSelection: () => ({ anchorNode: null }),
+    document: {
+      readyState: 'complete',
+      createElement: () => ({}),
+      getElementsByTagName: () => [{ parentNode: { insertBefore: noop } }],
+      getElementById: () => null,
+      querySelectorAll: () => [],
+      addEventListener: noop,
+      body: { appendChild: noop },
+      documentElement: { getAttribute: () => null },
+    },
+  };
+  ctx.window = ctx;
+  createContext(ctx);
+  runInContext(readFileSync(fileURLToPath(new URL('../../Site/posthog.js', import.meta.url)), 'utf8'), ctx);
+  const config = ctx.posthog._i[0][1];
+  expect(config.disable_session_recording).toBe(false);
+  const sr = config.session_recording;
+  expect(sr.recordBody).toBe(false);
+  expect(sr.recordHeaders).toBe(false);
+  expect(typeof sr.maskCapturedNetworkRequestFn).toBe('function');
+  const notify = { name: 'https://keysrs.com/api/notify', requestBody: '{"email":"notify-test@example.invalid"}' };
+  expect(sr.maskCapturedNetworkRequestFn(notify)).toBeNull();
+  const other = sr.maskCapturedNetworkRequestFn({
+    name: 'https://keysrs.com/', requestBody: 'a', responseBody: 'b', requestHeaders: { x: '1' }, responseHeaders: { y: '2' },
+  });
+  expect(other.name).toBe('https://keysrs.com/');
+  expect(other.requestBody).toBeUndefined();
+  expect(other.responseBody).toBeUndefined();
+  expect(other.requestHeaders).toBeUndefined();
+  expect(other.responseHeaders).toBeUndefined();
 });

@@ -20,7 +20,23 @@
     persistence: "localStorage+cookie",
     person_profiles: "always",
     disable_session_recording: false,
-    session_recording: { maskAllInputs: true, maskTextSelector: "*" },
+    session_recording: {
+      maskAllInputs: true,
+      maskTextSelector: "*",
+      // The notify form sends the visitor's address in a fetch body while this
+      // recording runs, and privacy.html promises it never reaches PostHog and
+      // lists no network payloads. An explicit false here wins over the project's
+      // remote body/header setting, and the mask drops /api/notify from the replay
+      // and strips any body or header a future recorder still hands it.
+      recordBody: false,
+      recordHeaders: false,
+      maskCapturedNetworkRequestFn: function (r) {
+        if (!r || String(r.name || "").indexOf("/api/") !== -1) return null;
+        delete r.requestBody; delete r.responseBody;
+        delete r.requestHeaders; delete r.responseHeaders;
+        return r;
+      }
+    },
     // The project has console logs and network timings on; privacy.html promises
     // neither, so the site turns them off here rather than relying on that setting.
     enable_recording_console_log: false,
