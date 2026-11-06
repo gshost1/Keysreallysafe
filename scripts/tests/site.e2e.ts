@@ -105,23 +105,29 @@ test('install tabs: brew, curl and DMG, with keyboard arrows and a copy button e
   await expect(browser.locator('body')).toContainText('curl -fsSL https://keysrs.com/install | bash');
 });
 
-// posthog.js runs here in a bare VM with consent already given: the PostHog
-// snippet only queues init's arguments, so its config can be read without
-// loading array.js or sending anything. The notify form puts the visitor's
-// address in a fetch body while a consented recording runs; privacy.html says
-// the address never reaches PostHog, so the recorder must not capture request
-// bodies or headers whatever the project's remote setting, and /api/notify is
-// dropped from the replay outright.
-test('consented session recording never captures network bodies or /api/notify', async () => {
+// posthog.js runs here in a bare VM: the PostHog snippet only queues its
+// calls, so the recording config can be read without loading array.js or
+// sending anything. The notify form puts the visitor's address in a fetch body
+// while a consented recording runs; privacy.html says the address never reaches
+// PostHog and lists no network entries, so the recorder must capture no bodies
+// or headers whatever the project's remote setting, and keep no network entry.
+function loadPosthog(consent: string | null) {
   const noop = () => {};
+  const buttons: any[] = [];
+  const element = () => {
+    const el: any = { setAttribute: noop, appendChild: noop, remove: noop, addEventListener: (_: string, fn: () => void) => { el.click = fn; } };
+    buttons.push(el);
+    return el;
+  };
   const ctx: any = {
     URLSearchParams,
     location: { search: '' },
-    localStorage: { getItem: (k: string) => (k === 'keysrs-analytics-consent' ? 'yes' : null), setItem: noop, removeItem: noop },
+    localStorage: { getItem: (k: string) => (k === 'keysrs-analytics-consent' ? consent : null), setItem: noop, removeItem: noop },
     getSelection: () => ({ anchorNode: null }),
     document: {
       readyState: 'complete',
-      createElement: () => ({}),
+      createElement: element,
+      createTextNode: () => ({}),
       getElementsByTagName: () => [{ parentNode: { insertBefore: noop } }],
       getElementById: () => null,
       querySelectorAll: () => [],
@@ -133,20 +139,31 @@ test('consented session recording never captures network bodies or /api/notify',
   ctx.window = ctx;
   createContext(ctx);
   runInContext(readFileSync(fileURLToPath(new URL('../../Site/posthog.js', import.meta.url)), 'utf8'), ctx);
-  const config = ctx.posthog._i[0][1];
-  expect(config.disable_session_recording).toBe(false);
-  const sr = config.session_recording;
+  return { ctx, ok: () => buttons.find((b) => b.textContent === 'OK').click() };
+}
+
+function expectNoNetworkCapture(sr: any) {
   expect(sr.recordBody).toBe(false);
   expect(sr.recordHeaders).toBe(false);
   expect(typeof sr.maskCapturedNetworkRequestFn).toBe('function');
-  const notify = { name: 'https://keysrs.com/api/notify', requestBody: '{"email":"notify-test@example.invalid"}' };
-  expect(sr.maskCapturedNetworkRequestFn(notify)).toBeNull();
-  const other = sr.maskCapturedNetworkRequestFn({
-    name: 'https://keysrs.com/', requestBody: 'a', responseBody: 'b', requestHeaders: { x: '1' }, responseHeaders: { y: '2' },
-  });
-  expect(other.name).toBe('https://keysrs.com/');
-  expect(other.requestBody).toBeUndefined();
-  expect(other.responseBody).toBeUndefined();
-  expect(other.requestHeaders).toBeUndefined();
-  expect(other.responseHeaders).toBeUndefined();
+  expect(sr.maskCapturedNetworkRequestFn({
+    name: 'https://keysrs.com/api/notify', requestBody: '{"email":"notify-test@example.invalid"}',
+  })).toBeNull();
+  expect(sr.maskCapturedNetworkRequestFn({ name: 'https://keysrs.com/', requestBody: 'a' })).toBeNull();
+}
+
+test('consented session recording never captures network entries or the notify address', async () => {
+  // Consent stored on an earlier visit: init gets the full config.
+  const returning = loadPosthog('yes').ctx;
+  const config = returning.posthog._i[0][1];
+  expect(config.disable_session_recording).toBe(false);
+  expectNoNetworkCapture(config.session_recording);
+
+  // First visit: OK in the banner switches recording on through set_config.
+  const first = loadPosthog(null);
+  expect(first.ctx.posthog._i[0][1].disable_session_recording).toBe(true);
+  first.ok();
+  const call = first.ctx.posthog.find((c: any[]) => c[0] === 'set_config');
+  expect(call[1].disable_session_recording).toBe(false);
+  expectNoNetworkCapture(call[1].session_recording);
 });
