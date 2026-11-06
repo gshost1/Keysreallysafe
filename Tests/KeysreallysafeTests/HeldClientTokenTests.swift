@@ -254,16 +254,19 @@ final class HeldClientTokenTests: XCTestCase {
         let (rig, _) = try makeRig()
         defer { rig.stop() }
         _ = try rig.service.issueGatewayClient(name: "demo", label: "cron", hold: true)
+        let opened = RequestLog()
         let handler = APIHandler(
-            service: rig.service, webRoot: try TempDir.make(), openFeedbackURL: { _ in XCTFail("nothing opens") }
+            service: rig.service, webRoot: try TempDir.make(),
+            openFeedbackURL: { _ in opened.record(HTTPRequest(method: "OPEN", path: "/", query: [:], headers: [:], body: Data(), serverPort: 0)) }
         )
         XCTAssertNotEqual(handler.controlSecret, handler.originToken)
-        let routes: [(String, [String: Any])] = [
-            ("/api/clients/held/token", ["label": "cron"]),
-            ("/api/mcp/vault_lookup", ["hashes": [String(repeating: "0", count: 64)]]),
-            ("/api/mcp/feedback", ["draft": "hello", "channel": "email"]),
+        // Well-formed bodies, so the secret is the only thing between each call and its answer.
+        let routes: [(String, [String: Any], Int)] = [
+            ("/api/clients/held/token", ["label": "cron"], 200),
+            ("/api/mcp/vault_lookup", ["hashes": [String(repeating: "0", count: 64)]], 200),
+            ("/api/mcp/feedback", ["draft": "hello", "destination": "email"], 200),
         ]
-        for (path, payload) in routes {
+        for (path, payload, _) in routes {
             let body = try JSONSerialization.data(withJSONObject: payload)
             for wrong in [nil, "", "nope", handler.originToken, handler.controlSecret + "0"] as [String?] {
                 var headers: [String: String] = [:]
@@ -275,13 +278,22 @@ final class HeldClientTokenTests: XCTestCase {
             XCTAssertEqual(handle(handler, method: "POST", path: path + "/", body: body, control: false).status, 403,
                            "\(path) with a trailing slash is the same route")
         }
+        XCTAssertEqual(opened.count, 0, "no refused feedback call opened anything")
         XCTAssertTrue(ControlFile.requiresSecret(method: "post", path: "/api/clients/held/token"))
-        let ok = handle(handler, method: "POST", path: "/api/clients/held/token",
-                        body: try JSONSerialization.data(withJSONObject: ["label": "cron"]))
-        XCTAssertEqual(ok.status, 200)
+        for (path, payload, status) in routes {
+            let ok = handle(handler, method: "POST", path: path, body: try JSONSerialization.data(withJSONObject: payload))
+            XCTAssertEqual(ok.status, status, "\(path) with the secret: \(String(decoding: ok.body, as: UTF8.self))")
+        }
+        XCTAssertEqual(opened.count, 1, "the accepted feedback call opened its draft")
         // The dashboard's own routes stay on the page token alone.
         let list = handle(handler, method: "POST", path: "/api/mcp/grants/status", body: Data("{}".utf8), control: false)
         XCTAssertEqual(list.status, 200)
+        // And the page itself never calls a gated route or names the header, so gating
+        // them cannot break the dashboard, and the page has nothing to send.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: repo.appendingPathComponent("Web/app.js"), encoding: .utf8)
+        for (path, _, _) in routes { XCTAssertFalse(app.contains(path), "the dashboard calls \(path)") }
+        XCTAssertFalse(app.lowercased().contains("x-ksf-control"))
     }
 
     /// The site publishes the secret in control.json beside the token, and the page it

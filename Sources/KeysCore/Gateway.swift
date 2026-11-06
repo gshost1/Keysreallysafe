@@ -358,7 +358,7 @@ final class GatewayListener: @unchecked Sendable {
     private static let dropIncoming = Set(grantHeaders).union([
         "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
         "te", "trailers", "transfer-encoding", "upgrade", "proxy-connection",
-        "host", "content-length", "accept-encoding", "x-ksf-token", "x-ksf-client",
+        "host", "content-length", "accept-encoding", "x-ksf-token", "x-ksf-control", "x-ksf-client",
         // Retired grant alias: no longer read, still never forwarded.
         "x-ksf-grant",
         // The relay's marker is for this Mac's ledger, not for the provider.

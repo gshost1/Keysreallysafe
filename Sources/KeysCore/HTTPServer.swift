@@ -250,7 +250,9 @@ final class APIHandler: @unchecked Sendable {
            !controlSecretOK(request) {
             return HTTPResponse.json(403, [
                 "error": "control_secret_required",
-                "message": "this route needs the control file's secret; restart the keys command or keys mcp server so it reads the current control file",
+                // An older keys binary prints this inside its own "restart the site" line, so
+                // it names the one fix that works: a keys as new as this app.
+                "message": "this keys command or keys mcp server is older than the running Keysrs and cannot send the control file's secret; update keys and restart keys mcp",
             ])
         }
         do {
