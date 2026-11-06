@@ -111,13 +111,74 @@ enum ControlFile {
         return Info(port: UInt16(port), pid: pid_t(pid), token: token, bootID: JSONValue.string(obj["boot"]) ?? "")
     }
 
-    /// A live owner, or nil when the file is missing or its process is gone.
-    /// Under the tripwire the no-argument form answers nil: there is
+    /// A live owner, or nil when the file is missing or its pid is not this user's
+    /// Keysrs. Under the tripwire the no-argument form answers nil: there is
     /// deliberately no default control file in a test process.
+    ///
+    /// The file outlives an unclean exit (it is removed only at exit), so its pid can
+    /// be recycled. "Some process has this pid" used to be enough, and kill's EPERM
+    /// for another account's process counted as alive too, so a stale file read as
+    /// the running app.
     static func live(at url: URL? = nil) -> Info? {
         guard let url = url ?? (try? ControlFile.url()), let info = try? read(at: url) else { return nil }
-        if kill(info.pid, 0) != 0 && errno == ESRCH { return nil }
-        return info
+        return isOwnSite(info) ? info : nil
+    }
+
+    /// Whether the file's pid may be this user's site: this very process, or a live
+    /// process of this user that is a `keys` binary or holds the file's listener.
+    /// The installed app and a checkout dev copy are both `keys`; the listener
+    /// branch is for a site whose binary is called something else (an XCTest rig
+    /// serving a spawned `keys` subprocess), and admits only the process actually
+    /// serving that port. This process counts as itself whatever its binary is.
+    static func isOwnSite(_ info: Info) -> Bool {
+        if info.pid == getpid() { return true }
+        guard isSameUser(info.pid) else { return false }
+        return isRunningSite(info.pid) || holdsLoopbackListener(info.pid, port: info.port)
+    }
+
+    /// Whether `pid` runs as this process's effective user. Another account's
+    /// process answers kill with EPERM, which `isAlive` counts as alive.
+    static func isSameUser(_ pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return false }
+        return info.pbi_uid == geteuid()
+    }
+
+    /// Whether `pid` holds a listening TCP socket on 127.0.0.1:`port`. A file's pid
+    /// being a Keysrs binary says nothing about who answers on its port: a recycled
+    /// pid can land on a `keys mcp`, and while the app is down anyone, in any
+    /// account, can bind the port. Only the process holding the listener is the
+    /// site, and macOS refuses a second account's bind on a port this user's
+    /// listener holds. Same-user processes only: that is whose fds libproc lists.
+    static func holdsLoopbackListener(_ pid: pid_t, port: UInt16) -> Bool {
+        guard pid > 0, port > 0 else { return false }
+        let estimate = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard estimate > 0 else { return false }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        // Room for a few fds opened between the two calls.
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(estimate) / stride + 32)
+        let filled = fds.withUnsafeMutableBytes { raw in
+            proc_pidinfo(pid, PROC_PIDLISTFDS, 0, raw.baseAddress, Int32(raw.count))
+        }
+        guard filled > 0 else { return false }
+        let loopback = inet_addr(BindPolicy.loopback)
+        for fd in fds.prefix(Int(filled) / stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let size = Int32(MemoryLayout<socket_fdinfo>.size)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size,
+                  Int(info.psi.soi_kind) == Int(SOCKINFO_TCP) else { continue }
+            let tcp = info.psi.soi_proto.pri_tcp
+            let local = tcp.tcpsi_ini
+            guard tcp.tcpsi_state == TSI_S_LISTEN,
+                  Int32(local.insi_vflag) & Int32(INI_IPV4) != 0,
+                  UInt16(bigEndian: UInt16(truncatingIfNeeded: local.insi_lport)) == port,
+                  local.insi_laddr.ina_46.i46a_addr4.s_addr == loopback
+            else { continue }
+            return true
+        }
+        return false
     }
 
     /// Whether `pid` is a live Keysrs binary. The site that may not be displaced is a

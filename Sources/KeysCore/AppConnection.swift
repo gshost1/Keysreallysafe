@@ -83,9 +83,9 @@ struct AppConnection {
         self.timeouts = timeouts
     }
 
-    /// The single "is the app up?" decision. A live control file is today's rule
-    /// unchanged — its owner alive means the app is running, so nothing launches
-    /// and nothing polls on that path. With no live app, this function alone owns
+    /// The single "is the app up?" decision. A live control file whose owner holds
+    /// the file's listener means the app is running, so nothing launches and
+    /// nothing polls on that path. With no live app, this function alone owns
     /// the launch: open, bounded wait for health, one retry, and after the retry
     /// the plain sentence is the answer — a tool result on MCP, exit 6 on the CLI,
     /// never any caller's own wording.
@@ -102,9 +102,9 @@ struct AppConnection {
         launch: AppLaunchSeam = .production
     ) throws -> AppConnection {
         let control = try control ?? ControlFile.url()
-        // The fast path: the file's owner is the truth, exactly as before this
-        // seam grew a launch; a hung site stays the app-call timeout's problem.
-        if let client = try? ControlClient.connect(control: control) {
+        // The fast path: a live file whose owner holds its recorded listener.
+        // A hung site stays the app-call timeout's problem.
+        if let client = provenClient(control: control) {
             return AppConnection(client: client, timeouts: launch.callTimeouts)
         }
         // No live app: this is the only place in the product that launches it.
@@ -163,7 +163,7 @@ struct AppConnection {
     /// accepting and its gateway is bound, but the probe is the belt over races
     /// and half-started owners: it proves this launch's app, not just its file.
     private static func healthyApp(control: URL, launch: AppLaunchSeam) -> AppConnection? {
-        guard let client = try? ControlClient.connect(control: control) else { return nil }
+        guard let client = provenClient(control: control) else { return nil }
         do {
             _ = try client.call(
                 method: "POST", path: launchHealthPath, body: [:], expect: 200, timeout: launchProbeTimeout
@@ -172,6 +172,20 @@ struct AppConnection {
         } catch {
             return nil
         }
+    }
+
+    /// The control client, only when the file's pid is this user's Keysrs AND that
+    /// process holds the loopback listener on the file's port. The file survives a
+    /// crash, so its pid may be recycled and its port bound by anyone, in any
+    /// account; the calls after this carry the control token and, for keys wrap,
+    /// every candidate's raw value. The fast path used to trust a pid that merely
+    /// existed and sent those to whatever answered. A listener that is not proven
+    /// here receives nothing, not even the health probe.
+    private static func provenClient(control: URL) -> ControlClient? {
+        guard let info = ControlFile.live(at: control),
+              ControlFile.holdsLoopbackListener(info.pid, port: info.port)
+        else { return nil }
+        return ControlClient(info: info)
     }
 
     /// The connected control client, for eligible CLI callers: the launch decision
