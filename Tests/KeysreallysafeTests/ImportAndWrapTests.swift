@@ -278,6 +278,145 @@ final class ImportAndWrapTests: XCTestCase {
                        "unwrap restores byte-for-byte from the backup kept outside the project")
     }
 
+    // MARK: - Audit lead 4 (pre-wrap backups keep no key value)
+
+    /// The backup files under `root` whose bytes contain `value`, by name only.
+    private func backupsHolding(_ value: String, under root: URL) -> [String] {
+        backupFiles(under: root).filter {
+            (try? String(contentsOf: $0, encoding: .utf8))?.contains(value) ?? false
+        }.map(\.lastPathComponent)
+    }
+
+    /// Unwrap restores key values from the vault and reads only the base URL
+    /// companions from the backup, so the backup needs nothing else. It used to be a
+    /// byte copy of the original file: the live key sat at a predictable path beside
+    /// the catalog, readable by any same-user process (the agent the wrap moves keys
+    /// away from included) with no Touch ID.
+    func testTheWrapTimeBackupKeepsOnlyTheCompanionLines() throws {
+        let site = try makeSite()
+        let project = try makeProject("companiononly", in: site.dir)
+        let env = try write(
+            "# keys\nOPENAI_API_KEY=\(plainValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\nOTHER=x\n",
+            to: ".env", under: project
+        )
+
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+
+        let root = EnvFileWriter.backupsRoot(beside: site.db.path)
+        XCTAssertEqual(backupsHolding(plainValue, under: root), [], "no backup holds the key value")
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: root))
+        let names = try fm.contentsOfDirectory(atPath: dir.path)
+        XCTAssertEqual(names.count, 1)
+        XCTAssertEqual(
+            try String(contentsOf: dir.appendingPathComponent(names[0]), encoding: .utf8),
+            "OPENAI_BASE_URL=https://api.example.internal/v1\n",
+            "the backup holds the companion line unwrap restores, nothing else"
+        )
+    }
+
+    /// The lead's local check: import, unwrap, purge. After a clean unwrap the
+    /// file's backups have no further use, and purge takes the whole tree.
+    func testUnwrapThenPurgeLeavesNoBackupBehind() throws {
+        let site = try makeSite()
+        let project = try makeProject("unwrappurge", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let root = EnvFileWriter.backupsRoot(beside: site.db.path)
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: root))
+
+        _ = try site.service.unwrap(file: env.path, folder: nil)
+        XCTAssertEqual(try String(contentsOf: env, encoding: .utf8), "OPENAI_API_KEY=\(plainValue)\n")
+        XCTAssertEqual(
+            (try? fm.contentsOfDirectory(atPath: dir.path))?.filter { $0.hasPrefix(".env.keysrs-backup-") } ?? [],
+            [], "a clean unwrap removes the file's backups"
+        )
+        XCTAssertEqual(backupsHolding(plainValue, under: root), [])
+
+        try site.service.purge(confirmation: "purge")
+        XCTAssertFalse(fm.fileExists(atPath: root.path), "purge removes the whole backups tree")
+    }
+
+    /// A 0.14/0.15 backup is a byte copy of the original file. Purge promises to
+    /// leave no Keysrs data behind, so it takes those too, and fails rather than
+    /// reporting success while one remains.
+    func testPurgeRemovesAnOlderFullBackup() throws {
+        let site = try makeSite()
+        let project = try makeProject("purgeold", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        let root = EnvFileWriter.backupsRoot(beside: site.db.path)
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: root))
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("OPENAI_API_KEY=\(plainValue)\n".utf8)
+            .write(to: dir.appendingPathComponent(".env.keysrs-backup-20261001-000000"))
+
+        try site.service.purge(confirmation: "purge")
+
+        XCTAssertFalse(fm.fileExists(atPath: root.path), "purge removes the whole backups tree")
+    }
+
+    /// Deleting a key must not leave its value on disk beside the catalog.
+    func testRemoveLeavesNoKeyValueInTheBackups() throws {
+        let site = try makeSite()
+        let project = try makeProject("rmkey", in: site.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let key = try XCTUnwrap(site.db.listCatalog().first?.name)
+
+        try site.service.remove(name: key)
+
+        XCTAssertEqual(backupsHolding(plainValue, under: EnvFileWriter.backupsRoot(beside: site.db.path)), [])
+    }
+
+    /// A rotation usually answers a leak: the old value must not stay on disk.
+    func testRotateLeavesNoOldValueInTheBackups() throws {
+        let site = try makeSite()
+        let project = try makeProject("rotatekey", in: site.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let key = try XCTUnwrap(site.db.listCatalog().first?.name)
+
+        _ = try site.service.rotate(name: key, secret: "sk-" + fakeBody + "ROTATED")
+
+        XCTAssertEqual(backupsHolding(plainValue, under: EnvFileWriter.backupsRoot(beside: site.db.path)), [])
+    }
+
+    /// Backups written by 0.14/0.15 still hold the values: rm and rotate cut every
+    /// backup in the tree down to its companion lines, which is all unwrap reads.
+    func testRemoveAndRotateCutOlderFullBackupsToTheirCompanionLines() throws {
+        let site = try makeSite()
+        let project = try makeProject("oldbackups", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let key = try XCTUnwrap(site.db.listCatalog().first?.name)
+        let root = EnvFileWriter.backupsRoot(beside: site.db.path)
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: root))
+        let old = dir.appendingPathComponent(".env.keysrs-backup-20261001-000000")
+        let full = "OPENAI_API_KEY=\(plainValue)\nOPENAI_BASE_URL=https://api.example.internal/v1\n"
+
+        try Data(full.utf8).write(to: old)
+        _ = try site.service.rotate(name: key, secret: "sk-" + fakeBody + "ROTATED")
+        XCTAssertEqual(backupsHolding(plainValue, under: root), [], "rotate scrubbed the older backup")
+        XCTAssertEqual(try String(contentsOf: old, encoding: .utf8),
+                       "OPENAI_BASE_URL=https://api.example.internal/v1\n")
+
+        try Data(full.utf8).write(to: old)
+        try site.service.remove(name: key)
+        XCTAssertEqual(backupsHolding(plainValue, under: root), [], "rm scrubbed the older backup")
+    }
+
+    /// Time Machine must not copy the backups folder onto a backup disk.
+    func testTheBackupsFolderIsExcludedFromTimeMachine() throws {
+        let site = try makeSite()
+        let project = try makeProject("tmexclude", in: site.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+
+        // A fresh URL: URL caches resource values it has already read.
+        let root = URL(fileURLWithPath: EnvFileWriter.backupsRoot(beside: site.db.path).path, isDirectory: true)
+        XCTAssertEqual(try root.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
+    }
+
     // MARK: - VAL-O-007 (a rewrite failure revokes the minted token; no path leaks)
 
     /// The project token is minted right before the rewrite, so a rewrite that
