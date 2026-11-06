@@ -481,6 +481,9 @@ function watchTraffic(page) {
   page.on("request", (request) => { t.open.add(request); t.last = Date.now(); });
   page.on("requestfinished", done);
   page.on("requestfailed", done);
+  // A reload or a new goto cuts off the old document's requests, and the browser does not always
+  // report them as failed; they can never finish, so they no longer count.
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) { t.open.clear(); t.last = Date.now(); } });
   traffic.set(page, t);
 }
 async function settle(page) {
@@ -491,6 +494,23 @@ async function settle(page) {
     if (Date.now() > deadline) throw new Error(`the page never went quiet: ${[...t.open].map((r) => r.url()).join(", ")}`);
     await sleep(10);
   }
+}
+
+// Every request the page sends from now on to `method pathname`, as the browser sent it.
+function outgoing(page, method, pathname) {
+  const list = [];
+  page.on("request", (r) => { if (r.method() === method && new URL(r.url()).pathname === pathname) list.push(r); });
+  return list;
+}
+// The page holds the whole reply to each request, or saw it fail, and has had a beat to act on
+// it. This replaces sleeping past a held reply: a case releases the reply, then waits here.
+const GRACE_MS = 200;
+async function landed(page, ...list) {
+  for (const request of list) {
+    const response = await request.response();
+    if (response) await response.finished();
+  }
+  await page.waitForTimeout(GRACE_MS);
 }
 
 async function openKeys(page, origin, options = {}) {
@@ -695,6 +715,7 @@ test("no secret reaches the DOM and no request leaves the origin across list, se
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
   const secretFree = async (step) =>
     assert.doesNotMatch(await page.evaluate(() => document.documentElement.innerHTML), new RegExp(SECRET), step);
+  await page.clock.install();
   await openKeys(page, origin);
   await settleKeys(page);
   await secretFree("the rendered list");
@@ -713,7 +734,12 @@ test("no secret reaches the DOM and no request leaves the origin across list, se
   await rowButton(page, "bravo", "copy").click();
   await page.waitForFunction(() => document.getElementById("status").textContent.startsWith("Copied"));
   await secretFree("copy feedback");
+  // The 1.2 s label and the 2.5 s deferred refresh, on the fake clock.
+  const lists = outgoing(page, "GET", "/api/keys");
+  await page.clock.runFor(2600);
   await page.waitForFunction(() => document.querySelector('#keys-body .key-row[data-name="bravo"] [data-act="copy"]')?.textContent === "Copy");
+  for (let i = 0; i < 200 && !lists.length; i++) await page.waitForTimeout(10);
+  await landed(page, ...lists);
   await secretFree("the post-copy refresh");
 
   await openRowMenu(page, "alpha");
@@ -944,7 +970,8 @@ test("the More menu skips disabled items, supports keyboard dismissal and stays 
 });
 
 test("a busy key action leaves a skipped menu action focused and lets refresh close it safely", async (page, origin) => {
-  delays.set(rule("POST", "/api/keys/alpha/check"), 1200);
+  const gate = hold();
+  delays.set(rule("POST", "/api/keys/alpha/check"), gate);
   await openKeys(page, origin);
   await settleKeys(page);
   await openRowMenu(page, "alpha");
@@ -962,6 +989,7 @@ test("a busy key action leaves a skipped menu action focused and lets refresh cl
   assert.equal(requests.some((r) => r.method === "POST" && r.pathname === "/api/keys/bravo/reveal"), false,
     "the busy action sends no second request");
 
+  gate.release();
   await waitDialog(page, "dlg-check", true);
   await page.waitForFunction(() => document.getElementById("key-menu").hidden);
   await page.locator("#dlg-check [data-close]").click();
@@ -1118,6 +1146,7 @@ test("the provider filter lists the vault's providers, combines with search and 
 });
 
 test("the provider filter is session-only and returns to All when its provider disappears", async (page, origin) => {
+  await page.clock.install();
   await openKeys(page, origin);
   const filter = page.locator("#keys-provider");
   await filter.selectOption("anthropic");
@@ -1136,7 +1165,9 @@ test("the provider filter is session-only and returns to All when its provider d
   await filter.selectOption("anthropic");
   keys = keys.filter((k) => k.name !== "bravo");
   catalogVersion += 1;
-  await page.waitForFunction(() => document.getElementById("keys-provider").value === "", null, { timeout: 30000 });
+  // The 15 s status poll is what notices the change.
+  await page.clock.runFor(16000);
+  await page.waitForFunction(() => document.getElementById("keys-provider").value === "");
   assert.deepEqual(await rowNames(page), ["alpha", "charlie"]);
   assert.equal(await page.locator("#keys-count").textContent(), "2 keys");
 });
@@ -3593,13 +3624,14 @@ const waitSlot = (page, id, want) =>
     { polling: 100, timeout: 5000 });
 
 test("a chart request that fails leaves a sticky reason and no stale drawing", async (page, origin) => {
+  await page.clock.install();
   await page.goto(origin);
   await settle(page);
   failures.set(rule("GET", "/api/spend"), chartDown);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("radio", { name: "This month" }).click();
   await waitSlot(page, "chart-error", "engine_busy");
-  await page.waitForTimeout(4500);
+  await page.clock.runFor(4500);
   assert.equal(await slot(page, "chart-error"), "engine_busy", "a failed load must stay reported");
   assert.equal(await page.locator("#chart-error").isVisible(), true);
 
@@ -3707,11 +3739,18 @@ test("a slow key list cannot overwrite a newer one", async (page, origin) => {
   await openKeys(page, origin);
   // A refresh is answered from the vault as it is now, then held back while the
   // vault changes and a second, faster refresh overtakes it.
-  delays.set(rule("GET", "/api/keys"), 1500);
+  const gate = hold();
+  delays.set(rule("GET", "/api/keys"), gate);
   await rowAct(page, "alpha", "reveal");
   await waitDialog(page, "dlg-reveal", true);
+  const lists = outgoing(page, "GET", "/api/keys");
+  const served = () => requests.filter((r) => r.method === "GET" && r.pathname === "/api/keys").length;
+  const before = served();
   await page.locator("#dlg-reveal [data-close]").click();   // the close handler refreshes
-  await page.waitForTimeout(150);
+  // The fixture has taken the refresh, so it is held, before the delay comes off.
+  for (let i = 0; i < 200 && served() === before; i++) await page.waitForTimeout(10);
+  assert.ok(served() > before, "the refresh is in flight");
+  const slow = [...lists];
 
   delays.delete(rule("GET", "/api/keys"));
   keys = keys.filter((k) => k.name !== "charlie");
@@ -3725,7 +3764,8 @@ test("a slow key list cannot overwrite a newer one", async (page, origin) => {
   assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"]);
 
   // The slow reply, carrying the older vault, lands last.
-  await page.waitForTimeout(1800);
+  gate.release();
+  await landed(page, ...slow);
   assert.deepEqual(await rowNames(page), ["alpha", "bravo", "foxtrot"],
     "a stale list must not restore a deleted key or drop a new one");
 });
@@ -3817,9 +3857,16 @@ test("an export waits for the range it describes instead of shipping the previou
     { model: "gpt-5", input_tokens: 5000, output_tokens: 0, cached_read_tokens: 0,
       cache_creation_tokens: 0, reasoning_tokens: 0, usd: null, usd_estimate: 0.01 },
   ];
-  delays.set(rule("GET", "/api/spend"), 700);
+  const gate = hold();
+  delays.set(rule("GET", "/api/spend"), gate);
+  const asked = () => requests.filter((r) => r.pathname === "/api/spend").length;
+  const before = asked();
   await page.getByRole("radio", { name: "This month" }).click();
   await page.keyboard.press("Shift+C");
+  // The month's report is held at the fixture while the export is asked for, then let go.
+  for (let i = 0; i < 200 && asked() === before; i++) await page.waitForTimeout(10);
+  assert.ok(asked() > before, "the month's report is in flight");
+  gate.release();
   await page.waitForFunction(() => window.__copied, null, { timeout: 8000 });
   const copied = await page.evaluate(() => window.__copied);
   assert.match(copied, /This month/, `the line names the range asked for: ${copied}`);
@@ -3834,7 +3881,8 @@ test("the grant dialog refuses every dismissal while the issue is in flight, the
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
   await openKeys(page, origin);
   await settleKeys(page);
-  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: 800, body: {
+  const gate = hold();
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: gate, body: {
     id: "g1", key: "alpha", provider: "openai", host: "api.openai.com", methods: ["GET", "POST"], paths: [],
     expires_at: "2026-09-20T13:00:00Z", base_url: "http://127.0.0.1:12767/g/g1", token: "ksf-grant-fixture", auth_header: "Authorization",
   } });
@@ -3860,6 +3908,7 @@ test("the grant dialog refuses every dismissal while the issue is in flight, the
   assert.equal(await dialogOpen(page, "dlg-grant"), true, "Cancel cannot close the dialog mid-issue");
 
   // The reply lands in the dialog the user is still looking at, and its token is shown there.
+  gate.release();
   await page.locator("#grant-result").waitFor({ state: "visible" });
   assert.equal(await page.locator("#grant-submit").isDisabled(), false, "the issue settled");
   assert.equal(await page.locator("#gr-token").textContent(), "ksf-grant-fixture",
@@ -3898,13 +3947,15 @@ test("the grant dialog refuses every dismissal while the issue is in flight, the
 // the page-wide flag there left the form disabled for good.
 test("another pane's operation cannot leave the grant dialog disabled", async (page, origin) => {
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
+  await page.clock.install();
   await openKeys(page, origin);
   await settleKeys(page);
   // The reveal holds the page-wide busy flag while its Touch ID is up. The grant dialog opens
   // during that window, so it is drawn while `busy` is true; the reveal then settles and clears the
   // flag, and nothing redraws the dialog — reading the page-wide flag left the form disabled for
   // good.
-  delays.set(rule("POST", "/api/keys/bravo/reveal"), 900);
+  const gate = hold();
+  delays.set(rule("POST", "/api/keys/bravo/reveal"), gate);
   await rowAct(page, "bravo", "reveal");
   for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys/bravo/reveal"); i++) await page.waitForTimeout(10);
   assert.ok(requests.some((r) => r.pathname === "/api/keys/bravo/reveal"), "the reveal is in flight");
@@ -3913,10 +3964,15 @@ test("another pane's operation cannot leave the grant dialog disabled", async (p
   assert.equal(await page.locator("#grant-submit").textContent(), "Grant",
     "the dialog does not claim an issue of its own is running");
   // The reveal settles: its busy flag clears and the grant form is usable.
-  await page.waitForTimeout(1200);
+  gate.release();
+  // The secret's dialog opens in the same turn that clears the busy flag.
+  await waitDialog(page, "dlg-reveal", true);
   assert.equal(await page.locator("#grant-submit").isDisabled(), false,
     "the other op settling leaves the grant form usable");
   assert.equal(await page.locator('.kind-switch [data-kind="client"]').isDisabled(), false);
+  // The secret's dialog sits over the grant form until its 15 s are up; the fake clock runs them.
+  await page.clock.runFor(16000);
+  await waitDialog(page, "dlg-reveal", false);
   // And it really works: the kind switch moves the form's fields and label.
   await page.locator('.kind-switch [data-kind="client"]').click();
   assert.equal(await page.locator("#grant-submit").textContent(), "Issue client");
@@ -3933,13 +3989,16 @@ test("two cached connection checks cannot paint in the order they were asked", a
   await settleKeys(page);
   // alpha's cached read is held back; bravo's lands first. The slower reply is stale and must not
   // repaint the dialog the newer press opened, or swap the key it names.
-  delays.set(rule("GET", "/api/keys/alpha/check"), 900);
+  const gate = hold();
+  delays.set(rule("GET", "/api/keys/alpha/check"), gate);
+  const alphaReads = outgoing(page, "GET", "/api/keys/alpha/check");
   await rowAct(page, "alpha", "check");
   for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys/alpha/check"); i++) await page.waitForTimeout(10);
   await rowAct(page, "bravo", "check");
   await waitDialog(page, "dlg-check", true);
   await page.waitForFunction(() => /bravo/.test(document.getElementById("check-name").textContent));
-  await page.waitForTimeout(1200);
+  gate.release();
+  await landed(page, ...alphaReads);
   assert.equal(await page.locator("#check-name").textContent(), "bravo", "the newer check owns the dialog");
   assert.deepEqual(await page.locator("#check-models li").allTextContents(), ["bravo-cached"]);
 });
@@ -3952,14 +4011,22 @@ test("a slower grants list cannot revive a grant a newer revoke killed", async (
 
   // Re-entering the pane starts a slow round trip. The revoke that follows starts a fast one, and
   // its revoked row is already painted when the earlier reply lands carrying "active".
-  delays.set(rule("GET", "/api/grants"), [900, 0]);
+  const gate = hold();
+  delays.set(rule("GET", "/api/grants"), [gate, 0]);
+  const reads = outgoing(page, "GET", "/api/grants");
   const before = requests.filter((r) => r.pathname === "/api/grants").length;
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("tab", { name: "Keys" }).click();
   for (let i = 0; i < 200 && requests.filter((r) => r.pathname === "/api/grants").length === before; i++) await page.waitForTimeout(10);
+  const sinceRevoke = requests.length;
   await page.locator('[aria-label="Revoke grant ee55ff66"]').click();
+  // The revoke's own round has started, so it holds the newer ticket, when the older reply lands.
+  // Its grants read cannot overtake: Chromium sends an identical GET only once the first is done.
+  for (let i = 0; i < 200 && !requests.slice(sinceRevoke).some((r) => r.pathname === "/api/profiles"); i++) await page.waitForTimeout(10);
+  assert.ok(requests.slice(sinceRevoke).some((r) => r.method === "DELETE"), "the revoke went out");
+  gate.release();
   await page.waitForFunction(() => /revoked/.test(document.querySelector("#grants-list li").textContent));
-  await page.waitForTimeout(1200);
+  await landed(page, ...reads);
   assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.",
     "the revoked row stays revoked");
   assert.equal(await page.locator('[aria-label="Revoke grant ee55ff66"]').count(), 0);
@@ -3978,10 +4045,13 @@ test("a slower month total cannot stick over a newer one", async (page, origin) 
   // otherwise be the last word on the Usage line until the catalog moved again. Every body is
   // fixed here, so arrival order is the only variable.
   let served = 0;
+  const gate = hold();
+  let slow = null;
   await page.route("**/api/spend*range=month*", async (route) => {
     served += 1;
     if (served === 2) {
-      await new Promise((r) => setTimeout(r, 900));
+      slow = route.request();
+      await gate;
       return route.fulfill({ status: 200, contentType: "application/json", body: month(1000, "grok-4") });
     }
     const body = served >= 3 ? month(5000, "gpt-5") : month(1000, "grok-4");
@@ -4000,7 +4070,8 @@ test("a slower month total cannot stick over a newer one", async (page, origin) 
   await page.getByRole("tab", { name: "Usage" }).click();
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => /5K tokens/.test(document.getElementById("usage-totals").textContent));
-  await page.waitForTimeout(1400);
+  gate.release();
+  await landed(page, slow);
   assert.match(await page.locator("#usage-totals").textContent(), /5K tokens/, "the newer month total stands");
 });
 
@@ -4008,13 +4079,16 @@ test("a settings read that returns after a toggle cannot paint the old value", a
   await page.goto(origin);
   await settle(page);
   // Opening Settings starts the read; the toggle answers first, and the older body then lands.
-  delays.set(rule("GET", "/api/preferences"), 900);
+  const gate = hold();
+  delays.set(rule("GET", "/api/preferences"), gate);
+  const reads = outgoing(page, "GET", "/api/preferences");
   const before = requests.filter((r) => r.pathname === "/api/preferences").length;
   await page.getByRole("tab", { name: "Settings" }).click();
   for (let i = 0; i < 200 && requests.filter((r) => r.pathname === "/api/preferences").length === before; i++) await page.waitForTimeout(10);
   await page.locator("#menubar-item-switch").click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
-  await page.waitForTimeout(1200);
+  gate.release();
+  await landed(page, ...reads);
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "true",
     "the older read must not paint the value the toggle replaced");
   assert.equal(preferences.menubar_item, true);
@@ -4031,7 +4105,8 @@ test("a grant dialog forced closed during Touch ID reopens to show the token", a
   keys.find((k) => k.name === "alpha").host = "api.openai.com";
   await openKeys(page, origin);
   await settleKeys(page);
-  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: 800, body: {
+  const gate = hold();
+  failures.set(rule("POST", "/api/keys/alpha/grants"), { status: 200, after: gate, body: {
     id: "g2", key: "alpha", provider: "openai", host: "api.openai.com", methods: ["GET"], paths: [],
     expires_at: "2026-09-20T13:00:00Z", base_url: "http://127.0.0.1:12767/g/g2", token: "ksf-grant-forced", auth_header: "Authorization",
   } });
@@ -4040,8 +4115,14 @@ test("a grant dialog forced closed during Touch ID reopens to show the token", a
   await page.locator("#grant-form [name=task]").fill("forced close task");
   await page.locator("#grant-submit").click();
   await page.waitForFunction(() => document.getElementById("grant-submit").disabled);
-  await page.evaluate(() => document.getElementById("dlg-grant").close());
+  // Closed, and its close event (the wipe) has run, before the reply is let go.
+  await page.evaluate(() => new Promise((resolve) => {
+    const dlg = document.getElementById("dlg-grant");
+    dlg.addEventListener("close", () => setTimeout(resolve, 0), { once: true });
+    dlg.close();
+  }));
   await waitDialog(page, "dlg-grant", false);
+  gate.release();
   await page.locator("#grant-result").waitFor({ state: "visible" });
   assert.equal(await dialogOpen(page, "dlg-grant"), true, "the dialog is back to show the token");
   assert.equal(await page.locator("#gr-token").textContent(), "ksf-grant-forced");
@@ -4057,11 +4138,16 @@ test("two quick clicks on one preference switch send on and then off", async (pa
   await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "false");
-  delays.set(rule("POST", "/api/preferences/menubar-item"), 500);
+  const gate = hold();
+  delays.set(rule("POST", "/api/preferences/menubar-item"), gate);
+  const writes = outgoing(page, "POST", "/api/preferences/menubar-item");
   await page.locator("#menubar-item-switch").click();
   await page.locator("#menubar-item-switch").click();
+  // Both clicks are in while the first write is still held.
+  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/menubar-item"); i++) await page.waitForTimeout(10);
+  gate.release();
   for (let i = 0; i < 400 && requests.filter((r) => r.pathname === "/api/preferences/menubar-item").length < 2; i++) await page.waitForTimeout(10);
-  await page.waitForTimeout(700);
+  await landed(page, ...writes);
   const sent = requests.filter((r) => r.pathname === "/api/preferences/menubar-item").map((r) => r.body && r.body.on);
   assert.deepEqual(sent, [true, false], "the second click sends the opposite of the first");
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "false");
@@ -4074,7 +4160,10 @@ test("two preference toggles cannot paint each other's values", async (page, ori
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
   // The first write is held back; the second press lands while it is still open.
-  delays.set(rule("POST", "/api/preferences/menubar-item"), 900);
+  const gate = hold();
+  delays.set(rule("POST", "/api/preferences/menubar-item"), gate);
+  const menubarWrites = outgoing(page, "POST", "/api/preferences/menubar-item");
+  const updateWrites = outgoing(page, "POST", "/api/preferences/update-checks");
   await page.locator("#menubar-item-switch").click();
   for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/menubar-item"); i++) await page.waitForTimeout(10);
   await page.locator("#auto-update-switch").click();
@@ -4082,8 +4171,10 @@ test("two preference toggles cannot paint each other's values", async (page, ori
   await page.waitForTimeout(400);
   assert.equal(requests.filter((r) => r.pathname === "/api/preferences/update-checks").length, 0,
     "the second write waits for the first");
+  gate.release();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "false");
-  await page.waitForTimeout(1200);
+  for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/update-checks"); i++) await page.waitForTimeout(10);
+  await landed(page, ...menubarWrites, ...updateWrites);
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "true",
     "the first toggle's value stands");
   assert.equal(await page.locator("#auto-update-switch").getAttribute("aria-checked"), "false",
@@ -4100,12 +4191,20 @@ test("a preference write that fails says so even after a newer read superseded i
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
   // The write is refused, and held long enough that a Settings re-read (a pane change) starts and
   // takes the newer ticket while it is still open.
-  failures.set(rule("POST", "/api/preferences/menubar-item"), { status: 400, after: 700, body: { error: "send on" } });
+  const gate = hold();
+  failures.set(rule("POST", "/api/preferences/menubar-item"), { status: 400, after: gate, body: { error: "send on" } });
+  const writes = outgoing(page, "POST", "/api/preferences/menubar-item");
   await page.locator("#menubar-item-switch").click();
   for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/preferences/menubar-item"); i++) await page.waitForTimeout(10);
+  const reads = outgoing(page, "GET", "/api/preferences");
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.getByRole("tab", { name: "Settings" }).click();
-  await page.waitForTimeout(1200);
+  // The re-read has answered, so the refused write lands under the newer ticket.
+  for (let i = 0; i < 200 && !reads.length; i++) await page.waitForTimeout(10);
+  assert.ok(reads.length, "the pane change re-reads the settings");
+  await landed(page, ...reads);
+  gate.release();
+  await landed(page, ...writes);
   assert.match(await status(page), /send on/, "the failed write is reported");
   assert.equal(await page.locator("#menubar-item-switch").getAttribute("aria-checked"), "false",
     "and the switch shows the value the engine still holds");
@@ -4122,17 +4221,24 @@ test("a failed key refresh still refreshes the grants pane", async (page, origin
   assert.equal(await page.locator('[aria-label="Revoke grant aa11bb22"]').count(), 1, "the grant starts out active");
 
   // The next key list is slow and fails; the revoke lands in between and its own refresh answers.
-  failures.set(rule("GET", "/api/keys"), { status: 500, after: 1200, body: { error: "boom" } });
+  const gate = hold();
+  failures.set(rule("GET", "/api/keys"), { status: 500, after: gate, body: { error: "boom" } });
+  const lists = outgoing(page, "GET", "/api/keys");
+  const reads = outgoing(page, "GET", "/api/grants");
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("tab", { name: "Keys" }).click();
   for (let i = 0; i < 200 && !requests.some((r) => r.pathname === "/api/keys" && r.method === "GET" && failures.get(rule("GET", "/api/keys"))); i++) {
     await page.waitForTimeout(10);
   }
   await page.waitForTimeout(100);
+  const sinceRevoke = requests.length;
   await page.locator('[aria-label="Revoke grant aa11bb22"]').click();
   // The failed round settles after the revoke did. The revoked row must stay revoked; a pane that
-  // still lists it as active is the bug.
-  await page.waitForTimeout(2000);
+  // still lists it as active is the bug. The revoke's own round has started when it is let go.
+  for (let i = 0; i < 200 && !requests.slice(sinceRevoke).some((r) => r.pathname === "/api/profiles"); i++) await page.waitForTimeout(10);
+  assert.ok(requests.slice(sinceRevoke).some((r) => r.method === "DELETE"), "the revoke went out");
+  gate.release();
+  await landed(page, ...lists, ...reads);
   assert.equal(await page.locator("#grants-count").textContent(), "0 active, 1 revoked grant, 0 clients.",
     "the failed key round does not leave the revoked grant looking active");
   assert.equal(await page.locator('[aria-label="Revoke grant aa11bb22"]').count(), 0);
@@ -4154,8 +4260,10 @@ test("an export reports a chart error instead of calling it still loading", asyn
   await page.getByRole("radio", { name: "This month" }).click();
   await page.waitForFunction(() => /report unavailable/.test(document.getElementById("chart-error").textContent));
   const before = requests.filter((r) => r.pathname === "/api/spend").length;
+  assert.equal(await status(page), "", "nothing is said before the export");
   await page.keyboard.press("Shift+C");
-  await page.waitForTimeout(1200);
+  // The export speaks once its attempts are over, so its line is the end of them.
+  await page.waitForFunction(() => document.getElementById("status").textContent !== "");
   assert.match(await status(page), /report unavailable/, "the export says what the engine said");
   assert.doesNotMatch(await status(page), /still loading/, "and never calls an error a slow load");
   assert.equal(requests.filter((r) => r.pathname === "/api/spend").length - before, 1,
