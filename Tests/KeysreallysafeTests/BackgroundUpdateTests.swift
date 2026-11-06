@@ -862,6 +862,8 @@ extension AppUpdaterTests {
         // then, well inside the day the daily timer would otherwise wait.
         rig.coordinator.finishCheck(held)
         rig.retries.fire()
+        XCTAssertFalse(rig.coordinator.isIdle,
+                       "a retry that checks claims the machine at once (the idle proof the next tests use)")
         await drain(until: rig.checks.calls == 1)
 
         XCTAssertEqual(rig.checks.calls, 1, "the retried check ran its own lookup")
@@ -896,7 +898,11 @@ extension AppUpdaterTests {
 
         try rig.preferences.setUpdateChecks(false)
         rig.retries.fire()
-        await drain(until: rig.checks.calls > 0)
+        // A check the retry started would claim the machine before its lookup
+        // task first runs, so an idle coordinator right after the fire is the
+        // deterministic proof; the short settle is the belt for the lookup.
+        XCTAssertTrue(rig.coordinator.isIdle, "the retry claimed nothing")
+        await drain(until: rig.checks.calls > 0, within: .milliseconds(250))
         XCTAssertEqual(rig.checks.calls, 0, "no GitHub lookup with automatic updates off")
     }
 
@@ -911,8 +917,10 @@ extension AppUpdaterTests {
         rig.coordinator.finishCheck(held)
         rig.controller.applyUpdateChecks(false)
 
+        XCTAssertNotNil(stale, "the refused check armed a retry")
         stale?()
-        await drain(until: rig.checks.calls > 0)
+        XCTAssertTrue(rig.coordinator.isIdle, "the stale retry claimed nothing")
+        await drain(until: rig.checks.calls > 0, within: .milliseconds(250))
         XCTAssertEqual(rig.checks.calls, 0, "the stale retry ran no lookup")
     }
 
@@ -1009,8 +1017,14 @@ extension AppUpdaterTests {
     /// Yields the main actor until `condition` holds, bounded: the check and the
     /// background install run as main-actor tasks the test interleaves with.
     @MainActor
-    private func drain(until condition: @autoclosure () -> Bool) async {
+    /// Yields until `condition` holds. `within` caps the wait for a check that
+    /// expects nothing to happen: the 1,000 short sleeps alone ran 8 s on CI,
+    /// where each sleep rounds up to the timer granularity.
+    private func drain(until condition: @autoclosure () -> Bool, within limit: Duration? = nil) async {
+        let clock = ContinuousClock()
+        let deadline = limit.map { clock.now + $0 }
         for _ in 0..<1_000 where !condition() {
+            if let deadline, clock.now >= deadline { return }
             try? await Task.sleep(for: .milliseconds(2))
         }
     }

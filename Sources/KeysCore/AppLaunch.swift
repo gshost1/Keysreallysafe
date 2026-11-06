@@ -39,6 +39,11 @@ protocol AppLaunchClock: Sendable {
 struct AppLaunchSeam: Sendable {
     var launcher: any AppLauncher = LaunchServicesAppLauncher()
     var clock: any AppLaunchClock = ThreadAppLaunchClock()
+    /// The bounds the connection's app calls run with. Every production pair
+    /// keeps the documented 10 s / 120 s; only a test builds a seam with
+    /// shorter ones, so a hung-site bound can be proven without sitting out
+    /// the real seconds.
+    var callTimeouts = AppCallTimeouts()
 
     /// LaunchServices and the wall clock: what every production caller runs
     /// with. `KEYS_TEST_NO_LAUNCH` — ours, the `KEYS_*` fixture-variable
@@ -59,6 +64,14 @@ struct AppLaunchSeam: Sendable {
         }
         return AppLaunchSeam(launcher: NoLaunchAppLauncher(), clock: NoSleepAppLaunchClock())
     }
+}
+
+/// The two app-call bounds an `AppConnection` carries: `app` for every call,
+/// `presence` for the calls that legitimately sit inside a Touch ID prompt.
+/// The defaults are `AppConnection`'s documented constants.
+struct AppCallTimeouts: Sendable {
+    var app: TimeInterval = AppConnection.appCallTimeout
+    var presence: TimeInterval = AppConnection.presenceCallTimeout
 }
 
 /// Production: LaunchServices resolves the bundle id to its app and opens it; the
