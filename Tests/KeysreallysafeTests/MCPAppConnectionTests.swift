@@ -497,7 +497,7 @@ final class MCPAppConnectionTests: XCTestCase {
 
         let bound: TimeInterval = 0.5
         let fake = RecordingAppLaunch()
-        let launch = AppLaunchSeam(launcher: fake, clock: fake, callTimeouts: AppCallTimeouts(app: bound))
+        let launch = AppLaunchSeam(launcher: fake, clock: fake, callTimeouts: AppCallTimeouts(app: bound, presence: bound * 2))
         let stub = try HungSiteStub()
         defer { stub.stop() }
         let (_, _, control) = try AppConnectionIsolationGuard.makeWorld()

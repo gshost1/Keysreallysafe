@@ -494,10 +494,10 @@ final class TestKeysToolTests: XCTestCase {
     /// concurrently against the same slow site, so the pair costs one slow answer,
     /// not two. The production bounds (10 s / 120 s) are pinned in
     /// ImportAndWrapTests and MCPAppConnectionTests; here the seam scales them
-    /// down to 0.4 s / 30 s with the site answering at 2 s, keeping the 5x gap.
+    /// down to 0.4 s / 30 s with the site answering at 3 s, a wide gap for a loaded runner.
     func testConfirmedCallOutlastsTheDefaultUnconfirmedKeepsIt() throws {
         let appBound: TimeInterval = 0.4
-        let siteDelay: TimeInterval = 2
+        let siteDelay: TimeInterval = 3
         let slow = try LoopbackHTTPServer(port: 0) { _ in
             Thread.sleep(forTimeInterval: siteDelay)
             return HTTPResponse.json(200, ["results": [] as [String]])
@@ -541,6 +541,7 @@ final class TestKeysToolTests: XCTestCase {
             done.leave()
         }
         XCTAssertEqual(done.wait(timeout: .now() + 60), .success, "both calls come back on their own bound")
+        XCTAssertFalse(fake.opened, "a live (if slow) site never triggers a launch")
 
         let confirmedOutcome = try confirmed.unwrap()
         XCTAssertNotNil(confirmedOutcome.result, "the presence bound held the call and the site's answer came back")

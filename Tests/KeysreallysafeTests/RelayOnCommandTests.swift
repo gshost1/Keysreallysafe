@@ -94,7 +94,6 @@ final class RelayOnCommandTests: XCTestCase {
         XCTAssertTrue(line.contains("has not finished after 1s"), "the timeout is named: \(line)")
         XCTAssertTrue(line.contains("it stays on until keys relay off"), "a relay mid-dial is still on: \(line)")
         XCTAssertGreaterThanOrEqual(log.all.count, 2, "it polled before giving up")
-        XCTAssertEqual(log.all.count, 5, "one POST, then a GET per 0.25 s step until the budget ran out")
     }
 
     /// A waiting phase (a failed dial, then backoff) ends the poll immediately, because

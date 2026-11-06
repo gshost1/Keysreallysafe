@@ -539,7 +539,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
             method: "POST", path: "/api/mcp/test_keys",
             body: ["keys": names, "confirm": confirm],
             expect: 200,
-            timeout: confirm ? app.timeouts.presence : app.timeouts.app
+            timeout: confirm ? app.timeouts.presence : nil
         )
         return try MCPToolResult.json(answer)
     }

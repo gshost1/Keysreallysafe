@@ -902,7 +902,7 @@ extension AppUpdaterTests {
         // task first runs, so an idle coordinator right after the fire is the
         // deterministic proof; the short settle is the belt for the lookup.
         XCTAssertTrue(rig.coordinator.isIdle, "the retry claimed nothing")
-        await drain(until: rig.checks.calls > 0, within: .milliseconds(250))
+        await drain(until: rig.checks.calls > 0, within: .seconds(1))
         XCTAssertEqual(rig.checks.calls, 0, "no GitHub lookup with automatic updates off")
     }
 
@@ -920,7 +920,7 @@ extension AppUpdaterTests {
         XCTAssertNotNil(stale, "the refused check armed a retry")
         stale?()
         XCTAssertTrue(rig.coordinator.isIdle, "the stale retry claimed nothing")
-        await drain(until: rig.checks.calls > 0, within: .milliseconds(250))
+        await drain(until: rig.checks.calls > 0, within: .seconds(1))
         XCTAssertEqual(rig.checks.calls, 0, "the stale retry ran no lookup")
     }
 

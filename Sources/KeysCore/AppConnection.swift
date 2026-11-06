@@ -42,9 +42,10 @@ struct AppConnection {
 
     /// The longer bound for the presence-gated calls (`import_and_wrap`; `test_keys`
     /// with confirm): the whole call legitimately stays open while a Touch ID prompt
-    /// is up, and 10 s would kill a slow approval mid-import. Opt-in per call through
-    /// `call`'s `timeout:` — the 10 s default above stays the bound for everything
-    /// else, exactly as its pins describe it.
+    /// is up, and 10 s would kill a slow approval mid-import. This is the default of
+    /// `AppCallTimeouts.presence`; a caller opts in with `timeout: app.timeouts.presence`,
+    /// never this constant, so a test seam's shorter bound reaches it too. The 10 s
+    /// default above stays the bound for everything else.
     static let presenceCallTimeout: TimeInterval = 120
 
     /// The installed app, opened by bundle id first with the documented install
