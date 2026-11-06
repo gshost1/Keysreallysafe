@@ -13,10 +13,14 @@ on:
 permissions:
   contents: read
 
-# A new commit on a PR cancels the run it replaces. Runs on main all finish.
+# A new commit on a PR cancels the run it replaces, and a new merge cancels
+# main's older run: each merge was already tested on its PR, and the latest run
+# tests everything merged before it. Without this, merging a batch of PRs queued
+# one full macOS run per merge and held other PRs' checks for up to an hour.
+# Manual runs never cancel each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 # Agent homes inside the workspace, never the runner's own: `keys setup` and MCP
 # registration resolve their config files from these, and no test may reach a real one.
