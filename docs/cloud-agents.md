@@ -6,7 +6,9 @@ vault without the key ever leaving the Mac. The mechanism is the same gateway a
 local agent uses, carried over an SSH reverse forward. For an agent you cannot
 SSH into (a managed runner or cloud sandbox), [relay.md](relay.md) describes
 `keys relay`, which carries the same gateway through a Worker you deploy
-yourself; the token rules below apply to it unchanged.
+yourself; the token rules below apply to it unchanged. With the relay off,
+such an agent can ring the relay's doorbell to ask for it, and you approve
+with Touch ID on the Mac ([relay.md](relay.md), The doorbell).
 
 The rules that make this safe are the same ones the local gateway follows:
 

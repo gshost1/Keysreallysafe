@@ -86,7 +86,11 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
   Terminal), and feeds what arrives into the same loopback gateway with the
   same token checks. Relayed requests can additionally be restricted to
   agents you have paired with the Mac. Keys never leave the Mac over it; see
-  [docs/relay.md](relay.md).
+  [docs/relay.md](relay.md). If you turn the relay's doorbell on (off by
+  default, one Touch ID), Keysrs also keeps a second outbound connection to
+  the same Worker from launch, which only lets an agent holding one of your
+  tokens ask for the relay: nothing turns on until you approve a Touch ID
+  prompt on the Mac.
 - The app sends no analytics or telemetry.
 - Update checks send one cookieless request to GitHub's public
   latest-release API and read only the release's version and download

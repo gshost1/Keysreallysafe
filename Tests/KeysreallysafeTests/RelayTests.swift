@@ -76,7 +76,9 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
 final class FakeRelayDialer: RelayDialer, @unchecked Sendable {
     private let lock = NSLock()
     private var outcomes: [Result<FakeRelaySocket, Error>]
-    private(set) var attempts: [(URL, [String: String])] = []
+    private var recorded: [(URL, [String: String])] = []
+    /// Read under the lock: a test may poll it while the loop under test is still dialing.
+    var attempts: [(URL, [String: String])] { lock.withLock { recorded } }
 
     init(_ outcomes: [Result<FakeRelaySocket, Error>]) {
         self.outcomes = outcomes
@@ -84,7 +86,7 @@ final class FakeRelayDialer: RelayDialer, @unchecked Sendable {
 
     func connect(url: URL, headers: [String: String]) async throws -> any RelaySocket {
         let next: Result<FakeRelaySocket, Error>? = lock.withLock {
-            attempts.append((url, headers))
+            recorded.append((url, headers))
             return outcomes.isEmpty ? nil : outcomes.removeFirst()
         }
         guard let next else { throw CancellationError() }

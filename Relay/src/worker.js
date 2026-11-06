@@ -10,7 +10,7 @@
 // console output is a one-line note on an unexpected frame, without payload.
 
 import { DurableObject } from "cloudflare:workers";
-import { BODYLESS_STATUS, FRAME, PROTOCOL, STRIP_RESPONSE, decodeFrame, encodeFrame, limitsFrom, secretMatches, stripRequestHeader } from "./protocol.js";
+import { BODYLESS_STATUS, DOORBELL, FRAME, PROTOCOL, STRIP_RESPONSE, decodeFrame, doorbellKey, encodeFrame, limitsFrom, ringCredentials, secretMatches, stripRequestHeader } from "./protocol.js";
 
 const DOCS = "https://github.com/gshost1/Keysreallysafe/blob/main/docs/relay.md";
 const utf8d = new TextDecoder();
@@ -27,8 +27,11 @@ function json(status, object, extraHeaders) {
 
 // The Worker's own answers an agent may simply send again, and how long to wait
 // first where a wait makes sense (docs/relay.md, the error table).
-const RETRY_AFTER = { mac_offline: "30", relay_busy: "5" };
-const RETRYABLE = new Set(["mac_offline", "relay_busy", "mac_disconnected"]);
+const RETRY_AFTER = { mac_offline: "30", relay_busy: "5", doorbell_offline: "60", doorbell_busy: "10", doorbell_mac_locked: "300" };
+const RETRYABLE = new Set([
+  "mac_offline", "relay_busy", "mac_disconnected",
+  "doorbell_offline", "doorbell_busy", "doorbell_mac_locked", "doorbell_not_now", "doorbell_unavailable",
+]);
 // The Mac's pairing refusals are the agent's to fix on the Mac (pair, renew,
 // re-scope), so the agent hears 403 rather than the 502 every other Mac error
 // gets (docs/relay.md, the pairing section). They are not in RETRYABLE or
@@ -47,10 +50,42 @@ const MiB = 1024 * 1024;
 const duration = (ms) => (ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`);
 const size = (n) => (n % MiB === 0 ? `${n / MiB} MiB` : `${n} bytes`);
 
-function refusal(status, code, message) {
+function refusal(status, code, message, retryAfter) {
   const body = { error: code, message };
   if (RETRYABLE.has(code)) body.retryable = true;
-  return json(status, body, RETRY_AFTER[code] ? { "retry-after": RETRY_AFTER[code] } : undefined);
+  const wait = retryAfter ?? RETRY_AFTER[code];
+  return json(status, body, wait ? { "retry-after": String(wait) } : undefined);
+}
+
+const NO_DOORBELL = "the Mac's doorbell is not connected: Keysrs is not running, its doorbell is off (keys relay doorbell on), or the Mac is asleep or offline";
+const ASKING = "the Mac is asking for Touch ID; ring again in a while, or just call: a request waits up to a minute for the relay";
+
+/// The Mac's answer to a ring as the ringer's response (docs/relay.md, The
+/// doorbell). The Mac says only which case applies; the wording is the Worker's.
+function ringAnswer(answer) {
+  switch (answer.result) {
+    case "on":
+      return json(200, { relay: "on", message: "the relay is on; call https://<this worker>/<key name>/… as usual" });
+    case "pending":
+    case "timeout":
+      return json(202, { relay: "off", state: "asking", message: ASKING, retryable: true }, { "retry-after": "15" });
+    case "declined":
+      return refusal(403, "doorbell_declined", "the person at the Mac declined to turn the relay on");
+    case "refused":
+      return refusal(403, "doorbell_refused", "the Mac does not know this client token or pairing as a live one, so it asked nobody");
+    case "away":
+      return refusal(503, "doorbell_mac_locked", "the Mac's screen is locked, so nobody is there to approve the relay");
+    case "not_now": {
+      const after = Number.isInteger(answer.retry_after) && answer.retry_after > 0 ? Math.min(answer.retry_after, 3600) : 600;
+      return refusal(429, "doorbell_not_now", "the Mac asked recently and is not asking again yet", after);
+    }
+    case "unavailable":
+      return refusal(503, "doorbell_unavailable", `the Mac could not turn the relay on${answer.message ? `: ${answer.message}` : ""}`);
+    case "offline":
+      return refusal(503, "doorbell_offline", NO_DOORBELL);
+    default:
+      return refusal(502, "doorbell_error", "the Mac answered the doorbell with something this Worker does not know");
+  }
 }
 
 class RelayError extends Error {
@@ -105,6 +140,46 @@ export default {
       // job and should travel no further than this function.
       return hub.fetch(new Request(url.origin + "/connect", { headers: { upgrade: "websocket" } }));
     }
+    if (url.pathname === DOORBELL.listenPath) {
+      if (request.method !== "GET") return json(405, { error: "method_not_allowed" }, { allow: "GET" });
+      // The doorbell key is derived from the relay secret, so a Worker without
+      // one has no doorbell either.
+      const expected = await doorbellKey(env.RELAY_SECRET);
+      if (!(await secretMatches(bearer(request), expected))) {
+        return json(401, { error: "unauthorized" }, { "www-authenticate": 'Bearer realm="keysrs-relay"' });
+      }
+      if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
+        return json(426, { error: "upgrade_required", message: `${DOORBELL.listenPath} is the Mac's doorbell WebSocket endpoint` }, { upgrade: "websocket" });
+      }
+      if (request.headers.get("x-keysrs-relay-protocol") !== PROTOCOL) {
+        return json(400, {
+          error: "unsupported_protocol",
+          message: `this Worker speaks relay protocol ${PROTOCOL}; update keys or redeploy the Worker from the same checkout`,
+        });
+      }
+      return hub.fetch(new Request(url.origin + DOORBELL.listenPath, { headers: { upgrade: "websocket" } }));
+    }
+    if (url.pathname === DOORBELL.ringPath) {
+      if (request.method !== "POST") return json(405, { error: "method_not_allowed" }, { allow: "POST" });
+      // Only the hashes travel on: the Durable Object, and the Mac after it,
+      // never hold the ringer's token.
+      const credentials = await ringCredentials(request.headers);
+      if (!credentials.client && !credentials.pair) {
+        return refusal(401, "doorbell_credential_required", "ring with the client token (Authorization: Bearer ksfc_…) or the pairing (X-KSF-Pair: ksfp_…) this Mac gave you");
+      }
+      const wait = url.searchParams.get("wait");
+      const ring = new URL(url.origin + DOORBELL.ringPath);
+      if (wait !== null) ring.searchParams.set("wait", wait);
+      return hub.fetch(new Request(ring, {
+        method: "POST",
+        headers: {
+          "x-ring-client": credentials.client || "",
+          "x-ring-pair": credentials.pair || "",
+          // For the per-address spacing only; it stays in the Durable Object's memory.
+          "x-ring-from": request.headers.get("cf-connecting-ip") || "",
+        },
+      }));
+    }
     return hub.fetch(request);
   },
 };
@@ -124,6 +199,13 @@ export class RelayHub extends DurableObject {
     this.heldBytes = 0;
     /** @type {Set<() => void>} wakes the requests waiting for a Mac */
     this.waiters = new Set();
+    // The one ring waiting for the Mac's answer, and when the last ring was
+    // sent to it (docs/relay.md, The doorbell). Memory only: a ring is an
+    // open HTTP request, which keeps this object awake for as long as it waits.
+    /** @type {{ id: string, ws: WebSocket, resolve: (answer: object) => void } | null} */
+    this.ringing = null;
+    /** @type {Map<string, number>} caller address -> when it last rang */
+    this.ringTimes = new Map();
     // Answered by the runtime without waking a hibernated object.
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
@@ -131,6 +213,8 @@ export class RelayHub extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/connect") return this.connect();
+    if (url.pathname === DOORBELL.listenPath) return this.listen();
+    if (url.pathname === DOORBELL.ringPath) return this.ring(request, url);
     return this.relay(request, url);
   }
 
@@ -139,10 +223,33 @@ export class RelayHub extends DurableObject {
   /// to sleep or lost its network leaves its socket open here, and a request sent
   /// into it would hang until the Mac came back only to fail.
   mac() {
+    return this.newest("mac");
+  }
+
+  /// The Mac's doorbell socket, by the same rule as its relay socket.
+  doorbell() {
+    return this.newest("doorbell");
+  }
+
+  /// Deferred Worker updates keep hibernating sockets alive. Before the doorbell,
+  /// /connect accepted untagged sockets with only connectedAt in the attachment.
+  /// They are still relay sockets, including when a new Mac replaces the old one.
+  /// Doorbells always have an explicit kind and must never enter that fallback.
+  sockets(kind) {
+    return this.ctx.getWebSockets().filter((ws) => {
+      const attachment = ws.deserializeAttachment();
+      return attachment?.kind === kind ||
+        (kind === "mac" && attachment?.kind === undefined && Number.isFinite(attachment?.connectedAt));
+    });
+  }
+
+  /// The most recently accepted open socket of one kind that has been heard
+  /// from within the silence limit.
+  newest(tag) {
     const now = Date.now();
     let best = null;
     let bestAt = -1;
-    for (const ws of this.ctx.getWebSockets()) {
+    for (const ws of this.sockets(tag)) {
       if (ws.readyState !== 1 /* OPEN */) continue;
       const at = ws.deserializeAttachment()?.connectedAt ?? 0;
       if (!this.heardRecently(ws, at, now)) continue;
@@ -191,15 +298,83 @@ export class RelayHub extends DurableObject {
     const [client, server] = Object.values(pair);
     // One Mac per relay: a reconnecting Mac must not wait for a stale socket
     // to time out, so the newcomer wins and the old socket is told why.
-    for (const old of this.ctx.getWebSockets()) {
+    for (const old of this.sockets("mac")) {
       this.failAll(old, 502, "mac_disconnected", "the Mac reconnected while this request was in flight; it may be retried");
       try { old.close(4000, "replaced"); } catch { /* already gone */ }
     }
-    this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ connectedAt: Date.now() });
+    this.ctx.acceptWebSocket(server, ["mac"]);
+    server.serializeAttachment({ connectedAt: Date.now(), kind: "mac" });
     // The requests that arrived while no Mac was here go to this one.
     for (const wake of [...this.waiters]) wake();
+    // A ring waiting for the Mac's answer has its answer: the relay is here.
+    this.ringing?.resolve({ result: "on" });
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /// The Mac's doorbell socket. Like the relay, a newcomer replaces the old one.
+  listen() {
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    for (const old of this.sockets("doorbell")) {
+      if (this.ringing?.ws === old) this.ringing.resolve({ result: "offline" });
+      try { old.close(4000, "replaced"); } catch { /* already gone */ }
+    }
+    this.ctx.acceptWebSocket(server, ["doorbell"]);
+    server.serializeAttachment({ connectedAt: Date.now(), kind: "doorbell" });
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /// One ring: sent to the Mac's doorbell, answered with the Mac's word, or
+  /// with "asking" once the ringer's wait is over. The Mac decides everything
+  /// about a ring; what this does is keep rings rare and one at a time.
+  async ring(request, url) {
+    if (this.mac()) return ringAnswer({ result: "on" });
+    const bell = this.doorbell();
+    if (!bell) return refusal(503, "doorbell_offline", NO_DOORBELL);
+    if (this.ringing) return refusal(503, "doorbell_busy", "another ring is waiting for the Mac's answer");
+    const now = Date.now();
+    for (const [from, at] of this.ringTimes) {
+      if (now - at >= DOORBELL.ringIntervalMs) this.ringTimes.delete(from);
+    }
+    const from = request.headers.get("x-ring-from") || "";
+    const last = this.ringTimes.get(from);
+    if (last !== undefined) {
+      return refusal(503, "doorbell_busy", "you rang moments ago", Math.ceil((DOORBELL.ringIntervalMs - (now - last)) / 1000));
+    }
+    if (this.ringTimes.size >= DOORBELL.maxRingCallers) {
+      return refusal(503, "doorbell_busy", "too many callers rang in the last few seconds");
+    }
+    let waitMs = DOORBELL.ringWaitMs;
+    const asked = url.searchParams.get("wait");
+    if (asked !== null && /^[0-9]{1,4}$/.test(asked)) waitMs = Math.min(Number(asked) * 1000, DOORBELL.maxRingWaitMs);
+
+    const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    let timer = null;
+    const answered = new Promise((resolve) => {
+      const ring = {
+        id,
+        ws: bell,
+        resolve: (answer) => {
+          if (this.ringing === ring) this.ringing = null;
+          clearTimeout(timer);
+          resolve(answer);
+        },
+      };
+      this.ringing = ring;
+      timer = setTimeout(() => ring.resolve({ result: "timeout" }), waitMs);
+    });
+    this.ringTimes.set(from, now);
+    try {
+      bell.send(JSON.stringify({
+        type: "ring",
+        id,
+        client: request.headers.get("x-ring-client") || null,
+        pair: request.headers.get("x-ring-pair") || null,
+      }));
+    } catch {
+      this.ringing?.resolve({ result: "offline" });
+    }
+    return ringAnswer(await answered);
   }
 
   allocId() {
@@ -548,6 +723,10 @@ export class RelayHub extends DurableObject {
   }
 
   webSocketMessage(ws, message) {
+    if (ws.deserializeAttachment()?.kind === "doorbell") {
+      this.doorbellMessage(ws, message);
+      return;
+    }
     if (typeof message === "string") {
       // The auto-response table normally answers this; a runtime without it
       // still gets a pong. Anything else is not part of the protocol.
@@ -617,11 +796,41 @@ export class RelayHub extends DurableObject {
     }
   }
 
+  /// The doorbell speaks text: the keepalive and the Mac's JSON answers. A
+  /// binary frame, or an answer to a ring that is not waiting, is ignored or
+  /// closes the socket; it can never reach a ringer it was not meant for.
+  doorbellMessage(ws, message) {
+    if (typeof message !== "string") {
+      ws.close(1003, "binary frames are not part of the doorbell");
+      return;
+    }
+    if (message === "ping") {
+      try { ws.send("pong"); } catch { /* closing */ }
+      return;
+    }
+    let answer;
+    try {
+      answer = message.length <= 2048 ? JSON.parse(message) : null;
+    } catch {
+      answer = null;
+    }
+    if (!answer || answer.type !== "answer" || typeof answer.id !== "string") return;
+    const ring = this.ringing;
+    if (!ring || ring.ws !== ws || ring.id !== answer.id) return;
+    ring.resolve({
+      result: typeof answer.result === "string" ? answer.result : "",
+      retry_after: answer.retry_after,
+      message: typeof answer.message === "string" && answer.message.length <= 512 ? answer.message : "",
+    });
+  }
+
   webSocketClose(ws) {
+    if (this.ringing?.ws === ws) this.ringing.resolve({ result: "offline" });
     this.failAll(ws, 502, "mac_disconnected", MAC_DROPPED);
   }
 
   webSocketError(ws) {
+    if (this.ringing?.ws === ws) this.ringing.resolve({ result: "offline" });
     this.failAll(ws, 502, "mac_disconnected", "the Mac's connection failed while this request was in flight; it may be retried");
   }
 }

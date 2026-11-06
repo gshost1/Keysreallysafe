@@ -2234,7 +2234,7 @@ struct RelayCommand: ParsableCommand {
             """,
         subcommands: [
             RelaySetupCommand.self, RelayRunCommand.self, RelayOnCommand.self, RelayOffCommand.self,
-            RelayStatusCommand.self, RelayResetCommand.self, RelayPairCommand.self,
+            RelayStatusCommand.self, RelayResetCommand.self, RelayPairCommand.self, RelayDoorbellCommand.self,
         ],
         defaultSubcommand: RelayRunCommand.self
     )
@@ -2262,9 +2262,71 @@ struct RelayCommand: ParsableCommand {
         return line
     }
 
+    /// The `doorbell` line of `keys relay status`: the choice, and the app's socket if it answers.
+    static func doorbellLine(enabled: Bool, app: [String: Any]?) -> String {
+        guard enabled else { return "off" }
+        guard let app else { return "on (Keysrs is not running, so nobody is listening)" }
+        switch JSONValue.string(app["doorbell_state"]) {
+        case "connected": return "on, listening"
+        case "connecting": return "on, connecting"
+        case "waiting":
+            return "on, not connected; retrying" + (JSONValue.string(app["doorbell_last_error"]).map { " (\($0))" } ?? "")
+        default: return "on, but not listening; run keys relay doorbell on"
+        }
+    }
+
     /// The `pairing` line of `keys relay status`: the mode and the live count.
     static func pairingLine(required: Bool, active: Int) -> String {
         "\(required ? "required" : "off"), \(active) active"
+    }
+}
+
+struct RelayDoorbellCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "doorbell",
+        abstract: "Let agents ask for the relay while it is off (on: one Touch ID), or not (off, the default).",
+        discussion: """
+            With the doorbell on, Keysrs keeps one more outbound socket to your Worker while it \
+            runs. An agent holding one of your client tokens or pairings rings with \
+            POST https://<your worker>/.keysrs/doorbell; this Mac then shows a Touch ID prompt \
+            naming that token, and approving it turns the relay on as keys relay on would. \
+            Nothing is turned on without that prompt, and a ring with an unknown token, or one \
+            while the screen is locked, asks nobody. docs/relay.md, The doorbell.
+            """
+    )
+
+    @Argument(help: "on, off or status.") var state: String
+
+    func run() throws { try run(launch: .production) }
+
+    func run(launch: AppLaunchSeam, control: URL? = nil, out: (String) -> Void = { print($0) }) throws {
+        let enabled: Bool
+        switch state.lowercased() {
+        case "on": enabled = true
+        case "off": enabled = false
+        case "status":
+            let service = try AppFactory.makeService()
+            let app = (try? ControlClient.connect(control: control ?? ControlFile.url(beside: service.catalog.path)))
+                .flatMap { try? $0.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5) }
+            out("doorbell \(RelayCommand.doorbellLine(enabled: service.doorbellEnabled(), app: app))")
+            return
+        default: throw AppError.usage("usage: keys relay doorbell on|off|status")
+        }
+        // The app holds the doorbell, as it holds the relay; it asks for the Touch ID.
+        let client = try AppConnection.connect(control: control, launch: launch).controlClient
+        if enabled { fputs("Touch ID in Keysrs…\n", stderr) }
+        let obj = try client.call(method: "POST", path: "/api/relay", body: ["doorbell": enabled], expect: 200)
+        guard enabled else {
+            out("doorbell off: agents that ring get 503 doorbell_offline")
+            return
+        }
+        let ring = JSONValue.string(obj["url"]).flatMap { URL(string: $0) }.map(RelayURL.doorbellRingURL) ?? "https://<your worker>/.keysrs/doorbell"
+        out("""
+            doorbell on: Keysrs listens while it runs, and asks you for Touch ID when an agent rings.
+            An agent rings with its client token (and its pairing, if pairing is required):
+              curl -X POST \(ring) -H "Authorization: Bearer $KEYSRS_TOKEN" -H "X-KSF-Pair: $KEYSRS_PAIR"
+            The Worker must be redeployed from this checkout once to have a doorbell (cd Relay && npx wrangler deploy).
+            """)
     }
 }
 
@@ -2584,9 +2646,10 @@ struct RelayStatusCommand: ParsableCommand {
             print("set up with: keys relay setup --url https://<your worker>.workers.dev")
         }
         let control = ControlFile.url(beside: service.catalog.path)
-        if let client = try? ControlClient.connect(control: control),
-           let obj = try? client.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5)
-        {
+        let app = (try? ControlClient.connect(control: control))
+            .flatMap { try? $0.call(method: "GET", path: "/api/relay", expect: 200, timeout: 5) }
+        print("doorbell \(RelayCommand.doorbellLine(enabled: service.doorbellEnabled(), app: app))")
+        if let obj = app {
             print("app     \(RelayCommand.appLine(obj))")
         }
         if let held = RelayLock.holder(at: service.relayLockURL), !held.isApp(control: control) {
@@ -2639,6 +2702,11 @@ struct RelayResetCommand: ParsableCommand {
             if JSONValue.bool(obj["on"]) == true {
                 _ = try client.call(method: "POST", path: "/api/relay", body: ["enabled": false], expect: 200)
                 out("turned off the relay in Keysrs")
+            }
+            // The app's doorbell holds the key in memory; it goes off with the relay it rings for.
+            if JSONValue.bool(obj["doorbell"]) == true {
+                _ = try client.call(method: "POST", path: "/api/relay", body: ["doorbell": false], expect: 200)
+                out("turned off the doorbell in Keysrs")
             }
         }
         try service.resetRelay()

@@ -120,6 +120,7 @@ enum AppRuntime {
         DispatchQueue.global(qos: .utility).async { service.sweepHeldTokens() }
         // Before the site serves, so every relay the menu or the dashboard turns on logs here.
         service.relayHost = RelayHost(log: { logFile.write("relay " + $0) })
+        service.doorbellHost = DoorbellHost(log: { logFile.write("relay " + $0) })
         // The app owns notifications: the authorization ask and the local-state poll
         // both run from the app process, never from a CLI or MCP subprocess.
         let notifications = AppNotifier(preferences: service.preferences)
@@ -134,6 +135,8 @@ enum AppRuntime {
             throw error
         }
         guard let server = startedServer else { throw AppError.http("Keysrs could not start its dashboard.") }
+        // A doorbell the person left on listens again, without Touch ID: it can only ask.
+        service.startDoorbellAtLaunch()
         let link = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/keys")
         if CommandLineLink.repairRetired(link: link, retired: root.appendingPathComponent("bin/keys"), binary: binary) {
             log("command line link moved from the retired runtime to Keysrs.app")
