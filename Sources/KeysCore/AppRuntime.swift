@@ -162,7 +162,9 @@ enum AppRuntime {
         // no default control file, so a second invocation inside a test process
         // finds no live app and asks nothing — the fail-closed direction.
         guard let control = control ?? (try? ControlFile.url()) else { return false }
-        guard let info = ControlFile.live(at: control) else { return false }
+        // `serving`, not `live`: the call carries the control token, and a file that
+        // outlived its site may name a port someone else now holds.
+        guard let info = ControlFile.serving(at: control) else { return false }
         _ = try? client(info).call(method: "POST", path: "/api/mcp/app/show", expect: 200)
         return true
     }

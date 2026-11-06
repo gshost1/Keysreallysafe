@@ -349,6 +349,10 @@ final class HeldClientTokenTests: XCTestCase {
         let answer = try client.call(method: "POST", path: "/api/clients/held/token", body: ["label": "cron"], expect: 200)
         XCTAssertEqual(answer["token"] as? String, issued.token)
         XCTAssertEqual(log.last?.headers["x-ksf-control"], handler.controlSecret)
+        // A route that does not need the secret never carries it.
+        _ = try client.call(method: "POST", path: "/api/mcp/grants/status", body: [:], expect: 200)
+        XCTAssertEqual(log.last?.path, "/api/mcp/grants/status")
+        XCTAssertNil(log.last?.headers["x-ksf-control"])
 
         try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
         XCTAssertEqual(try ControlFile.read(at: control)?.controlSecret, "")

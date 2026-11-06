@@ -325,8 +325,11 @@ struct ControlClient {
         req.httpMethod = method
         req.timeoutInterval = timeout
         req.setValue(info.token, forHTTPHeaderField: "X-KSF-Token")
-        // Sent on every call: `serving` already proved this listener is this user's site.
-        if !info.controlSecret.isEmpty { req.setValue(info.controlSecret, forHTTPHeaderField: ControlFile.secretHeader) }
+        // Only the routes that need it carry the secret, so it never rides a call that
+        // does not, whatever proved (or failed to prove) the listener for this client.
+        if ControlFile.requiresSecret(method: method, path: path) {
+            req.setValue(info.controlSecret, forHTTPHeaderField: ControlFile.secretHeader)
+        }
         req.setValue("127.0.0.1:\(info.port)", forHTTPHeaderField: "Host")
         if let body {
             req.httpBody = try JSONValue.data(body)
