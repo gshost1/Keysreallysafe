@@ -84,6 +84,8 @@ final class MenubarRecoveryTests: XCTestCase {
         let delay = Duration.milliseconds(400)
         let controller = MenubarItemController(workspaceCenter: center, appCenter: center,
                                                recoveryDelay: delay, defaults: defaults)
+        var stopped = false
+        defer { if !stopped { controller.stop() } }
         let original = controller.item
         // Each request restarts the delay, so the item can only change mid-burst if some gap
         // between two requests, or since the last one, reached the delay. A busy CI runner can
@@ -91,6 +93,7 @@ final class MenubarRecoveryTests: XCTestCase {
         let clock = ContinuousClock()
         var longestGap = Duration.zero
         var lastRequest: ContinuousClock.Instant?
+        var recoveredMidBurst = false
         for _ in 0..<5 {
             let now = clock.now
             if let lastRequest { longestGap = max(longestGap, now - lastRequest) }
@@ -99,15 +102,29 @@ final class MenubarRecoveryTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
             if longestGap < delay, clock.now - now < delay {
                 XCTAssertTrue(controller.item === original)
+            } else {
+                recoveredMidBurst = true
             }
         }
         let didReplace = try await replaced(controller, from: original)
         XCTAssertTrue(didReplace)
-        let recovered = controller.item
+        var recovered = controller.item
+        if recoveredMidBurst {
+            // A recovery that fired mid-burst leaves the later requests to schedule one more,
+            // which is correct; the coalescing check below is about the burst's last request,
+            // so wait for the item to hold still for longer than the delay first.
+            let deadline = clock.now.advanced(by: .seconds(30))
+            while clock.now < deadline {
+                try await Task.sleep(for: delay + .milliseconds(300))
+                if controller.item === recovered { break }
+                recovered = controller.item
+            }
+        }
         try await Task.sleep(for: .milliseconds(700))
         XCTAssertTrue(controller.item === recovered)
         controller.requestRecovery(reason: "pending at shutdown")
         controller.stop()
+        stopped = true
         center.post(name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
         try await Task.sleep(for: .milliseconds(700))
         XCTAssertTrue(controller.item === recovered)
