@@ -516,17 +516,17 @@ enum EnvFileWriter {
     /// so the caller never reports a clean tree that is not.
     static func scrubBackups(under root: URL) throws {
         let fm = FileManager.default
-        guard let folders = try? fm.contentsOfDirectory(atPath: root.path) else { return }
+        guard isRegular(root, directory: true) else { return }
+        let unreadable = { (name: String) in AppError.usage("cannot read the wrap-time backup \(name)") }
+        guard let folders = try? fm.contentsOfDirectory(atPath: root.path) else { throw unreadable("folder") }
         for folder in folders {
             let dir = root.appendingPathComponent(folder, isDirectory: true)
-            guard isRegular(dir, directory: true),
-                  let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
-            // A backup ends in its timestamp; a scratch temp of one ends in `.keysrs-<hex>`.
-            for name in names {
-                guard let mark = name.range(of: ".keysrs-backup-", options: .backwards),
-                      !name[mark.upperBound...].contains(".") else { continue }
+            guard isRegular(dir, directory: true) else { continue }
+            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { throw unreadable("folder") }
+            for name in names where isBackupName(name) {
                 let file = dir.appendingPathComponent(name)
-                guard isRegular(file, directory: false), let data = fm.contents(atPath: file.path) else { continue }
+                guard isRegular(file, directory: false) else { continue }
+                guard let data = fm.contents(atPath: file.path) else { throw unreadable(name) }
                 let cut = backupContent(of: data)
                 guard cut != data else { continue }
                 let temp = dir.appendingPathComponent(".\(name).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
@@ -546,15 +546,29 @@ enum EnvFileWriter {
     /// Removes the App Support backups of one file — its own names in its hashed
     /// folder, never a sibling file's — and the folder once it is empty. Unwrap calls
     /// it after every line came back: nothing reads them after that.
-    static func removeBackups(of url: URL, under root: URL) {
-        guard let dir = backupDirectory(for: url, under: root),
-              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+    /// Answers false when one could not be removed, so the caller does not report
+    /// it gone. A scrub temp a crash left behind (`.<backup>.keysrs-<hex>`) goes too.
+    @discardableResult
+    static func removeBackups(of url: URL, under root: URL) -> Bool {
+        guard let dir = backupDirectory(for: url, under: root) else { return true }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return !FileManager.default.fileExists(atPath: dir.path)
+        }
         let prefix = url.lastPathComponent + ".keysrs-backup-"
-        for name in names where name.hasPrefix(prefix) {
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        var clean = true
+        for name in names where name.hasPrefix(prefix) || name.hasPrefix("." + prefix) {
+            do { try FileManager.default.removeItem(at: dir.appendingPathComponent(name)) } catch { clean = false }
         }
         // rmdir refuses a folder that still holds a sibling's backup.
         _ = Darwin.rmdir(dir.path)
+        return clean
+    }
+
+    /// A backup's own name ends in its timestamp (`.keysrs-backup-<ts>`, maybe `-n`);
+    /// a scratch temp of one ends in `.keysrs-<hex>` after it.
+    private static func isBackupName(_ name: String) -> Bool {
+        guard let mark = name.range(of: ".keysrs-backup-", options: .backwards) else { return false }
+        return !name[mark.upperBound...].contains(".")
     }
 
     /// lstat's answer: a real directory or regular file, never a symlink to one.
@@ -609,8 +623,14 @@ enum EnvFileWriter {
         } catch {
             // A rename that got through and then failed further up must not leave the
             // new bytes behind: put the original back, then drop the scratch files.
-            try? restore(prepared)
-            discard([prepared])
+            // When the original cannot go back, the backup stays: it holds the
+            // companion lines unwrap needs to undo the file by hand.
+            do {
+                try restore(prepared)
+                discard([prepared])
+            } catch {
+                try? FileManager.default.removeItem(at: prepared.temp)
+            }
             throw error
         }
         return Result(backup: prepared.backup)

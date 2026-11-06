@@ -406,6 +406,28 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(backupsHolding(plainValue, under: root), [], "rm scrubbed the older backup")
     }
 
+    /// Older builds wrote byte copies, beside the file (pre-0.14) or in App Support
+    /// (0.14, 0.15). A clean unwrap removes both, whichever one it read: the legacy
+    /// copy used to stay whenever an App Support backup existed.
+    func testACleanUnwrapRemovesOlderFullBackupsInBothPlaces() throws {
+        let site = try makeSite()
+        let project = try makeProject("bothplaces", in: site.dir)
+        let original = "OPENAI_API_KEY=\(plainValue)\n"
+        let env = try write(original, to: ".env", under: project)
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let root = EnvFileWriter.backupsRoot(beside: site.db.path)
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: root))
+        try Data(original.utf8).write(to: dir.appendingPathComponent(".env.keysrs-backup-20261001-000000"))
+        let legacy = project.appendingPathComponent(".env.keysrs-backup-20260901-000000")
+        try Data(original.utf8).write(to: legacy)
+
+        _ = try site.service.unwrap(file: env.path, folder: nil)
+
+        XCTAssertEqual(try String(contentsOf: env, encoding: .utf8), original)
+        XCTAssertFalse(fm.fileExists(atPath: legacy.path), "the copy beside the file is gone")
+        XCTAssertEqual(backupsHolding(plainValue, under: root), [], "and so is the App Support one")
+    }
+
     /// Two files in one folder share a hashed backup folder: unwrapping one removes
     /// only its own backups, and the other's companion line stays for its unwrap.
     func testUnwrapRemovesOnlyItsOwnFilesBackups() throws {
