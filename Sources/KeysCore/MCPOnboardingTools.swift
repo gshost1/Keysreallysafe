@@ -391,17 +391,69 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
 
     /// The production git seam: git resolved from PATH the way a shell would,
     /// taken per call so construction stays offline-safe and a PATH that
-    /// changes mid-session needs no restart. Empty PATH components are skipped
-    /// (a shell would read them as the working directory; a tool must not).
+    /// changes mid-session needs no restart. Only absolute PATH entries count:
+    /// an empty or relative one (".", "node_modules/.bin") resolves against this
+    /// process's working directory, which is the project folder, so a `git` the
+    /// repository ships would run as the user.
     /// Tests inject explicit paths instead — a real one for fixture repos, a
     /// missing or fake one for the degraded answers.
     static func gitOnPATH() -> String? {
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        for directory in path.split(separator: ":") where !directory.isEmpty {
+        for directory in absolutePATH().split(separator: ":") {
             let candidate = "\(directory)/git"
             if isRunnable(candidate) { return candidate }
         }
         return nil
+    }
+
+    /// The inherited PATH with every empty or relative entry dropped.
+    private static func absolutePATH() -> String {
+        (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .filter { $0.hasPrefix("/") }
+            .joined(separator: ":")
+    }
+
+    /// Overrides for the repository settings that make these read-only queries
+    /// run a command: a folder's .git/config may come from someone else (an
+    /// archive, a synced folder), and git runs what it names as the user.
+    /// core.fsmonitor fires on any query that reads the index (check-ignore,
+    /// ls-files); log.showSignature makes `log` call gpg.program on signed
+    /// commits; hooks and transports are never needed here. Command-line config
+    /// outranks every config file, includes included. core.fsmonitor is empty,
+    /// not "false": git before 2.36 reads the key as a hook path and would run
+    /// a `false` found on PATH, while every version reads empty as off.
+    private static let gitHardening = [
+        "-c", "core.fsmonitor=",
+        "-c", "log.showSignature=false",
+        "-c", "core.hooksPath=/dev/null",
+        "-c", "protocol.allow=never",
+    ]
+
+    /// The whole environment git gets. Nothing else is inherited: an agent's
+    /// GIT_DIR, GIT_CONFIG_COUNT/KEY/VALUE or GIT_SSH_COMMAND would retarget git
+    /// or add config the overrides above don't name, and the rest (API keys
+    /// among it) is none of git's business. System and global config still
+    /// apply on purpose: the user wrote them, the overrides above outrank them,
+    /// and they carry the user's safe.directory entries (without them a trusted
+    /// repository owned by another account reads as "not a git repository")
+    /// and core.excludesFile (without it `gitignored` disagrees with the user's
+    /// own git). HOME and XDG_CONFIG_HOME locate those files; DEVELOPER_DIR
+    /// picks the toolchain behind the /usr/bin/git shim. No lazy fetch, so a
+    /// partial clone's missing object never starts a fetch from the remote the
+    /// repository names. Git older than 2.39.4 ignores GIT_NO_LAZY_FETCH, and a
+    /// repository's own protocol.<name>.allow outranks `-c protocol.allow`, so
+    /// an `ext::` promisor remote could still run a command there;
+    /// GIT_ALLOW_PROTOCOL overrides every protocol setting on any git since
+    /// 2.6.1, and "none" names no real transport.
+    private static func gitEnvironment() -> [String: String] {
+        let inherited = ProcessInfo.processInfo.environment
+        var environment = [
+            "PATH": absolutePATH(), "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "none",
+        ]
+        for name in ["HOME", "XDG_CONFIG_HOME", "DEVELOPER_DIR"] {
+            if let value = inherited[name] { environment[name] = value }
+        }
+        return environment
     }
 
     /// One metadata-only probe: is the folder inside a git working tree at all?
@@ -442,7 +494,8 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         return !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// One bounded git invocation, `-C` pinned to the canonical root. nil means
+    /// One bounded git invocation, `-C` pinned to the canonical root, with the
+    /// command-running settings overridden and a fixed environment. nil means
     /// git could not be spawned or did not finish inside the bound — the caller
     /// turns that into the honest statement instead of a fact. stderr is
     /// discarded unread: a fatal's text must never reach a result, and an unread
@@ -455,7 +508,11 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     ) -> (exit: Int32, output: String)? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = ["-C", directory] + arguments
+        process.arguments = ["-C", directory] + gitHardening + arguments
+        process.environment = gitEnvironment()
+        // Not the MCP server's stdin: that is the host's JSON-RPC stream, and a
+        // repository's `include.path=/dev/stdin` would have git read from it.
+        process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let out = Pipe()
         process.standardOutput = out

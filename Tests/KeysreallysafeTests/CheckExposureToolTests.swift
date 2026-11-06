@@ -143,7 +143,9 @@ final class CheckExposureToolTests: XCTestCase {
         let script = """
         #!/bin/sh
         printf '%s\\n' "git $*" >> "\(log.path)"
-        case "$3" in
+        # Skip the global options (-C <dir>, -c <key=value>) to the subcommand.
+        while [ "$1" = "-C" ] || [ "$1" = "-c" ]; do shift 2; done
+        case "$1" in
           rev-parse) echo true; exit 0 ;;
           check-ignore) exit 1 ;;
           ls-files) exit 0 ;;
@@ -293,20 +295,31 @@ final class CheckExposureToolTests: XCTestCase {
         let recorded = try String(contentsOf: log, encoding: .utf8)
             .split(separator: "\n").map(String.init)
         XCTAssertEqual(recorded.count, 4, "one repository probe plus the three facts for the one file")
+        let hardening = [
+            "-c", "core.fsmonitor=", "-c", "log.showSignature=false",
+            "-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never",
+        ]
         for (index, expected) in [
             "rev-parse --is-inside-work-tree",
             "check-ignore -- .env",
             "ls-files -- .env",
             "log --all --oneline -- .env",
         ].enumerated() {
-            // "git", "-C", "<the canonical root>", "<the fact query on the relative path>"
-            let parts = recorded[index].split(separator: " ", maxSplits: 3).map(String.init)
+            // "git", "-C", "<the canonical root>", the overrides that keep the
+            // scanned repository's config from running anything, then "<the
+            // fact query on the relative path>".
+            let parts = recorded[index].split(separator: " ", maxSplits: 3 + hardening.count).map(String.init)
+            XCTAssertEqual(parts.count, 4 + hardening.count, "unexpected argv: \(recorded[index])")
+            guard parts.count == 4 + hardening.count else { continue }
             XCTAssertEqual(parts[0], "git")
             XCTAssertEqual(parts[1], "-C", "every call pins the working directory")
             XCTAssertTrue(parts[2].hasPrefix("/"), "the canonical root, absolute for git and never in the result")
-            XCTAssertEqual(parts[3], expected, "the exact fact query, on the relative path")
+            XCTAssertEqual(Array(parts[3..<(3 + hardening.count)]), hardening,
+                           "every call overrides the repository's command-running settings")
+            XCTAssertEqual(parts[3 + hardening.count], expected, "the exact fact query, on the relative path")
+            // The query alone: "log.showSignature=false" in the overrides is not a show.
             for forbidden in ["show", "diff", "blame", "cat ", "checkout", "remote"] {
-                XCTAssertFalse(recorded[index].contains(forbidden),
+                XCTAssertFalse(parts[3 + hardening.count].contains(forbidden),
                                "no content-bearing command is ever run: \(recorded[index])")
             }
         }
@@ -494,5 +507,199 @@ final class CheckExposureToolTests: XCTestCase {
             XCTAssertEqual(text, "the folder must be this session's working directory or inside it",
                           "\(label): the exact path-free message")
         }
+    }
+
+    // MARK: - The scanned repository's config never runs a command
+
+    /// A repository is a folder someone else may have written: an archive, a
+    /// synced folder, a nested checkout. Its .git/config can name commands that
+    /// git runs "in the usual way" (man git, SECURITY), and safe.directory does
+    /// not help when the user owns the extracted folder. check_exposure is the
+    /// read-only check agents are told to use instead of git, so none of those
+    /// commands may run. `core.fsmonitor` is consulted by every query that reads
+    /// the index; check-ignore is the first. Failed pre-fix: the marker existed.
+    func testARepositoryConfiguredFsmonitorNeverRuns() throws {
+        let root = try makeExposureRepo()
+        let marker = try TempDir.make().appendingPathComponent("fsmonitor-ran")
+        // Set last: the fixture's own add and commit must not trip it.
+        try git(["config", "core.fsmonitor", "touch '\(marker.path)'; false"], in: root)
+
+        let result = try callJSON(try roster(projectFolder: { root.path }), arguments: ["folder": root.path])
+
+        XCTAssertFalse(fm.fileExists(atPath: marker.path), "the repository's core.fsmonitor command ran")
+        try assertFixtureFacts(result)
+    }
+
+    /// `log.showSignature` in the repository config makes `git log` verify every
+    /// signed commit it prints with `gpg.program`, which the same config names.
+    /// The signed commit is a hand-written object with a dummy signature, so no
+    /// key or real gpg is involved. Failed pre-fix: the marker existed.
+    func testARepositoryConfiguredSignatureProgramNeverRuns() throws {
+        let root = try makeExposureRepo()
+        let scratch = try TempDir.make()
+        let marker = scratch.appendingPathComponent("gpg-ran")
+        let fakeGPG = scratch.appendingPathComponent("fake-gpg")
+        try Data("#!/bin/sh\ntouch '\(marker.path)'\nexit 1\n".utf8).write(to: fakeGPG)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeGPG.path)
+
+        // A root commit carrying a gpgsig header over the current tree, so it
+        // touches every tracked env file and `log -- <file>` prints it.
+        let tree = try git(["rev-parse", "HEAD^{tree}"], in: root).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let object = scratch.appendingPathComponent("signed-commit")
+        let signedCommit = [
+            "tree \(tree)",
+            "author fixture <fixture@invalid> 1700000000 +0000",
+            "committer fixture <fixture@invalid> 1700000000 +0000",
+            "gpgsig -----BEGIN PGP SIGNATURE-----",
+            " ",
+            " iQEzBAABCAAdFIXTURE",
+            " -----END PGP SIGNATURE-----",
+            "",
+            "fixture signed commit",
+            "",
+        ].joined(separator: "\n")
+        try Data(signedCommit.utf8).write(to: object)
+        let commit = try git(["hash-object", "-t", "commit", "-w", object.path], in: root).stdout
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try git(["update-ref", "refs/heads/signed", commit], in: root)
+        try git(["config", "log.showSignature", "true"], in: root)
+        try git(["config", "gpg.program", fakeGPG.path], in: root)
+
+        let result = try callJSON(try roster(projectFolder: { root.path }), arguments: ["folder": root.path])
+
+        XCTAssertFalse(fm.fileExists(atPath: marker.path), "the repository's gpg.program ran")
+        try assertFixtureFacts(result)
+    }
+
+    /// Runs `body` with process environment variables set (or, for nil,
+    /// unset), restoring each one's previous value afterwards. Tests run
+    /// serially, so the process-wide change is visible only to this test.
+    private func withEnvironment(_ changes: [String: String?], _ body: () throws -> Void) rethrows {
+        let before = ProcessInfo.processInfo.environment
+        for (name, value) in changes {
+            if let value { setenv(name, value, 1) } else { unsetenv(name) }
+        }
+        defer {
+            for name in changes.keys {
+                if let old = before[name] { setenv(name, old, 1) } else { unsetenv(name) }
+            }
+        }
+        try body()
+    }
+
+    /// git gets a fixed environment: no lazy fetch, no transport, and nothing
+    /// inherited from the MCP process beyond PATH (absolute entries only), HOME,
+    /// XDG_CONFIG_HOME and DEVELOPER_DIR. An inherited GIT_DIR, GIT_CONFIG_COUNT or
+    /// GIT_SSH_COMMAND would otherwise point git at another repository or add
+    /// config the overrides do not name, and API-key variables are none of
+    /// git's business. Failed pre-fix: the whole environment was passed on.
+    func testGitRunsWithAMinimalEnvironment() throws {
+        let root = try TempDir.make()
+        try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: root)
+        let dump = try TempDir.make().appendingPathComponent("env.txt")
+        let fake = try TempDir.make().appendingPathComponent("env-git")
+        try Data("#!/bin/sh\n/usr/bin/env > '\(dump.path)'\necho true\nexit 0\n".utf8).write(to: fake)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+
+        var changes: [String: String?] = [:]
+        for name in ["GIT_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_SSH_COMMAND",
+                     "KEYSRS_TEST_UNRELATED"] {
+            changes[name] = "inherited-\(name)"
+        }
+        changes["PATH"] = "relative-entry:\(ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")"
+        changes["XDG_CONFIG_HOME"] = "/nonexistent-xdg"
+        changes["DEVELOPER_DIR"] = "/nonexistent-developer"
+        try withEnvironment(changes) {
+            _ = try callJSON(try roster(projectFolder: { root.path }, gitExecutable: { fake.path }),
+                             arguments: ["folder": root.path])
+        }
+
+        var seen: [String: String] = [:]
+        for line in try String(contentsOf: dump, encoding: .utf8).split(separator: "\n") {
+            let pair = line.split(separator: "=", maxSplits: 1).map(String.init)
+            seen[pair[0]] = pair.count > 1 ? pair[1] : ""
+        }
+        // /bin/sh adds PWD, SHLVL and _ on its own; they never came from Keysrs.
+        let fromShell: Set<String> = ["PWD", "SHLVL", "_", "OLDPWD"]
+        var expected: Set<String> = [
+            "PATH", "GIT_NO_LAZY_FETCH", "GIT_ALLOW_PROTOCOL", "XDG_CONFIG_HOME", "DEVELOPER_DIR",
+        ]
+        if ProcessInfo.processInfo.environment["HOME"] != nil { expected.insert("HOME") }
+        XCTAssertEqual(Set(seen.keys).subtracting(fromShell), expected, "git sees only the fixed environment")
+        XCTAssertEqual(seen["GIT_NO_LAZY_FETCH"], "1")
+        XCTAssertEqual(seen["GIT_ALLOW_PROTOCOL"], "none", "no transport, whatever the repository allows")
+        XCTAssertEqual(seen["XDG_CONFIG_HOME"], "/nonexistent-xdg")
+        XCTAssertEqual(seen["DEVELOPER_DIR"], "/nonexistent-developer")
+        XCTAssertFalse((seen["PATH"] ?? "").split(separator: ":").contains { !$0.hasPrefix("/") },
+                       "PATH keeps absolute entries only: \(seen["PATH"] ?? "")")
+    }
+
+    /// The user's own global config still applies: it is theirs, the overrides
+    /// outrank it, and its core.excludesFile is part of what `gitignored`
+    /// means for this user. A temp HOME holds a .gitconfig naming a global
+    /// ignore file that lists `.env`; the repository's own .gitignore does not.
+    func testTheUsersGlobalExcludesFileStillCounts() throws {
+        let root = try TempDir.make()
+        try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: root)
+        try git(["init", "-q"], in: root)
+
+        let home = try TempDir.make()
+        let globalIgnore = home.appendingPathComponent("global-ignore")
+        try write(".env\n", to: "global-ignore", under: home)
+        try write("[core]\n\texcludesFile = \(globalIgnore.path)\n", to: ".gitconfig", under: home)
+
+        try withEnvironment(["HOME": home.path, "XDG_CONFIG_HOME": nil]) {
+            let result = try callJSON(try roster(projectFolder: { root.path }), arguments: ["folder": root.path])
+            XCTAssertEqual(result["git"] as? String, "available")
+            XCTAssertEqual(try rows(result)[".env"]?["gitignored"] as? Bool, true,
+                           "the user's global excludesFile ignores .env, as their own git would")
+        }
+    }
+
+    /// The facts makeExposureRepo builds, unchanged by the hardening.
+    private func assertFixtureFacts(
+        _ result: [String: Any], file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        XCTAssertEqual(result["git"] as? String, "available", file: file, line: line)
+        let rows = try rows(result)
+        for (path, facts) in [
+            ".env": (false, false, true), ".env.local": (true, false, false),
+            ".env.production": (false, true, true), "sub/.env": (false, false, false),
+        ] {
+            let row = try XCTUnwrap(rows[path], file: file, line: line)
+            XCTAssertEqual(row["gitignored"] as? Bool, facts.0, "\(path) gitignored", file: file, line: line)
+            XCTAssertEqual(row["tracked"] as? Bool, facts.1, "\(path) tracked", file: file, line: line)
+            XCTAssertEqual(row["in_history"] as? Bool, facts.2, "\(path) in_history", file: file, line: line)
+        }
+    }
+
+    // MARK: - gitOnPATH resolves absolute entries only
+
+    /// A relative PATH entry (".", "node_modules/.bin") resolves against the MCP
+    /// process's working directory, which is the project folder, so a `git` the
+    /// repository ships would run. The entry here is a relative path to a temp
+    /// dir holding a fake git, placed ahead of the real PATH, so the test needs
+    /// no chdir. Failed pre-fix: gitOnPATH returned the fake.
+    func testGitOnPATHSkipsRelativeEntries() throws {
+        let fakeDir = try TempDir.make().resolvingSymlinksInPath()
+        let fake = fakeDir.appendingPathComponent("git")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: fake)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+
+        let cwd = URL(fileURLWithPath: fm.currentDirectoryPath).resolvingSymlinksInPath().path
+        let depth = cwd.split(separator: "/").count
+        let relative = String(repeating: "../", count: depth) + String(fakeDir.path.dropFirst())
+        XCTAssertFalse(relative.hasPrefix("/"))
+        XCTAssertTrue(fm.isExecutableFile(atPath: relative + "/git"), "the relative entry reaches the fake")
+
+        var resolved: String?
+        withEnvironment(["PATH": "\(relative):\(ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")"]) {
+            resolved = MCPOnboardingTools.gitOnPATH()
+        }
+        XCTAssertNotNil(resolved, "the real git on the absolute entries still resolves")
+        XCTAssertTrue(resolved?.hasPrefix("/") ?? false, "only an absolute entry may supply git: \(resolved ?? "nil")")
+        XCTAssertNotEqual(resolved.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }, fake.path,
+                          "the relative entry's fake git was chosen")
     }
 }
