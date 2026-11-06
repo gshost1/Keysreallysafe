@@ -399,13 +399,13 @@ enum EnvFileWriter {
         var backup: URL
     }
 
-    /// One file's rewrite, prepared but not committed: the pre-image's backup is on
-    /// disk, the new bytes are in a temp beside the target (same directory, the file's
-    /// own mode, one `rename` away) and the target itself has not moved. The split
-    /// exists so a batch of files can be made all-or-nothing: every file is prepared
-    /// first, and only a batch whose every temp exists commits. `discard` removes the
-    /// temps and the backups, `commit` renames the temps home, `restore` puts an
-    /// already-renamed file back.
+    /// One file's rewrite, prepared but not committed: the backup of the pre-image's
+    /// companion lines is on disk, the new bytes are in a temp beside the target (same
+    /// directory, the file's own mode, one `rename` away) and the target itself has not
+    /// moved. The split exists so a batch of files can be made all-or-nothing: every
+    /// file is prepared first, and only a batch whose every temp exists commits.
+    /// `discard` removes the temps and the backups, `commit` renames the temps home,
+    /// `restore` puts an already-renamed file back.
     struct Prepared {
         var url: URL
         var backup: URL
@@ -413,7 +413,8 @@ enum EnvFileWriter {
         /// The bytes the target held when this was prepared: `commit` proves they are
         /// still there before the rename, so the refuse-if-changed guarantee covers the
         /// whole window (for `keys wrap`, all the way across the plan's apply), and
-        /// `restore` proves the rename landed before it puts them back.
+        /// `restore` puts exactly these back — from memory, because the backup on disk
+        /// keeps only the companion lines.
         var original: Data
         /// The new bytes this call put in the temp: `restore` proves the file still
         /// holds exactly these before it overwrites them, so a user edit made in the
@@ -450,11 +451,12 @@ enum EnvFileWriter {
     }
 
     /// Where wrap-time backups live: beside the CATALOG, like control.json and
-    /// relay.lock — never inside the project (VAL-O-002). A backup holds the real
-    /// secret values, so it must not sit in the tree the agent works in, where one
-    /// `git add -A` commits it and `git clean` eats the only restore source.
-    /// Derived from the catalog location each call, never a bare `Paths.appSupport`,
-    /// so `KEYS_CATALOG` keeps every writer and reader on the same tree.
+    /// relay.lock — never inside the project (VAL-O-002), where one `git add -A`
+    /// commits it, `git clean` eats it, and an agent can plant one. A backup keeps
+    /// only the base URL companion lines (`backupContent`); key values come back
+    /// from the vault. Derived from the catalog location each call, never a bare
+    /// `Paths.appSupport`, so `KEYS_CATALOG` keeps every writer and reader on the
+    /// same tree.
     static func backupsRoot(beside catalog: URL) -> URL {
         catalog.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
     }
@@ -468,6 +470,112 @@ enum EnvFileWriter {
     /// real Application Support.
     static func defaultBackupsRoot() throws -> URL {
         backupsRoot(beside: try Paths.resolvingCatalog())
+    }
+
+    /// What a wrap-time backup keeps of the original file: only the assignments of
+    /// the base URL companion variables a wrap rewrites — the one thing unwrap reads
+    /// from it. Unwrap restores key values from the vault, so a byte copy of the file
+    /// would only park live keys at a predictable path beside the catalog, readable
+    /// by any process running as the user (the agent the wrap moves keys away from
+    /// included) with no Touch ID, until something deleted it — and nothing did.
+    /// Comments, other variables and multi-line values are dropped; bytes that are
+    /// not UTF-8 keep nothing.
+    static func backupContent(of original: Data) -> Data {
+        guard let text = String(data: original, encoding: .utf8) else { return Data() }
+        let parsed = EnvFile.parse(text)
+        let companions = Set(WrapDetect.baseURLVariables.values)
+        let kept = parsed.lines.filter {
+            guard case let .entry(entry) = $0 else { return false }
+            return !entry.multiline && companions.contains(entry.name)
+        }
+        return Data(EnvFile(lines: kept, newline: parsed.newline).render().utf8)
+    }
+
+    /// Creates the file's hashed backup folder (0700) and marks the backups root
+    /// excluded from Time Machine, every time: a root made by an older build has no
+    /// mark yet, and the backups have no reason to be on a backup disk.
+    private static func makeBackupDirectory(_ dir: URL, root: URL) throws {
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
+        )
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var marked = root
+        // Best effort: the backups hold no key value, so a volume that refuses the
+        // mark is not worth refusing the wrap over.
+        try? marked.setResourceValues(values)
+    }
+
+    /// Cuts every backup under `root` down to its companion lines (`backupContent`).
+    /// Backups written by 0.14 and 0.15 are byte copies of the original file, so rm
+    /// and rotate call this: the value they remove or replace must not stay on disk
+    /// beside the catalog. Idempotent; a backup already in the new form is left
+    /// alone, and symlinks and anything not named like a backup are never touched.
+    /// Each cut goes through a temp and one rename, so a crash leaves the old file
+    /// or the new one. Throws when a backup that still needs cutting cannot be cut,
+    /// so the caller never reports a clean tree that is not.
+    static func scrubBackups(under root: URL) throws {
+        let fm = FileManager.default
+        guard isRegular(root, directory: true) else { return }
+        let unreadable = { (name: String) in AppError.usage("cannot read the wrap-time backup \(name)") }
+        guard let folders = try? fm.contentsOfDirectory(atPath: root.path) else { throw unreadable("folder") }
+        for folder in folders {
+            let dir = root.appendingPathComponent(folder, isDirectory: true)
+            guard isRegular(dir, directory: true) else { continue }
+            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { throw unreadable("folder") }
+            for name in names where isBackupName(name) {
+                let file = dir.appendingPathComponent(name)
+                guard isRegular(file, directory: false) else { continue }
+                guard let data = fm.contents(atPath: file.path) else { throw unreadable(name) }
+                let cut = backupContent(of: data)
+                guard cut != data else { continue }
+                let temp = dir.appendingPathComponent(".\(name).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
+                do {
+                    try writeNew(temp, data: cut, mode: 0o600)
+                    guard Darwin.rename(temp.path, file.path) == 0 else {
+                        throw AppError.usage("could not replace \(name): \(String(cString: strerror(errno)))")
+                    }
+                } catch {
+                    try? fm.removeItem(at: temp)
+                    throw AppError.usage("cannot clean the wrap-time backup \(name): \(Self.systemReason(error))")
+                }
+            }
+        }
+    }
+
+    /// Removes the App Support backups of one file — its own names in its hashed
+    /// folder, never a sibling file's — and the folder once it is empty. Unwrap calls
+    /// it after every line came back: nothing reads them after that.
+    /// Answers false when one could not be removed, so the caller does not report
+    /// it gone. A scrub temp a crash left behind (`.<backup>.keysrs-<hex>`) goes too.
+    @discardableResult
+    static func removeBackups(of url: URL, under root: URL) -> Bool {
+        guard let dir = backupDirectory(for: url, under: root) else { return true }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return !FileManager.default.fileExists(atPath: dir.path)
+        }
+        let prefix = url.lastPathComponent + ".keysrs-backup-"
+        var clean = true
+        for name in names where name.hasPrefix(prefix) || name.hasPrefix("." + prefix) {
+            do { try FileManager.default.removeItem(at: dir.appendingPathComponent(name)) } catch { clean = false }
+        }
+        // rmdir refuses a folder that still holds a sibling's backup.
+        _ = Darwin.rmdir(dir.path)
+        return clean
+    }
+
+    /// A backup's own name ends in its timestamp (`.keysrs-backup-<ts>`, maybe `-n`);
+    /// a scratch temp of one ends in `.keysrs-<hex>` after it.
+    private static func isBackupName(_ name: String) -> Bool {
+        guard let mark = name.range(of: ".keysrs-backup-", options: .backwards) else { return false }
+        return !name[mark.upperBound...].contains(".")
+    }
+
+    /// lstat's answer: a real directory or regular file, never a symlink to one.
+    private static func isRegular(_ url: URL, directory: Bool) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return false }
+        return (info.st_mode & S_IFMT) == (directory ? S_IFDIR : S_IFREG)
     }
 
     /// The per-file folder inside the backups root, keyed by the SHA-256 of the
@@ -494,14 +602,13 @@ enum EnvFileWriter {
         return url.lastPathComponent + ".keysrs-backup-" + f.string(from: now)
     }
 
-    /// Backs up `original` (0600, never overwriting) under the catalog-sibling
-    /// backups tree — never beside the file — then swaps `text` in with one rename
-    /// so a reader sees the old file or the new one, never half. The new file keeps
-    /// the old mode. Refuses if the file changed since it was read, naming no
-    /// absolute path: the refusal is user-facing (a tool result, a Terminal line).
-    ///
-    /// This is the ONE-file case of the batch `commit`; the batch paths (the import
-    /// and `keys wrap`) prepare every file first and rename them together.
+    /// Backs up `original`'s companion lines (0600, never overwriting) under the
+    /// catalog-sibling backups tree — never beside the file — then swaps `text` in with
+    /// one rename so a reader sees the old file or the new one, never half. The new
+    /// file keeps the old mode. Refuses if the file changed since it was read, naming
+    /// no absolute path: the refusal is user-facing (a tool result, a Terminal line).
+    /// This is the ONE-file case of the batch `commit`; the batch paths (the import and
+    /// `keys wrap`) prepare every file first and rename them together.
     static func rewrite(
         _ url: URL, original: Data, text: String, now: Date = Date(),
         backupRoot: URL? = nil
@@ -516,19 +623,25 @@ enum EnvFileWriter {
         } catch {
             // A rename that got through and then failed further up must not leave the
             // new bytes behind: put the original back, then drop the scratch files.
-            try? restore(prepared)
-            discard([prepared])
+            // When the original cannot go back, the backup stays: it holds the
+            // companion lines unwrap needs to undo the file by hand.
+            do {
+                try restore(prepared)
+                discard([prepared])
+            } catch {
+                try? FileManager.default.removeItem(at: prepared.temp)
+            }
             throw error
         }
         return Result(backup: prepared.backup)
     }
 
-    /// Phase A for one file: the refuse-if-changed check, the pre-wrap backup
-    /// (outside the project) and the new bytes in a temp beside the target — the
-    /// target itself untouched. The check runs FIRST, before a backup or a temp
-    /// exists: an edited file must leave no trace at all, and a backup taken just
-    /// before a refusal used to linger as a pre-image nobody asked for. A failure
-    /// after that removes whatever this call created.
+    /// Phase A for one file: the refuse-if-changed check, the pre-wrap backup of the
+    /// companion lines (outside the project) and the new bytes in a temp beside the
+    /// target — the target itself untouched. The check runs FIRST, before a backup or a
+    /// temp exists: an edited file must leave no trace at all, and a backup taken just
+    /// before a refusal used to linger as a pre-image nobody asked for. A failure after
+    /// that removes whatever this call created.
     static func prepare(
         _ url: URL, original: Data, text: String, now: Date = Date(), backupRoot: URL
     ) throws -> Prepared {
@@ -540,9 +653,7 @@ enum EnvFileWriter {
             throw AppError.usage("cannot decide where to keep the backup for \(url.lastPathComponent); nothing was rewritten")
         }
         do {
-            try FileManager.default.createDirectory(
-                at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
-            )
+            try makeBackupDirectory(dir, root: backupRoot)
         } catch {
             throw AppError.usage("cannot create the backup folder for \(url.lastPathComponent); nothing was rewritten")
         }
@@ -561,7 +672,7 @@ enum EnvFileWriter {
             throw AppError.usage("cannot write \(url.lastPathComponent): \(Self.systemReason(error))")
         }
         do {
-            try writeNew(backup, data: original, mode: 0o600)
+            try writeNew(backup, data: backupContent(of: original), mode: 0o600)
         } catch {
             // writeNew may have created the backup before the write failed: a
             // truncated pre-image would later read as the newest wrap.
@@ -597,9 +708,7 @@ enum EnvFileWriter {
         // The folder holds no secret yet; making it now is what proves the backup
         // can be taken before any key or token exists.
         do {
-            try FileManager.default.createDirectory(
-                at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
-            )
+            try makeBackupDirectory(dir, root: backupRoot)
         } catch {
             throw AppError.usage("cannot create the backup folder for \(url.lastPathComponent); nothing was rewritten")
         }
@@ -648,13 +757,10 @@ enum EnvFileWriter {
             }
             throw AppError.usage("\(prepared.name) changed again after the wrap wrote it")
         }
-        guard let original = FileManager.default.contents(atPath: prepared.backup.path) else {
-            throw AppError.usage("cannot read the backup of \(prepared.name)")
-        }
         let temp = prepared.url.deletingLastPathComponent()
             .appendingPathComponent(".\(prepared.name).keysrs-\(Hex.encode(SecureRandom.bytes(6)))")
         do {
-            try writeNew(temp, data: original, mode: prepared.mode)
+            try writeNew(temp, data: prepared.original, mode: prepared.mode)
             guard Darwin.rename(temp.path, prepared.url.path) == 0 else {
                 throw AppError.usage("could not restore \(prepared.name): \(String(cString: strerror(errno)))")
             }
@@ -669,8 +775,8 @@ enum EnvFileWriter {
     /// same order. A failure while preparing deletes every temp and backup and throws
     /// `BatchFailure(.prepared)`: no file moved, so the caller only has to undo what
     /// IT did before the files (the vault keys, the token). A failure mid-commit
-    /// restores the files already renamed from the backups just taken and deletes the
-    /// remaining temps, then throws `BatchFailure(.committed)` naming what went back
+    /// puts the files already renamed back from the originals held in memory, deletes
+    /// the remaining temps, then throws `BatchFailure(.committed)` naming what went back
     /// and what could not. `afterCommit` runs once, between the last rename and the
     /// caller's own bookkeeping; a throw there rolls the files back the same way.
     @discardableResult
@@ -721,7 +827,9 @@ enum EnvFileWriter {
                     // later unwrap think this file was wrapped.
                     try? FileManager.default.removeItem(at: one.backup)
                 } catch {
-                    // Still holds the new bytes: its backup is the way back.
+                    // Still holds the new bytes. The values it held are in the vault
+                    // (the caller keeps them) and its companions in the backup, so
+                    // keys unwrap is the way back.
                     stuck.append(one.name)
                 }
             }
@@ -740,9 +848,9 @@ enum EnvFileWriter {
 
     /// Unwrap's half of the swap: the same refuse-if-changed, one-rename replace as
     /// `rewrite`, minus the backup. The wrap-time backup (outside the project since
-    /// VAL-O-002) is the restore's own source and stays put, and a fresh one would
-    /// archive the token unwrap exists to revoke — a dead capability parked on disk
-    /// for no reason.
+    /// VAL-O-002) is the restore's source for companion lines and unwrap removes it
+    /// once every line came back; a fresh one would archive the token unwrap exists
+    /// to revoke — a dead capability parked on disk for no reason.
     static func swap(_ url: URL, original: Data, text: String) throws {
         let mode = try currentMode(url)
         guard let current = FileManager.default.contents(atPath: url.path), current == original else {
@@ -1067,7 +1175,7 @@ struct WrapRunner {
             out("  \(item.variable) -> \(item.key ?? "")\(item.isNew ? " (added to the vault)" : "")\(client)")
         }
         for (v, _) in baseURLs.sorted(by: { $0.key < $1.key }) { out("  \(v) -> \(options.relay == nil ? "gateway" : "relay")") }
-        out("backup with the original values kept outside the project (0600); keys unwrap restores from it")
+        out("the original values stay in the vault and keys unwrap restores them; base URL lines are backed up outside the project (0600)")
         out("the gateway forgets keys when Keysrs quits; after a relaunch run keys gateway on <key> for each")
         return Summary(wrapped: wrapped, baseURLs: baseURLs, backup: result.backup, changed: true)
     }

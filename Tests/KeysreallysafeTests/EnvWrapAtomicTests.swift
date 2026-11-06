@@ -160,7 +160,8 @@ final class EnvWrapAtomicTests: XCTestCase {
         XCTAssertFalse(text.contains(fakeBody), "the secret is gone from the file")
         XCTAssertTrue(GatewayClientToken.looksLikeToken(EnvFile.parse(text).entries[0].entry.value))
         XCTAssertEqual(backupFiles(under: vault.dir).count, 1, "exactly the backup the summary names")
-        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(summary.backup)), Data(original.utf8))
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(summary.backup)), Data(),
+                       "no companion line in the original, so the backup keeps no byte of it (audit lead 4)")
         XCTAssertTrue(leftoverTemps(under: vault.dir).isEmpty, "the temp became the file")
         XCTAssertEqual(try vault.db.listWrappedFiles().count, 1)
     }
@@ -190,7 +191,7 @@ final class EnvWrapAtomicTests: XCTestCase {
         let result = try EnvFileWriter.rewrite(
             env, original: Data("A=1\n".utf8), text: "A=2\n", backupRoot: backupRoot
         )
-        XCTAssertEqual(try Data(contentsOf: result.backup), Data("A=1\n".utf8))
+        XCTAssertEqual(try Data(contentsOf: result.backup), Data(), "A is not a companion line (audit lead 4)")
         XCTAssertEqual(try String(contentsOf: env, encoding: .utf8), "A=2\n")
         XCTAssertEqual(backupFiles(under: dir).count, 1, "one backup, the one the result names")
     }

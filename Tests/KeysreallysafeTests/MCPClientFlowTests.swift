@@ -872,7 +872,7 @@ final class MCPClientFlowTests: XCTestCase {
 
         // The env file was rewritten by the app: one ksfc token on both lines,
         // the per-key gateway base URLs, no raw value, and no backup inside the
-        // project — the original values live in the catalog's own backups tree.
+        // project — the companion lines live in the catalog's own backups tree.
         let wrappedText = try String(contentsOf: rig.env, encoding: .utf8)
         XCTAssertFalse(wrappedText.contains(fakeBody), "the raw values are gone from the file")
         let wrappedFile = EnvFile.parse(wrappedText)
@@ -892,9 +892,11 @@ final class MCPClientFlowTests: XCTestCase {
         let backups = backupFiles(under: rig.dir)
         XCTAssertEqual(backups.count, 1, "the wrap wrote exactly one backup, under the catalog's backups tree")
         let backup = try XCTUnwrap(backups.first)
-        XCTAssertEqual(try Data(contentsOf: backup), originalData, "the backup holds the pre-wrap bytes")
+        XCTAssertEqual(try Data(contentsOf: backup), EnvFileWriter.backupContent(of: originalData),
+                       "the backup holds the pre-wrap companion lines only (audit lead 4)")
+        XCTAssertFalse(try String(contentsOf: backup, encoding: .utf8).contains(fakeBody), "and no key value")
         let backupMode = try fm.attributesOfItem(atPath: backup.path)[.posixPermissions] as? Int
-        XCTAssertEqual(backupMode, 0o600, "the backup is owner-only — it still holds the values")
+        XCTAssertEqual(backupMode, 0o600, "the backup is owner-only")
         XCTAssertEqual(try rig.db.listWrappedFiles().count, 1, "the import recorded the wrapped file")
 
         // The gateway accepts the project token for a member key: a real

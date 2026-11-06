@@ -2132,6 +2132,7 @@ final class KeysService: @unchecked Sendable {
         revokeGrants(key: name, reason: "key_deleted", caller: caller)
         try? catalog.deleteProviderCheck(keyName: name)
         try recordKeyEvent(name: name, action: "rm", caller: caller)
+        try scrubWrapBackups(after: "\(name) was deleted")
     }
 
     func rotate(name: String, secret: String, caller: String = "dashboard") throws -> CatalogRow {
@@ -2180,6 +2181,7 @@ final class KeysService: @unchecked Sendable {
         // The pause was earned by the old value; the new one gets to prove itself at once.
         breaker.reset(key: name)
         try recordKeyEvent(name: name, action: "rotate", caller: caller)
+        try scrubWrapBackups(after: "\(name) was rotated")
         guard let row = try catalog.catalogRow(name: name) else {
             throw AppError.notFound(name)
         }
@@ -2201,6 +2203,7 @@ final class KeysService: @unchecked Sendable {
         try Self.removeRetiredOptimizerData(catalogDirectory: catalog.path.deletingLastPathComponent())
         try Self.removeRetiredPlanSnapshot(catalogDirectory: catalog.path.deletingLastPathComponent())
         try Self.removeRetiredUsageImports(catalogDirectory: catalog.path.deletingLastPathComponent())
+        try Self.removeWrapBackups(catalog: catalog.path)
         gatewayLock.withLock {
             bumpGatewayGenerationLocked(gatewayCache.keys)
             gatewayCache.removeAll()
@@ -2213,6 +2216,30 @@ final class KeysService: @unchecked Sendable {
         _ = try catalog.removeRetiredPlanMeter()
         // wipeData empties every table, the retired subscription rows and cursors included.
         try catalog.wipeData()
+    }
+
+    /// Backups written by older builds are byte copies of the wrapped file, so the
+    /// value rm deletes or rotate replaces may still sit in one. Every backup is cut
+    /// to its companion lines (all unwrap reads); a failure says the key change
+    /// itself went through, so the error is not mistaken for a refused rm or rotate.
+    private func scrubWrapBackups(after done: String) throws {
+        do {
+            try EnvFileWriter.scrubBackups(under: EnvFileWriter.backupsRoot(beside: catalog.path))
+        } catch {
+            let reason = (error as? AppError)?.description ?? error.localizedDescription
+            throw AppError.usage("\(done), but \(reason)")
+        }
+    }
+
+    /// The wrap-time backups tree beside the catalog. Purge promises to leave no
+    /// Keysrs data behind, and a backup from an older build holds key values, so the
+    /// whole tree goes; a failure throws, so purge never reports success while one
+    /// remains. Derived from the catalog path, like every other backups reader.
+    static func removeWrapBackups(catalog: URL) throws {
+        let root = EnvFileWriter.backupsRoot(beside: catalog)
+        var info = stat()
+        guard lstat(root.path, &info) == 0 else { return }
+        try FileManager.default.removeItem(at: root)
     }
 
     /// 0.9.0 and 0.9.1 shipped an experimental optimizer that kept encrypted
