@@ -97,6 +97,9 @@ final class KeysService: @unchecked Sendable {
     /// Held while the relay is turned on or off, so two toggles at once (menu and dashboard)
     /// cannot both find it off and race for the lock.
     private let relayToggleLock = NSLock()
+    /// A shutdown cancels approvals already in flight, even if the doorbell stays enabled
+    /// (relay off) or is enabled again before Touch ID returns. Under relayToggleLock.
+    private var relayApprovalGeneration: UInt64 = 0
     var checker: any ProviderCheckFetching = ProviderCheckHTTP()
     /// The persisted app choices (menu-bar item, updates, relay, welcome).
     let preferences: AppPreferences
@@ -1890,8 +1893,8 @@ final class KeysService: @unchecked Sendable {
     func stopRelayForRevoke() -> Bool {
         // The doorbell goes too: after a kill switch every ring would be refused anyway,
         // and turning it back on costs a Touch ID like the relay.
-        stopDoorbell()
         return relayToggleLock.withLock {
+            stopDoorbellLocked()
             let wasOn = relayHost.isOn
             relayHost.stop()
             return wasOn
@@ -1945,6 +1948,7 @@ final class KeysService: @unchecked Sendable {
         try requireGatewayOwner()
         try relayToggleLock.withLock {
             guard enabled else {
+                relayApprovalGeneration &+= 1
                 relayHost.stop()
                 return
             }
@@ -2010,21 +2014,27 @@ final class KeysService: @unchecked Sendable {
 
     /// For quitting: no presence, no owner check, whatever is in progress.
     func stopRelay() {
-        relayHost.stop()
+        relayToggleLock.withLock {
+            relayApprovalGeneration &+= 1
+            relayHost.stop()
+        }
     }
 
     /// Forgets the URL and deletes the secret. The Worker keeps its copy until
     /// `wrangler secret delete RELAY_SECRET`, which the command reminds the person of.
     func resetRelay() throws {
-        doorbellHost.stop()
-        if let relaySecrets {
-            do { try relaySecrets.delete(name: Self.relaySecretName) } catch AppError.notFound {}
-            do { try relaySecrets.delete(name: DoorbellKey.accountName) } catch AppError.notFound {}
-        }
-        try catalog.withTransaction {
-            try catalog.deleteMeta(Self.relayURLMetaKey)
-            try catalog.deleteMeta(Self.relayURLMetaKey + "_secret_hint")
-            try catalog.deleteMeta(Self.doorbellMetaKey)
+        try relayToggleLock.withLock {
+            relayApprovalGeneration &+= 1
+            doorbellHost.stop()
+            if let relaySecrets {
+                do { try relaySecrets.delete(name: Self.relaySecretName) } catch AppError.notFound {}
+                do { try relaySecrets.delete(name: DoorbellKey.accountName) } catch AppError.notFound {}
+            }
+            try catalog.withTransaction {
+                try catalog.deleteMeta(Self.relayURLMetaKey)
+                try catalog.deleteMeta(Self.relayURLMetaKey + "_secret_hint")
+                try catalog.deleteMeta(Self.doorbellMetaKey)
+            }
         }
     }
 
@@ -2074,6 +2084,12 @@ final class KeysService: @unchecked Sendable {
 
     /// Off, and the key leaves the Keychain: turning it on again derives it again.
     func stopDoorbell() {
+        relayToggleLock.withLock { stopDoorbellLocked() }
+    }
+
+    /// Caller holds relayToggleLock, also used for the final ring validation and start.
+    private func stopDoorbellLocked() {
+        relayApprovalGeneration &+= 1
         doorbellHost.stop()
         try? catalog.deleteMeta(Self.doorbellMetaKey)
         if let relaySecrets {
@@ -2136,6 +2152,7 @@ final class KeysService: @unchecked Sendable {
     /// gate keeps prompts rare; then Touch ID, naming who rang, turns the relay on exactly as
     /// `keys relay on` would.
     func answerDoorbellRing(_ ring: DoorbellRing, now: @Sendable () -> Date = { Date() }) -> DoorbellAnswer {
+        let approvalGeneration = relayToggleLock.withLock { relayApprovalGeneration }
         if relayHost.isOn { return .on }
         guard let ringer = doorbellRinger(ring, now: now()) else {
             doorbellHost.log("doorbell: a ring with no live client token or pairing; asked nobody")
@@ -2180,28 +2197,39 @@ final class KeysService: @unchecked Sendable {
             return .unavailable("Touch ID could not be shown on the Mac")
         }
         doorbellGate.finished(declined: false, now: now())
-        guard doorbellEnabled() else {
-            doorbellHost.log("doorbell: approved for \(quoted), but the doorbell was turned off meanwhile; relay left off")
-            return .unavailable("the doorbell was turned off on the Mac")
-        }
-        guard doorbellRinger(ring, now: now()) != nil else {
-            doorbellHost.log("doorbell: approved for \(quoted), but its token is no longer live; relay left off")
-            return .refused
-        }
+        // Evaluate the injected clock outside the lock too: only the final state reads and
+        // start belong in the critical section, never a callback that can shut us down.
+        let approvedAt = now()
         do {
             try requireGatewayOwner()
-            try relayToggleLock.withLock {
-                if relayHost.isOn { return }
-                try startRelayLocked {
-                    // The person approved this start a moment ago; the secret is read for it.
-                    guard let url = relayStatus().url else {
-                        throw AppError.usage("no relay is set up; run: keys relay setup --url https://<your worker>.workers.dev")
+            let answer: DoorbellAnswer = try relayToggleLock.withLock {
+                guard doorbellEnabled() else {
+                    doorbellHost.log("doorbell: approved for \(quoted), but the doorbell was turned off meanwhile; relay left off")
+                    return .unavailable("the doorbell was turned off on the Mac")
+                }
+                guard approvalGeneration == relayApprovalGeneration else {
+                    return .unavailable("the relay was turned off on the Mac")
+                }
+                // BEGIN IMMEDIATE serializes the live-credential check and start with
+                // every catalog revoke, including share/unwrap and another process.
+                return try catalog.withTransaction {
+                    guard doorbellRinger(ring, now: approvedAt) != nil else {
+                        doorbellHost.log("doorbell: approved for \(quoted), but its token is no longer live; relay left off")
+                        return .refused
                     }
-                    return (url, try storedRelaySecret(try relayStore(), url: url))
+                    if relayHost.isOn { return .on }
+                    try startRelayLocked {
+                        // The person approved this start a moment ago; the secret is read for it.
+                        guard let url = relayStatus().url else {
+                            throw AppError.usage("no relay is set up; run: keys relay setup --url https://<your worker>.workers.dev")
+                        }
+                        return (url, try storedRelaySecret(try relayStore(), url: url))
+                    }
+                    return .on
                 }
             }
-            doorbellHost.log("doorbell: relay turned on for \(quoted)")
-            return .on
+            if answer == .on { doorbellHost.log("doorbell: relay turned on for \(quoted)") }
+            return answer
         } catch {
             doorbellHost.log("doorbell: could not turn the relay on for \(quoted): \(error)")
             // Only the Mac's own usage refusals (a relay running in a Terminal, no gateway)

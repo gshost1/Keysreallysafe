@@ -8,6 +8,30 @@ import XCTest
 final class RelayDoorbellTests: XCTestCase {
     private let origin = URL(string: "https://keysrs-relay.me.workers.dev")!
 
+    func testKillAfterEnabledCheckCannotReopenRelay() throws {
+        final class Clock: @unchecked Sendable {
+            let lock = NSLock()
+            var calls = 0
+            func next(_ service: KeysService) -> Date {
+                let count = lock.withLock { calls += 1; return calls }
+                if count == 4 { _ = service.stopRelayForRevoke() }
+                return Date()
+            }
+        }
+        let (service, _, _) = try service()
+        try service.add(name: "demo", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.setupRelay(url: origin.absoluteString)
+        _ = try service.startGateway(port: 0)
+        defer { service.stopRelay(); service.stopGateway() }
+        let (token, _) = try service.issueGatewayClient(name: "demo", label: "agent")
+        _ = try service.setDoorbell(enabled: true)
+        let clock = Clock()
+        let answer = service.answerDoorbellRing(ring(client: token), now: { clock.next(service) })
+        XCTAssertFalse(service.doorbellEnabled())
+        XCTAssertFalse(service.relayHost.isOn, "kill completed before start, so relay must remain off")
+        XCTAssertNotEqual(answer, .on)
+    }
+
     // MARK: key and wire
 
     func testTheKeyMatchesTheWorkersDerivation() {
@@ -402,6 +426,104 @@ final class RelayDoorbellTests: XCTestCase {
         gate.duringNextPrompt = { _ = try service.revokeGatewayClient(name: "demo", id: issued.id) }
 
         XCTAssertEqual(service.answerDoorbellRing(ring(client: token)), .refused)
+        XCTAssertFalse(service.relayHost.isOn)
+    }
+
+    /// Run each shutdown both inside Touch ID and at the old check/start boundary. The
+    /// synchronous callbacks make the ordering deterministic, and deadlock if a prompt
+    /// accidentally holds relayToggleLock. No scheduler delays are needed.
+    private func assertPendingApprovalCancelled(
+        expected: DoorbellAnswer,
+        _ cancel: @escaping @Sendable (KeysService, Int64) throws -> Void
+    ) throws {
+        for atFinalCheck in [false, true] {
+            let (service, gate, _) = try service()
+            try service.add(name: "demo", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+            _ = try service.setupRelay(url: origin.absoluteString)
+            _ = try service.startGateway(port: 0)
+            defer {
+                service.stopRelay()
+                service.stopGateway()
+                service.stopDoorbell()
+            }
+            let (token, issued) = try service.issueGatewayClient(name: "demo", label: "agent")
+            _ = try service.setDoorbell(enabled: true)
+            let calls = LockedValue(0)
+            let failure = LockedValue<String?>(nil)
+            if !atFinalCheck {
+                gate.duringNextPrompt = { try cancel(service, issued.id) }
+            }
+            let answer = service.answerDoorbellRing(ring(client: token), now: {
+                let count = calls.get() + 1
+                calls.set(count)
+                // Initial ringer, gate admission, gate completion, final validation.
+                if atFinalCheck && count == 4 {
+                    do { try cancel(service, issued.id) }
+                    catch { failure.set(String(describing: error)) }
+                }
+                return Date()
+            })
+            XCTAssertNil(failure.get())
+            XCTAssertEqual(answer, expected, "at final check: \(atFinalCheck)")
+            XCTAssertFalse(service.relayHost.isOn)
+        }
+    }
+
+    func testDoorbellOffCancelsAPendingApproval() throws {
+        try assertPendingApprovalCancelled(expected: .unavailable("the doorbell was turned off on the Mac")) { service, _ in
+            _ = try service.setDoorbell(enabled: false)
+        }
+    }
+
+    func testDoorbellOffThenOnDoesNotReuseTheOldApproval() throws {
+        try assertPendingApprovalCancelled(expected: .unavailable("the relay was turned off on the Mac")) { service, _ in
+            _ = try service.setDoorbell(enabled: false)
+            _ = try service.setDoorbell(enabled: true)
+        }
+    }
+
+    func testRelayOffCancelsAPendingApprovalWhileLeavingTheDoorbellEnabled() throws {
+        try assertPendingApprovalCancelled(expected: .unavailable("the relay was turned off on the Mac")) { service, _ in
+            _ = try service.setRelay(enabled: false)
+            XCTAssertTrue(service.doorbellEnabled())
+        }
+    }
+
+    func testProcessShutdownCancelsAPendingApproval() throws {
+        try assertPendingApprovalCancelled(expected: .unavailable("the relay was turned off on the Mac")) { service, _ in
+            service.stopRelay()
+        }
+    }
+
+    func testRevokeAllCancelsAPendingApproval() throws {
+        try assertPendingApprovalCancelled(expected: .unavailable("the doorbell was turned off on the Mac")) { service, _ in
+            let handler = APIHandler(service: service, webRoot: service.catalog.path.deletingLastPathComponent())
+            let response = handle(handler, method: "POST", path: "/api/mcp/revoke_all", body: Data("{}".utf8))
+            XCTAssertEqual(response.status, 200)
+            XCTAssertTrue(try service.catalog.allGatewayClients().allSatisfy { $0.revokedAt != nil })
+        }
+    }
+
+    func testTokenRevokeCancelsAPendingApprovalAtBothBoundaries() throws {
+        try assertPendingApprovalCancelled(expected: .refused) { service, id in
+            _ = try service.revokeGatewayClient(name: "demo", id: id)
+        }
+    }
+
+    func testPairingRevokeDuringThePromptTurnsNothingOn() throws {
+        let (service, gate, _) = try service()
+        try service.add(name: "demo", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.setupRelay(url: origin.absoluteString)
+        _ = try service.startGateway(port: 0)
+        defer {
+            service.stopRelay()
+            service.stopGateway()
+            service.stopDoorbell()
+        }
+        let (pair, _) = try service.issueRelayPairing(label: "agent", keys: ["demo"])
+        _ = try service.setDoorbell(enabled: true)
+        gate.duringNextPrompt = { _ = try service.revokeRelayPairing("agent") }
+        XCTAssertEqual(service.answerDoorbellRing(ring(pair: pair)), .refused)
         XCTAssertFalse(service.relayHost.isOn)
     }
 

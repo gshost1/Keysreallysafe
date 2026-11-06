@@ -231,13 +231,25 @@ export class RelayHub extends DurableObject {
     return this.newest("doorbell");
   }
 
+  /// Deferred Worker updates keep hibernating sockets alive. Before the doorbell,
+  /// /connect accepted untagged sockets with only connectedAt in the attachment.
+  /// They are still relay sockets, including when a new Mac replaces the old one.
+  /// Doorbells always have an explicit kind and must never enter that fallback.
+  sockets(kind) {
+    return this.ctx.getWebSockets().filter((ws) => {
+      const attachment = ws.deserializeAttachment();
+      return attachment?.kind === kind ||
+        (kind === "mac" && attachment?.kind === undefined && Number.isFinite(attachment?.connectedAt));
+    });
+  }
+
   /// The most recently accepted open socket of one kind that has been heard
   /// from within the silence limit.
   newest(tag) {
     const now = Date.now();
     let best = null;
     let bestAt = -1;
-    for (const ws of this.ctx.getWebSockets(tag)) {
+    for (const ws of this.sockets(tag)) {
       if (ws.readyState !== 1 /* OPEN */) continue;
       const at = ws.deserializeAttachment()?.connectedAt ?? 0;
       if (!this.heardRecently(ws, at, now)) continue;
@@ -286,7 +298,7 @@ export class RelayHub extends DurableObject {
     const [client, server] = Object.values(pair);
     // One Mac per relay: a reconnecting Mac must not wait for a stale socket
     // to time out, so the newcomer wins and the old socket is told why.
-    for (const old of this.ctx.getWebSockets("mac")) {
+    for (const old of this.sockets("mac")) {
       this.failAll(old, 502, "mac_disconnected", "the Mac reconnected while this request was in flight; it may be retried");
       try { old.close(4000, "replaced"); } catch { /* already gone */ }
     }
@@ -303,7 +315,7 @@ export class RelayHub extends DurableObject {
   listen() {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    for (const old of this.ctx.getWebSockets("doorbell")) {
+    for (const old of this.sockets("doorbell")) {
       if (this.ringing?.ws === old) this.ringing.resolve({ result: "offline" });
       try { old.close(4000, "replaced"); } catch { /* already gone */ }
     }

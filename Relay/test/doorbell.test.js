@@ -292,3 +292,57 @@ describe("ringing", () => {
     expect(await bell.next()).toBe("pong");
   });
 });
+
+
+describe("relay sockets kept across the doorbell Worker update", () => {
+  function legacyRelay(h) {
+    const [client, server] = Object.values(new WebSocketPair());
+    // The pre-doorbell Worker accepted without tags or a kind attachment.
+    h.ctx.acceptWebSocket(server);
+    server.serializeAttachment({ connectedAt: Date.now() });
+    client.accept();
+    return { client, server };
+  }
+
+  it("discovers a legacy relay and reports it on without ringing the doorbell", async () => {
+    await runInDurableObject(hub(), async (h) => {
+      const legacy = legacyRelay(h);
+      const bell = h.listen().webSocket;
+      bell.accept();
+      try {
+        expect(h.mac()).toBe(legacy.server);
+        expect(h.doorbell().deserializeAttachment().kind).toBe("doorbell");
+        const request = new Request(`${ORIGIN}${DOORBELL.ringPath}`, { method: "POST" });
+        expect((await h.fetch(request)).status).toBe(200);
+        expect(h.ringing).toBeNull();
+        expect(legacy.server.readyState).toBe(1);
+      } finally {
+        legacy.client.close(1000, "test done");
+        bell.close(1000, "test done");
+      }
+    });
+  });
+
+  it("replaces the legacy relay on reconnect without closing the doorbell", async () => {
+    await runInDurableObject(hub(), async (h) => {
+      const legacy = legacyRelay(h);
+      const bell = h.listen().webSocket;
+      bell.accept();
+      const closed = new Promise((resolve) => legacy.client.addEventListener("close", resolve));
+      const current = h.connect().webSocket;
+      current.accept();
+      try {
+        // Check synchronously too: a tag-only replacement would leave it OPEN.
+        expect(legacy.server.readyState).not.toBe(1);
+        const event = await withTimeout(closed, 5000, "legacy relay replacement");
+        expect({ code: event.code, reason: event.reason }).toEqual({ code: 4000, reason: "replaced" });
+        expect(h.mac().deserializeAttachment().kind).toBe("mac");
+        expect(h.doorbell().readyState).toBe(1);
+      } finally {
+        legacy.client.close(1000, "test done");
+        current.close(1000, "test done");
+        bell.close(1000, "test done");
+      }
+    });
+  });
+});
