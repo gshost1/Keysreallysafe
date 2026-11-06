@@ -439,10 +439,17 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// and core.excludesFile (without it `gitignored` disagrees with the user's
     /// own git). HOME and XDG_CONFIG_HOME locate those files; DEVELOPER_DIR
     /// picks the toolchain behind the /usr/bin/git shim. No lazy fetch, so a
-    /// partial clone never reaches a remote.
+    /// partial clone's missing object never starts a fetch from the remote the
+    /// repository names. Git older than 2.39.4 ignores GIT_NO_LAZY_FETCH, and a
+    /// repository's own protocol.<name>.allow outranks `-c protocol.allow`, so
+    /// an `ext::` promisor remote could still run a command there;
+    /// GIT_ALLOW_PROTOCOL overrides every protocol setting on any git since
+    /// 2.6.1, and "none" names no real transport.
     private static func gitEnvironment() -> [String: String] {
         let inherited = ProcessInfo.processInfo.environment
-        var environment = ["PATH": absolutePATH(), "GIT_NO_LAZY_FETCH": "1"]
+        var environment = [
+            "PATH": absolutePATH(), "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "none",
+        ]
         for name in ["HOME", "XDG_CONFIG_HOME", "DEVELOPER_DIR"] {
             if let value = inherited[name] { environment[name] = value }
         }
@@ -503,6 +510,9 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = ["-C", directory] + gitHardening + arguments
         process.environment = gitEnvironment()
+        // Not the MCP server's stdin: that is the host's JSON-RPC stream, and a
+        // repository's `include.path=/dev/stdin` would have git read from it.
+        process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let out = Pipe()
         process.standardOutput = out

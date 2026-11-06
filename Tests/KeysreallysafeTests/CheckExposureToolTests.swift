@@ -588,9 +588,9 @@ final class CheckExposureToolTests: XCTestCase {
         try body()
     }
 
-    /// git gets a fixed environment: no lazy fetch, and nothing inherited from
-    /// the MCP process beyond PATH (absolute entries only), HOME, XDG_CONFIG_HOME
-    /// and DEVELOPER_DIR. An inherited GIT_DIR, GIT_CONFIG_COUNT or
+    /// git gets a fixed environment: no lazy fetch, no transport, and nothing
+    /// inherited from the MCP process beyond PATH (absolute entries only), HOME,
+    /// XDG_CONFIG_HOME and DEVELOPER_DIR. An inherited GIT_DIR, GIT_CONFIG_COUNT or
     /// GIT_SSH_COMMAND would otherwise point git at another repository or add
     /// config the overrides do not name, and API-key variables are none of
     /// git's business. Failed pre-fix: the whole environment was passed on.
@@ -622,10 +622,13 @@ final class CheckExposureToolTests: XCTestCase {
         }
         // /bin/sh adds PWD, SHLVL and _ on its own; they never came from Keysrs.
         let fromShell: Set<String> = ["PWD", "SHLVL", "_", "OLDPWD"]
-        var expected: Set<String> = ["PATH", "GIT_NO_LAZY_FETCH", "XDG_CONFIG_HOME", "DEVELOPER_DIR"]
+        var expected: Set<String> = [
+            "PATH", "GIT_NO_LAZY_FETCH", "GIT_ALLOW_PROTOCOL", "XDG_CONFIG_HOME", "DEVELOPER_DIR",
+        ]
         if ProcessInfo.processInfo.environment["HOME"] != nil { expected.insert("HOME") }
         XCTAssertEqual(Set(seen.keys).subtracting(fromShell), expected, "git sees only the fixed environment")
         XCTAssertEqual(seen["GIT_NO_LAZY_FETCH"], "1")
+        XCTAssertEqual(seen["GIT_ALLOW_PROTOCOL"], "none", "no transport, whatever the repository allows")
         XCTAssertEqual(seen["XDG_CONFIG_HOME"], "/nonexistent-xdg")
         XCTAssertEqual(seen["DEVELOPER_DIR"], "/nonexistent-developer")
         XCTAssertFalse((seen["PATH"] ?? "").split(separator: ":").contains { !$0.hasPrefix("/") },
