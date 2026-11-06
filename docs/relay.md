@@ -173,6 +173,105 @@ rejection to its default 502 with the code preserved — a refusal either way,
 so the mismatch fails closed. Redeploying the Worker from this checkout turns
 the 502 into the precise 403.
 
+## The doorbell
+
+The relay is off until you turn it on, and an agent on another machine whose
+calls get 503 `mac_offline` has no way to tell the Mac. The doorbell is that
+way: with it on, an agent asks for the relay, and the Mac asks you.
+
+```sh
+keys relay doorbell on       # one Touch ID; stays on across launches
+keys relay doorbell status   # off, or on and whether Keysrs is listening
+keys relay doorbell off      # no Touch ID
+```
+
+The agent rings with the client token it already has, plus its pairing if
+the Mac requires pairing:
+
+```sh
+curl -X POST "https://<your worker>/.keysrs/doorbell" \
+  -H "Authorization: Bearer $KEYSRS_TOKEN" -H "X-KSF-Pair: $KEYSRS_PAIR"
+```
+
+The Mac checks the ring, and if it passes, shows a Touch ID prompt that names
+the token or pairing that rang (`turn on the relay: "hetzner box" asked
+through <your worker>`). Approving it turns the relay on exactly as `keys
+relay on` would, and the ring is answered 200. Nothing turns the relay on
+without that prompt. The Worker needs redeploying from this checkout once
+(`cd Relay && npx wrangler deploy`); it needs no new secret.
+
+**Two planes.** The doorbell is a second socket from the Mac to the same
+Worker, kept apart from the relay on purpose. The relay carries requests and
+needs the relay secret, which leaves the Keychain only after Touch ID, so it
+cannot start on its own at launch. The doorbell carries no request, key or
+token, only "an agent asks" and the Mac's answer, so it can start at launch
+without Touch ID. Its credential is the **doorbell key**, `ksfd_` +
+HMAC-SHA256(relay secret, `keysrs relay doorbell v1`) in hex. The Worker works
+it out from `RELAY_SECRET`. The Mac works it out once, under the Touch ID that
+`keys relay doorbell on` costs, and keeps it in the Keychain under the relay's
+service, account `doorbell`. It cannot be turned back into the relay secret,
+and the Worker refuses it at `/connect`, as it refuses the relay secret on the
+doorbell. `keys relay setup` works the key out again from the new secret.
+`keys relay doorbell off`, `keys relay reset`, `keys revoke --all` and `keys
+purge` delete it.
+
+**The wire.** The Mac opens `GET /.keysrs/doorbell/listen` with `Upgrade:
+websocket`, `Authorization: Bearer <doorbell key>` and
+`X-Keysrs-Relay-Protocol: 1`, answered like `/connect` (401, 426, 400). Its
+frames are text: the same `ping`/`pong` keepalive and silence rules as the
+relay, and JSON. A newer doorbell socket replaces an older one (4000
+`replaced`), and the relay socket and the doorbell socket never replace each
+other. Both paths start with a dot, so no key name can shadow them.
+
+```
+Worker → Mac   {"type":"ring","id":"<32 hex>","client":"<sha256 hex>"|null,"pair":"<sha256 hex>"|null}
+Mac → Worker   {"type":"answer","id":"<same>","result":"…","retry_after":<s>,"message":"…"}
+```
+
+A ring is `POST /.keysrs/doorbell`, with an optional `?wait=<seconds>` (60 by
+default, 120 at most). The Worker reads the client token from the headers the
+gateway reads it from (`Authorization: Bearer`, `X-KSF-Client`, `x-api-key`,
+`x-goog-api-key`, `api-key`) and the pairing from `X-KSF-Pair`. It checks only
+their shape, and forwards **only their SHA-256 hashes**, the form the Mac
+stores them in. Whoever holds the doorbell socket never sees a credential they
+could spend. The Worker sends at most one ring at a time, and no more than one
+every ten seconds. A ring while the relay is connected is answered 200 without
+reaching the Mac. A relay that connects while a ring waits answers it 200.
+
+**The Mac decides.** In this order, and only the last step asks anyone:
+
+1. The relay is already on → `on`.
+2. The hash is not a live (unrevoked, unexpired) client token or pairing on
+   this Mac → `refused`. While pairing is required, only a pairing counts, as
+   for a relayed call.
+3. The screen is locked → `away`. A prompt behind the lock screen reaches
+   nobody.
+4. A prompt for an earlier ring is still up → `pending`. You declined one in
+   the last ten minutes, or six prompts have been shown in the last hour →
+   `not_now`, with when to try again.
+5. Touch ID, naming who rang. Approved → the relay turns on → `on`. Cancelled
+   → `declined`, and the ten-minute quiet period starts. The relay cannot
+   start (no gateway, `keys relay` running in a Terminal) → `unavailable`,
+   with the Mac's own reason.
+
+Every ring and its outcome is a `relay doorbell:` line in menubar.log, with
+the token's label and never a hash.
+
+| status | answer                       | meaning                                                   |
+|--------|------------------------------|-----------------------------------------------------------|
+| 200    | `{"relay":"on"}`             | the relay is on; call the Worker as usual                 |
+| 202    | `{"state":"asking"}`         | the Mac is showing the prompt, or the wait ran out; `Retry-After: 15` |
+| 401    | `doorbell_credential_required` | no client token or pairing in the Keysrs shape; the Mac was not rung |
+| 403    | `doorbell_refused`           | the Mac does not know the token or pairing as a live one  |
+| 403    | `doorbell_declined`          | the person at the Mac cancelled the prompt                |
+| 429    | `doorbell_not_now`           | the Mac asked recently; `Retry-After` says when it asks again |
+| 503    | `doorbell_offline`           | no doorbell is listening: Keysrs not running, the doorbell off, or the Mac asleep or offline; `Retry-After: 60` |
+| 503    | `doorbell_busy`              | another ring is waiting, or the last was under ten seconds ago; `Retry-After` |
+| 503    | `doorbell_mac_locked`        | the Mac's screen is locked; `Retry-After: 300`            |
+| 503    | `doorbell_unavailable`       | the relay could not start; the message says why           |
+
+The 503s and the 429 carry `"retryable": true`, and the two 403s do not.
+
 ## Sharing keys with another machine
 
 `keys share` is the short way to give one machine — a Linux box, a VPS, a
@@ -500,11 +599,16 @@ Mac side with a fake socket against the real gateway on loopback, and
 idle-sleep assertion with a fake in place of IOKit, `/api/relay`). The Worker
 suite also pins the pairing surface: each of the four `pairing_*` ERROR codes
 becoming its 403 with no retry guidance, the other Mac codes staying 502, and
-`x-ksf-pair` passing through into the REQUEST frame untouched. On the Mac
+`x-ksf-pair` passing through into the REQUEST frame untouched, and
+`test/doorbell.test.js` the doorbell: its key, hashes in place of
+credentials, each answer's status, one ring at a time, and the relay and
+doorbell sockets leaving each other alone. On the Mac
 side `RelayTests` covers the verification (accept; missing, unknown and
 malformed credentials; expiry at the boundary; revocation across a
 reconnect; out-of-scope keys; the credential stripped before replay) and
-`RelayPairingTests` the management surface (issue, list, revoke, require
+`RelayDoorbellTests` the doorbell (the key matching the Worker's, the ring
+and answer shapes, the prompt bounds, and each way a ring is answered without
+a prompt), `RelayPairingTests` the management surface (issue, list, revoke, require
 on/off — including the one Touch ID that turning enforcement off costs, the
 token-gated `/api/relay/pairings/required` toggle route that `keys relay pair
 require` delegates to through the control file, and the fail-closed refusal
@@ -619,13 +723,34 @@ running it, as a key is while the gateway holds it; the dashboard's
 `/api/relay` reports the state and the Worker URL, never the secret or its
 hint.
 
+Someone who learns the **doorbell key** — it sits in the Keychain without a
+Touch ID gate, because the doorbell starts at launch — can take over the
+doorbell socket. They then get the rings, which carry SHA-256 hashes and no
+credential, and can stop rings from reaching the Mac. They cannot open the
+relay socket, cannot work out the relay secret, and cannot make the Mac show
+a prompt: only the Worker rings, and the Worker rings whoever holds the
+newest doorbell socket. `keys relay setup` (a new secret, hence a new key)
+and `wrangler secret put RELAY_SECRET` shut them out.
+
+Someone who controls the **Worker** can ring the Mac whenever they like, with
+any hash they have seen pass. That shows you a Touch ID prompt, naming one of
+your own tokens, no more than the Mac's own bounds allow: one at a time, none
+for ten minutes after you decline, six an hour. Approving one only turns the
+relay on. Every request through it still needs a valid token, which is the
+position such an attacker is already in. If a prompt you did not expect
+appears, cancel it, and treat it like a leaked relay secret.
+
 Someone who learns the **Worker URL** alone can send it requests and burn
 your Cloudflare request quota, and will be told whether the Mac is online.
 While the Mac is away they can also fill the 32 waiting slots and the 32 MiB
 of kept bodies, a minute at a time, so that your agents get `relay_busy`
 instead of waiting; that is all the window adds. Every one of those requests
 is refused on the Mac without a token, the waiting ones included once it is
-back.
+back. They cannot ring the Mac without one of your tokens either: the Worker
+sends no ring without a credential in the right shape, and the Mac answers a
+hash it does not know with `refused`, asking nobody. Distinguishing `refused`
+from the other answers tells them whether a guessed 24-byte token exists,
+which the gateway's 401 already tells them for a relayed call.
 
 ## What changes in the privacy contract
 
@@ -634,6 +759,13 @@ back.
   moment you turn it on (one Touch ID) until you turn it off or quit, never
   at launch by itself, or while `keys relay` runs in a Terminal. One relay
   at a time.
+- With the doorbell on (off by default, `keys relay doorbell on`, one Touch
+  ID), Keysrs.app also holds a **second** outbound connection to the same
+  Worker for as long as it runs, from launch, carrying rings and answers and
+  nothing else. It holds the doorbell key (`ksfd_…`, derived from the relay
+  secret), stored in the Keychain under the relay's service and account
+  `doorbell`. A ring reaches the Mac as hashes, and turns nothing on without
+  a Touch ID.
   Nothing new binds on the Mac; the gateway and dashboard stay on
   `127.0.0.1`.
 - Key values still never leave the Mac. Request bodies still never reach the

@@ -575,11 +575,12 @@ final class APIHandler: @unchecked Sendable {
     }
 
     /// `enabled` turns this process's relay on (Touch ID here) or off, `stay_awake` and
-    /// `awake_while_shared` are the idle-sleep choices; any of them, and nothing else.
+    /// `awake_while_shared` are the idle-sleep choices, `doorbell` lets agents ask for the
+    /// relay (Touch ID here to turn it on); any of them, and nothing else.
     private func relaySet(_ request: HTTPRequest) throws -> HTTPResponse {
         let obj = try jsonBody(request)
-        guard !obj.isEmpty, Set(obj.keys).isSubset(of: ["enabled", "stay_awake", "awake_while_shared"]) else {
-            return HTTPResponse.json(400, ["error": "send enabled, stay_awake, awake_while_shared or a mix"])
+        guard !obj.isEmpty, Set(obj.keys).isSubset(of: ["enabled", "stay_awake", "awake_while_shared", "doorbell"]) else {
+            return HTTPResponse.json(400, ["error": "send enabled, stay_awake, awake_while_shared, doorbell or a mix"])
         }
         func flag(_ key: String) throws -> Bool? {
             guard obj.keys.contains(key) else { return nil }
@@ -590,6 +591,7 @@ final class APIHandler: @unchecked Sendable {
         if let stayAwake = try flag("stay_awake") { try service.setRelayStayAwake(stayAwake) }
         if let shared = try flag("awake_while_shared") { try service.setRelayAwakeWhileShared(shared) }
         if let enabled { _ = try service.setRelay(enabled: enabled) }
+        if let doorbell = try flag("doorbell") { _ = try service.setDoorbell(enabled: doorbell) }
         return HTTPResponse.json(200, Self.relayJSON(service.relayReport()))
     }
 
@@ -750,7 +752,20 @@ final class APIHandler: @unchecked Sendable {
             "active_shares": report.activeShares,
             "pairing_required": report.pairingRequired,
             "active_pairings": report.activePairings,
+            // The doorbell: the person's choice, and its socket while it runs. Never the key.
+            "doorbell": report.doorbellEnabled,
+            "doorbell_state": Self.phaseName(report.doorbell.on ? report.doorbell.state.phase : .stopped),
+            "doorbell_last_error": (report.doorbell.on ? report.doorbell.state.lastError : nil) ?? NSNull(),
         ]
+    }
+
+    static func phaseName(_ phase: RelayClient.Phase) -> String {
+        switch phase {
+        case .stopped: return "off"
+        case .connecting: return "connecting"
+        case .connected: return "connected"
+        case .waiting: return "waiting"
+        }
     }
 
     private func clientsList(_ name: String) throws -> HTTPResponse {

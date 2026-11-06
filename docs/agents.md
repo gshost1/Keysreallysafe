@@ -376,7 +376,12 @@ without opening a port on the Mac. For a managed agent that accepts no inbound
 SSH — GitHub Actions, Claude Code or Codex cloud sessions, Modal, E2B — the
 relay is the other route. Both keep every check this page describes; the
 details and the per-agent snippets are in [cloud-agents.md](cloud-agents.md)
-and [relay.md](relay.md).
+and [relay.md](relay.md). An agent there that gets 503 `mac_offline` while
+the user has the doorbell on can ask for the relay with `POST
+https://<worker>/.keysrs/doorbell` and its client token. The user then
+approves with Touch ID on the Mac: 200 means the relay is on, 202 means the
+prompt is still up. Ring once and wait, don't loop: the Mac backs off after
+a decline.
 
 ## Unwrapping an env file
 
@@ -523,7 +528,9 @@ the parts that bind an agent, stated as rules:
   closes — that is the protocol, its MCP client keeps it open, so only a
   client starts it. `keys tunnel --print` prints the ssh command instead;
   `keys relay on`, `off` and `status` control the app's relay without
-  blocking. `keys dashboard` is safe in a script: it fronts the app's
+  blocking, and `keys relay doorbell on|off|status` the doorbell, which lets
+  an agent on another machine ask for the relay (docs/relay.md, The
+  doorbell). `keys dashboard` is safe in a script: it fronts the app's
   window (launching Keysrs when needed), prints one line and returns.
 - **`keys rm` exits 0 even when the confirm was declined.** Check the
   output for `cancelled`. An agent should never pass `--yes`, and should
