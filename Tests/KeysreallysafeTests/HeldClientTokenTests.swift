@@ -214,6 +214,156 @@ final class HeldClientTokenTests: XCTestCase {
         XCTAssertEqual((obj["client"] as? [String: Any])?["held"] as? Bool, true)
     }
 
+    /// Audit lead 5: the origin token is in every GET / answer, and loopback is shared by
+    /// every macOS account, so that token alone must never hand back a held client token.
+    /// Every request here is raw, as another account's curl would send it.
+    func testThePageTokenAloneNeverReadsAHeldToken() throws {
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
+        let issued = try rig.service.issueGatewayClient(name: "demo", label: "cron", days: 7, hold: true)
+        let web = try TempDir.make()
+        try "<html><head></head><body></body></html>".write(
+            to: web.appendingPathComponent("index.html"), atomically: true, encoding: .utf8
+        )
+        let handler = APIHandler(service: rig.service, webRoot: web)
+        let promptsAfterIssue = rig.gate.reasons.count
+        func raw(_ method: String, _ path: String, _ headers: [String: String] = [:], _ body: Data = Data()) -> HTTPResponse {
+            var headers = headers
+            headers["host"] = "127.0.0.1:12765"
+            return handler.handle(HTTPRequest(method: method, path: path, query: [:], headers: headers, body: body, serverPort: 12765))
+        }
+
+        let page = String(decoding: raw("GET", "/").body, as: UTF8.self)
+        let token = try XCTUnwrap(
+            page.firstMatch(of: /<meta name="ksf-token" content="([0-9a-f]+)">/).map { String($0.1) }
+        )
+        let clients = try XCTUnwrap(JSONSerialization.jsonObject(with: raw("GET", "/api/keys/demo/clients").body) as? [String: Any])
+        let rows = try XCTUnwrap(clients["clients"] as? [[String: Any]])
+        XCTAssertTrue(rows.contains { $0["label"] as? String == "cron" && $0["held"] as? Bool == true })
+
+        let body = try JSONSerialization.data(withJSONObject: ["label": "cron"])
+        let stolen = raw("POST", "/api/clients/held/token", ["x-ksf-token": token, "content-type": "application/json"], body)
+        XCTAssertEqual(stolen.status, 403, "the page token alone must not read a held token")
+        XCTAssertNil(String(decoding: stolen.body, as: UTF8.self).range(of: issued.token))
+        XCTAssertEqual(rig.gate.reasons.count, promptsAfterIssue)
+    }
+
+    /// The secret-gated routes answer the control secret, and nothing else stands in for it:
+    /// not its absence, not a wrong value, not the page token in its header.
+    func testSecretGatedRoutesNeedTheControlSecret() throws {
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
+        _ = try rig.service.issueGatewayClient(name: "demo", label: "cron", hold: true)
+        let opened = RequestLog()
+        let handler = APIHandler(
+            service: rig.service, webRoot: try TempDir.make(),
+            openFeedbackURL: { _ in opened.record(HTTPRequest(method: "OPEN", path: "/", query: [:], headers: [:], body: Data(), serverPort: 0)) }
+        )
+        XCTAssertNotEqual(handler.controlSecret, handler.originToken)
+        // Well-formed bodies, so the secret is the only thing between each call and its answer.
+        let routes: [(String, [String: Any], Int)] = [
+            ("/api/clients/held/token", ["label": "cron"], 200),
+            ("/api/mcp/vault_lookup", ["hashes": [String(repeating: "0", count: 64)]], 200),
+            ("/api/mcp/feedback", ["draft": "hello", "destination": "email"], 200),
+        ]
+        for (path, payload, _) in routes {
+            let body = try JSONSerialization.data(withJSONObject: payload)
+            for wrong in [nil, "", "nope", handler.originToken, handler.controlSecret + "0"] as [String?] {
+                var headers: [String: String] = [:]
+                if let wrong { headers["x-ksf-control"] = wrong }
+                let refused = handle(handler, method: "POST", path: path, headers: headers, body: body, control: false)
+                XCTAssertEqual(refused.status, 403, "\(path) with \(wrong ?? "no header")")
+                XCTAssertEqual(try json(refused)["error"] as? String, "control_secret_required")
+            }
+            XCTAssertEqual(handle(handler, method: "POST", path: path + "/", body: body, control: false).status, 403,
+                           "\(path) with a trailing slash is the same route")
+        }
+        XCTAssertEqual(opened.count, 0, "no refused feedback call opened anything")
+        XCTAssertTrue(ControlFile.requiresSecret(method: "post", path: "/api/clients/held/token"))
+        for (path, payload, status) in routes {
+            let ok = handle(handler, method: "POST", path: path, body: try JSONSerialization.data(withJSONObject: payload))
+            XCTAssertEqual(ok.status, status, "\(path) with the secret: \(String(decoding: ok.body, as: UTF8.self))")
+        }
+        XCTAssertEqual(opened.count, 1, "the accepted feedback call opened its draft")
+        // The dashboard's own routes stay on the page token alone.
+        let list = handle(handler, method: "POST", path: "/api/mcp/grants/status", body: Data("{}".utf8), control: false)
+        XCTAssertEqual(list.status, 200)
+        // And the page itself never calls a gated route or names the header, so gating
+        // them cannot break the dashboard, and the page has nothing to send.
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let app = try String(contentsOf: repo.appendingPathComponent("Web/app.js"), encoding: .utf8)
+        for (path, _, _) in routes { XCTAssertFalse(app.contains(path), "the dashboard calls \(path)") }
+        XCTAssertFalse(app.lowercased().contains("x-ksf-control"))
+    }
+
+    /// The site publishes the secret in control.json beside the token, and the page it
+    /// serves carries the token only.
+    func testTheSitePublishesTheSecretInTheControlFileOnly() throws {
+        let (db, _) = try makeDB()
+        let (service, _, _) = makeService(db: db)
+        let control = ControlFile.url(beside: db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control)
+        let web = try TempDir.make()
+        try Data("<html><head></head></html>".utf8).write(to: web.appendingPathComponent("index.html"))
+        setenv("KEYS_WEB_ROOT", web.path, 1)
+        defer { unsetenv("KEYS_WEB_ROOT") }
+        let server = try LoopbackSite.bind(service: service, preferredPort: 0, gatewayPort: 0)
+        defer { server.stop(); service.stopGateway(); try? FileManager.default.removeItem(at: control) }
+
+        let info = try XCTUnwrap(try ControlFile.read(at: control))
+        XCTAssertEqual(info.controlSecret.count, 64)
+        XCTAssertNotEqual(info.controlSecret, info.token)
+        let mode = try FileManager.default.attributesOfItem(atPath: control.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:\(server.boundPort)/")!)
+        req.setValue("127.0.0.1:\(server.boundPort)", forHTTPHeaderField: "Host")
+        let (data, _) = try BlockingHTTP.send(req, timeout: 5)
+        let page = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(page.contains(info.token), "the page still carries its CSRF token")
+        XCTAssertFalse(page.contains(info.controlSecret), "the page never carries the control secret")
+    }
+
+    /// `keys client token` end to end over a control file: the current file's secret reads
+    /// the held token; a file from a site that predates the secret fails closed in the
+    /// client, with a sentence, and the request never leaves this process.
+    func testTheCLIReadsWithTheSecretAndFailsClosedOnAnOlderControlFile() throws {
+        let (rig, _) = try makeRig()
+        defer { rig.stop() }
+        let issued = try rig.service.issueGatewayClient(name: "demo", label: "cron", hold: true)
+        let handler = APIHandler(service: rig.service, webRoot: try TempDir.make())
+        let log = RequestLog()
+        let server = try LoopbackHTTPServer(port: 0) { request in
+            log.record(request)
+            return handler.handle(request)
+        }
+        server.start()
+        defer { server.stop() }
+        let control = ControlFile.url(beside: rig.db.path)
+        try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
+        defer { try? FileManager.default.removeItem(at: control) }
+
+        try ControlFile.write(
+            port: server.boundPort, token: handler.originToken, controlSecret: handler.controlSecret, to: control
+        )
+        let client = try ControlClient.connect(control: control)
+        let answer = try client.call(method: "POST", path: "/api/clients/held/token", body: ["label": "cron"], expect: 200)
+        XCTAssertEqual(answer["token"] as? String, issued.token)
+        XCTAssertEqual(log.last?.headers["x-ksf-control"], handler.controlSecret)
+        // A route that does not need the secret never carries it.
+        _ = try client.call(method: "POST", path: "/api/mcp/grants/status", body: [:], expect: 200)
+        XCTAssertEqual(log.last?.path, "/api/mcp/grants/status")
+        XCTAssertNil(log.last?.headers["x-ksf-control"])
+
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        XCTAssertEqual(try ControlFile.read(at: control)?.controlSecret, "")
+        let before = log.count
+        let command = try ClientTokenCommand.parse(["--label", "cron"])
+        XCTAssertThrowsError(try command.run(launch: .neverLaunching, control: control)) { error in
+            XCTAssertTrue("\(error)".contains("older than this keys command"), "\(error)")
+        }
+        XCTAssertEqual(log.count, before, "nothing was sent to a site that cannot check the secret")
+    }
+
     func testGetNeverServesAHeldToken() throws {
         let (rig, _) = try makeRig()
         defer { rig.stop() }

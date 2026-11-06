@@ -75,7 +75,9 @@ Touch ID). On a Mac whose 0.9.x install was never upgraded, `keys autostart
 ## Privacy boundaries
 
 - The dashboard and its API bind to `127.0.0.1` only; the Keysrs window loads
-  the dashboard from there, and nothing off this Mac can reach it. Nothing
+  the dashboard from there, and nothing off this Mac can reach it. Other
+  accounts on this Mac share loopback and can open it (see the token note
+  under The dashboard). Nothing
   else listens either: the one optional way in from outside is the relay,
   which holds a single **outbound** connection from this Mac to a Cloudflare
   Worker **you** deployed into your own account, only while it is on (in
@@ -220,10 +222,14 @@ item to be on.
 Every request the page makes is same-origin. Mutating calls carry a token the
 server generates per launch. That token is a browser CSRF defense: it stops a
 web page you have open from driving the dashboard. It is not authentication
-of local processes. Any program running as you can fetch `index.html`, read
-the token and edit key metadata (provider, kind, notes). What stands between
-such a program and a secret is the presence prompt on copy, reveal, env,
-rotate and delete, not the token.
+of local processes. Any program running as you, or in another account on this
+Mac, can fetch `index.html`, read the token and edit key metadata (provider,
+kind, notes). What stands between such a program and a secret is the presence
+prompt on copy, reveal, env, rotate and delete, not the token. The few routes
+that answer without a prompt with a credential or a vault match (`keys client
+token`, the scan's vault check, the feedback scrub) also need a second
+per-launch secret that lives only in the owner-only control file and is never
+in the page.
 
 ## The vault
 

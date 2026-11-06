@@ -49,7 +49,8 @@ enum LoopbackSite {
             // replaces the file. A checkout process (the 12765 dev copy) does not, so it
             // cannot point the CLIs at itself and then delete their file on exit.
             try ControlFile.write(
-                port: server.boundPort, token: handler.originToken, takeover: isAppBundle, to: control
+                port: server.boundPort, token: handler.originToken, controlSecret: handler.controlSecret,
+                takeover: isAppBundle, to: control
             )
             atexit { ControlFile.remove() }
         } catch {

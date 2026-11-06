@@ -367,8 +367,10 @@ and has not loaded the key yet: the token is valid, but calls are refused until
 
 The trade-off is stated plainly: while it lives, any process running as you
 can read a held token without Touch ID, exactly as it could read a token
-`keys wrap` wrote into an env file. Keep the scope (methods, path prefix) and
-the days small. Revoking — `keys client revoke`, `keys revoke --all`, deleting
+`keys wrap` wrote into an env file. The read needs a per-launch secret that
+lives only in Keysrs's owner-only control file and never in the dashboard
+page, so another account on this Mac cannot make it. Keep the scope (methods,
+path prefix) and the days small. Revoking — `keys client revoke`, `keys revoke --all`, deleting
 the key, purge — deletes the held copy too, and reads show in `keys log` as
 `client_held_read` (at most one row per token per hour).
 

@@ -486,7 +486,12 @@ final class MCPAppConnectionTests: XCTestCase {
         let stub = try HungSiteStub()
         defer { stub.stop() }
         let (_, _, control) = try AppConnectionIsolationGuard.makeWorld()
-        try ControlFile.write(port: stub.port, token: "hung-site", pid: ProcessInfo.processInfo.processIdentifier, to: control)
+        // With a control secret, so the secret-gated tools (send_feedback) reach the stub
+        // too instead of failing closed in the client.
+        try ControlFile.write(
+            port: stub.port, token: "hung-site", controlSecret: "hung-control",
+            pid: ProcessInfo.processInfo.processIdentifier, to: control
+        )
         // The app-bound production tools wired over the HUNG site's control file,
         // so the bound below drives the real groups against the stub, never the
         // machine's installed app.

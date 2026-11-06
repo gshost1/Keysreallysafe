@@ -98,7 +98,7 @@ final class MCPClientFlowTests: XCTestCase {
             return handler.handle(request)
         }
         server.start()
-        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, controlSecret: handler.controlSecret, to: control)
 
         let agentCwd = try makeFolder(dir, "agent-cwd")
         addTeardownBlock {
@@ -613,7 +613,7 @@ final class MCPClientFlowTests: XCTestCase {
         // shared guard (control URL, fake launch pair) before any write.
         try assertNotProductionPath(control)
         try AppConnectionIsolationGuard.assertIsolated(control: control, launch: .neverLaunching)
-        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, controlSecret: handler.controlSecret, to: control)
 
         // The project the subprocess stands in: a real git repository that has
         // committed the env file, so check_exposure answers real facts.

@@ -17,7 +17,7 @@ enum HTTPFrame {
     /// parsing comes through here; response heads keep their repeated fields as a list.
     static let singleValueHeaders: Set<String> = [
         "authorization", "proxy-authorization", "x-api-key", "x-goog-api-key", "api-key",
-        "x-ksf-client", "x-ksf-token", "host",
+        "x-ksf-client", "x-ksf-token", "x-ksf-control", "host",
     ]
 
     static func setDeadlines(fd: Int32, seconds: Int = socketTimeoutSeconds) {
