@@ -419,9 +419,11 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// core.fsmonitor fires on any query that reads the index (check-ignore,
     /// ls-files); log.showSignature makes `log` call gpg.program on signed
     /// commits; hooks and transports are never needed here. Command-line config
-    /// outranks every config file, includes included.
+    /// outranks every config file, includes included. core.fsmonitor is empty,
+    /// not "false": git before 2.36 reads the key as a hook path and would run
+    /// a `false` found on PATH, while every version reads empty as off.
     private static let gitHardening = [
-        "-c", "core.fsmonitor=false",
+        "-c", "core.fsmonitor=",
         "-c", "log.showSignature=false",
         "-c", "core.hooksPath=/dev/null",
         "-c", "protocol.allow=never",
@@ -430,18 +432,20 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
     /// The whole environment git gets. Nothing else is inherited: an agent's
     /// GIT_DIR, GIT_CONFIG_COUNT/KEY/VALUE or GIT_SSH_COMMAND would retarget git
     /// or add config the overrides above don't name, and the rest (API keys
-    /// among it) is none of git's business. No system or global config either:
-    /// the facts come from the repository alone. HOME stays for the default
-    /// ~/.config/git/ignore; no lazy fetch, so a partial clone never reaches
-    /// a remote.
+    /// among it) is none of git's business. System and global config still
+    /// apply on purpose: the user wrote them, the overrides above outrank them,
+    /// and they carry the user's safe.directory entries (without them a trusted
+    /// repository owned by another account reads as "not a git repository")
+    /// and core.excludesFile (without it `gitignored` disagrees with the user's
+    /// own git). HOME and XDG_CONFIG_HOME locate those files; DEVELOPER_DIR
+    /// picks the toolchain behind the /usr/bin/git shim. No lazy fetch, so a
+    /// partial clone never reaches a remote.
     private static func gitEnvironment() -> [String: String] {
-        var environment = [
-            "PATH": absolutePATH(),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_NO_LAZY_FETCH": "1",
-        ]
-        if let home = ProcessInfo.processInfo.environment["HOME"] { environment["HOME"] = home }
+        let inherited = ProcessInfo.processInfo.environment
+        var environment = ["PATH": absolutePATH(), "GIT_NO_LAZY_FETCH": "1"]
+        for name in ["HOME", "XDG_CONFIG_HOME", "DEVELOPER_DIR"] {
+            if let value = inherited[name] { environment[name] = value }
+        }
         return environment
     }
 

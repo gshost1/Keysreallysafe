@@ -296,7 +296,7 @@ final class CheckExposureToolTests: XCTestCase {
             .split(separator: "\n").map(String.init)
         XCTAssertEqual(recorded.count, 4, "one repository probe plus the three facts for the one file")
         let hardening = [
-            "-c", "core.fsmonitor=false", "-c", "log.showSignature=false",
+            "-c", "core.fsmonitor=", "-c", "log.showSignature=false",
             "-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never",
         ]
         for (index, expected) in [
@@ -572,11 +572,28 @@ final class CheckExposureToolTests: XCTestCase {
         try assertFixtureFacts(result)
     }
 
-    /// git runs with a fixed environment: no system or global config, no lazy
-    /// fetch, and nothing inherited from the MCP process beyond PATH and HOME.
-    /// An inherited GIT_DIR, GIT_CONFIG_COUNT or GIT_SSH_COMMAND would otherwise
-    /// point git at another repository or add config the overrides do not name.
-    /// The fake git dumps its environment; PATH keeps only absolute entries.
+    /// Runs `body` with process environment variables set (or, for nil,
+    /// unset), restoring each one's previous value afterwards. Tests run
+    /// serially, so the process-wide change is visible only to this test.
+    private func withEnvironment(_ changes: [String: String?], _ body: () throws -> Void) rethrows {
+        let before = ProcessInfo.processInfo.environment
+        for (name, value) in changes {
+            if let value { setenv(name, value, 1) } else { unsetenv(name) }
+        }
+        defer {
+            for name in changes.keys {
+                if let old = before[name] { setenv(name, old, 1) } else { unsetenv(name) }
+            }
+        }
+        try body()
+    }
+
+    /// git gets a fixed environment: no lazy fetch, and nothing inherited from
+    /// the MCP process beyond PATH (absolute entries only), HOME, XDG_CONFIG_HOME
+    /// and DEVELOPER_DIR. An inherited GIT_DIR, GIT_CONFIG_COUNT or
+    /// GIT_SSH_COMMAND would otherwise point git at another repository or add
+    /// config the overrides do not name, and API-key variables are none of
+    /// git's business. Failed pre-fix: the whole environment was passed on.
     func testGitRunsWithAMinimalEnvironment() throws {
         let root = try TempDir.make()
         try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: root)
@@ -585,17 +602,18 @@ final class CheckExposureToolTests: XCTestCase {
         try Data("#!/bin/sh\n/usr/bin/env > '\(dump.path)'\necho true\nexit 0\n".utf8).write(to: fake)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
 
-        let inherited = ["GIT_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_SSH_COMMAND"]
-        for name in inherited { setenv(name, "inherited-\(name)", 1) }
-        let savedPath = ProcessInfo.processInfo.environment["PATH"]
-        setenv("PATH", "relative-entry:\(savedPath ?? "/usr/bin:/bin")", 1)
-        defer {
-            for name in inherited { unsetenv(name) }
-            if let savedPath { setenv("PATH", savedPath, 1) } else { unsetenv("PATH") }
+        var changes: [String: String?] = [:]
+        for name in ["GIT_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_SSH_COMMAND",
+                     "KEYSRS_TEST_UNRELATED"] {
+            changes[name] = "inherited-\(name)"
         }
-
-        _ = try callJSON(try roster(projectFolder: { root.path }, gitExecutable: { fake.path }),
-                         arguments: ["folder": root.path])
+        changes["PATH"] = "relative-entry:\(ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")"
+        changes["XDG_CONFIG_HOME"] = "/nonexistent-xdg"
+        changes["DEVELOPER_DIR"] = "/nonexistent-developer"
+        try withEnvironment(changes) {
+            _ = try callJSON(try roster(projectFolder: { root.path }, gitExecutable: { fake.path }),
+                             arguments: ["folder": root.path])
+        }
 
         var seen: [String: String] = [:]
         for line in try String(contentsOf: dump, encoding: .utf8).split(separator: "\n") {
@@ -604,14 +622,36 @@ final class CheckExposureToolTests: XCTestCase {
         }
         // /bin/sh adds PWD, SHLVL and _ on its own; they never came from Keysrs.
         let fromShell: Set<String> = ["PWD", "SHLVL", "_", "OLDPWD"]
-        XCTAssertEqual(Set(seen.keys).subtracting(fromShell),
-                       ["PATH", "HOME", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_NO_LAZY_FETCH"],
-                       "git sees only the fixed environment")
-        XCTAssertEqual(seen["GIT_CONFIG_NOSYSTEM"], "1")
-        XCTAssertEqual(seen["GIT_CONFIG_GLOBAL"], "/dev/null")
+        var expected: Set<String> = ["PATH", "GIT_NO_LAZY_FETCH", "XDG_CONFIG_HOME", "DEVELOPER_DIR"]
+        if ProcessInfo.processInfo.environment["HOME"] != nil { expected.insert("HOME") }
+        XCTAssertEqual(Set(seen.keys).subtracting(fromShell), expected, "git sees only the fixed environment")
         XCTAssertEqual(seen["GIT_NO_LAZY_FETCH"], "1")
+        XCTAssertEqual(seen["XDG_CONFIG_HOME"], "/nonexistent-xdg")
+        XCTAssertEqual(seen["DEVELOPER_DIR"], "/nonexistent-developer")
         XCTAssertFalse((seen["PATH"] ?? "").split(separator: ":").contains { !$0.hasPrefix("/") },
                        "PATH keeps absolute entries only: \(seen["PATH"] ?? "")")
+    }
+
+    /// The user's own global config still applies: it is theirs, the overrides
+    /// outrank it, and its core.excludesFile is part of what `gitignored`
+    /// means for this user. A temp HOME holds a .gitconfig naming a global
+    /// ignore file that lists `.env`; the repository's own .gitignore does not.
+    func testTheUsersGlobalExcludesFileStillCounts() throws {
+        let root = try TempDir.make()
+        try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env", under: root)
+        try git(["init", "-q"], in: root)
+
+        let home = try TempDir.make()
+        let globalIgnore = home.appendingPathComponent("global-ignore")
+        try write(".env\n", to: "global-ignore", under: home)
+        try write("[core]\n\texcludesFile = \(globalIgnore.path)\n", to: ".gitconfig", under: home)
+
+        try withEnvironment(["HOME": home.path, "XDG_CONFIG_HOME": nil]) {
+            let result = try callJSON(try roster(projectFolder: { root.path }), arguments: ["folder": root.path])
+            XCTAssertEqual(result["git"] as? String, "available")
+            XCTAssertEqual(try rows(result)[".env"]?["gitignored"] as? Bool, true,
+                           "the user's global excludesFile ignores .env, as their own git would")
+        }
     }
 
     /// The facts makeExposureRepo builds, unchanged by the hardening.
@@ -650,13 +690,10 @@ final class CheckExposureToolTests: XCTestCase {
         XCTAssertFalse(relative.hasPrefix("/"))
         XCTAssertTrue(fm.isExecutableFile(atPath: relative + "/git"), "the relative entry reaches the fake")
 
-        let saved = ProcessInfo.processInfo.environment["PATH"]
-        setenv("PATH", "\(relative):\(saved ?? "/usr/bin:/bin")", 1)
-        defer {
-            if let saved { setenv("PATH", saved, 1) } else { unsetenv("PATH") }
+        var resolved: String?
+        withEnvironment(["PATH": "\(relative):\(ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin")"]) {
+            resolved = MCPOnboardingTools.gitOnPATH()
         }
-
-        let resolved = MCPOnboardingTools.gitOnPATH()
         XCTAssertNotNil(resolved, "the real git on the absolute entries still resolves")
         XCTAssertTrue(resolved?.hasPrefix("/") ?? false, "only an absolute entry may supply git: \(resolved ?? "nil")")
         XCTAssertNotEqual(resolved.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }, fake.path,
