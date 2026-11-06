@@ -43,11 +43,21 @@ extension KeysService {
         // it will probe. It is paid again on every confirmed call: the gateway's
         // unlocked in-memory secret is deliberately not consulted, because a test's
         // approval is never remembered as standing in for the user's yes.
-        let probing = targets.filter { $0.target.probe != nil }
+        // It names each key's provider and host, as checkProvider does: a key's host
+        // can be rewritten without a prompt, so this is the one line that binds where
+        // the secret goes. The probes below use these same resolved targets and never
+        // re-read the catalog after approval.
+        // The host comes straight after the key name, before the provider's display
+        // name: a custom provider's name is free text, so it must not be able to put a
+        // fake destination in front of the real one.
+        let probing = targets.compactMap { entry -> String? in
+            guard entry.target.probe != nil, let host = entry.target.host else { return nil }
+            return "\(entry.name) at \(PromptText.host(host)) (\(PromptText.field(entry.target.provider.name, max: 40)))"
+        }
         if !probing.isEmpty {
             try presence.require(
                 reason: "test \(probing.count) key\(probing.count == 1 ? "" : "s") read-only: "
-                    + probing.map(\.name).joined(separator: ", ")
+                    + probing.joined(separator: ", ")
             )
         }
 

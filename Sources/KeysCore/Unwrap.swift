@@ -59,7 +59,7 @@ extension KeysService {
             return ["files": [Self.staleRow(path: canonical)], "revoked": 0]
         }
         let display = URL(fileURLWithPath: canonical).lastPathComponent
-        try presence.require(reason: "unwrap \(display)" + (try revocationClause(for: canonical)))
+        try presence.require(reason: "unwrap \(Self.promptLabel(display))" + (try revocationClause(for: canonical)))
         let outcome = try restoreFile(canonical: canonical, caller: caller, now: now)
         return ["files": [outcome.payload()], "revoked": outcome.revoked]
     }
@@ -127,9 +127,9 @@ extension KeysService {
 
         // ONE prompt for the whole call, naming the files and the project.
         let names = live.map { URL(fileURLWithPath: $0).lastPathComponent }
-        let named = names.count == 1 ? names[0] : "\(names.count) files"
+        let named = names.count == 1 ? Self.promptLabel(names[0]) : "\(names.count) files"
         try presence.require(
-            reason: "unwrap \(named) for project \(project.label) and revoke their gateway client tokens"
+            reason: "unwrap \(named) for project \(Self.promptLabel(project.label)) and revoke their gateway client tokens"
         )
 
         var files: [[String: Any]] = []

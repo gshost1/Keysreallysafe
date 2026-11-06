@@ -171,7 +171,7 @@ extension KeysService {
         }
         let owner = (try? requireGatewayOwner()) != nil
         let names = members.map(\.name).joined(separator: ", ")
-        try presence.require(reason: "share \(names) with \(label) for \(ttlDays) days")
+        try presence.require(reason: "share \(names) with \(Self.promptLabel(label)) for \(ttlDays) days")
         if owner {
             for member in members {
                 _ = try setGateway(name: member.name, enabled: true, host: nil, caller: caller, presenceChecked: true)

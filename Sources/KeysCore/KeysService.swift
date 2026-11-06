@@ -108,7 +108,7 @@ final class KeysService: @unchecked Sendable {
         self.secrets = secrets
         self.relaySecrets = relaySecrets
         self.heldTokens = heldTokens
-        self.presence = presence
+        self.presence = presence is PlainReasonPresenceGate ? presence : PlainReasonPresenceGate(inner: presence)
         self.presencePrompts = presencePrompts
         self.clipboard = clipboard
         self.runner = runner
@@ -499,7 +499,8 @@ final class KeysService: @unchecked Sendable {
             // A batch (keys wrap, client issue with the gateway) asked once for all of its keys,
             // and its own prompt or confirmed plan named each host.
             if !presenceChecked {
-                try (gate ?? presence).require(reason: reason ?? Self.gatewayReason(key: name, provider: provider, host: resolved))
+                // An injected gate must not skip the plain-reason wrapper `presence` has.
+                try (gate.map { PlainReasonPresenceGate(inner: $0) } ?? presence).require(reason: reason ?? Self.gatewayReason(key: name, provider: provider, host: resolved))
             }
             if let stillValid, !stillValid() {
                 throw AppError.usage("the request expired before it was approved")
@@ -573,7 +574,7 @@ final class KeysService: @unchecked Sendable {
     /// Names where the key will be sent: the prompt is the only line a local process that
     /// rewrote the host cannot cross, so it must show the destination.
     static func gatewayReason(key: String, provider: Providers.Record, host: String) -> String {
-        "send the key \(key) to \(provider.name) at \(host) through the gateway"
+        "send the key \(key) to \(provider.name) at \(PromptText.host(host)) through the gateway"
     }
 
     // MARK: - Grants (temporary, narrowly scoped access)
@@ -604,6 +605,8 @@ final class KeysService: @unchecked Sendable {
         try requireGatewayOwner()
         let row = try existingRow(name)
         let request = try raw.validated()
+        // An injected gate must not skip the plain-reason wrapper `presence` has.
+        let gate = gate.map { PlainReasonPresenceGate(inner: $0) }
         guard let provider = Providers.provider(id: row.provider), provider.gateway else {
             throw AppError.usage("gateway is not available for provider \(row.provider); a grant cannot be issued")
         }
@@ -693,9 +696,21 @@ final class KeysService: @unchecked Sendable {
 
     /// The OS renders the prompt as `"<App>" is trying to <reason>.`, so reasons
     /// start lowercase to read mid-sentence; proper nouns keep their case.
+    ///
+    /// The task is the agent's own text, so it comes after the key, host and duration:
+    /// whatever it says, it cannot sit in front of the clause the user is approving.
     static func grantReason(task: String, key: String, provider: Providers.Record, host: String, minutes: Int) -> String {
+        grantClause(key: key, provider: provider, host: host, minutes: minutes) + taskClause(task)
+    }
+
+    private static func grantClause(key: String, provider: Providers.Record, host: String, minutes: Int) -> String {
         let span = minutes % 60 == 0 && minutes >= 60 ? "\(minutes / 60) h" : "\(minutes) min"
-        return "grant \"\(task)\" the key \(key) for \(provider.name) at \(host), \(span)"
+        return "grant the key \(key) for \(provider.name) at \(PromptText.host(host)), \(span)"
+    }
+
+    /// The agent's task, last in a grant or renewal reason.
+    static func taskClause(_ task: String) -> String {
+        ", task \"\(promptTask(task))\""
     }
 
     /// The profile-grant reason: the pinned plain skeleton plus the profile name and the
@@ -717,8 +732,9 @@ final class KeysService: @unchecked Sendable {
         if let n = request.maxRequests { scope.append("max \(n) req") }
         if let u = request.maxUsd { scope.append(String(format: "max $%.2f", u)) }
         if profile.unattended { scope.append("unattended") }
-        return grantReason(task: task, key: key, provider: provider, host: host, minutes: minutes)
+        return grantClause(key: key, provider: provider, host: host, minutes: minutes)
             + ", profile \(profile.name): " + scope.joined(separator: ", ")
+            + taskClause(task)
     }
 
     static func grantDetail(_ g: Grant) -> String {
@@ -743,7 +759,7 @@ final class KeysService: @unchecked Sendable {
             ? "\(g.windowMinutes / 60) h" : "\(g.windowMinutes) min"
         let providerName = Providers.provider(id: g.provider)?.name ?? g.provider
         var parts = [
-            "renew \"\(g.task)\" the key \(g.key) for \(providerName) at \(g.host)",
+            "renew the key \(g.key) for \(providerName) at \(PromptText.host(g.host))",
             span,
             g.methods.sorted().joined(separator: ","),
             g.paths.isEmpty ? "any path" : g.paths.joined(separator: ","),
@@ -752,7 +768,7 @@ final class KeysService: @unchecked Sendable {
         if let u = g.maxUsd { parts.append(String(format: "max $%.2f", u)) }
         if g.unattended { parts.append("unattended") }
         if let p = g.profile { parts.append("profile \(p)") }
-        return parts.joined(separator: ", ")
+        return parts.joined(separator: ", ") + taskClause(g.task)
     }
 
     /// The issuance detail plus the renewal ordinal; the token stays out, as at issuance.
@@ -987,7 +1003,7 @@ final class KeysService: @unchecked Sendable {
         if let cached = lookupGateway(name: name), cached.provider == target.provider, cached.host == host {
             secret = cached.secret
         } else {
-            try presence.require(reason: "check \(name) against \(target.provider.name) at \(host) (read-only)")
+            try presence.require(reason: "check \(name) against \(target.provider.name) at \(PromptText.host(host)) (read-only)")
             secret = try secrets.get(name: name)
         }
         let result = ProviderCheck.run(key: name, provider: target.provider, host: host, secret: secret, fetcher: checker)
@@ -1068,8 +1084,8 @@ final class KeysService: @unchecked Sendable {
         }
         // A held token is handed back later without asking again, so this one prompt says so.
         try presence.require(reason: hold
-            ? "issue gateway client for \(name) at \(host), held for \(label) for \(ttlDays) days"
-            : "issue gateway client for \(name) at \(host)")
+            ? "issue gateway client for \(name) at \(PromptText.host(host)), held for \(Self.promptLabel(label)) for \(ttlDays) days"
+            : "issue gateway client for \(name) at \(PromptText.host(host))")
         if enableGateway {
             _ = try setGateway(name: name, enabled: true, host: nil, caller: caller, presenceChecked: true)
         }
@@ -1232,7 +1248,7 @@ final class KeysService: @unchecked Sendable {
         guard candidates.count <= WrapPlan.maxCandidates else {
             throw AppError.usage("too many variables to wrap at once (at most \(WrapPlan.maxCandidates))")
         }
-        let label = String(file.prefix(120))
+        let label = PromptText.field(file, max: 120)
         let rows = try catalog.listCatalog()
         try presence.require(reason: "match \(candidates.count) value\(candidates.count == 1 ? "" : "s") in \(label) against the vault and wrap them")
         var vault: [(name: String, secret: Data)] = []
@@ -1755,7 +1771,7 @@ final class KeysService: @unchecked Sendable {
         if try catalog.relayPairings().contains(where: { $0.label == trimmedLabel && $0.revokedAt == nil }) {
             throw AppError.alreadyExists("a live pairing named \(trimmedLabel) already exists; revoke it first")
         }
-        try presence.require(reason: "pair a remote agent as \(trimmedLabel)")
+        try presence.require(reason: "pair a remote agent as \(Self.promptLabel(trimmedLabel))")
         let credential = RelayPairing.generate()
         let pairing = try catalog.insertRelayPairing(
             label: trimmedLabel,
@@ -2367,11 +2383,14 @@ final class KeysService: @unchecked Sendable {
     /// characters (a newline that fakes a second line of the prompt) are dropped
     /// and the length is capped; key, host and duration stay in the reason.
     static func promptLabel(_ label: String) -> String {
-        let visible = String(String.UnicodeScalarView(label.unicodeScalars.filter {
-            !CharacterSet.controlCharacters.contains($0)
-                && !($0.properties.generalCategory == .format)
-        }))
-        return visible.count > 60 ? String(visible.prefix(59)) + "…" : visible
+        PromptText.field(label, max: 60)
+    }
+
+    /// A grant's task as the Touch ID reason shows it: the agent chose it, so it gets
+    /// the label's treatment at the task's own 120-character cap, and its double
+    /// quotes become single ones so it cannot close the quotes around it.
+    static func promptTask(_ task: String) -> String {
+        PromptText.field(task, max: 120).replacingOccurrences(of: "\"", with: "'")
     }
 
     func spend(
