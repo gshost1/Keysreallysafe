@@ -166,6 +166,15 @@ function spend(params) {
 
 const rule = (method, pathname) => `${method} ${pathname}`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// A reply held until the case lets it go, in place of a delay long enough to outlast the steps
+// in between: `const gate = hold(); delays.set(key, gate); ...; gate.release();`. It goes wherever
+// a delay in milliseconds goes (`delays`, a queue entry, a failure's `after`).
+function hold() {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  return Object.assign(gate, { release });
+}
+const pause = (wait) => (wait && typeof wait.then === "function" ? wait : sleep(wait));
 
 function json(response, status, value) {
   const body = JSON.stringify(value);
@@ -401,7 +410,7 @@ const server = http.createServer((request, response) => {
     const failure = failures.get(key);
     if (failure) {
       // A failure can be held back too, so one request can fail after a later one has answered.
-      if (failure.after) await sleep(failure.after);
+      if (failure.after) await pause(failure.after);
       if (failure === "drop" || failure.drop) return request.socket.destroy();
       if (failure.raw !== undefined) {
         response.writeHead(failure.status, { "Content-Type": "text/plain" });
@@ -423,7 +432,7 @@ const server = http.createServer((request, response) => {
     // A list waits in order, one entry per request of that call, so an earlier reply can be held
     // back while a newer one of the same call overtakes it. A plain number holds back every reply.
     const ms = Array.isArray(wait) ? wait.shift() : wait;
-    if (ms) await sleep(ms);
+    if (ms) await pause(ms);
     json(response, status, value);
   });
 });
@@ -460,9 +469,33 @@ const waitDialog = (page, id, open) =>
   page.waitForFunction(([name, want]) => document.getElementById(name).open === want, [id, open]);
 
 
+// networkidle waits for 500 ms with no request open, and the suite waited on it well over a
+// hundred times. The page's own requests are counted here instead, so a case waits for the same
+// quiet with a shorter window: the page has loaded and no request of its has been open for
+// QUIET_MS. Every page the runner opens is watched from its first request.
+const QUIET_MS = 150;
+const traffic = new WeakMap();
+function watchTraffic(page) {
+  const t = { open: new Set(), last: Date.now() };
+  const done = (request) => { t.open.delete(request); t.last = Date.now(); };
+  page.on("request", (request) => { t.open.add(request); t.last = Date.now(); });
+  page.on("requestfinished", done);
+  page.on("requestfailed", done);
+  traffic.set(page, t);
+}
+async function settle(page) {
+  await page.waitForLoadState("load");
+  const t = traffic.get(page);
+  const deadline = Date.now() + 30000;
+  while (t.open.size || Date.now() - t.last < QUIET_MS) {
+    if (Date.now() > deadline) throw new Error(`the page never went quiet: ${[...t.open].map((r) => r.url()).join(", ")}`);
+    await sleep(10);
+  }
+}
+
 async function openKeys(page, origin, options = {}) {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   if (!options.expectEmpty) await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   return page;
@@ -972,7 +1005,7 @@ test("deleting from the More menu updates rows, count and the provider filter", 
 test("a first vault visit searches, copies and edits through the More menu", async (page, origin) => {
   await page.clock.install();
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal(await page.locator("#pane-usage").isVisible(), true, "Usage is the default pane");
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -2033,7 +2066,7 @@ const waitFocused = (page, want) => page.waitForFunction((want) => {
   return (tr ? `${tr.dataset.name}${a.dataset.act ? ":" + a.dataset.act : ""}` : (a && a.id) || "") === want;
 }, want, { timeout: 5000 });
 // The startup key load and the Keys tab's own load each redraw the rows (as does the provider
-// catalog arriving), and a redraw drops focus. networkidle has already fired by then, so wait for
+// catalog arriving), and a redraw drops focus. The page has gone quiet once by then, so wait for
 // both loads to reach their grant lookups and for the catalog names before focusing a row.
 async function settleKeys(page) {
   for (let i = 0; i < 100 && requests.filter((r) => r.pathname.endsWith("/clients")).length < 2 * keys.length; i++) {
@@ -2336,7 +2369,7 @@ test("renewing a grant posts to the renew route and refreshes the row, and a ref
 });
 test("chips and pickers wrap on the arrow keys", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator('[data-range="today"]').focus();
   await page.keyboard.press("ArrowLeft");
@@ -2357,7 +2390,7 @@ test("chips and pickers wrap on the arrow keys", async (page, origin) => {
 
 test("range and group chips drive the query and the URL", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   assert.equal(await page.locator("#group-chips").isHidden(), false, "grouping is always offered");
   assert.equal(await page.locator('[data-group="project"]').count(), 0, "projects went with the Claude Code log reader");
@@ -2377,7 +2410,7 @@ test("range and group chips drive the query and the URL", async (page, origin) =
 
 test("a link that names a key boots into the chart with that key chosen", async (page, origin) => {
   await page.goto(`${origin}/?key=alpha&range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#keys-filter:visible").waitFor();
   assert.equal(await keyPicked(page), "alpha");
@@ -2399,7 +2432,7 @@ const keyOptions = (page) => page.locator("#keys-filter [data-key-filter]").eval
 const inKeysScope = () => !document.getElementById("pane-chart").hidden;
 const openKeysSource = async (page, origin, query = "range=week") => {
   await page.goto(`${origin}/?${query}`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(inKeysScope);
   await page.locator("#mix .mix-row").first().waitFor();
@@ -2540,7 +2573,7 @@ test("the per-key picker names every key and filters to one, all keys included",
 
 test("requests are a chartable unit", async (page, origin) => {
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("radio", { name: "Requests" }).click();
   await page.waitForFunction(() => document.getElementById("daily-unit").textContent.startsWith("requests per"));
@@ -2599,7 +2632,7 @@ test("an old link's tool source is struck from the URL and its gateway filters s
   // A bookmark from before 2026-11-04 may still say source=claude. The engine refuses a tool
   // source, so the page must neither send it nor keep advertising it.
   await page.goto(`${origin}/?range=week&source=claude&key=alpha`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#mix .mix-row").first().waitFor();
   const url = new URL(await page.url());
@@ -2751,7 +2784,7 @@ test("a key's gateway figure opens that key in the chart", async (page, origin) 
 test("an empty chart explains that only routed requests are recorded", async (page, origin) => {
   ledger = [];
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#spend-empty:visible").waitFor();
   const text = await page.locator("#spend-empty").textContent();
@@ -2772,7 +2805,7 @@ const twoModelRows = () => [
 
 test("the Usage summary and the Keys figures follow the same unit, switched from Usage", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.waitForFunction(() => /tokens/.test(document.getElementById("usage-totals").textContent));
   assert.doesNotMatch(await page.locator("#usage-totals").textContent(), /\$/, "the month summary leads with tokens");
 
@@ -2846,7 +2879,7 @@ test("token headlines count reasoning tokens exactly as the engine's buckets do"
     { model: "gpt-5", input_tokens: 100, output_tokens: 20, reasoning_tokens: 80, cached_read_tokens: 0, cache_creation_tokens: 0, usd: null, usd_estimate: 0.01 },
   ];
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.locator("#mix .mix-row").first().waitFor();
   assert.match(await totalsText(page), /200 tokens/, "reasoning tokens are part of the count");
@@ -2877,7 +2910,7 @@ test("every vendor family wears its own palette, Claude stays orange, and the le
   ];
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto(`${origin}/?range=month`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction((n) => document.querySelectorAll("#mix .mix-row").length === n, 8);
 
@@ -2928,7 +2961,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
   // The OS preference never decides: a light system still opens dark.
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.locator("#pane-usage").waitFor();
   const read = () => page.evaluate(() => ({
     attr: document.documentElement.dataset.theme || null,
@@ -2983,7 +3016,7 @@ test("neutral dark is the default, Settings switches to the site's light look an
 
   // Remembered, and applied before the first paint rather than after a flash of dark.
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal((await read()).attr, "light");
   // Even under a dark system preference, the stored choice wins.
   await page.emulateMedia({ colorScheme: "dark" });
@@ -3042,7 +3075,7 @@ test("a theme switch keeps the vault's filter, search and menu, and a reload kee
 
   // A reload keeps the theme and the sort; the provider filter is session-only.
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "light", "the theme survives the reload");
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -3056,7 +3089,7 @@ test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothi
   page.on("request", (r) => { if (new URL(r.url()).origin !== origin) foreign.push(r.url()); });
   ledger = twoModelRows();
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   for (const width of [390, 540, 780, 1280, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     for (const pane of ["Usage", "Chart", "Keys", "Settings"]) {
@@ -3088,7 +3121,7 @@ test("every pane fits the viewport at 390, 540, 780, 1280 and 1920 px, and nothi
 // panes, so a long message must ellipsize on one line there and never reach the rail.
 test("the status line stays one row beside the rail on every pane from 390 px up", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.evaluate(() => { document.getElementById("status").textContent = "Saved keysreallysafe-month-2026-11-01-2026-11-30.csv, with the raw token and cost columns. ".repeat(3); });
   for (const width of [390, 540, 780, 1180, 1440]) {
     await page.setViewportSize({ width, height: 900 });
@@ -3115,7 +3148,7 @@ test("the rail carries the original app icon and Usage, Chart, Keys, Help and Se
   page.on("response", (r) => { if (new URL(r.url()).pathname === "/icon.png") icons.push({ origin: new URL(r.url()).origin, status: r.status() }); });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const read = () => page.evaluate(() => {
     const img = document.querySelector(".rail .brand-mark img");
     const mark = getComputedStyle(document.querySelector(".rail .brand-mark"));
@@ -3162,7 +3195,7 @@ test("the rail carries the original app icon and Usage, Chart, Keys, Help and Se
 
 test("rail tabs switch panes, mark the selection and step on every arrow key", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const selected = () => page.evaluate(() =>
     [...document.querySelectorAll("[role=tab]")].filter((t) => t.getAttribute("aria-selected") === "true").map((t) => t.id));
   for (const [name, id] of [["Keys", "nav-keys"], ["Chart", "nav-chart"], ["Settings", "nav-settings"], ["Usage", "nav-usage"]]) {
@@ -3225,7 +3258,7 @@ test("rail tabs switch panes, mark the selection and step on every arrow key", a
 
 test("the rail narrows at 780 and 540 px and the logo shrinks to 40 px", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   for (const [width, rail, logo] of [[1280, 78, 48], [781, 78, 48], [780, 65, 48], [541, 65, 48], [540, 53, 40], [390, 53, 40]]) {
     await page.setViewportSize({ width, height: 800 });
     const g = await page.evaluate(() => {
@@ -3273,7 +3306,7 @@ test("a model reached through two providers is one series whose total counts eac
     { model: "claude-sonnet-5", input_tokens: 100, output_tokens: 50, reasoning_tokens: 25 },
   ];
   await page.goto(`${origin}/?range=month`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(() => document.querySelectorAll("#mix .mix-row").length === 1, null, { timeout: 5000 });
   assert.equal(await page.locator("#mix .mix-name").textContent(), "claude-sonnet-5",
@@ -3362,7 +3395,7 @@ test("a model no provider named stays unknown rather than borrowing a name", asy
 test("an empty vault gets the first-use guide, dismisses it and keeps it in help", async (page, origin) => {
   keys = [];
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.locator("#onboard:visible").waitFor();
   const guide = await page.locator("#onboard").textContent();
   assert.match(guide, /Add a key/);
@@ -3387,7 +3420,7 @@ test("an empty vault gets the first-use guide, dismisses it and keeps it in help
   await page.locator("#onboard-dismiss").click();
   await page.waitForFunction(() => document.getElementById("onboard").hidden);
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.equal(await page.locator("#onboard").isHidden(), true, "a dismissed guide stays dismissed");
   await page.getByRole("button", { name: "Keyboard shortcuts" }).click();
   await waitDialog(page, "dlg-help", true);
@@ -3396,7 +3429,7 @@ test("an empty vault gets the first-use guide, dismisses it and keeps it in help
 
 test("a vault that already has keys is not interrupted by the first-use guide", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
   await page.getByRole("tab", { name: "Usage" }).click();
@@ -3407,7 +3440,7 @@ test("a vault that already has keys is not interrupted by the first-use guide", 
 
 test("the providers manager adds, hides and removes", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   // Both the Add key and the Providers buttons belong to the Keys pane.
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -3475,7 +3508,7 @@ test("the providers manager adds, hides and removes", async (page, origin) => {
 
 test("the agents dialog personalizes each recipe to the chosen key", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   // Agents lives in Settings now that the header carries only status and help.
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Agents", exact: true }).click();
@@ -3512,7 +3545,7 @@ test("the agents dialog personalizes each recipe to the chosen key", async (page
 test("the first-use guide links to the agents dialog", async (page, origin) => {
   keys = [];
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   assert.match(await page.locator("#onboard").textContent(), /Wire up a coding agent/);
   await page.locator("#onboard [data-action='agents']").click();
   await waitDialog(page, "dlg-agents", true);
@@ -3523,7 +3556,7 @@ test("the first-use guide links to the agents dialog", async (page, origin) => {
 
 test("four panes: the shortcuts and arrow keys reach Usage, Chart, Keys and Settings and nothing else", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const tabNames = await page.locator("[role=tab]").allTextContents();
   assert.deepEqual(tabNames.map((t) => t.trim()), ["Usage", "Chart", "Keys", "Settings"]);
   const shown = () => page.evaluate(() =>
@@ -3561,7 +3594,7 @@ const waitSlot = (page, id, want) =>
 
 test("a chart request that fails leaves a sticky reason and no stale drawing", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   failures.set(rule("GET", "/api/spend"), chartDown);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("radio", { name: "This month" }).click();
@@ -3578,7 +3611,7 @@ test("a chart request that fails leaves a sticky reason and no stale drawing", a
 
 test("a key list that fails reports in the Keys pane and clears on reload", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   failures.set(rule("GET", "/api/keys"), keysDown);
   await page.getByRole("tab", { name: "Keys" }).click();
   await waitSlot(page, "keys-error", "vault is locked");
@@ -3591,7 +3624,7 @@ test("a key list that fails reports in the Keys pane and clears on reload", asyn
 
 test("one pane recovering leaves the other pane's failure alone", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   failures.set(rule("GET", "/api/spend"), chartDown);
   await page.getByRole("tab", { name: "Chart" }).click();
   await waitSlot(page, "chart-error", "engine_busy");
@@ -3739,7 +3772,7 @@ test("changing the range drops a model filter the new rows may not carry", async
 
 test("the Keys switch's label, its hint and the unit it stores are one value", async (page, origin) => {
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator('#keys-body .key-row[data-name="alpha"]').waitFor();
@@ -3773,7 +3806,7 @@ test("an export waits for the range it describes instead of shipping the previou
       cache_creation_tokens: 0, reasoning_tokens: 0, usd: 1, usd_estimate: null },
   ];
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(() => /100K tokens/.test(document.getElementById("totals").textContent));
   await page.evaluate(() => { window.__copied = ""; navigator.clipboard.writeText = async (t) => { window.__copied = t; }; });
@@ -3955,7 +3988,7 @@ test("a slower month total cannot stick over a newer one", async (page, origin) 
     return route.fulfill({ status: 200, contentType: "application/json", body });
   });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.waitForFunction(() => /1K tokens/.test(document.getElementById("usage-totals").textContent));
 
   // A catalog change while Settings is open asks for the month (the slow answer, no. 2)…
@@ -3973,7 +4006,7 @@ test("a slower month total cannot stick over a newer one", async (page, origin) 
 
 test("a settings read that returns after a toggle cannot paint the old value", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   // Opening Settings starts the read; the toggle answers first, and the older body then lands.
   delays.set(rule("GET", "/api/preferences"), 900);
   const before = requests.filter((r) => r.pathname === "/api/preferences").length;
@@ -4021,7 +4054,7 @@ test("a grant dialog forced closed during Touch ID reopens to show the token", a
 // value twice and left the switch the opposite of the last click.
 test("two quick clicks on one preference switch send on and then off", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "false");
   delays.set(rule("POST", "/api/preferences/menubar-item"), 500);
@@ -4037,7 +4070,7 @@ test("two quick clicks on one preference switch send on and then off", async (pa
 
 test("two preference toggles cannot paint each other's values", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
   // The first write is held back; the second press lands while it is still open.
@@ -4062,7 +4095,7 @@ test("two preference toggles cannot paint each other's values", async (page, ori
 // refused, and the switch silently went back with nothing said. The error is always reported.
 test("a preference write that fails says so even after a newer read superseded it", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("auto-update-switch").getAttribute("aria-checked") === "true");
   // The write is refused, and held long enough that a Settings re-read (a pane change) starts and
@@ -4112,7 +4145,7 @@ test("a failed key refresh still refreshes the grants pane", async (page, origin
 test("an export reports a chart error instead of calling it still loading", async (page, origin) => {
   ledger = twoModelRows();
   await page.goto(`${origin}/?range=week`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Chart" }).click();
   await page.waitForFunction(() => /1\.9K tokens/.test(document.getElementById("totals").textContent));
   // The range moves to a report the engine refuses, so the export has no report for the filters on
@@ -4156,7 +4189,7 @@ test("a slow failure cannot raise the outage banner over a newer reply", async (
 test("a second copy restarts its own confirmation instead of the first timer ending it", async (page, origin) => {
   await page.clock.install();
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.evaluate(() => { navigator.clipboard.writeText = async () => {}; });
   await page.locator("#btn-help").click();
   await waitDialog(page, "dlg-help", true);
@@ -4254,7 +4287,7 @@ test("long key metadata keeps every action inside the viewport", async (page, or
   // The key list is drawn again once grants arrive. Resolving the row
   // inside the same evaluate measures the table as it is now, not a row that redraw detached
   // (which reads as a zero-width button; seen only when the warm suite ran fast enough).
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   for (const width of [390, 520, 521, 600, 720, 768, 1024, 1280, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await page.evaluate(() => {
@@ -4286,7 +4319,7 @@ test("the vault's rows, Copy and More stay inside the viewport in both themes fr
   const longName = keys[0].name;
   await openKeys(page, origin, { expectEmpty: true });
   await page.locator("#keys-body .key-row[data-name]").first().waitFor();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   const palettes = {
     dark: { bg: "rgb(17, 17, 19)", pane: "rgb(26, 26, 29)", blue: "#4c9aff" },
     light: { bg: "rgb(245, 245, 247)", pane: "rgb(255, 255, 255)", blue: "#0071e3" },
@@ -4374,7 +4407,7 @@ const relayHintMatches = (page, pattern) =>
 
 test("Settings turns the app's relay on and off with the page token and says where it stands", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   const sw = page.locator("#relay-switch");
   const awake = page.locator("#relay-awake-switch");
@@ -4434,7 +4467,7 @@ test("Settings turns the app's relay on and off with the page token and says whe
 test("the relay switch says why it cannot turn on: not set up, a Terminal relay, a refusal", async (page, origin) => {
   Object.assign(relay, { configured: false, url: null });
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   const sw = page.locator("#relay-switch");
   await relayHintMatches(page, /^Not set up yet: deploy the Worker \(docs\/relay\.md\), then run keys relay setup --url/);
@@ -4464,7 +4497,7 @@ test("the relay switch says why it cannot turn on: not set up, a Terminal relay,
 // whole persisted state; a reload reads the store, not a browser copy.
 test("Settings shows the app's persisted choices and writes each one with the page token", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   const menubar = page.locator("#menubar-item-switch");
   const autoUpdate = page.locator("#auto-update-switch");
@@ -4488,7 +4521,7 @@ test("Settings shows the app's persisted choices and writes each one with the pa
 
   // A reload reads the persisted truth, not a browser copy.
   await page.reload();
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "true");
   assert.equal(await autoUpdate.getAttribute("aria-checked"), "false");
@@ -4500,7 +4533,7 @@ test("Settings shows the app's persisted choices and writes each one with the pa
 test("with the menu bar item off, Settings still carries Quit and the relay controls", async (page, origin) => {
   preferences.menubar_item = false;
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Settings" }).click();
   await page.waitForFunction(() => document.getElementById("menubar-item-switch").getAttribute("aria-checked") === "false");
   assert.equal(await page.locator("#relay-switch").isVisible(), true);
@@ -4523,7 +4556,7 @@ test("key search filters by name, provider and host, counts what it shows and cl
   keys.find((k) => k.name === "bravo").host = "api.example.test";
   keys.find((k) => k.name === "charlie").gateway_host = "gw.typesafe.test";
   await page.goto(`${origin}/#keys`);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator("#keys-body .key-row[data-name]").first().waitFor();
   const names = () => page.locator("#keys-body .key-row[data-name]").evaluateAll((rows) => rows.map((r) => r.dataset.name));
@@ -4643,7 +4676,7 @@ test("the key History drawer names every audited action and caller in words", as
 test("the first-use guide walks through the command line, a key, an agent, tokens and the relay", async (page, origin) => {
   keys = [];
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.locator("#onboard:visible").waitFor();
   const text = await page.locator("#onboard").textContent();
   assert.match(text, /Use with coding agents/);
@@ -4680,7 +4713,7 @@ test("the first-use guide walks through the command line, a key, an agent, token
 
 test("arrow keys step through the flat list from the search box", async (page, origin) => {
   await page.goto(origin);
-  await page.waitForLoadState("networkidle");
+  await settle(page);
   await page.getByRole("tab", { name: "Keys" }).click();
   await page.locator("#keys-body .key-row[data-name]").first().waitFor();
   await page.locator("#keys-search").focus();
@@ -4711,6 +4744,7 @@ test("arrow keys step through the flat list from the search box", async (page, o
     for (const check of checks) {
       reset();
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      watchTraffic(page);
       const pageErrors = [];
       page.on("pageerror", (error) => pageErrors.push(error.message));
       try {
