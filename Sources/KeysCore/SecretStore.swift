@@ -31,6 +31,68 @@ protocol PresenceGate: Sendable {
     func require(reason: String) throws
 }
 
+/// What may reach a Touch ID sheet. Reasons carry text a same-user process or a
+/// prompt-injected agent chose (a grant's task, a folder name, a label), and the
+/// sheet is the one line such a process cannot cross, so nothing in a reason may
+/// fake a line break, reorder what follows it (bidi controls) or overdraw it
+/// (stacked combining marks).
+enum PromptText {
+    /// A base character plus this many marks covers every real script; Zalgo-style
+    /// stacks past it are cut.
+    static let maxScalarsPerCharacter = 4
+
+    /// Line breaks and the other C0/C1 controls, plus the Unicode line and
+    /// paragraph separators, which render as line breaks without being controls.
+    static func breaks(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .control, .lineSeparator, .paragraphSeparator: return true
+        default: return false
+        }
+    }
+
+    /// Bidi embeddings, overrides and isolates, zero-width characters and every
+    /// other format scalar: invisible, but able to reorder or hide what follows.
+    static func hidden(_ scalar: Unicode.Scalar) -> Bool {
+        breaks(scalar) || scalar.properties.generalCategory == .format
+            || CharacterSet.controlCharacters.contains(scalar)
+    }
+
+    /// `text` with every break replaced by `breakReplacement`, every other hidden
+    /// scalar dropped and each character cut to `maxScalarsPerCharacter` scalars.
+    static func plain(_ text: String, breakReplacement: String = " ") -> String {
+        var out = String.UnicodeScalarView()
+        for character in text.precomposedStringWithCanonicalMapping {
+            let visible = character.unicodeScalars.filter { !hidden($0) }
+            if visible.isEmpty {
+                if character.unicodeScalars.contains(where: breaks) {
+                    out.append(contentsOf: breakReplacement.unicodeScalars)
+                }
+                continue
+            }
+            out.append(contentsOf: visible.prefix(maxScalarsPerCharacter))
+        }
+        return String(out)
+    }
+
+    /// One untrusted field inside a reason (a task, a label): hidden scalars and
+    /// breaks dropped, then capped at `max` characters so it cannot crowd out the
+    /// key, host and duration that follow it.
+    static func field(_ text: String, max: Int) -> String {
+        let visible = plain(text, breakReplacement: "")
+        return visible.count > max ? String(visible.prefix(max - 1)) + "…" : visible
+    }
+}
+
+/// The gate every KeysService prompt goes through: whatever a reason builder put
+/// in, the sheet gets `PromptText.plain` of it, so a builder that forgets to
+/// sanitize a field still cannot forge a line or reorder the reason.
+struct PlainReasonPresenceGate: PresenceGate {
+    let inner: any PresenceGate
+    func require(reason: String) throws {
+        try inner.require(reason: PromptText.plain(reason))
+    }
+}
+
 /// Touch ID or Mac password on every get/copy. New context each call; no reuse duration.
 /// Failures are distinguished: unavailable (no GUI session, sandbox, nothing enrolled),
 /// cancelled (user, app or system), and failed (wrong password / biometry mismatch).

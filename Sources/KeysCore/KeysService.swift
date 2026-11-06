@@ -108,7 +108,7 @@ final class KeysService: @unchecked Sendable {
         self.secrets = secrets
         self.relaySecrets = relaySecrets
         self.heldTokens = heldTokens
-        self.presence = presence
+        self.presence = presence is PlainReasonPresenceGate ? presence : PlainReasonPresenceGate(inner: presence)
         self.presencePrompts = presencePrompts
         self.clipboard = clipboard
         self.runner = runner
@@ -693,9 +693,10 @@ final class KeysService: @unchecked Sendable {
 
     /// The OS renders the prompt as `"<App>" is trying to <reason>.`, so reasons
     /// start lowercase to read mid-sentence; proper nouns keep their case.
+    /// The task is the agent's own text and comes first, so it is a `promptTask`.
     static func grantReason(task: String, key: String, provider: Providers.Record, host: String, minutes: Int) -> String {
         let span = minutes % 60 == 0 && minutes >= 60 ? "\(minutes / 60) h" : "\(minutes) min"
-        return "grant \"\(task)\" the key \(key) for \(provider.name) at \(host), \(span)"
+        return "grant \"\(promptTask(task))\" the key \(key) for \(provider.name) at \(host), \(span)"
     }
 
     /// The profile-grant reason: the pinned plain skeleton plus the profile name and the
@@ -743,7 +744,7 @@ final class KeysService: @unchecked Sendable {
             ? "\(g.windowMinutes / 60) h" : "\(g.windowMinutes) min"
         let providerName = Providers.provider(id: g.provider)?.name ?? g.provider
         var parts = [
-            "renew \"\(g.task)\" the key \(g.key) for \(providerName) at \(g.host)",
+            "renew \"\(promptTask(g.task))\" the key \(g.key) for \(providerName) at \(g.host)",
             span,
             g.methods.sorted().joined(separator: ","),
             g.paths.isEmpty ? "any path" : g.paths.joined(separator: ","),
@@ -2367,11 +2368,14 @@ final class KeysService: @unchecked Sendable {
     /// characters (a newline that fakes a second line of the prompt) are dropped
     /// and the length is capped; key, host and duration stay in the reason.
     static func promptLabel(_ label: String) -> String {
-        let visible = String(String.UnicodeScalarView(label.unicodeScalars.filter {
-            !CharacterSet.controlCharacters.contains($0)
-                && !($0.properties.generalCategory == .format)
-        }))
-        return visible.count > 60 ? String(visible.prefix(59)) + "…" : visible
+        PromptText.field(label, max: 60)
+    }
+
+    /// A grant's task as the Touch ID reason shows it: the agent chose it, and it sits
+    /// ahead of the key, host and duration, so it gets the label's treatment at the
+    /// task's own 120-character cap.
+    static func promptTask(_ task: String) -> String {
+        PromptText.field(task, max: 120)
     }
 
     func spend(

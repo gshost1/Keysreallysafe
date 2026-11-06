@@ -229,6 +229,38 @@ final class ImportAndWrapTests: XCTestCase {
                        "the preference is set once the rewrite succeeded")
     }
 
+    // MARK: - Audit lead 2 (the folder label is untrusted text)
+
+    /// The project label is the folder's last component, which an agent with a
+    /// directory tool can choose. In both import prompts it sits ahead of the
+    /// identities and the Docker clause, so it loses control and format scalars and
+    /// the Docker clause stays in the reason.
+    func testTheProjectLabelIsStrippedInBothImportPrompts() throws {
+        let vault = try makeVault()
+        let project = try makeProject("acme\nApproved\u{202E}x", in: vault.dir)
+        try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+
+        _ = try vault.service.importAndWrap(folder: project.path, variables: nil, docker: true)
+
+        XCTAssertEqual(vault.gate.reasons.count, 1)
+        assertPlainReason(vault.gate.reasons[0])
+        XCTAssertTrue(vault.gate.reasons[0].contains("for project acmeApprovedx: openai"), vault.gate.reasons[0])
+        XCTAssertTrue(vault.gate.reasons[0].hasSuffix(" and allow Docker containers to reach the gateway"))
+
+        // The Docker-only prompt: nothing left to import, the preference off again.
+        try vault.service.preferences.setDockerAccess(false)
+        _ = try vault.service.importAndWrap(folder: project.path, variables: nil, docker: true)
+        XCTAssertEqual(vault.gate.reasons.count, 2, "the Docker-only prompt went up")
+        assertPlainReason(vault.gate.reasons[1])
+        XCTAssertTrue(vault.gate.reasons[1].contains("(project acmeApprovedx)"), vault.gate.reasons[1])
+    }
+
+    private func assertPlainReason(_ reason: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(reason.unicodeScalars.contains {
+            CharacterSet.controlCharacters.contains($0) || $0.properties.generalCategory == .format
+        }, "no control or format scalar in the prompt: \(reason.debugDescription)", file: file, line: line)
+    }
+
     // MARK: - VAL-O-002 (backups are kept outside the project, under the catalog)
 
     /// The wrap-time backup holds the original secret values, so it must not sit in

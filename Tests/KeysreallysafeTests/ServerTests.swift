@@ -659,7 +659,7 @@ final class ServerTests: XCTestCase {
     /// refusals, and a refused ask never reaches the presence gate.
     func testGrantUnderAProfileViaTheAPISharesTheCLIPathBoundsAndNamedRefusals() throws {
         let (handler, service, _) = try makeHandler()
-        let gate = try XCTUnwrap(service.presence as? RecordingPresenceGate)
+        let gate = try XCTUnwrap((service.presence as? PlainReasonPresenceGate)?.inner as? RecordingPresenceGate)
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         _ = try service.addProfile(ProfileRequest(
             name: "evals", keys: ["demo"], methods: ["GET", "POST"], paths: ["/v1/messages"],
