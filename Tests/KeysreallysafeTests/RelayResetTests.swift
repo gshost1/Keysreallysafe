@@ -143,13 +143,13 @@ final class RelayResetTests: XCTestCase {
     }
 
     /// A Keysrs process that does not answer at all is still a site that may be running
-    /// the relay: reset refuses rather than delete the secret under it.
+    /// the relay: reset refuses rather than delete the secret under it. The stand-in
+    /// holds the file's listener, as a hung app does; a `keys` pid that does not is a
+    /// recycled one, and its port belongs to someone else.
     func testAKeysrsProcessThatDoesNotAnswerRefusesTheReset() throws {
         let rig = try rig()
-        let silent = try LoopbackHTTPServer(port: 0) { _ in HTTPResponse.json(403, ["error": "auth_failed"]) }
-        silent.start()
-        addTeardownBlock { silent.stop() }
-        try ControlFile.write(port: silent.boundPort, token: "app-token", pid: try liveSite(), to: rig.control)
+        let silent = try KeysrsStandIn.startListening(self)
+        try ControlFile.write(port: silent.port, token: "app-token", pid: silent.process.processIdentifier, to: rig.control)
 
         XCTAssertThrowsError(try RelayResetCommand.run(service: rig.service, out: { _ in })) { error in
             XCTAssertTrue("\(error)".contains("did not answer"), "\(error)")

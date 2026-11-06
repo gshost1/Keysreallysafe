@@ -102,9 +102,10 @@ struct AppConnection {
         launch: AppLaunchSeam = .production
     ) throws -> AppConnection {
         let control = try control ?? ControlFile.url()
-        // The fast path: a live file whose owner holds its recorded listener.
-        // A hung site stays the app-call timeout's problem.
-        if let client = provenClient(control: control) {
+        // The fast path: a file whose owner holds its recorded listener
+        // (`ControlFile.serving`); a listener nobody proved receives nothing, not
+        // even the health probe. A hung site stays the app-call timeout's problem.
+        if let client = try? ControlClient.connect(control: control) {
             return AppConnection(client: client, timeouts: launch.callTimeouts)
         }
         // No live app: this is the only place in the product that launches it.
@@ -163,7 +164,7 @@ struct AppConnection {
     /// accepting and its gateway is bound, but the probe is the belt over races
     /// and half-started owners: it proves this launch's app, not just its file.
     private static func healthyApp(control: URL, launch: AppLaunchSeam) -> AppConnection? {
-        guard let client = provenClient(control: control) else { return nil }
+        guard let client = try? ControlClient.connect(control: control) else { return nil }
         do {
             _ = try client.call(
                 method: "POST", path: launchHealthPath, body: [:], expect: 200, timeout: launchProbeTimeout
@@ -172,20 +173,6 @@ struct AppConnection {
         } catch {
             return nil
         }
-    }
-
-    /// The control client, only when the file's pid is this user's Keysrs AND that
-    /// process holds the loopback listener on the file's port. The file survives a
-    /// crash, so its pid may be recycled and its port bound by anyone, in any
-    /// account; the calls after this carry the control token and, for keys wrap,
-    /// every candidate's raw value. The fast path used to trust a pid that merely
-    /// existed and sent those to whatever answered. A listener that is not proven
-    /// here receives nothing, not even the health probe.
-    private static func provenClient(control: URL) -> ControlClient? {
-        guard let info = ControlFile.live(at: control),
-              ControlFile.holdsLoopbackListener(info.pid, port: info.port)
-        else { return nil }
-        return ControlClient(info: info)
     }
 
     /// The connected control client, for eligible CLI callers: the launch decision

@@ -136,6 +136,20 @@ enum ControlFile {
         return isRunningSite(info.pid) || holdsLoopbackListener(info.pid, port: info.port)
     }
 
+    /// The owner a client may talk to: a process of this user (or this one) that
+    /// holds the file's loopback listener. `live` answers "is a Keysrs up"; this
+    /// answers "is the thing on this port that Keysrs". Every call after it carries
+    /// the control token and, for keys wrap, raw key values, and the file survives
+    /// a crash: its pid may be recycled into any process, and its port bound by
+    /// anyone, in any account, while the app is down.
+    static func serving(at url: URL) -> Info? {
+        guard let info = try? read(at: url),
+              info.pid == getpid() || isSameUser(info.pid),
+              holdsLoopbackListener(info.pid, port: info.port)
+        else { return nil }
+        return info
+    }
+
     /// Whether `pid` runs as this process's effective user. Another account's
     /// process answers kill with EPERM, which `isAlive` counts as alive.
     static func isSameUser(_ pid: pid_t) -> Bool {
@@ -148,10 +162,9 @@ enum ControlFile {
 
     /// Whether `pid` holds a listening TCP socket on 127.0.0.1:`port`. A file's pid
     /// being a Keysrs binary says nothing about who answers on its port: a recycled
-    /// pid can land on a `keys mcp`, and while the app is down anyone, in any
-    /// account, can bind the port. Only the process holding the listener is the
-    /// site, and macOS refuses a second account's bind on a port this user's
-    /// listener holds. Same-user processes only: that is whose fds libproc lists.
+    /// pid can land on a `keys mcp`. Only the process holding the listener is the
+    /// site. Same-user processes only: those are the ones whose fds libproc lists,
+    /// and a refused listing answers false, the fail-closed direction.
     static func holdsLoopbackListener(_ pid: pid_t, port: UInt16) -> Bool {
         guard pid > 0, port > 0 else { return false }
         let estimate = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
@@ -197,7 +210,8 @@ enum ControlFile {
             .lastPathComponent == "keys"
     }
 
-    /// Whether `pid` is a process that exists (a zombie counts, as it does for `live`).
+    /// Whether `pid` is a process that exists (a zombie counts). `live` asks more:
+    /// a zombie has no path, so it is not a running site.
     static func isAlive(_ pid: pid_t) -> Bool {
         guard pid > 0 else { return false }
         return kill(pid, 0) == 0 || errno != ESRCH
@@ -246,13 +260,16 @@ enum ControlFile {
 struct ControlClient {
     var info: ControlFile.Info
 
+    /// Only a file whose owner holds its listener connects (`ControlFile.serving`):
+    /// every call after this carries the token, so a port nobody proved gets none.
+    ///
     /// The default control URL resolves INSIDE the body (a Swift default
     /// argument cannot throw): under the test tripwire the no-argument form
     /// throws the refusal instead of reaching for the real control.json, and a
     /// caller with an explicit catalog sibling keeps today's behavior.
     static func connect(control: URL? = nil) throws -> ControlClient {
         let control = try control ?? ControlFile.url()
-        guard let info = ControlFile.live(at: control) else {
+        guard let info = ControlFile.serving(at: control) else {
             // Its own exit code (6), so a script can tell a site that is not running from a
             // mistyped command.
             throw AppError.siteUnavailable(

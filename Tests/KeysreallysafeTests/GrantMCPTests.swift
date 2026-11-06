@@ -1514,18 +1514,7 @@ final class MCPGrantTests: XCTestCase {
         // another live Keysrs process (a copy of sleep named `keys`) as the owner.
         // The guard runs before the site's control file is rewritten.
         try AppConnectionIsolationGuard.assertIsolated(control: site.control, launch: .neverLaunching)
-        let standInDir = try TempDir.make()
-        let standIn = standInDir.appendingPathComponent("keys")
-        try fm.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: standIn)
-        let owner = Process()
-        owner.executableURL = standIn
-        owner.arguments = ["30"]
-        try owner.run()
-        addTeardownBlock {
-            if owner.isRunning { owner.terminate() }
-            owner.waitUntilExit()
-        }
-        let other = owner.processIdentifier
+        let other = try KeysrsStandIn.start(self).processIdentifier
         try ControlFile.write(port: site.server.boundPort, token: site.handler.originToken, pid: other, to: site.control)
 
         let refusal = try create(site, ask(site))

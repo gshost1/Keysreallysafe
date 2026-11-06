@@ -184,18 +184,7 @@ final class GatewayHardeningAndCursorTests: XCTestCase {
         try service.add(name: "demo", provider: "openai", kind: "runtime", notes: "", secret: fixtureSecret)
         // The owner must be this user's Keysrs: a copy of sleep named `keys`. Any
         // other live pid (a recycled one, another account's) leaves the file stale.
-        let standInDir = try TempDir.make()
-        let standIn = standInDir.appendingPathComponent("keys")
-        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: standIn)
-        let owner = Process()
-        owner.executableURL = standIn
-        owner.arguments = ["30"]
-        try owner.run()
-        addTeardownBlock {
-            if owner.isRunning { owner.terminate() }
-            owner.waitUntilExit()
-        }
-        let other = owner.processIdentifier
+        let other = try KeysrsStandIn.start(self).processIdentifier
         try ControlFile.write(port: 1, token: "other", pid: other, to: ControlFile.url(beside: db.path))
         XCTAssertThrowsError(try service.setGateway(name: "demo", enabled: true, host: nil)) { error in
             guard let app = error as? AppError, case .gatewayOwned(let pid) = app else {

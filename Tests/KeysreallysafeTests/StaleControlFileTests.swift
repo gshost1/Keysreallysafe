@@ -3,6 +3,61 @@ import Foundation
 import XCTest
 @testable import KeysCore
 
+/// A live Keysrs-shaped process that is not this one and listens on nothing: a
+/// copy of `/bin/sleep` named `keys`, which `proc_pidpath` reports as a `keys`
+/// binary. It stands in for a site `ControlFile.live` counts (or a stale pid
+/// recycled into a same-user `keys mcp`), never for one a client may talk to: it
+/// holds no listener. Stopped when the test ends.
+enum KeysrsStandIn {
+    static func start(_ test: XCTestCase) throws -> Process {
+        let dir = try TempDir.make()
+        let binary = dir.appendingPathComponent("keys")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: binary)
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["30"]
+        try process.run()
+        test.addTeardownBlock {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+        return process
+    }
+
+    /// A `keys` process that holds a listener on 127.0.0.1 and never answers: a copy
+    /// of perl named `keys` that binds an ephemeral port, prints it, and sleeps with
+    /// the connections left in its backlog. It is what a hung Keysrs looks like from
+    /// outside, a site that `ControlFile.serving` proves and that answers nothing.
+    static func startListening(_ test: XCTestCase) throws -> (process: Process, port: UInt16) {
+        let dir = try TempDir.make()
+        let binary = dir.appendingPathComponent("keys")
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/perl"), to: binary)
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["-e", """
+            use Socket; socket(S, PF_INET, SOCK_STREAM, 0) or die; \
+            bind(S, sockaddr_in(0, inet_aton("127.0.0.1"))) or die; listen(S, 16) or die; \
+            my ($p) = sockaddr_in(getsockname(S)); $| = 1; print "$p\\n"; sleep 60
+            """]
+        let out = Pipe()
+        process.standardOutput = out
+        try process.run()
+        test.addTeardownBlock {
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+        }
+        var line = Data()
+        while !line.contains(UInt8(ascii: "\n")) {
+            let chunk = out.fileHandleForReading.availableData
+            guard !chunk.isEmpty else { throw AppError.http("the listening stand-in exited") }
+            line.append(chunk)
+        }
+        let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let port = UInt16(text) else { throw AppError.http("the listening stand-in printed \(text)") }
+        return (process, port)
+    }
+}
+
 /// A control.json left behind by a crash, SIGKILL or power loss keeps the dead
 /// app's port and pid. Its pid can be recycled — by a process of another account,
 /// by any process of this one — and its port can be bound by anyone while Keysrs
@@ -14,25 +69,6 @@ final class StaleControlFileTests: XCTestCase {
 
     /// A dummy provider-shaped value: never a real key.
     private static let dummyValue = "sk-proj-" + String(repeating: "x", count: 48)
-
-    /// A live Keysrs-shaped process that is not this one and listens on nothing: a
-    /// copy of `/bin/sleep` named `keys`, which `proc_pidpath` reports as a `keys`
-    /// binary — what a stale file's pid looks like when it is recycled into a
-    /// same-user `keys mcp` or `keys grant`.
-    private func keysNamedSleeper() throws -> Process {
-        let dir = try TempDir.make()
-        let binary = dir.appendingPathComponent("keys")
-        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/sleep"), to: binary)
-        let process = Process()
-        process.executableURL = binary
-        process.arguments = ["30"]
-        try process.run()
-        addTeardownBlock {
-            if process.isRunning { process.terminate() }
-            process.waitUntilExit()
-        }
-        return process
-    }
 
     /// A same-user process that is not Keysrs at all.
     private func plainSleeper() throws -> Process {
@@ -123,9 +159,46 @@ final class StaleControlFileTests: XCTestCase {
     /// ownership and relay checks that lean on `live` keep their meaning.
     func testASameUserKeysrsBinaryIsALiveSite() throws {
         let (_, control) = try world()
-        let site = try keysNamedSleeper().processIdentifier
+        let site = try KeysrsStandIn.start(self).processIdentifier
         try ControlFile.write(port: 12_766, token: "dummy", pid: site, to: control)
         XCTAssertEqual(ControlFile.live(at: control)?.pid, site)
+    }
+
+    /// The plain control client every other command uses (keys unwrap, share,
+    /// edit, quit): a live same-user Keysrs pid that does not hold the recorded
+    /// port is not a site to send the token to.
+    func testThePlainClientRefusesAPortTheKeysrsPidDoesNotHold() throws {
+        let (_, control) = try world()
+        let (server, log) = try squatter()
+        let recycled = try KeysrsStandIn.start(self).processIdentifier
+        try ControlFile.write(port: server.boundPort, token: "dummy", pid: recycled, to: control)
+
+        XCTAssertNotNil(ControlFile.live(at: control), "a Keysrs process is up")
+        XCTAssertNil(ControlFile.serving(at: control), "but it does not serve the file's port")
+        XCTAssertThrowsError(try ControlClient.connect(control: control)) { error in
+            guard case .siteUnavailable? = error as? AppError else { return XCTFail("got \(error)") }
+        }
+        assertSentNothing(log)
+    }
+
+    /// The positive half: the process holding the listener is the site.
+    func testTheProcessHoldingTheListenerIsTheSite() throws {
+        let (_, control) = try world()
+        let (server, _) = try squatter()
+        try ControlFile.write(port: server.boundPort, token: "dummy", to: control)
+        XCTAssertEqual(ControlFile.serving(at: control)?.port, server.boundPort)
+        server.stop()
+        XCTAssertNil(ControlFile.serving(at: control), "a closed listener is no site")
+    }
+
+    /// The production shape: another `keys` process of this user holding the
+    /// file's listener is the site.
+    func testAKeysrsProcessHoldingTheListenerIsTheSite() throws {
+        let (_, control) = try world()
+        let site = try KeysrsStandIn.startListening(self)
+        try ControlFile.write(port: site.port, token: "dummy", pid: site.process.processIdentifier, to: control)
+        XCTAssertEqual(ControlFile.serving(at: control)?.pid, site.process.processIdentifier)
+        XCTAssertNoThrow(try ControlClient.connect(control: control))
     }
 
     // MARK: - keys wrap over a stale file
@@ -153,7 +226,7 @@ final class StaleControlFileTests: XCTestCase {
     func testWrapSendsNothingToAPortTheKeysrsPidDoesNotHold() throws {
         let (dir, control) = try world()
         let (server, log) = try squatter()
-        let recycled = try keysNamedSleeper().processIdentifier
+        let recycled = try KeysrsStandIn.start(self).processIdentifier
         try ControlFile.write(port: server.boundPort, token: "dummy", pid: recycled, to: control)
 
         let (error, launch) = try runWrap(control: control, dir: dir)
