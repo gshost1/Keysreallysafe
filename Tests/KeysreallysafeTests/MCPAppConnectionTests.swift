@@ -178,7 +178,7 @@ final class MCPAppConnectionTests: XCTestCase {
     /// since the real app is running on this machine). The unwired seams fail
     /// loudly if a loop ever strays off the app-bound names. Building the roster
     /// runs the shared isolation guard first (inside `MCPRoster.groups`).
-    private static func appBoundRoster(control: URL) throws -> MCPToolRegistry {
+    private static func appBoundRoster(control: URL, launch: AppLaunchSeam = .neverLaunching) throws -> MCPToolRegistry {
         let unwiredCatalog: () throws -> CatalogDB = {
             throw AppError.usage("the app-bound loop reads no catalog")
         }
@@ -188,7 +188,8 @@ final class MCPAppConnectionTests: XCTestCase {
         return MCPToolRegistry(groups: try MCPRoster.groups(
             catalog: unwiredCatalog,
             control: control,
-            fetchLatestRelease: unwiredFetch
+            fetchLatestRelease: unwiredFetch,
+            launch: launch
         ))
     }
 
@@ -482,9 +483,21 @@ final class MCPAppConnectionTests: XCTestCase {
     /// A hung site cannot hang the server: against a socket stub that accepts and
     /// never responds, each app-dependent call comes back inside the app-call
     /// timeout (overriding ControlClient's 180 s default) as an isError result, and
-    /// the server keeps serving.
+    /// the server keeps serving. The production bound is 10 s (pinned first); the
+    /// drive runs the same tools over a seam with a 0.5 s bound, so eight hung
+    /// calls cost seconds, and the upper bound (well under 10 s) proves every
+    /// tool takes its bound from the seam rather than a constant of its own.
     func testHungSiteBounded() throws {
         XCTAssertEqual(AppConnection.appCallTimeout, 10, "the contract's 10 s app-call timeout")
+        XCTAssertEqual(AppLaunchSeam.production(environment: [:]).callTimeouts.app, 10,
+                       "the production seam carries the 10 s app-call timeout")
+        XCTAssertEqual(AppLaunchSeam.production(environment: ["KEYS_TEST_NO_LAUNCH": "1"]).callTimeouts.app, 10,
+                       "the no-launch test pair keeps it too")
+        XCTAssertEqual(AppLaunchSeam.neverLaunching.callTimeouts.app, 10, "the tests' default pair keeps it")
+
+        let bound: TimeInterval = 0.5
+        let fake = RecordingAppLaunch()
+        let launch = AppLaunchSeam(launcher: fake, clock: fake, callTimeouts: AppCallTimeouts(app: bound, presence: bound * 2))
         let stub = try HungSiteStub()
         defer { stub.stop() }
         let (_, _, control) = try AppConnectionIsolationGuard.makeWorld()
@@ -493,10 +506,11 @@ final class MCPAppConnectionTests: XCTestCase {
         // so the bound below drives the real groups against the stub, never the
         // machine's installed app.
         let registry = MCPToolRegistry(
-            groups: try Self.appBoundRoster(control: control).groups + [AppConnectionProbeGroup(control: control)]
+            groups: try Self.appBoundRoster(control: control, launch: launch).groups
+                + [AppConnectionProbeGroup(control: control, launch: launch)]
         )
 
-        // The probe call sits out the whole 10 s app-call timeout and comes back.
+        // The probe call sits out the whole app-call timeout and comes back.
         let started = Date()
         let (frames, _) = try MCPSession.run([
             MCPSession.initialize(id: "open"),
@@ -512,8 +526,8 @@ final class MCPAppConnectionTests: XCTestCase {
         XCTAssertEqual(hung["isError"] as? Bool, true)
         XCTAssertFalse(Self.resultText(hung).isEmpty, "a bounded plain error, not a hang")
         XCTAssertFalse(Self.resultText(hung).contains("hung-site"), "the control token never enters the message")
-        XCTAssertGreaterThanOrEqual(elapsed, 9, "the call sat out the 10 s app-call timeout")
-        XCTAssertLessThanOrEqual(elapsed, 12, "the 10 s app-call timeout overrides the 180 s default")
+        XCTAssertGreaterThanOrEqual(elapsed, bound * 0.9, "the call sat out the app-call timeout")
+        XCTAssertLessThanOrEqual(elapsed, bound * 6, "the app-call timeout overrides the 180 s default")
         XCTAssertTrue((try MCPSession.assertResult(responses[2], id: 2)).isEmpty,
                       "the server keeps serving after the timed-out call")
 
@@ -532,10 +546,12 @@ final class MCPAppConnectionTests: XCTestCase {
             XCTAssertEqual(toolResponses.count, 3)
             let result = try MCPSession.assertResult(toolResponses[1], id: "t")
             XCTAssertEqual(result["isError"] as? Bool, true, "\(tool.name) is a tool result")
-            XCTAssertLessThanOrEqual(toolElapsed, 12, "\(tool.name) comes back inside the app-call timeout")
+            XCTAssertGreaterThanOrEqual(toolElapsed, bound * 0.9, "\(tool.name) reached the hung site and sat out the bound")
+            XCTAssertLessThanOrEqual(toolElapsed, bound * 6, "\(tool.name) comes back inside the seam's app-call timeout")
             XCTAssertTrue((try MCPSession.assertResult(toolResponses[2], id: "p")).isEmpty,
                           "\(tool.name): the server keeps serving")
         }
+        XCTAssertFalse(fake.opened, "a live (if hung) site never triggers a launch")
     }
 
     // MARK: - CONNECTION-005

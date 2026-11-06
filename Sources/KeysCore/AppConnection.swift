@@ -42,9 +42,10 @@ struct AppConnection {
 
     /// The longer bound for the presence-gated calls (`import_and_wrap`; `test_keys`
     /// with confirm): the whole call legitimately stays open while a Touch ID prompt
-    /// is up, and 10 s would kill a slow approval mid-import. Opt-in per call through
-    /// `call`'s `timeout:` — the 10 s default above stays the bound for everything
-    /// else, exactly as its pins describe it.
+    /// is up, and 10 s would kill a slow approval mid-import. This is the default of
+    /// `AppCallTimeouts.presence`; a caller opts in with `timeout: app.timeouts.presence`,
+    /// never this constant, so a test seam's shorter bound reaches it too. The 10 s
+    /// default above stays the bound for everything else.
     static let presenceCallTimeout: TimeInterval = 120
 
     /// The installed app, opened by bundle id first with the documented install
@@ -73,8 +74,14 @@ struct AppConnection {
     static let launchHealthPath = "/api/mcp/grants/status"
 
     private let client: ControlClient
+    /// The bounds this connection's calls run with: the seam's, which in
+    /// production are always the constants above.
+    let timeouts: AppCallTimeouts
 
-    private init(client: ControlClient) { self.client = client }
+    private init(client: ControlClient, timeouts: AppCallTimeouts) {
+        self.client = client
+        self.timeouts = timeouts
+    }
 
     /// The single "is the app up?" decision. A live control file is today's rule
     /// unchanged — its owner alive means the app is running, so nothing launches
@@ -98,7 +105,7 @@ struct AppConnection {
         // The fast path: the file's owner is the truth, exactly as before this
         // seam grew a launch; a hung site stays the app-call timeout's problem.
         if let client = try? ControlClient.connect(control: control) {
-            return AppConnection(client: client)
+            return AppConnection(client: client, timeouts: launch.callTimeouts)
         }
         // No live app: this is the only place in the product that launches it.
         for _ in 0..<launchAttempts {
@@ -139,7 +146,7 @@ struct AppConnection {
         var waited: TimeInterval = 0
         var step = 0
         while waited < launchHealthBudget {
-            if let app = healthyApp(control: control) { return app }
+            if let app = healthyApp(control: control, launch: launch) { return app }
             let interval = min(
                 launchBackoffSteps[min(step, launchBackoffSteps.count - 1)],
                 launchHealthBudget - waited
@@ -148,20 +155,20 @@ struct AppConnection {
             waited += interval
             step += 1
         }
-        return healthyApp(control: control)
+        return healthyApp(control: control, launch: launch)
     }
 
     /// One poll: the control file live AND its site answering the authenticated
     /// health probe. The app writes control.json only after its loopback server is
     /// accepting and its gateway is bound, but the probe is the belt over races
     /// and half-started owners: it proves this launch's app, not just its file.
-    private static func healthyApp(control: URL) -> AppConnection? {
+    private static func healthyApp(control: URL, launch: AppLaunchSeam) -> AppConnection? {
         guard let client = try? ControlClient.connect(control: control) else { return nil }
         do {
             _ = try client.call(
                 method: "POST", path: launchHealthPath, body: [:], expect: 200, timeout: launchProbeTimeout
             )
-            return AppConnection(client: client)
+            return AppConnection(client: client, timeouts: launch.callTimeouts)
         } catch {
             return nil
         }
@@ -176,16 +183,17 @@ struct AppConnection {
     var controlClient: ControlClient { client }
 
     /// One app call: loopback HTTP with the per-launch `X-KSF-Token` from the
-    /// control file on every request, bounded by `timeout` (the 10 s default; a
-    /// presence-gated caller passes `presenceCallTimeout`). The site's answer for
-    /// `expect` is returned; anything else becomes the AppError it carries.
+    /// control file on every request, bounded by `timeout` (nil means
+    /// `timeouts.app`, the 10 s default; a presence-gated caller passes
+    /// `timeouts.presence`). The site's answer for `expect` is returned; anything
+    /// else becomes the AppError it carries.
     func call(
         method: String,
         path: String,
         body: [String: Any]? = nil,
         expect: Int,
-        timeout: TimeInterval = Self.appCallTimeout
+        timeout: TimeInterval? = nil
     ) throws -> [String: Any] {
-        try client.call(method: method, path: path, body: body, expect: expect, timeout: timeout)
+        try client.call(method: method, path: path, body: body, expect: expect, timeout: timeout ?? timeouts.app)
     }
 }

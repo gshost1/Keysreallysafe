@@ -82,14 +82,16 @@ final class RelayOnCommandTests: XCTestCase {
     }
 
     /// Still connecting when the budget runs out: the loop stops, and the sentence says
-    /// the first dial did not finish rather than leaving the reader to guess.
+    /// the first dial did not finish rather than leaving the reader to guess. A 1 s
+    /// budget is four poll steps; the production 10 s one was forty real loopback
+    /// round trips (5 s on CI) for the same sentence.
     func testADialThatOutlastsTheBudgetSaysSo() throws {
         let (printed, log) = try drive(states: [
             ["on": true, "state": "connecting", "url": "https://w.me.workers.dev"],
-        ])
+        ], budget: 1)
         let line = try XCTUnwrap(printed.first)
         XCTAssertTrue(line.hasPrefix("relay on, connecting to w.me.workers.dev"), line)
-        XCTAssertTrue(line.contains("has not finished"), "the timeout is named: \(line)")
+        XCTAssertTrue(line.contains("has not finished after 1s"), "the timeout is named: \(line)")
         XCTAssertTrue(line.contains("it stays on until keys relay off"), "a relay mid-dial is still on: \(line)")
         XCTAssertGreaterThanOrEqual(log.all.count, 2, "it polled before giving up")
     }

@@ -513,7 +513,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
         let app = try AppConnection.connect(control: control, launch: launch)
         let answer = try app.call(
             method: "POST", path: "/api/mcp/import_and_wrap", body: body, expect: 200,
-            timeout: AppConnection.presenceCallTimeout
+            timeout: app.timeouts.presence
         )
         return try MCPToolResult.json(answer)
     }
@@ -539,7 +539,7 @@ struct MCPOnboardingTools: MCPToolGroup, @unchecked Sendable {
             method: "POST", path: "/api/mcp/test_keys",
             body: ["keys": names, "confirm": confirm],
             expect: 200,
-            timeout: confirm ? AppConnection.presenceCallTimeout : AppConnection.appCallTimeout
+            timeout: confirm ? app.timeouts.presence : nil
         )
         return try MCPToolResult.json(answer)
     }

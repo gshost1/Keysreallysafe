@@ -488,14 +488,18 @@ final class TestKeysToolTests: XCTestCase {
     }
 
     /// The bound is the presence bound exactly when the call is confirmed: against
-    /// a site that answers after 10.6 s — past the 10 s default, well inside the
-    /// 120 s presence bound — the confirmed call waits the slow answer out and
-    /// relays it, while the unconfirmed call ends at the default instead of
-    /// hanging. Both run concurrently against the same slow site, so the pair
-    /// costs one slow answer, not two.
+    /// a site that answers past the default bound, well inside the presence bound,
+    /// the confirmed call waits the slow answer out and relays it, while the
+    /// unconfirmed call ends at the default instead of hanging. Both run
+    /// concurrently against the same slow site, so the pair costs one slow answer,
+    /// not two. The production bounds (10 s / 120 s) are pinned in
+    /// ImportAndWrapTests and MCPAppConnectionTests; here the seam scales them
+    /// down to 0.4 s / 30 s with the site answering at 3 s, a wide gap for a loaded runner.
     func testConfirmedCallOutlastsTheDefaultUnconfirmedKeepsIt() throws {
+        let appBound: TimeInterval = 0.4
+        let siteDelay: TimeInterval = 3
         let slow = try LoopbackHTTPServer(port: 0) { _ in
-            Thread.sleep(forTimeInterval: 10.6)
+            Thread.sleep(forTimeInterval: siteDelay)
             return HTTPResponse.json(200, ["results": [] as [String]])
         }
         slow.start()
@@ -508,7 +512,11 @@ final class TestKeysToolTests: XCTestCase {
             pid: ProcessInfo.processInfo.processIdentifier, to: control
         )
 
-        let group = MCPOnboardingTools(control: control, launch: .neverLaunching)
+        let fake = RecordingAppLaunch()
+        let launch = AppLaunchSeam(
+            launcher: fake, clock: fake, callTimeouts: AppCallTimeouts(app: appBound, presence: 30)
+        )
+        let group = MCPOnboardingTools(control: control, launch: launch)
         let confirmed = Slot<(elapsed: TimeInterval, result: MCPToolResult?)>()
         let unconfirmed = Slot<(elapsed: TimeInterval, failure: String?)>()
         let done = DispatchGroup()
@@ -532,21 +540,23 @@ final class TestKeysToolTests: XCTestCase {
             unconfirmed.set((Date().timeIntervalSince(started), failure))
             done.leave()
         }
-        XCTAssertEqual(done.wait(timeout: .now() + 90), .success, "both calls come back on their own bound")
+        XCTAssertEqual(done.wait(timeout: .now() + 60), .success, "both calls come back on their own bound")
+        XCTAssertFalse(fake.opened, "a live (if slow) site never triggers a launch")
 
         let confirmedOutcome = try confirmed.unwrap()
         XCTAssertNotNil(confirmedOutcome.result, "the presence bound held the call and the site's answer came back")
         XCTAssertLessThanOrEqual(confirmedOutcome.elapsed, 30)
-        XCTAssertGreaterThanOrEqual(confirmedOutcome.elapsed, 10.2,
-                                    "the confirmed call sat out the 10 s default: the presence bound is in play")
+        XCTAssertGreaterThanOrEqual(confirmedOutcome.elapsed, siteDelay * 0.9,
+                                    "the confirmed call sat out the default: the presence bound is in play")
 
         let unconfirmedOutcome = try unconfirmed.unwrap()
         XCTAssertNotNil(unconfirmedOutcome.failure, "the default bound ends the unconfirmed call, never a 120 s hang")
         XCTAssertTrue(unconfirmedOutcome.failure?.contains("could not reach the local site") ?? false,
                       "the failure is the site-unreachable error: \(unconfirmedOutcome.failure ?? "")")
-        XCTAssertGreaterThanOrEqual(unconfirmedOutcome.elapsed, 9.0,
+        XCTAssertGreaterThanOrEqual(unconfirmedOutcome.elapsed, appBound * 0.9,
                                     "it was the bound that ended the call, not a fast failure")
-        XCTAssertLessThanOrEqual(unconfirmedOutcome.elapsed, 13.0)
+        XCTAssertLessThan(unconfirmedOutcome.elapsed, siteDelay * 0.9,
+                          "the unconfirmed call ended on its bound, before the site answered")
     }
 
     // MARK: - the sweep's offline row
