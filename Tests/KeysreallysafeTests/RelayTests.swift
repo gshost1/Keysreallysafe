@@ -98,13 +98,6 @@ final class RecordingSleeper: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [TimeInterval] = []
     private var limit: Int = .max
-    private var parkedLength: TimeInterval?
-    /// Sleeps of this length are neither recorded nor ended: they wait until cancelled, so a
-    /// keepalive timer never fires and `delays` holds only the backoffs.
-    var parked: TimeInterval? {
-        get { lock.withLock { parkedLength } }
-        set { lock.withLock { parkedLength = newValue } }
-    }
     /// Read under the lock: the relay loop appends from its own task while the test asserts,
     /// and ThreadSanitizer flagged the unguarded read.
     var delays: [TimeInterval] { lock.withLock { recorded } }
@@ -114,10 +107,6 @@ final class RecordingSleeper: @unchecked Sendable {
     }
 
     func sleep(_ seconds: TimeInterval) async throws {
-        if seconds == parked {
-            try await Task.sleep(nanoseconds: 3_600_000_000_000)
-            return
-        }
         let stop: Bool = lock.withLock {
             recorded.append(seconds)
             return recorded.count >= limit
@@ -452,9 +441,6 @@ final class RelayTests: XCTestCase {
         let second = FakeRelaySocket()
         let dialer = FakeRelayDialer([.success(first), .success(second)])
         let sleeper = RecordingSleeper()
-        // The keepalive (pingInterval 3600) waits for the socket's end instead of ticking
-        // every millisecond beside the backoff the test checks.
-        sleeper.parked = 3600
         let client = makeClient(port: 1, dialer: dialer, sleeper: sleeper)
         let run = Task { await client.run() }
         defer { run.cancel() }
@@ -465,7 +451,7 @@ final class RelayTests: XCTestCase {
         _ = try await second.frame(.error, id: 4)
         XCTAssertTrue(first.closed)
         XCTAssertEqual(dialer.attempts.count, 2)
-        XCTAssertEqual(sleeper.delays, [1], "one backoff between the two sockets")
+        XCTAssertEqual(sleeper.delays.filter { $0 != 3600 }, [1], "one backoff; the rest are the keepalive timer")
         XCTAssertEqual(client.inflightCount, 0, "the half-received request died with its socket")
     }
 
