@@ -97,7 +97,8 @@ func makeHandler() throws -> (APIHandler, KeysService, URL) {
 }
 
 /// One dashboard request from the loopback origin. Mutations carry the CSRF token unless
-/// `token` is false; caller headers win over both defaults.
+/// `token` is false, and the control-file secret too unless `control` is false (a
+/// control-channel caller sends both); caller headers win over the defaults.
 func handle(
     _ handler: APIHandler,
     method: String,
@@ -105,12 +106,14 @@ func handle(
     query: [String: String] = [:],
     headers: [String: String] = [:],
     body: Data = Data(),
-    token: Bool = true
+    token: Bool = true,
+    control: Bool = true
 ) -> HTTPResponse {
     var headers = headers
     headers["host"] = headers["host"] ?? "127.0.0.1:12765"
     if token, method != "GET", method != "HEAD" {
         headers["x-ksf-token"] = headers["x-ksf-token"] ?? handler.originToken
+        if control { headers["x-ksf-control"] = headers["x-ksf-control"] ?? handler.controlSecret }
     }
     return handler.handle(HTTPRequest(
         method: method,

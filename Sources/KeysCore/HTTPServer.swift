@@ -112,6 +112,9 @@ final class APIHandler: @unchecked Sendable {
     let service: KeysService
     let webRoot: URL
     let originToken: String
+    /// The control-file-only secret (`ControlFile.secretHeader`). Unlike `originToken`
+    /// it is never injected into a page; the site publishes it in control.json alone.
+    let controlSecret: String
     /// The app's one "show my window" action, as the MCP `open_app` route drives
     /// it. The default fronts the running app's own window through its controller
     /// and does NOTHING when there is no window — it is deliberately not the
@@ -151,6 +154,7 @@ final class APIHandler: @unchecked Sendable {
         service: KeysService,
         webRoot: URL,
         originToken: String = OriginToken.generate(),
+        controlSecret: String = OriginToken.generate(),
         showAppWindow: @escaping () -> Void = APIHandler.frontKeysrsWindow,
         setMenubarItem: @escaping (Bool) -> Void = APIHandler.applyMenubarItemPreference,
         setUpdateChecks: @escaping (Bool) -> Void = APIHandler.applyUpdateChecksPreference,
@@ -162,6 +166,7 @@ final class APIHandler: @unchecked Sendable {
         self.service = service
         self.webRoot = webRoot
         self.originToken = originToken
+        self.controlSecret = controlSecret
         self.showAppWindow = showAppWindow
         self.setMenubarItem = setMenubarItem
         self.setUpdateChecks = setUpdateChecks
@@ -238,6 +243,15 @@ final class APIHandler: @unchecked Sendable {
         let path = normalizePath(request.path)
         if path.hasPrefix("/api/"), mutatingAPI(request.method), !tokenOK(request) {
             return HTTPResponse.json(403, ["error": "missing or bad token"])
+        }
+        // The page token is readable by any loopback peer, including another macOS
+        // account; these routes answer only a reader of the owner-only control file.
+        if path.hasPrefix("/api/"), ControlFile.requiresSecret(method: request.method, path: path),
+           !controlSecretOK(request) {
+            return HTTPResponse.json(403, [
+                "error": "control_secret_required",
+                "message": "this route needs the control file's secret; restart the keys command or keys mcp server so it reads the current control file",
+            ])
         }
         do {
             switch (request.method, path) {
@@ -420,6 +434,11 @@ final class APIHandler: @unchecked Sendable {
     private func tokenOK(_ request: HTTPRequest) -> Bool {
         let header = request.headers["x-ksf-token"] ?? ""
         return ConstantTime.equal(header.utf8, originToken.utf8)
+    }
+
+    private func controlSecretOK(_ request: HTTPRequest) -> Bool {
+        let header = request.headers[ControlFile.secretHeader.lowercased()] ?? ""
+        return !controlSecret.isEmpty && ConstantTime.equal(header.utf8, controlSecret.utf8)
     }
 
     private func sameOriginOK(_ request: HTTPRequest) -> Bool {

@@ -70,7 +70,7 @@ final class FeedbackToolsTests: XCTestCase {
         server.start()
         let control = ControlFile.url(beside: db.path)
         try AppConnectionIsolationGuard.assertIsolated(control: control)
-        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, controlSecret: handler.controlSecret, to: control)
         return Site(
             server: server, handler: handler, service: service, db: db, dir: dir,
             control: control, gate: gate, open: open, log: log,
@@ -464,7 +464,7 @@ final class FeedbackToolsTests: XCTestCase {
         server.start()
         let control = ControlFile.url(beside: db.path)
         try AppConnectionIsolationGuard.assertIsolated(control: control)
-        try ControlFile.write(port: server.boundPort, token: handler.originToken, to: control)
+        try ControlFile.write(port: server.boundPort, token: handler.originToken, controlSecret: handler.controlSecret, to: control)
         addTeardownBlock { server.stop() }
 
         // The real registry over the site's control file: every production group
