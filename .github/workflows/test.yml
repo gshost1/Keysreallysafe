@@ -32,20 +32,18 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      all: ${{ steps.scope.outputs.all }}
-      swift: ${{ steps.filter.outputs.swift }}
-      assets: ${{ steps.filter.outputs.assets }}
-      web: ${{ steps.filter.outputs.web }}
-      site: ${{ steps.filter.outputs.site }}
-      relay: ${{ steps.filter.outputs.relay }}
-      siteworker: ${{ steps.filter.outputs.siteworker }}
+      swift: ${{ steps.scope.outputs.swift }}
+      contract: ${{ steps.scope.outputs.contract }}
+      web: ${{ steps.scope.outputs.web }}
+      site: ${{ steps.scope.outputs.site }}
+      relay: ${{ steps.scope.outputs.relay }}
+      siteworker: ${{ steps.scope.outputs.siteworker }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        if: github.event_name == 'pull_request'
-      # Which areas a PR touches. Each list names what that area's tests read,
-      # not only its own folder: the Swift tests read Fixtures/, Skills/ and the
-      # top-level scripts; the browser suites read Web/ or Site/ through
-      # scripts/tests.
+      # Which areas a PR touches (read from the PR's file list, no checkout).
+      # Each list names everything that area's tests read, not only its own
+      # folder. The Swift suite reads the real Web/providers.json and other Web/
+      # assets, Fixtures/, Skills/, the docs the skill links to, top-level
+      # scripts, and drives the built binary from the MCP Python tests.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name == 'pull_request'
@@ -58,16 +56,20 @@ jobs:
               - 'Tests/**'
               - 'Package.swift'
               - 'Package.resolved'
+              - 'Web/**'
               - 'Fixtures/**'
               - 'Skills/**'
-              - 'scripts/*.py'
-            assets:
-              - 'Web/**'
               - 'docs/**'
               - 'README.md'
+              - 'scripts/*.py'
+              - 'scripts/tests/test_keys_*mcp*.py'
+            contract:
               - 'scripts/tests/test_backend_contract_ui.cjs'
+              - 'scripts/tests/package.json'
+              - 'scripts/tests/package-lock.json'
             web:
               - 'Web/**'
+              - 'Site/site.js'
               - 'scripts/tests/test_keys_dashboard_ui.cjs'
               - 'scripts/tests/dashboard.e2e.ts'
               - 'scripts/tests/e2e.config.ts'
@@ -86,12 +88,31 @@ jobs:
             siteworker:
               - 'SiteWorker/**'
               - 'wrangler.jsonc'
+      # One place that turns "run everything" (main, manual, CI changes) plus
+      # the filter into the per-area flags every job reads.
       - id: scope
-        run: echo "all=${{ github.event_name != 'pull_request' || steps.filter.outputs.ci == 'true' }}" >> "$GITHUB_OUTPUT"
+        env:
+          ALL: ${{ github.event_name != 'pull_request' || steps.filter.outputs.ci == 'true' }}
+          SWIFT: ${{ steps.filter.outputs.swift }}
+          CONTRACT: ${{ steps.filter.outputs.contract }}
+          WEB: ${{ steps.filter.outputs.web }}
+          SITE: ${{ steps.filter.outputs.site }}
+          RELAY: ${{ steps.filter.outputs.relay }}
+          SITEWORKER: ${{ steps.filter.outputs.siteworker }}
+        run: |
+          any() { for v in "$@"; do [ "$v" = true ] && { echo true; return; }; done; echo false; }
+          {
+            echo "swift=$(any "$ALL" "$SWIFT")"
+            echo "contract=$(any "$ALL" "$SWIFT" "$CONTRACT")"
+            echo "web=$(any "$ALL" "$WEB")"
+            echo "site=$(any "$ALL" "$SITE")"
+            echo "relay=$(any "$ALL" "$RELAY")"
+            echo "siteworker=$(any "$ALL" "$SITEWORKER")"
+          } | tee -a "$GITHUB_OUTPUT"
 
   swift:
     needs: changes
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.swift == 'true'
+    if: needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -108,7 +129,7 @@ jobs:
   # relay and the revoke paths.
   thread-sanitizer:
     needs: changes
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.swift == 'true'
+    if: needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -116,13 +137,11 @@ jobs:
         timeout-minutes: 30
         run: swift test --sanitize=thread --filter 'Gateway|Grant|Relay|Revoke'
 
-  # The Swift tests that read checked-in assets (Web/, docs/, README.md), so a
-  # change to those alone still meets the real backend without the whole suite.
-  swift-assets:
+  # Its own runner so the Swift suite and the browser install overlap instead
+  # of queueing; it builds again, which costs runner time, not wall time.
+  contract:
     needs: changes
-    if: >-
-      needs.changes.outputs.all == 'true' || needs.changes.outputs.swift == 'true'
-      || needs.changes.outputs.assets == 'true'
+    if: needs.changes.outputs.contract == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -142,24 +161,19 @@ jobs:
       # KEYS_CONTRACT_TIMEOUT_S bounds the browser half inside the test; the step
       # timeout is the backstop, so a wedged browser fails the step rather than
       # holding the runner open.
-      - name: Check the dashboard against the real backend, plus the asset-reading tests
+      - name: Check the dashboard against the real backend (synthetic vault only)
         timeout-minutes: 15
         env:
           NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
           KEYS_BACKEND_CONTRACT_UI: "1"
-        run: swift test --filter 'BackendContractUITests|AppRuntimeTests|MenubarTests|AgentSkillTests'
+        run: swift test --filter BackendContractUITests
 
   browser:
     needs: changes
-    if: >-
-      needs.changes.outputs.all == 'true' || needs.changes.outputs.web == 'true'
-      || needs.changes.outputs.site == 'true'
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.site == 'true'
     runs-on: macos-latest
     env:
       NODE_PATH: ${{ github.workspace }}/scripts/tests/node_modules
-      E2E_TELEMETRY_DISABLED: "1"
-      WEB: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.web == 'true' }}
-      SITE: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.site == 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -174,16 +188,16 @@ jobs:
         working-directory: scripts/tests
         run: npx --no-install playwright install chromium
       - name: Check dashboard workflows in a real browser (synthetic local fixtures only)
-        if: env.WEB == 'true'
+        if: needs.changes.outputs.web == 'true'
         run: node scripts/tests/test_keys_dashboard_ui.cjs
       - name: Check tester-army dashboard flows (synthetic fixture server only)
-        if: env.WEB == 'true'
+        if: needs.changes.outputs.web == 'true'
         working-directory: scripts/tests
-        run: npx --no-install e2e run
+        run: npm run test:e2e:dashboard
       - name: Check the marketing site flows (static Site/ only)
-        if: env.SITE == 'true'
+        if: needs.changes.outputs.site == 'true'
         working-directory: scripts/tests
-        run: npx --no-install e2e run --config e2e.site.config.ts
+        run: npm run test:e2e:site
 
   # Runs on every PR: the scripts tests read most of the tree (Site/install,
   # packaging, plugins, licenses, Web) and take seconds.
@@ -197,15 +211,10 @@ jobs:
 
   workers:
     needs: changes
-    if: >-
-      needs.changes.outputs.all == 'true' || needs.changes.outputs.relay == 'true'
-      || needs.changes.outputs.siteworker == 'true'
+    if: needs.changes.outputs.relay == 'true' || needs.changes.outputs.siteworker == 'true'
     # workerd and node behave the same on Linux, and it keeps a full run within
     # the five concurrent macOS jobs a free account gets.
     runs-on: ubuntu-latest
-    env:
-      RELAY: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.relay == 'true' }}
-      SITEWORKER: ${{ needs.changes.outputs.all == 'true' || needs.changes.outputs.siteworker == 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -217,12 +226,12 @@ jobs:
             SiteWorker/package-lock.json
       # Runs inside workerd with a throwaway secret: no Cloudflare account, no network.
       - name: Check the relay Worker offline
-        if: env.RELAY == 'true'
+        if: needs.changes.outputs.relay == 'true'
         working-directory: Relay
         run: npm ci && npm test
       # The keysrs.com notify form, in workerd with simulated KV and rate limit.
       - name: Check the site Worker offline
-        if: env.SITEWORKER == 'true'
+        if: needs.changes.outputs.siteworker == 'true'
         working-directory: SiteWorker
         run: npm ci && npm test
 
@@ -230,11 +239,11 @@ jobs:
   # every job above passed or was skipped as out of scope, and fails if any
   # failed, was cancelled, or the change detection itself broke.
   test:
-    needs: [changes, swift, thread-sanitizer, swift-assets, browser, scripts, workers]
+    needs: [changes, swift, thread-sanitizer, contract, browser, scripts, workers]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
           jobs: ${{ toJSON(needs) }}
-          allowed-skips: swift, thread-sanitizer, swift-assets, browser, workers
+          allowed-skips: swift, thread-sanitizer, contract, browser, workers
