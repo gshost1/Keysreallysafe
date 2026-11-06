@@ -54,16 +54,20 @@ export const DOORBELL = Object.freeze({
   listenPath: "/.keysrs/doorbell/listen",
   ringPath: "/.keysrs/doorbell",
   keyPrefix: "ksfd_",
-  // HMAC context for the doorbell key; Relay.swift's DoorbellKey uses the same.
+  // HMAC context for the doorbell key; DoorbellKey in
+  // Sources/KeysCore/RelayDoorbell.swift uses the same bytes.
   keyContext: "keysrs relay doorbell v1",
   // How long a ringer waits for the Mac's answer by default, and at most
   // (`?wait=<seconds>`): long enough to walk to the Mac and touch the sensor.
   ringWaitMs: 60_000,
   maxRingWaitMs: 120_000,
-  // At most one ring reaches the Mac this often, whoever rings: the Worker
-  // checks no credential, so this is what keeps a stranger who knows the URL
-  // from making the Mac look up hashes all day.
+  // One ring per caller address this often. The Worker checks no credential,
+  // so a single spacing for everyone would let a stranger with a made-up token
+  // hold it and keep every real agent out; per address, they hold only their
+  // own. The Mac bounds what reaches it on top (4 at once, 30 a minute).
   ringIntervalMs: 10_000,
+  // Addresses remembered for that spacing, at most; memory only, never stored.
+  maxRingCallers: 1024,
 });
 
 // The two credentials a ring may carry, in the shape the Mac mints them

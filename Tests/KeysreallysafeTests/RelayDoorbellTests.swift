@@ -190,7 +190,8 @@ final class RelayDoorbellTests: XCTestCase {
     private func service() throws -> (KeysService, RecordingPresenceGate, FakeRelayDialer) {
         let (db, _) = try makeDB()
         let (service, gate) = makeGatedService(db: db)
-        let dialer = FakeRelayDialer([])
+        // Sockets nobody feeds stay open, as a listening doorbell does.
+        let dialer = FakeRelayDialer((0..<8).map { _ in .success(FakeRelaySocket()) })
         service.doorbellHost = DoorbellHost(log: { _ in }, dialer: dialer)
         service.relayHost = RelayHost(log: { _ in }, dialer: FakeRelayDialer([]), blocker: FakeSleepBlocker())
         service.screenLocked = { false }
@@ -318,6 +319,7 @@ final class RelayDoorbellTests: XCTestCase {
             service.stopGateway()
         }
         let (token, _) = try service.issueGatewayClient(name: "demo", label: "hetzner box")
+        _ = try service.setDoorbell(enabled: true)
 
         service.screenLocked = { true }
         let prompts = gate.reasons.count
@@ -365,6 +367,72 @@ final class RelayDoorbellTests: XCTestCase {
         XCTAssertTrue(message.contains("gateway is not running"), message)
     }
 
+    /// The kill switch run while the prompt is up must not wait for it (it would deadlock
+    /// here if the prompt held the relay's toggle lock), and an approval that lands after it
+    /// turns nothing on.
+    func testTheKillSwitchDuringThePromptWinsOverTheApproval() throws {
+        let (service, gate, _) = try service()
+        try service.add(name: "demo", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.setupRelay(url: origin.absoluteString)
+        _ = try service.startGateway(port: 0)
+        defer {
+            service.stopRelay()
+            service.stopGateway()
+        }
+        let (token, _) = try service.issueGatewayClient(name: "demo", label: "agent")
+        _ = try service.setDoorbell(enabled: true)
+        gate.duringNextPrompt = { _ = service.stopRelayForRevoke() }
+
+        XCTAssertEqual(service.answerDoorbellRing(ring(client: token)), .unavailable("the doorbell was turned off on the Mac"))
+        XCTAssertFalse(service.relayHost.isOn)
+        XCTAssertFalse(service.doorbellEnabled())
+    }
+
+    func testATokenRevokedWhileThePromptIsUpTurnsNothingOn() throws {
+        let (service, gate, _) = try service()
+        try service.add(name: "demo", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.setupRelay(url: origin.absoluteString)
+        _ = try service.startGateway(port: 0)
+        defer {
+            service.stopRelay()
+            service.stopGateway()
+        }
+        let (token, issued) = try service.issueGatewayClient(name: "demo", label: "agent")
+        _ = try service.setDoorbell(enabled: true)
+        gate.duringNextPrompt = { _ = try service.revokeGatewayClient(name: "demo", id: issued.id) }
+
+        XCTAssertEqual(service.answerDoorbellRing(ring(client: token)), .refused)
+        XCTAssertFalse(service.relayHost.isOn)
+    }
+
+    func testRingsTheRelayCouldNotServeAreNotCountedAgainstTheHour() throws {
+        let (service, gate, _) = try service()
+        try service.add(name: "demo", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
+        _ = try service.setupRelay(url: origin.absoluteString)
+        let (token, _) = try service.issueGatewayClient(name: "demo", label: "agent")
+        _ = try service.setDoorbell(enabled: true)
+        let prompts = gate.reasons.count
+        for _ in 0..<(DoorbellGate.defaultPerHour + 2) {
+            guard case .unavailable = service.answerDoorbellRing(ring(client: token)) else { return XCTFail("no gateway yet") }
+        }
+        XCTAssertEqual(gate.reasons.count, prompts, "nobody was asked")
+        _ = try service.startGateway(port: 0)
+        defer {
+            service.stopRelay()
+            service.stopGateway()
+        }
+        XCTAssertEqual(service.answerDoorbellRing(ring(client: token)), .on, "the hour's allowance is untouched")
+    }
+
+    func testADoorbellWhoseLoopEndedIsOffAndStartsAgain() async throws {
+        let host = DoorbellHost(log: { _ in }, dialer: FakeRelayDialer([]))
+        host.start(origin: origin, key: "ksfd_x", current: { nil }, onRing: { _ in .refused })
+        try await until("the loop to end by itself") { !host.isOn }
+        host.start(origin: origin, key: "ksfd_x", onRing: { _ in .refused })
+        XCTAssertTrue(host.isOn)
+        host.stop()
+    }
+
     func testWhilePairingIsRequiredOnlyAPairingRings() throws {
         let (service, gate, _) = try service()
         try service.add(name: "demo", provider: "anthropic", kind: "runtime", notes: "", secret: fixtureSecret)
@@ -377,6 +445,7 @@ final class RelayDoorbellTests: XCTestCase {
         let (token, _) = try service.issueGatewayClient(name: "demo", label: "agent")
         let (credential, _) = try service.issueRelayPairing(label: "paired box", keys: ["demo"])
         try service.setRelayPairingRequired(true)
+        _ = try service.setDoorbell(enabled: true)
         let prompts = gate.reasons.count
 
         XCTAssertEqual(service.answerDoorbellRing(ring(client: token)), .refused)

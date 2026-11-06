@@ -26,7 +26,7 @@ beforeEach(async () => {
       try { ws.close(1000, "test reset"); } catch { /* already closing */ }
     }
     h.ringing = null;
-    h.lastRingAt = 0;
+    h.ringTimes.clear();
   });
 });
 
@@ -181,7 +181,7 @@ describe("ringing", () => {
       [{ result: "something new" }, 502, "doorbell_error", undefined],
     ];
     for (const [answer, status, code, retryAfter] of cases) {
-      await runInDurableObject(hub(), (h) => { h.lastRingAt = 0; });
+      await runInDurableObject(hub(), (h) => { h.ringTimes.clear(); });
       const { res, bell } = await ringAnswered(answer);
       expect(res.status, code).toBe(status);
       const body = await res.json();
@@ -198,7 +198,7 @@ describe("ringing", () => {
     expect(res.status).toBe(202);
     expect(await res.json()).toMatchObject({ relay: "off", state: "asking", retryable: true });
 
-    await runInDurableObject(hub(), (h) => { h.lastRingAt = 0; });
+    await runInDurableObject(hub(), (h) => { h.ringTimes.clear(); });
     const bell = await listen();
     const quick = await ring(undefined, "?wait=1");
     expect(quick.status).toBe(202);
@@ -231,7 +231,7 @@ describe("ringing", () => {
     expect(second.ws.readyState).toBe(1);
   });
 
-  it("rings one at a time and no more than every ten seconds", async () => {
+  it("rings one at a time and no more than every ten seconds per caller", async () => {
     const bell = await listen();
     const first = ring();
     const got = JSON.parse(await bell.next());
@@ -246,6 +246,21 @@ describe("ringing", () => {
     expect(Number(soon.headers.get("retry-after"))).toBeGreaterThan(0);
     expect(Number(soon.headers.get("retry-after"))).toBeLessThanOrEqual(10);
     expect(bell.messages).toEqual([]);
+  });
+
+  it("spaces rings per caller, so a stranger's rings do not lock out another agent", async () => {
+    const bell = await listen();
+    // A made-up token from one address: refused on the Mac, and spacing that address only.
+    const stranger = ring({ authorization: `Bearer ksfc_${"ef".repeat(24)}`, "cf-connecting-ip": "203.0.113.9" });
+    const first = JSON.parse(await bell.next());
+    bell.ws.send(JSON.stringify({ type: "answer", id: first.id, result: "refused" }));
+    expect((await stranger).status).toBe(403);
+    expect((await ring({ authorization: `Bearer ksfc_${"ef".repeat(24)}`, "cf-connecting-ip": "203.0.113.9" })).status).toBe(503);
+    const agent = ring({ authorization: `Bearer ${CLIENT}`, "cf-connecting-ip": "198.51.100.4" });
+    const second = JSON.parse(await bell.next());
+    expect(second.client).toBe(CLIENT_HASH);
+    bell.ws.send(JSON.stringify({ type: "answer", id: second.id, result: "on" }));
+    expect((await agent).status).toBe(200);
   });
 
   it("fails a waiting ring with doorbell_offline when the doorbell drops", async () => {

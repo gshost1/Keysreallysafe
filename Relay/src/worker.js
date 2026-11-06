@@ -172,7 +172,12 @@ export default {
       if (wait !== null) ring.searchParams.set("wait", wait);
       return hub.fetch(new Request(ring, {
         method: "POST",
-        headers: { "x-ring-client": credentials.client || "", "x-ring-pair": credentials.pair || "" },
+        headers: {
+          "x-ring-client": credentials.client || "",
+          "x-ring-pair": credentials.pair || "",
+          // For the per-address spacing only; it stays in the Durable Object's memory.
+          "x-ring-from": request.headers.get("cf-connecting-ip") || "",
+        },
       }));
     }
     return hub.fetch(request);
@@ -199,7 +204,8 @@ export class RelayHub extends DurableObject {
     // open HTTP request, which keeps this object awake for as long as it waits.
     /** @type {{ id: string, ws: WebSocket, resolve: (answer: object) => void } | null} */
     this.ringing = null;
-    this.lastRingAt = 0;
+    /** @type {Map<string, number>} caller address -> when it last rang */
+    this.ringTimes = new Map();
     // Answered by the runtime without waking a hibernated object.
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
@@ -315,9 +321,16 @@ export class RelayHub extends DurableObject {
     if (!bell) return refusal(503, "doorbell_offline", NO_DOORBELL);
     if (this.ringing) return refusal(503, "doorbell_busy", "another ring is waiting for the Mac's answer");
     const now = Date.now();
-    const since = now - this.lastRingAt;
-    if (since < DOORBELL.ringIntervalMs) {
-      return refusal(503, "doorbell_busy", "the Mac was rung moments ago", Math.ceil((DOORBELL.ringIntervalMs - since) / 1000));
+    for (const [from, at] of this.ringTimes) {
+      if (now - at >= DOORBELL.ringIntervalMs) this.ringTimes.delete(from);
+    }
+    const from = request.headers.get("x-ring-from") || "";
+    const last = this.ringTimes.get(from);
+    if (last !== undefined) {
+      return refusal(503, "doorbell_busy", "you rang moments ago", Math.ceil((DOORBELL.ringIntervalMs - (now - last)) / 1000));
+    }
+    if (this.ringTimes.size >= DOORBELL.maxRingCallers) {
+      return refusal(503, "doorbell_busy", "too many callers rang in the last few seconds");
     }
     let waitMs = DOORBELL.ringWaitMs;
     const asked = url.searchParams.get("wait");
@@ -338,7 +351,7 @@ export class RelayHub extends DurableObject {
       this.ringing = ring;
       timer = setTimeout(() => ring.resolve({ result: "timeout" }), waitMs);
     });
-    this.lastRingAt = now;
+    this.ringTimes.set(from, now);
     try {
       bell.send(JSON.stringify({
         type: "ring",

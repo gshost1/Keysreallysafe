@@ -1711,6 +1711,11 @@ final class KeysService: @unchecked Sendable {
             throw AppError.usage("no relay secret is stored; run: keys relay setup --url \(url.absoluteString)")
         }
         try presence.require(reason: reason ?? "connect the relay to \(url.host ?? url.absoluteString)")
+        return (url, try storedRelaySecret(store, url: url))
+    }
+
+    /// The secret itself. Only ever called right after a presence check that was for it.
+    private func storedRelaySecret(_ store: any SecretStore, url: URL) throws -> String {
         let secret: String
         do {
             secret = try store.get(name: Self.relaySecretName)
@@ -1720,7 +1725,7 @@ final class KeysService: @unchecked Sendable {
         guard RelaySecret.looksLikeSecret(secret) else {
             throw AppError.usage("the stored relay secret is not one keys relay setup made; run keys relay setup again")
         }
-        return (url, secret)
+        return secret
     }
 
     var relayLockURL: URL { RelayLock.url(beside: catalog.path) }
@@ -1936,7 +1941,7 @@ final class KeysService: @unchecked Sendable {
     /// Turns this process's relay on, with one presence check because the secret leaves the
     /// Keychain, or off. It stays on until turned off or the process quits; nothing turns it
     /// back on at launch, like the gateway forgets its keys.
-    func setRelay(enabled: Bool, presenceReason: String? = nil) throws -> RelayReport {
+    func setRelay(enabled: Bool) throws -> RelayReport {
         try requireGatewayOwner()
         try relayToggleLock.withLock {
             guard enabled else {
@@ -1944,27 +1949,42 @@ final class KeysService: @unchecked Sendable {
                 return
             }
             if relayHost.isOn { return }
-            // Everything that can be refused without the secret is refused before Touch ID.
-            guard relayStatus().configured else {
-                throw AppError.usage(
-                    "no relay is set up; deploy the Worker (docs/relay.md), then run: keys relay setup --url https://<your worker>.workers.dev"
-                )
-            }
-            guard let port = gatewayLock.withLock({ gatewayListener?.boundPort }) else {
-                throw AppError.usage("the gateway is not running in this process, so the relay would have nothing to reach")
-            }
-            let held: RelayLock
-            do {
-                held = try RelayLock(at: relayLockURL)
-            } catch let busy as RelayLock.Held {
-                throw AppError.usage(busy.appRefusal)
-            }
-            let (origin, secret) = try relayCredentials(reason: presenceReason)
-            relayHost.setStayAwake(preferences.relayStayAwake)
-            relayHost.setStayAwakeWhileShared(preferences.relayAwakeWhileShared, live: shareLiveCheck())
-            relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held, pairing: relayPairingVerifier())
+            try startRelayLocked { try relayCredentials() }
         }
         return relayReport()
+    }
+
+    /// Under relayToggleLock, with the relay off: everything that can be refused without the
+    /// secret is refused before `credentials`, which is where Touch ID is asked (or was just
+    /// asked, for the doorbell), and then the relay starts.
+    private func startRelayLocked(_ credentials: () throws -> (url: URL, secret: String)) throws {
+        if let refusal = relayStartRefusal() { throw AppError.usage(refusal) }
+        guard let port = gatewayLock.withLock({ gatewayListener?.boundPort }) else {
+            throw AppError.usage("the gateway is not running in this process, so the relay would have nothing to reach")
+        }
+        let held: RelayLock
+        do {
+            held = try RelayLock(at: relayLockURL)
+        } catch let busy as RelayLock.Held {
+            throw AppError.usage(busy.appRefusal)
+        }
+        let (origin, secret) = try credentials()
+        relayHost.setStayAwake(preferences.relayStayAwake)
+        relayHost.setStayAwakeWhileShared(preferences.relayAwakeWhileShared, live: shareLiveCheck())
+        relayHost.start(origin: origin, secret: secret, gatewayPort: port, relayLock: held, pairing: relayPairingVerifier())
+    }
+
+    /// Why the relay could not start right now, checked without the secret, a prompt or a lock:
+    /// not set up, no gateway, or `keys relay` holding the one relay in a Terminal.
+    private func relayStartRefusal() -> String? {
+        guard relayStatus().configured else {
+            return "no relay is set up; deploy the Worker (docs/relay.md), then run: keys relay setup --url https://<your worker>.workers.dev"
+        }
+        guard gatewayLock.withLock({ gatewayListener?.boundPort }) != nil else {
+            return "the gateway is not running in this process, so the relay would have nothing to reach"
+        }
+        if !relayHost.isOn, let held = RelayLock.holder(at: relayLockURL) { return held.appRefusal }
+        return nil
     }
 
     /// Whether the relay keeps the Mac from idle sleep while relayed calls are open. Off
@@ -2126,6 +2146,12 @@ final class KeysService: @unchecked Sendable {
             doorbellHost.log("doorbell: \(quoted) rang while the screen is locked; asked nobody")
             return .away
         }
+        // A relay that could not start anyway is said so before anyone is asked, and before
+        // the gate counts a prompt that would never be shown.
+        if let refusal = relayStartRefusal() {
+            doorbellHost.log("doorbell: \(quoted) rang; the relay cannot start: \(refusal)")
+            return .unavailable(refusal)
+        }
         switch doorbellGate.admit(now: now()) {
         case .pending:
             return .pending
@@ -2136,18 +2162,47 @@ final class KeysService: @unchecked Sendable {
             break
         }
         doorbellHost.log("doorbell: \(quoted) rang; asking for Touch ID")
+        let host = relayStatus().url?.host ?? "your Worker"
+        // Touch ID outside relayToggleLock: a prompt nobody is there to answer must not hold
+        // up the kill switch or `keys relay off`, which take that lock. What made the ring
+        // worth asking about is checked again once the person has answered: the doorbell may
+        // have been turned off, or the kill switch run, or the token revoked, while it was up.
         do {
-            let host = relayStatus().url?.host ?? "your Worker"
-            _ = try setRelay(enabled: true, presenceReason: "turn on the relay: \(quoted) asked through \(host)")
-            doorbellGate.finished(declined: false, now: now())
-            doorbellHost.log("doorbell: relay turned on for \(quoted)")
-            return .on
+            try presence.require(reason: "turn on the relay: \(quoted) asked through \(host)")
         } catch AppError.authCancelled, AppError.authFailed {
             doorbellGate.finished(declined: true, now: now())
             doorbellHost.log("doorbell: declined for \(quoted)")
             return .declined
         } catch {
-            doorbellGate.finished(declined: false, now: now())
+            // No prompt was shown, so none is counted.
+            doorbellGate.finished(declined: false, prompted: false, now: now())
+            doorbellHost.log("doorbell: could not ask for Touch ID for \(quoted): \(error)")
+            return .unavailable("Touch ID could not be shown on the Mac")
+        }
+        doorbellGate.finished(declined: false, now: now())
+        guard doorbellEnabled() else {
+            doorbellHost.log("doorbell: approved for \(quoted), but the doorbell was turned off meanwhile; relay left off")
+            return .unavailable("the doorbell was turned off on the Mac")
+        }
+        guard doorbellRinger(ring, now: now()) != nil else {
+            doorbellHost.log("doorbell: approved for \(quoted), but its token is no longer live; relay left off")
+            return .refused
+        }
+        do {
+            try requireGatewayOwner()
+            try relayToggleLock.withLock {
+                if relayHost.isOn { return }
+                try startRelayLocked {
+                    // The person approved this start a moment ago; the secret is read for it.
+                    guard let url = relayStatus().url else {
+                        throw AppError.usage("no relay is set up; run: keys relay setup --url https://<your worker>.workers.dev")
+                    }
+                    return (url, try storedRelaySecret(try relayStore(), url: url))
+                }
+            }
+            doorbellHost.log("doorbell: relay turned on for \(quoted)")
+            return .on
+        } catch {
             doorbellHost.log("doorbell: could not turn the relay on for \(quoted): \(error)")
             // Only the Mac's own usage refusals (a relay running in a Terminal, no gateway)
             // travel back to the agent; anything else stays in the log.

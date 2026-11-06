@@ -234,9 +234,15 @@ gateway reads it from (`Authorization: Bearer`, `X-KSF-Client`, `x-api-key`,
 `x-goog-api-key`, `api-key`) and the pairing from `X-KSF-Pair`. It checks only
 their shape, and forwards **only their SHA-256 hashes**, the form the Mac
 stores them in. Whoever holds the doorbell socket never sees a credential they
-could spend. The Worker sends at most one ring at a time, and no more than one
-every ten seconds. A ring while the relay is connected is answered 200 without
-reaching the Mac. A relay that connects while a ring waits answers it 200.
+could spend. The Worker sends one ring at a time, and takes at most one ring
+every ten seconds from each caller address. The spacing is per address
+because the Worker cannot tell a real token from a made-up one: one spacing
+for everyone would let a stranger keep every real agent out. The Mac adds its
+own bounds on top, whatever the Worker sends: four rings at once and thirty a
+minute, past which it answers `not_now` without looking. A ring while the
+relay is connected is answered 200 without reaching the Mac, which tells a
+stranger with a well-shaped token no more than a relayed call's 503 already
+does. A relay that connects while a ring waits answers it 200.
 
 **The Mac decides.** In this order, and only the last step asks anyone:
 
@@ -245,14 +251,17 @@ reaching the Mac. A relay that connects while a ring waits answers it 200.
    this Mac → `refused`. While pairing is required, only a pairing counts, as
    for a relayed call.
 3. The screen is locked → `away`. A prompt behind the lock screen reaches
-   nobody.
+   nobody. The relay could not start anyway (no gateway, `keys relay` running
+   in a Terminal) → `unavailable`, with the Mac's own reason.
 4. A prompt for an earlier ring is still up → `pending`. You declined one in
    the last ten minutes, or six prompts have been shown in the last hour →
    `not_now`, with when to try again.
-5. Touch ID, naming who rang. Approved → the relay turns on → `on`. Cancelled
-   → `declined`, and the ten-minute quiet period starts. The relay cannot
-   start (no gateway, `keys relay` running in a Terminal) → `unavailable`,
-   with the Mac's own reason.
+5. Touch ID, naming who rang. Cancelled → `declined`, and the ten-minute
+   quiet period starts. Approved → the doorbell must still be on and the token
+   still live, since either can change while the prompt is up. Then the relay
+   turns on → `on`. The prompt is shown outside the lock that turning the
+   relay on and off shares, so `keys relay off` and the kill switch never wait
+   for a prompt that nobody answers.
 
 Every ring and its outcome is a `relay doorbell:` line in menubar.log, with
 the token's label and never a hash.
@@ -266,7 +275,7 @@ the token's label and never a hash.
 | 403    | `doorbell_declined`          | the person at the Mac cancelled the prompt                |
 | 429    | `doorbell_not_now`           | the Mac asked recently; `Retry-After` says when it asks again |
 | 503    | `doorbell_offline`           | no doorbell is listening: Keysrs not running, the doorbell off, or the Mac asleep or offline; `Retry-After: 60` |
-| 503    | `doorbell_busy`              | another ring is waiting, or the last was under ten seconds ago; `Retry-After` |
+| 503    | `doorbell_busy`              | another ring is waiting, or this address rang under ten seconds ago; `Retry-After` |
 | 503    | `doorbell_mac_locked`        | the Mac's screen is locked; `Retry-After: 300`            |
 | 503    | `doorbell_unavailable`       | the relay could not start; the message says why           |
 

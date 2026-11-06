@@ -157,10 +157,13 @@ final class DoorbellGate: @unchecked Sendable {
         }
     }
 
-    func finished(declined: Bool, now: Date) {
+    /// `prompted` false: the prompt never appeared (Touch ID unavailable), so it is not
+    /// counted against the hour.
+    func finished(declined: Bool, prompted: Bool = true, now: Date) {
         lock.withLock {
             prompting = false
             if declined { declinedAt = now }
+            if !prompted, !prompts.isEmpty { prompts.removeLast() }
         }
     }
 
@@ -393,6 +396,9 @@ final class DoorbellHost: @unchecked Sendable {
     let log: @Sendable (String) -> Void
     private let dialer: any RelayDialer
     private let lock = NSLock()
+    /// Held across a whole start or stop, so the old loop is gone before a new one dials:
+    /// two doorbell sockets would evict each other at the Worker.
+    private let transition = NSLock()
     private var running: Running?
 
     init(
@@ -416,31 +422,39 @@ final class DoorbellHost: @unchecked Sendable {
         current: (@Sendable () -> (url: URL, key: String)?)? = nil,
         onRing: @escaping @Sendable (DoorbellRing) -> DoorbellAnswer
     ) {
+        transition.lock()
+        defer { transition.unlock() }
+        stopLocked(wait: 2)
         let client = DoorbellClient(options: .init(url: origin, key: key), dialer: dialer, log: log, onRing: onRing, current: current)
         let done = DispatchSemaphore(value: 0)
-        let task = Task.detached {
-            await client.run()
-            done.signal()
-        }
-        // Swapped under the lock, so two starts at once leave exactly one loop running.
-        let replaced = lock.withLock { () -> Running? in
-            defer { running = Running(client: client, task: task, done: done) }
-            return running
-        }
-        if let replaced {
-            replaced.task.cancel()
-            _ = replaced.done.wait(timeout: .now() + 2)
+        lock.withLock {
+            let task = Task.detached { [weak self] in
+                await client.run()
+                // A loop that ended by itself (its key gone) is off, so turning it on again
+                // starts a new one instead of finding this one "on".
+                self?.lock.withLock { if self?.running?.client === client { self?.running = nil } }
+                done.signal()
+            }
+            running = Running(client: client, task: task, done: done)
         }
         log("doorbell on; agents ring \(RelayURL.doorbellRingURL(origin)) to ask for the relay")
     }
 
-    func stop(wait: TimeInterval = 2, quiet: Bool = false) {
+    func stop(wait: TimeInterval = 2) {
+        transition.lock()
+        defer { transition.unlock() }
+        if stopLocked(wait: wait) { log("doorbell off") }
+    }
+
+    /// Under `transition`. Says whether a loop was running.
+    @discardableResult
+    private func stopLocked(wait: TimeInterval) -> Bool {
         guard let stopping = lock.withLock({ () -> Running? in
             defer { running = nil }
             return running
-        }) else { return }
+        }) else { return false }
         stopping.task.cancel()
         _ = stopping.done.wait(timeout: .now() + wait)
-        if !quiet { log("doorbell off") }
+        return true
     }
 }
