@@ -272,7 +272,7 @@ final class ServerTests: XCTestCase {
         XCTAssertNotNil(spendObj["catalog_version"] as? Int)
     }
 
-    func testHTMLResponsesSendCSPAndReferrerPolicy() throws {
+    func testHTMLResponsesSendCSPFramingAndReferrerPolicy() throws {
         let (db, dir) = try makeDB()
         let (service, _, _) = makeService(db: db)
         let web = dir.appendingPathComponent("Web", isDirectory: true)
@@ -294,8 +294,12 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(
             response.headers["Content-Security-Policy"],
-            "default-src 'self'; connect-src 'self'; img-src 'self' data:"
+            "default-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
         )
+        // Audit lead 7: no other page may frame the dashboard and redress clicks onto its
+        // one-click controls (auto-update off, Quit, Revoke). X-Frame-Options for browsers
+        // that ignore frame-ancestors.
+        XCTAssertEqual(response.headers["X-Frame-Options"], "DENY")
         XCTAssertEqual(response.headers["Referrer-Policy"], "no-referrer")
         let html = String(data: response.body, encoding: .utf8)!
         XCTAssertTrue(html.contains("<meta name=\"ksf-token\" content=\"\(handler.originToken)\">"), html)

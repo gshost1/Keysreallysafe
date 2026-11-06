@@ -1618,7 +1618,10 @@ final class APIHandler: @unchecked Sendable {
         var response = HTTPResponse.data(200, body, type: mime(full.pathExtension))
         if full.pathExtension.lowercased() == "html" {
             response.headers["Content-Security-Policy"] =
-                "default-src 'self'; connect-src 'self'; img-src 'self' data:"
+                "default-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+            // No other page may frame the dashboard and redress clicks onto its one-click
+            // controls. X-Frame-Options covers browsers that ignore frame-ancestors.
+            response.headers["X-Frame-Options"] = "DENY"
             response.headers["Referrer-Policy"] = "no-referrer"
         }
         return response

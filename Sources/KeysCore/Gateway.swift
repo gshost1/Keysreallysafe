@@ -363,6 +363,9 @@ final class GatewayListener: @unchecked Sendable {
         "x-ksf-grant",
         // The relay's marker is for this Mac's ledger, not for the provider.
         "x-ksf-via",
+        // Google APIs honour a method override on POST, which would let a POST-only grant or
+        // client reach DELETE or PATCH: the scope check sees only the request line.
+        "x-http-method-override", "x-http-method", "x-method-override",
     ])
 
     /// Split on the first `?` in the raw target. Path/query bytes are not decoded.

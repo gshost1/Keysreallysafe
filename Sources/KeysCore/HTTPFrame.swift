@@ -46,9 +46,16 @@ enum HTTPFrame {
         var leftover = Data(data[headerEnd.upperBound...])
         guard let headerText = String(data: headerData, encoding: .isoLatin1) else { return .bad }
         let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
+        // The head is split on CRLF only, so a bare CR or LF (or a NUL) would stay inside the
+        // request line or a header and reach a handler, and through the gateway URLRequest,
+        // where an HTTP/1.1 upstream might read it as a line end. RFC 9112 §2.2 lets a server
+        // reject them; refuse the request instead of guessing. Same bytes the relay refuses.
+        if lines.contains(where: { $0.utf8.contains(where: RelayRequest.isLineBreakOrNul) }) {
+            return .bad
+        }
         guard let first = lines.first else { return .bad }
         let parts = first.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
-        guard parts.count >= 2 else { return .bad }
+        guard parts.count >= 2, RelayRequest.isToken(String(parts[0])) else { return .bad }
         let method = String(parts[0])
         let target = String(parts[1])
 
@@ -57,7 +64,12 @@ enum HTTPFrame {
         var transferEncodings: [String] = []
         for line in lines.dropFirst() {
             guard let idx = line.firstIndex(of: ":") else { continue }
-            let key = line[..<idx].trimmingCharacters(in: .whitespaces).lowercased()
+            // A name must be a token, as on the relay path. That also refuses whitespace before
+            // the colon (RFC 9112 §5.1) and a folded line (§5.2), which a stricter peer would
+            // read as part of the previous header rather than as a header of its own.
+            let name = String(line[..<idx])
+            guard RelayRequest.isToken(name) else { return .bad }
+            let key = name.lowercased()
             let value = line[line.index(after: idx)...].trimmingCharacters(in: .whitespaces)
             if key == "content-length" {
                 contentLengths.append(String(value))
