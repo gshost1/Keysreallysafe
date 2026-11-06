@@ -389,7 +389,7 @@ final class AppLaunchSeamTests: XCTestCase {
             Set(seamRouted.keys),
             ["GrantCommand", "GrantsCommand", "RevokeCommand", "RenewCommand", "GatewayCommand", "WrapCommand",
              "AgentCommand", "RelayOnCommand", "RelayOffCommand", "TunnelCommand", "RelayRunCommand",
-             "DashboardCommand", "ClientTokenCommand", "ClientIssueCommand"],
+             "DashboardCommand", "ClientTokenCommand", "ClientIssueCommand", "RelayDoorbellCommand"],
             "exactly the eligible population routes through AppConnection.connect"
         )
 
@@ -401,13 +401,15 @@ final class AppLaunchSeamTests: XCTestCase {
         // call inline, and the pin below covers the shared helper.
         // UnwrapCommand is the onboarding slice's `keys unwrap`: it deliberately
         // keeps the plain client and never auto-launches (a script gets exit 6).
+        // `keys relay doorbell` mirrors the relay verbs: on and off launch the app like
+        // keys relay on, status reads it gracefully like keys relay status.
         // The `keys share` verbs mirror client and pair issue: the running app when
         // there is one, the catalog otherwise, and no launch.
         let graceful = blocks.filter { _, body in body.contains("ControlClient.connect") }
         XCTAssertEqual(
             Set(graceful.keys),
             ["ListCommand", "ProvidersCommand", "ClientIssueCommand", "AgentCommand", "RelayPairIssueCommand",
-             "RelayPairRequireCommand", "RelayStatusCommand", "UnwrapCommand",
+             "RelayPairRequireCommand", "RelayStatusCommand", "RelayDoorbellCommand", "UnwrapCommand",
              "ShareIssueCommand", "ShareRevokeCommand", "ShareAwakeCommand"],
             "exactly the graceful population keeps the plain control client"
         )
