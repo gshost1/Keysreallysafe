@@ -10,7 +10,8 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
     private var texts: [String] = []
     private var iterator: AsyncStream<RelayMessage>.Iterator
     private let feed: AsyncStream<RelayMessage>.Continuation
-    private(set) var closed = false
+    private var closedState = false
+    var closed: Bool { lock.withLock { closedState } }
     /// When set, every keepalive text send fails as a dead transport would.
     var failPings = false
 
@@ -50,7 +51,7 @@ final class FakeRelaySocket: RelaySocket, @unchecked Sendable {
     /// Like URLSession's cancel: a pending receive fails once the socket is closed.
     func close() {
         lock.lock()
-        closed = true
+        closedState = true
         lock.unlock()
         feed.finish()
     }
