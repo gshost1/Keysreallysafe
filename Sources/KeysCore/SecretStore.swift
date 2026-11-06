@@ -101,12 +101,13 @@ enum PromptText {
         return visible.count > max ? String(visible.prefix(max - 1)) + "…" : visible
     }
 
-    /// A host as it is dialed. `URL` turns a non-ASCII hostname into its punycode
-    /// form, so a lookalike (a Cyrillic і in "openai") shows as the `xn--` name the
-    /// secret actually goes to instead of passing for the real one.
+    /// A host as it is dialed, parsed the way `Providers.upstreamRequest` parses it.
+    /// `URL` turns a non-ASCII hostname into its punycode form, so a lookalike (a
+    /// Cyrillic і in "openai") shows as the `xn--` name the secret actually goes to,
+    /// and a stored host with a `#` or `?` in it ("evil.example#.openai.com") shows
+    /// as the part before it, the only part that is dialed.
     static func host(_ host: String) -> String {
-        guard !host.unicodeScalars.allSatisfy(\.isASCII) else { return host }
-        guard let url = URL(string: "https://\(host)/"), let dialed = url.host else {
+        guard let url = URL(string: "https://\(host)/"), let dialed = url.host, !dialed.isEmpty else {
             return field(host, max: 80)
         }
         return url.port.map { "\(dialed):\($0)" } ?? dialed

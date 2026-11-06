@@ -128,6 +128,9 @@ final class GrantPromptHardeningTests: XCTestCase {
         XCTAssertEqual(PromptText.host("api.opena\u{0456}.com"), "api.xn--opena-r2e.com")
         XCTAssertEqual(PromptText.host("api.opena\u{0456}.com:8443"), "api.xn--opena-r2e.com:8443")
         XCTAssertEqual(PromptText.host("127.0.0.1:9000"), "127.0.0.1:9000")
+        XCTAssertEqual(PromptText.host("evil.example#.api.openai.com"), "evil.example", "only what is dialed")
+        XCTAssertEqual(PromptText.host("evil.example?.api.openai.com"), "evil.example")
+        XCTAssertEqual(PromptText.host("api.openai.com"), "api.openai.com")
     }
 
     private func assertPlain(_ reason: String, file: StaticString = #filePath, line: UInt = #line) {
