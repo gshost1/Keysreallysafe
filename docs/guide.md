@@ -391,10 +391,12 @@ confirm (or with `--yes`), each key gets the gateway turned on and one client
 token (POST and GET, 30 days unless `--days`), the value in the file becomes
 that token, and `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL` or `GROQ_BASE_URL` is
 set to `http://127.0.0.1:12767/<key>` for the matching key variable (to your
-relay Worker with `--relay https://…`). The original file is copied beside
-itself as `<file>.keysrs-backup-<time>` (0600; it still holds the real
-values, so delete it once the agent works), then replaced in one rename with
-its permissions kept. Comments, blank lines, `export`, quotes and inline
+relay Worker with `--relay https://…`). The original values stay in the
+vault, where `keys unwrap` restores them from. The file's original base URL
+lines, and nothing else, are backed up in `backups/` beside the catalog
+(0600, excluded from Time Machine); unwrap reads them and then deletes the
+backup, and `keys purge` removes the folder. The file is then replaced in one
+rename with its permissions kept. Comments, blank lines, `export`, quotes and inline
 comments stay as written, and the file always ends with a newline.
 `--dry-run` stops after the plan.
 

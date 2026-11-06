@@ -210,7 +210,9 @@ final class EnvWrapTests: XCTestCase {
         XCTAssertEqual(try EnvFileWriter.currentMode(env), 0o640, "permissions are kept")
 
         let backup = try XCTUnwrap(summary.backup)
-        XCTAssertEqual(try Data(contentsOf: backup), Data(original.utf8))
+        XCTAssertEqual(try Data(contentsOf: backup), EnvFileWriter.backupContent(of: Data(original.utf8)),
+                       "the backup keeps only the companion lines; the values are in the vault")
+        XCTAssertFalse(try String(contentsOf: backup, encoding: .utf8).contains(fakeBody))
         XCTAssertEqual(try EnvFileWriter.currentMode(backup), 0o600)
 
         XCTAssertEqual(Set(try service.list().map(\.name)), ["router", "anthropic"])
@@ -226,10 +228,10 @@ final class EnvWrapTests: XCTestCase {
         XCTAssertFalse(screen.contains(fakeBody), "values never reach the terminal")
         XCTAssertFalse(screen.contains("ksfc_"), "tokens are written to the file, not printed")
         XCTAssertTrue(screen.contains("OPENAI_API_KEY -> router"))
-        XCTAssertTrue(screen.contains("backup with the original values kept outside the project"),
+        XCTAssertTrue(screen.contains("base URL lines are backed up outside the project"),
                       "the runner says a backup exists without saying where on disk")
         XCTAssertFalse(screen.contains(backup.path), "the absolute backup path is never printed (VAL-O-002)")
-        assertNoSentinel(fakeBody, in: dir.appendingPathComponent("catalog.db").deletingLastPathComponent(), skipping: [env, backup])
+        assertNoSentinel(fakeBody, in: dir.appendingPathComponent("catalog.db").deletingLastPathComponent(), skipping: [env])
     }
 
     func testRunAgainFindsNothing() throws {

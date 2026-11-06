@@ -231,7 +231,7 @@ final class ImportAndWrapTests: XCTestCase {
 
     // MARK: - VAL-O-002 (backups are kept outside the project, under the catalog)
 
-    /// The wrap-time backup holds the original secret values, so it must not sit in
+    /// The wrap-time backup holds the original companion lines, so it must not sit in
     /// the project the agent works in — one `git add -A` away from the repo, one
     /// `git clean` away from gone. The import keeps it under the catalog's own
     /// backups tree instead (the file's hashed folder, 0700 directory, 0600 file),
@@ -261,7 +261,9 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertEqual(names.count, 1, "one backup in the file's hashed folder")
         XCTAssertTrue(names[0].hasPrefix(".env.keysrs-backup-"), "the backup keeps the wrapped file's name")
         let backup = dir.appendingPathComponent(names[0])
-        XCTAssertEqual(try Data(contentsOf: backup), Data(original.utf8), "the backup holds the original bytes")
+        XCTAssertEqual(try String(contentsOf: backup, encoding: .utf8),
+                       "OPENAI_BASE_URL=https://api.example.internal/v1\n",
+                       "the backup holds the companion line, not the key value (audit lead 4)")
         XCTAssertEqual(try EnvFileWriter.currentMode(backup), 0o600)
         XCTAssertEqual(try EnvFileWriter.currentMode(dir), 0o700, "the hashed folder is 0700")
         XCTAssertEqual(try EnvFileWriter.currentMode(root), 0o700, "the backups root is 0700")
@@ -402,6 +404,43 @@ final class ImportAndWrapTests: XCTestCase {
         try Data(full.utf8).write(to: old)
         try site.service.remove(name: key)
         XCTAssertEqual(backupsHolding(plainValue, under: root), [], "rm scrubbed the older backup")
+    }
+
+    /// Two files in one folder share a hashed backup folder: unwrapping one removes
+    /// only its own backups, and the other's companion line stays for its unwrap.
+    func testUnwrapRemovesOnlyItsOwnFilesBackups() throws {
+        let site = try makeSite()
+        let project = try makeProject("siblings", in: site.dir)
+        let env = try write("OPENAI_API_KEY=\(plainValue)\n", to: ".env", under: project)
+        try write("ANTHROPIC_API_KEY=\(anthropicValue)\n", to: ".env.local", under: project)
+        _ = try site.service.importAndWrap(folder: project.path, variables: nil, docker: false)
+        let dir = try XCTUnwrap(EnvFileWriter.backupDirectory(for: env, under: EnvFileWriter.backupsRoot(beside: site.db.path)))
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: dir.path).count, 2)
+
+        _ = try site.service.unwrap(file: env.path, folder: nil)
+
+        let left = try fm.contentsOfDirectory(atPath: dir.path)
+        XCTAssertEqual(left.count, 1)
+        XCTAssertTrue(left[0].hasPrefix(".env.local.keysrs-backup-"), "the sibling's backup stays")
+    }
+
+    /// The scrub rewrites files in Keysrs's own tree only: a symlink named like a
+    /// backup is skipped, so it cannot point the rewrite at a file elsewhere.
+    func testTheScrubNeverFollowsASymlink() throws {
+        let dir = try TempDir.make()
+        let root = EnvFileWriter.backupsRoot(beside: dir.appendingPathComponent("catalog.db"))
+        let folder = root.appendingPathComponent("abc", isDirectory: true)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let outside = dir.appendingPathComponent("elsewhere.txt")
+        let text = "OPENAI_API_KEY=\(plainValue)\n"
+        try Data(text.utf8).write(to: outside)
+        try fm.createSymbolicLink(
+            at: folder.appendingPathComponent(".env.keysrs-backup-20261001-000000"), withDestinationURL: outside
+        )
+
+        try EnvFileWriter.scrubBackups(under: root)
+
+        XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), text, "the link's target is untouched")
     }
 
     /// Time Machine must not copy the backups folder onto a backup disk.
@@ -718,7 +757,7 @@ final class ImportAndWrapTests: XCTestCase {
 
     /// The rewrite touches the value span only: export, quotes, spacing and inline
     /// comments stay byte-identical, the file ends with a newline, the 0600 backup
-    /// holds the original values, the raw value is gone, and the mode is kept.
+    /// holds no key value, the raw value is gone, and the mode is kept.
     func testRewrittenFileKeepsEverythingButTheValueSpan() throws {
         let vault = try makeVault()
         let project = try makeProject(in: vault.dir)
@@ -740,7 +779,7 @@ final class ImportAndWrapTests: XCTestCase {
         XCTAssertFalse(text.contains(fakeBody), "the raw value is gone")
 
         // The backup is kept outside the project (VAL-O-002), under the catalog's
-        // own backups tree: the original bytes, 0600, inside a 0700 folder.
+        // own backups tree: the companion lines only, 0600, inside a 0700 folder.
         XCTAssertTrue(
             try fm.contentsOfDirectory(atPath: project.path).filter { $0.contains("keysrs-backup") }.isEmpty,
             "no backup beside the file"
@@ -748,7 +787,8 @@ final class ImportAndWrapTests: XCTestCase {
         let backups = try backupFiles(under: vault.dir)
         XCTAssertEqual(backups.count, 1, "one backup under the catalog's backups tree")
         let backup = try XCTUnwrap(backups.first)
-        XCTAssertEqual(try Data(contentsOf: backup), Data(original.utf8), "the backup holds the original bytes")
+        XCTAssertEqual(try Data(contentsOf: backup), Data(),
+                       "the original had no companion line, so the backup keeps nothing (audit lead 4)")
         XCTAssertEqual(try EnvFileWriter.currentMode(backup), 0o600)
         XCTAssertEqual(
             try EnvFileWriter.currentMode(URL(fileURLWithPath: backup.deletingLastPathComponent().path)), 0o700,

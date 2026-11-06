@@ -300,6 +300,15 @@ extension KeysService {
             for legacy in Self.legacyBackups(of: canonical) { try? FileManager.default.removeItem(at: legacy) }
             outcome.backup = nil
         }
+        // The App Support backups go too once every line came back: nothing reads
+        // them after this, and one an older build wrote is a byte copy of the file,
+        // key values included. A failed line keeps them for the rerun.
+        if outcome.failed.isEmpty {
+            EnvFileWriter.removeBackups(
+                of: URL(fileURLWithPath: canonical), under: EnvFileWriter.backupsRoot(beside: catalog.path)
+            )
+            outcome.backup = nil
+        }
 
         // Revoke exactly the tokens this file held, found by hashing each wrapped
         // line's token value: per-key tokens from `keys wrap` and the project token
